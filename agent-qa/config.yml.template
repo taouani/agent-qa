@@ -1,0 +1,45 @@
+version: 1.0.0
+last_installed: 2025-01-01 00:00:00
+
+
+# CONFIGURATION
+# Configure repository platform and project settings for Agent QA.
+
+
+# ================================================
+# Repository Platform
+# Select which git repository platform Agent QA should use:
+# - gitlab: Use GitLab MCP server
+# - github: Use GitHub MCP server
+# - azure-devops: Use Azure DevOps MCP server
+#
+# This setting determines which MCP server tools Agent QA will use for
+# commit analysis, pull request/merge request retrieval, and code change tracking.
+# ================================================
+repository_platform: gitlab
+
+
+# ================================================
+# Repository Project ID
+# The project ID or identifier for your git repository.
+#
+# Format depends on selected platform:
+# - GitLab: Numeric project ID or full path (e.g., "12345" or "my-group/my-project")
+# - GitHub: Repository owner/name (e.g., "octocat/Spoon-Knife")
+# - Azure DevOps: Project name/ID and repository ID/name
+#
+# This is required for all repository operations.
+# ================================================
+repository_project_id: ""
+
+
+# ================================================
+# Azure DevOps Cloud ID
+# Azure DevOps organization/account name (required only if repository_platform is azure-devops).
+#
+# Example: "myorganization" for https://dev.azure.com/myorganization
+#
+# Leave empty if not using Azure DevOps.
+# ================================================
+azure_devops_cloud_id: ""
+
