@@ -37,13 +37,13 @@ The base installation downloads Agent-QA to your home directory (`~/agent-qa`). 
 ### macOS/Linux
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/main/scripts/base-install.sh | bash
+curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/taouani/agent-qa/main/scripts/base-install.sh" -OutFile "$env:TEMP\base-install.sh"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh" -OutFile "$env:TEMP\base-install.sh"
 # Note: You may need to use WSL or Git Bash for bash scripts
 ```
 
@@ -324,7 +324,7 @@ chmod +x ~/agent-qa/scripts/*.sh
 
 **Solution**: Run base installation first:
 ```bash
-curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/main/scripts/base-install.sh | bash
+curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
 ```
 
 #### "MCP server not available"

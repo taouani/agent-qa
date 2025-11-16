@@ -45,7 +45,7 @@ Agent-QA automates the entire QA documentation workflow by:
 
 1. **Base Installation** (one-time setup):
    ```bash
-   curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/main/scripts/base-install.sh | bash
+   curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
    ```
 
 2. **Project Installation** (in your project directory):

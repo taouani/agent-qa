@@ -133,7 +133,7 @@ validate_installations() {
         print_error "Agent QA base installation not found at ~/agent-qa/"
         echo ""
         print_status "Please run the base installation first:"
-        echo "  curl -sSL ${REPO_URL:-https://github.com/YOUR_USERNAME/agent-qa}/raw/main/scripts/base-install.sh | bash"
+        echo "  curl -sSL ${REPO_URL:-https://github.com/YOUR_USERNAME/agent-qa}/raw/master/scripts/base-install.sh | bash"
         echo ""
         exit 1
     fi
