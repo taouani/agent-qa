@@ -438,6 +438,79 @@ update_framework() {
     fi
 }
 
+# Update .claude/commands/agent-qa/ files for Claude Code/Cursor IDE recognition (optional)
+update_claude_commands() {
+    # This is optional and only needed for Claude Code/Cursor IDE
+    # Other IDEs can reference commands directly from agent-qa/commands/
+    
+    local source_claude_dir="$BASE_DIR/.claude/commands/agent-qa"
+    local dest_claude_dir="$PROJECT_DIR/.claude/commands/agent-qa"
+
+    # Check if source .claude directory exists (might not exist in base installation)
+    if [[ ! -d "$source_claude_dir" ]]; then
+        # Try to find it in the repository root (for local installations)
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -d "$repo_root/.claude/commands/agent-qa" ]]; then
+            source_claude_dir="$repo_root/.claude/commands/agent-qa"
+        else
+            # Not an error - .claude/commands/ is optional and IDE-specific
+            print_verbose "No .claude/commands/agent-qa directory found - skipping (optional for Claude Code/Cursor IDE only)"
+            return
+        fi
+    fi
+
+    if [[ ! -d "$source_claude_dir" ]]; then
+        print_verbose "No IDE command files found - skipping (optional)"
+        return
+    fi
+
+    print_status "Updating Claude Code/Cursor IDE command files (optional)"
+
+    local claude_commands_updated=0
+    local claude_commands_skipped=0
+    local claude_commands_new=0
+
+    ensure_dir "$dest_claude_dir"
+
+    if [[ -d "$source_claude_dir" ]]; then
+        find "$source_claude_dir" -type f -name "*.md" | while read -r source_file; do
+            local relative_path="${source_file#$source_claude_dir/}"
+            local dest_file="$dest_claude_dir/$relative_path"
+
+            if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                SKIPPED_FILES+=("$dest_file")
+                ((claude_commands_skipped++)) || true
+                print_verbose "Skipped: $relative_path"
+            else
+                if [[ -f "$dest_file" ]]; then
+                    UPDATED_FILES+=("$dest_file")
+                    ((claude_commands_updated++)) || true
+                    print_verbose "Updated: $relative_path"
+                else
+                    NEW_FILES+=("$dest_file")
+                    ((claude_commands_new++)) || true
+                    print_verbose "New file: $relative_path"
+                fi
+                if [[ "$DRY_RUN" != "true" ]]; then
+                    copy_file "$source_file" "$dest_file" > /dev/null
+                fi
+            fi
+        done
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $claude_commands_new -gt 0 ]]; then
+            echo "✓ Added $claude_commands_new IDE command files"
+        fi
+        if [[ $claude_commands_updated -gt 0 ]]; then
+            echo "✓ Updated $claude_commands_updated IDE command files"
+        fi
+        if [[ $claude_commands_skipped -gt 0 ]]; then
+            echo -e "${YELLOW}$claude_commands_skipped IDE command files were not updated. To update these, re-run with --overwrite-commands flag.${NC}"
+        fi
+    fi
+}
+
 # Update agent-qa folder and configuration
 update_agent_qa_folder() {
     print_status "Updating agent-qa folder"
@@ -494,6 +567,10 @@ perform_update() {
     fi
     update_framework
     if [[ -d "$BASE_DIR/agent-qa/framework" ]]; then
+        echo ""
+    fi
+    update_claude_commands
+    if [[ -d "$BASE_DIR/.claude/commands/agent-qa" ]] || [[ -d "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.claude/commands/agent-qa" ]]; then
         echo ""
     fi
 

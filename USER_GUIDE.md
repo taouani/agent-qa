@@ -23,12 +23,30 @@ Before using Agent-QA, ensure:
 3. ✅ You have access to Jira tickets and git repositories
 4. ✅ Your `agent-qa/config.yml` is configured correctly
 
+### IDE-Specific Setup
+
+**Claude Code / Cursor IDE:**
+- Commands are automatically installed to `.claude/commands/agent-qa/` during installation
+- Type `/analyze-requirements` in the chat to use commands
+- If commands aren't recognized, see [Troubleshooting](#troubleshooting)
+
+**VS Code / GitHub Copilot / Other IDEs:**
+- Commands can be used by referencing the markdown files directly
+- See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for detailed instructions
+- The `.claude/commands/` directory is optional and only for Claude Code/Cursor
+
 ### Your First Command
 
-Start with analyzing a single Jira ticket:
-
+**In Claude Code/Cursor:**
 ```
 /analyze-requirements PROJ-123
+```
+
+**In VS Code / Other IDEs:**
+Reference the command file and ask your AI assistant to follow it:
+```
+@agent-qa/commands/analyze-requirements/analyze-requirements.md
+Please analyze requirements for Jira ticket PROJ-123 following the instructions in this file.
 ```
 
 This will:
@@ -559,12 +577,18 @@ Test cases are automatically exported to CSV format compatible with Jira Xray:
 
 ### Command Not Found
 
-**Issue**: Command not recognized
+**Issue**: Command not recognized in Claude Code/Cursor
 
 **Solution**: 
 - Verify Agent-QA is installed: `ls agent-qa/commands`
-- Check you're in the project directory
-- Re-run project installation if needed
+- Check if `.claude/commands/agent-qa/` exists: `ls .claude/commands/agent-qa/`
+- If missing, re-run project installation: `~/agent-qa/scripts/project-install.sh`
+- Or manually copy command files (see [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md))
+
+**For VS Code / Other IDEs:**
+- Commands don't need to be in `.claude/commands/`
+- Reference command files directly: `@agent-qa/commands/analyze-requirements/analyze-requirements.md`
+- See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for IDE-specific instructions
 
 ### MCP Server Errors
 

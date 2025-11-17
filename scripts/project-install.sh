@@ -463,6 +463,59 @@ install_config_template() {
     fi
 }
 
+# Install .claude/commands/agent-qa/ files for Claude Code/Cursor IDE recognition (optional)
+install_claude_commands() {
+    # This is optional and only needed for Claude Code/Cursor IDE
+    # Other IDEs can reference commands directly from agent-qa/commands/
+    
+    local claude_commands_count=0
+    local source_claude_dir="$BASE_DIR/.claude/commands/agent-qa"
+    local dest_claude_dir="$PROJECT_DIR/.claude/commands/agent-qa"
+
+    # Check if source .claude directory exists (might not exist in base installation)
+    if [[ ! -d "$source_claude_dir" ]]; then
+        # Try to find it in the repository root (for local installations)
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -d "$repo_root/.claude/commands/agent-qa" ]]; then
+            source_claude_dir="$repo_root/.claude/commands/agent-qa"
+        else
+            # Not an error - .claude/commands/ is optional and IDE-specific
+            print_verbose "No .claude/commands/agent-qa directory found - skipping (optional for Claude Code/Cursor IDE only)"
+            return
+        fi
+    fi
+
+    # Create .claude/commands/agent-qa directory
+    ensure_dir "$dest_claude_dir"
+
+    # Copy all command files
+    if [[ -d "$source_claude_dir" ]]; then
+        if [[ "$DRY_RUN" != "true" ]]; then
+            print_status "Installing Claude Code/Cursor IDE command files (optional)"
+        fi
+        
+        find "$source_claude_dir" -type f -name "*.md" | while read -r source_file; do
+            local relative_path="${source_file#$source_claude_dir/}"
+            local dest_file="$dest_claude_dir/$relative_path"
+
+            if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                print_verbose "Skipped: $relative_path"
+            else
+                if copy_file "$source_file" "$dest_file" > /dev/null; then
+                    ((claude_commands_count++)) || true
+                    print_verbose "  Installed: $relative_path"
+                fi
+            fi
+        done
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $claude_commands_count -gt 0 ]]; then
+            echo "✓ Installed $claude_commands_count Claude Code/Cursor IDE command files (optional)"
+        fi
+    fi
+}
+
 # Perform installation
 perform_installation() {
     # Show dry run warning at the top if applicable
@@ -522,6 +575,7 @@ perform_installation() {
         echo ""
     fi
     install_config_template
+    install_claude_commands
 
     # Installation complete
     if [[ "$DRY_RUN" != "true" ]]; then

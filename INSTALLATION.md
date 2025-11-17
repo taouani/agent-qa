@@ -34,18 +34,40 @@ Agent-QA requires MCP servers to be configured in your IDE. The installation scr
 
 The base installation downloads Agent-QA to your home directory (`~/agent-qa`). This is a one-time setup.
 
-### macOS/Linux
+### Option 1: Install from GitHub (When repository is available)
+
+**Note**: This requires the repository to be available on GitHub. If you get a 404 error, the repository is not yet on GitHub - use Option 2 instead.
+
+#### macOS/Linux
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
 ```
 
-### Windows (PowerShell)
+#### Windows (PowerShell)
 
 ```powershell
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh" -OutFile "$env:TEMP\base-install.sh"
 # Note: You may need to use WSL or Git Bash for bash scripts
 ```
+
+### Option 2: Install from Local Repository (Use this if GitHub installation fails)
+
+If you get a 404 error or the repository is not yet on GitHub, install from your local repository:
+
+1. **Navigate to the agent-qa repository directory**:
+   ```bash
+   cd /path/to/agent-qa
+   ```
+
+2. **Run the local installation script**:
+   ```bash
+   ./scripts/install-from-local.sh
+   ```
+
+This will copy Agent-QA files from your local repository to `~/agent-qa`.
+
+**Note**: Make sure you have the agent-qa repository cloned or available locally before running this script.
 
 ### What Happens During Base Installation
 
@@ -76,6 +98,8 @@ ls ~/agent-qa/agent-qa/commands
 ```
 
 You should see command directories like `analyze-requirements`, `generate-test-cases`, etc.
+
+**Note**: The `.claude/commands/agent-qa/` directory is optional and only needed for Claude Code/Cursor IDE command recognition. Other IDEs can use commands directly from `agent-qa/commands/`.
 
 ## Project Installation
 
@@ -145,11 +169,16 @@ This is your Azure DevOps organization name (the part after `dev.azure.com/`).
        framework/       # Framework files
        config.yml       # Your project configuration
        config.yml.template
+     .claude/           # Optional: For Claude Code/Cursor IDE only
+       commands/
+         agent-qa/      # IDE command recognition files
    ```
 
 2. **Creates/updates `agent-qa/config.yml`** with your selections
 
 3. **Copies command files** from base installation to your project
+
+4. **Optionally installs `.claude/commands/agent-qa/`** files (only if available, for Claude Code/Cursor IDE)
 
 ### Non-Interactive Installation
 
@@ -301,6 +330,28 @@ To completely reinstall Agent-QA in a project:
 
 ### Base Installation Issues
 
+#### "404: Not Found" or "bash: line 1: 404:: command not found" Error
+
+**This means the repository is not yet available on GitHub.**
+
+**Solution**: Use Option 2 (Install from Local Repository):
+
+```bash
+cd /path/to/agent-qa
+./scripts/install-from-local.sh
+```
+
+#### "Repository structure not found"
+
+If using local installation and you get this error:
+
+1. **Verify you're in the repository root**: The script should be run from the agent-qa repository directory
+2. **Check directory structure**: Ensure `agent-qa/` and `scripts/` directories exist
+3. **Use absolute path**: Try using the full path to the script:
+   ```bash
+   /full/path/to/agent-qa/scripts/install-from-local.sh
+   ```
+
 #### "curl: command not found"
 
 **Solution**: Install curl:
@@ -316,7 +367,7 @@ chmod +x ~/agent-qa/scripts/*.sh
 
 #### "Failed to download common-functions.sh"
 
-**Solution**: Check your internet connection and GitHub access. The script downloads files from GitHub.
+**Solution**: Check your internet connection and GitHub access. The script downloads files from GitHub. If the repository is not on GitHub, use local installation instead.
 
 ### Project Installation Issues
 

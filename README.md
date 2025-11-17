@@ -43,6 +43,8 @@ Agent-QA automates the entire QA documentation workflow by:
 
 ### Installation
 
+#### Option 1: Install from GitHub (when repository is available)
+
 1. **Base Installation** (one-time setup):
    ```bash
    curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
@@ -53,11 +55,42 @@ Agent-QA automates the entire QA documentation workflow by:
    ~/agent-qa/scripts/project-install.sh
    ```
 
+#### Option 2: Install from Local Repository (if GitHub installation fails)
+
+If you get a 404 error, the repository is not yet on GitHub. Install from your local copy:
+
+1. **Navigate to the agent-qa repository**:
+   ```bash
+   cd /path/to/agent-qa
+   ```
+
+2. **Run local installation**:
+   ```bash
+   ./scripts/install-from-local.sh
+   ```
+
+3. **Project Installation** (in your project directory):
+   ```bash
+   ~/agent-qa/scripts/project-install.sh
+   ```
+
 3. Follow the prompts to configure your repository platform and project ID.
 
 For detailed installation instructions, see [INSTALLATION.md](INSTALLATION.md).
 
 ## 📖 Usage
+
+### IDE-Specific Usage
+
+**Claude Code / Cursor IDE:**
+Commands are recognized automatically. Type `/` followed by the command name:
+```
+/analyze-requirements PROJ-123
+/generate-test-cases
+```
+
+**VS Code / GitHub Copilot / Other IDEs:**
+Reference the command files directly. See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for details.
 
 ### Basic Workflow
 
