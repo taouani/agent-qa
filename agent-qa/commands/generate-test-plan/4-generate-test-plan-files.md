@@ -19,7 +19,7 @@ Same pattern as other commands:
 
 ## Important Constraints
 
-- Follow agent-os markdown standards
+- Follow markdown standards
 - Include all plan fields
 - Link to generated deliverables
 

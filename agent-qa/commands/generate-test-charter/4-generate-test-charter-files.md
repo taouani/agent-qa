@@ -83,7 +83,7 @@ Create `test-charter-index.md`:
 
 ## Important Constraints
 
-- Follow agent-os markdown standards
+- Follow markdown standards
 - Use appropriate file naming
 - Include all charter fields
 - Create proper markdown links

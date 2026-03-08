@@ -18,7 +18,7 @@ The FIRST STEP is to initialize the repository MCP server connection, read repos
 Read the repository platform setting from agent configuration:
 
 1. **Locate Configuration File**:
-   - Check for `agent-os/config.yml` or `agent-qa/config.yml`
+   - Check for `agent-qa/config.yml`
    - Look for `repository_platform` setting
    - Supported values: `github`, `gitlab`, `azure-devops` (case-insensitive)
 
@@ -32,7 +32,7 @@ Read the repository platform setting from agent configuration:
      ```
      ❌ Repository platform configuration not found
      
-     Please configure repository platform in agent-os/config.yml or agent-qa/config.yml:
+     Please configure repository platform in agent-qa/config.yml:
      repository_platform: [github|gitlab|azure-devops]
      ```
    - If platform value is invalid, provide error message:

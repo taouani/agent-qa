@@ -173,7 +173,7 @@ Where `{folder-name}` is:
 
 ## Architecture
 
-Agent-QA follows the agent-os framework patterns:
+Agent-QA follows these patterns:
 
 - **Multi-phase Commands** - Each command is broken down into numbered phases
 - **MCP Server Integration** - Uses Model Context Protocol for external tool integration
@@ -242,7 +242,7 @@ Agent-QA is designed to be extensible. Key areas for contribution:
 ## Acknowledgments
 
 Agent-QA leverages:
-- The agent-os framework for command structure
+
 - MCP (Model Context Protocol) for tool integration
 - Best practices from senior QA architect templates
 

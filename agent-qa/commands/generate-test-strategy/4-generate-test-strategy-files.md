@@ -40,7 +40,7 @@ Create `test-strategy-index.md` with links to all strategies.
 
 ## Important Constraints
 
-- Follow agent-os markdown standards
+- Follow markdown standards
 - Include all strategy fields
 - Create proper markdown links
 

@@ -224,7 +224,7 @@ If file generation is successful, output:
 
 ## Important Constraints
 
-- Follow agent-os markdown formatting standards
+- Follow markdown formatting standards
 - Group analysis by Jira ticket
 - Include all correlation mappings
 - Format diff snippets properly in markdown code blocks

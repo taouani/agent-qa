@@ -23,8 +23,8 @@ Check for configuration files in the following order:
    - Look for file at `agent-qa/config.yml`
    - If found, read from this file
 
-2. **Check `agent-os/config.yml`** (fallback):
-   - If `agent-qa/config.yml` not found, check `agent-os/config.yml`
+2. **Check `agent-qa/config.yml`** (primary):
+   - Read from `agent-qa/config.yml`
    - If found, read from this file
 
 3. **Error if Not Found**:
@@ -66,7 +66,7 @@ Validate that the platform value is one of the supported platforms:
 ```
 ❌ Repository platform configuration not found
 
-Please configure repository platform in agent-os/config.yml or agent-qa/config.yml:
+Please configure repository platform in agent-qa/config.yml:
 
 repository_platform: [github|gitlab|azure-devops]
 ```
@@ -86,7 +86,7 @@ Please update repository_platform in your config file.
 ```
 ❌ Repository platform not configured
 
-Please add repository_platform setting to agent-os/config.yml or agent-qa/config.yml:
+Please add repository_platform setting to agent-qa/config.yml:
 
 repository_platform: [github|gitlab|azure-devops]
 ```
@@ -115,7 +115,7 @@ This instruction file follows patterns from:
 ## Important Notes
 
 - Configuration reading is case-insensitive for platform values
-- Framework supports both `agent-os/config.yml` and `agent-qa/config.yml` for flexibility
+- Framework reads from `agent-qa/config.yml`
 - Platform value must be one of: `github`, `gitlab`, `azure-devops`
 - Clear error messages guide users to fix configuration issues
 

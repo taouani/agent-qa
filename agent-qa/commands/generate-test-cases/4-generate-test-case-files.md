@@ -205,7 +205,7 @@ Write all files to:
 - Use pipe-separated format for steps in CSV
 - Format preconditions with bullet points and line breaks
 - Include traceability matrix with coverage metrics
-- Follow agent-os markdown standards
+- Follow markdown standards
 - Match language of original requirements
 - Include regression suite recommendations
 

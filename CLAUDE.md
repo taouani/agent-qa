@@ -4,13 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Agent-QA is an AI-powered QA automation agent built on the agent-os framework. It analyzes Jira tickets, Confluence pages, and git repository changes to generate test deliverables (test cases, strategies, charters, plans, risk registers, release notes, Gherkin features, Playwright specs). The project is entirely markdown and YAML — no application runtime, no package manager, no compiled code.
+Agent-QA is an AI-powered QA automation agent. It analyzes Jira tickets, Confluence pages, and git repository changes to generate test deliverables (test cases, strategies, charters, plans, risk registers, release notes, Gherkin features, Playwright specs). The project is entirely markdown and YAML — no application runtime, no package manager, no compiled code.
 
 ## Architecture
 
 ### Two-Layer Structure
 
-- **`agent-os/`** — Base framework (v2.1.1). Provides multi-phase command patterns, coding standards, and product definitions. Shared across agent projects.
 - **`agent-qa/`** — QA-specific commands, framework utilities, format templates, and configuration. This is where most development happens.
 
 ### Command Pattern

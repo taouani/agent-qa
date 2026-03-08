@@ -1,10 +1,10 @@
 # Agent-QA Commands
 
-This directory contains all agent-qa commands following agent-os multi-phase command patterns.
+This directory contains all agent-qa commands .
 
 ## Command Structure
 
-Each command follows the agent-os pattern with:
+Each command follows the multi-phase pattern with:
 - Main command file: `{command-name}.md`
 - Numbered phase instruction files: `{phase-number}-{phase-name}.md`
 
@@ -127,7 +127,7 @@ Where `{folder-name}` is:
 
 ## Notes
 
-- All commands follow agent-os multi-phase patterns
+- All commands follow multi-phase patterns
 - Commands are independent and can be run in any order (after analyze-requirements)
 - Each command prompts user to select which requirements analysis to use
 - Commands automatically detect and include related deliverables when available

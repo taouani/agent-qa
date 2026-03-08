@@ -22,5 +22,5 @@ Same pattern as other commands:
 - Format risks in priority order (highest first)
 - Include all risk fields
 - Link risks to requirements
-- Follow agent-os markdown standards
+- Follow markdown standards
 

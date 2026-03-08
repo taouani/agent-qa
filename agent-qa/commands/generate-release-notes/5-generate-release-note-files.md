@@ -230,7 +230,7 @@ If file generation is successful, output:
 
 ## Important Constraints
 
-- Follow agent-os markdown formatting standards
+- Follow markdown formatting standards
 - Include all sections from Phase 3 and Phase 4
 - Use proper markdown formatting (tables, lists, code blocks, links)
 - Include all traceability links between artifacts
