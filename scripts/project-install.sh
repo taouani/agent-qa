@@ -516,6 +516,217 @@ install_claude_commands() {
     fi
 }
 
+# Install .claude/rules/ files
+install_claude_rules() {
+    local source_rules_dir="$BASE_DIR/.claude/rules"
+    local dest_rules_dir="$PROJECT_DIR/.claude/rules"
+
+    if [[ ! -d "$source_rules_dir" ]]; then
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -d "$repo_root/.claude/rules" ]]; then
+            source_rules_dir="$repo_root/.claude/rules"
+        else
+            print_verbose "No .claude/rules directory found - skipping"
+            return
+        fi
+    fi
+
+    ensure_dir "$dest_rules_dir"
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing Claude Code rules"
+    fi
+
+    local rules_count=0
+    find "$source_rules_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_rules_dir/}"
+        local dest_file="$dest_rules_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((rules_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        echo "✓ Installed Claude Code rules in .claude/rules/"
+    fi
+}
+
+# Install .claude/agents/agent-qa/ files
+install_claude_agents() {
+    local source_agents_dir="$BASE_DIR/.claude/agents/agent-qa"
+    local dest_agents_dir="$PROJECT_DIR/.claude/agents/agent-qa"
+
+    if [[ ! -d "$source_agents_dir" ]]; then
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -d "$repo_root/.claude/agents/agent-qa" ]]; then
+            source_agents_dir="$repo_root/.claude/agents/agent-qa"
+        else
+            print_verbose "No .claude/agents/agent-qa directory found - skipping"
+            return
+        fi
+    fi
+
+    ensure_dir "$dest_agents_dir"
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing Claude Code subagents"
+    fi
+
+    local agents_count=0
+    find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_agents_dir/}"
+        local dest_file="$dest_agents_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((agents_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        echo "✓ Installed Claude Code subagents in .claude/agents/agent-qa/"
+    fi
+}
+
+# Install .claude/hooks.json
+install_claude_hooks() {
+    local source_hooks="$BASE_DIR/.claude/hooks.json"
+    local dest_hooks="$PROJECT_DIR/.claude/hooks.json"
+
+    if [[ ! -f "$source_hooks" ]]; then
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -f "$repo_root/.claude/hooks.json" ]]; then
+            source_hooks="$repo_root/.claude/hooks.json"
+        else
+            print_verbose "No .claude/hooks.json found - skipping"
+            return
+        fi
+    fi
+
+    if should_skip_file "$dest_hooks" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+        print_verbose "Skipped: hooks.json"
+    else
+        copy_file "$source_hooks" "$dest_hooks" > /dev/null
+        if [[ "$DRY_RUN" != "true" ]]; then
+            echo "✓ Installed Claude Code hooks in .claude/hooks.json"
+        fi
+    fi
+}
+
+# Install .cursor/rules/ files
+install_cursor_rules() {
+    local source_cursor_dir="$BASE_DIR/.cursor/rules"
+    local dest_cursor_dir="$PROJECT_DIR/.cursor/rules"
+
+    if [[ ! -d "$source_cursor_dir" ]]; then
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -d "$repo_root/.cursor/rules" ]]; then
+            source_cursor_dir="$repo_root/.cursor/rules"
+        else
+            print_verbose "No .cursor/rules directory found - skipping"
+            return
+        fi
+    fi
+
+    ensure_dir "$dest_cursor_dir"
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing Cursor IDE rules"
+    fi
+
+    local cursor_count=0
+    find "$source_cursor_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_cursor_dir/}"
+        local dest_file="$dest_cursor_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((cursor_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        echo "✓ Installed Cursor IDE rules in .cursor/rules/"
+    fi
+}
+
+# Install .github/copilot-instructions.md
+install_copilot_instructions() {
+    local source_copilot="$BASE_DIR/.github/copilot-instructions.md"
+    local dest_copilot="$PROJECT_DIR/.github/copilot-instructions.md"
+
+    if [[ ! -f "$source_copilot" ]]; then
+        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+        if [[ -f "$repo_root/.github/copilot-instructions.md" ]]; then
+            source_copilot="$repo_root/.github/copilot-instructions.md"
+        else
+            print_verbose "No .github/copilot-instructions.md found - skipping"
+            return
+        fi
+    fi
+
+    ensure_dir "$PROJECT_DIR/.github"
+
+    if should_skip_file "$dest_copilot" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+        print_verbose "Skipped: copilot-instructions.md"
+    else
+        copy_file "$source_copilot" "$dest_copilot" > /dev/null
+        if [[ "$DRY_RUN" != "true" ]]; then
+            echo "✓ Installed GitHub Copilot instructions in .github/copilot-instructions.md"
+        fi
+    fi
+}
+
+# Install agent-qa/formats/ directory
+install_formats() {
+    local source_formats_dir="$BASE_DIR/agent-qa/formats"
+    local dest_formats_dir="$PROJECT_DIR/agent-qa/formats"
+
+    if [[ ! -d "$source_formats_dir" ]]; then
+        print_verbose "No formats directory found - skipping"
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing format templates"
+    fi
+
+    local formats_count=0
+    find "$source_formats_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_formats_dir/}"
+        local dest_file="$dest_formats_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((formats_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $formats_count -gt 0 ]]; then
+            echo "✓ Installed $formats_count format template files in agent-qa/formats/"
+        fi
+    fi
+}
+
 # Perform installation
 perform_installation() {
     # Show dry run warning at the top if applicable
@@ -548,6 +759,7 @@ perform_installation() {
     ensure_dir "$PROJECT_DIR/agent-qa/workflows"
     ensure_dir "$PROJECT_DIR/agent-qa/standards"
     ensure_dir "$PROJECT_DIR/agent-qa/framework"
+    ensure_dir "$PROJECT_DIR/agent-qa/formats"
 
     # Create/update configuration file
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -575,7 +787,21 @@ perform_installation() {
         echo ""
     fi
     install_config_template
+    install_formats
+    if [[ -d "$BASE_DIR/agent-qa/formats" ]]; then
+        echo ""
+    fi
     install_claude_commands
+    echo ""
+    install_claude_rules
+    echo ""
+    install_claude_agents
+    echo ""
+    install_claude_hooks
+    echo ""
+    install_cursor_rules
+    echo ""
+    install_copilot_instructions
 
     # Installation complete
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -593,13 +819,15 @@ perform_installation() {
         echo -e "   - Playwright MCP server (for test automation)"
         echo ""
         echo -e "${GREEN}3) Start using Agent QA commands:${NC}"
-        echo -e "   - analyze-requirements"
-        echo -e "   - generate-test-cases"
-        echo -e "   - generate-test-charter"
-        echo -e "   - generate-test-strategy"
-        echo -e "   - generate-test-plan"
-        echo -e "   - generate-risk-register"
-        echo -e "   - generate-release-notes"
+        echo -e "   Core:   analyze-requirements, generate-test-cases, generate-test-strategy"
+        echo -e "           generate-test-charter, generate-test-plan, generate-risk-register"
+        echo -e "           analyze-commits, generate-release-notes"
+        echo -e "   New:    generate-gherkin, generate-playwright-tests, publish-to-confluence"
+        echo ""
+        echo -e "${GREEN}4) IDE integration installed:${NC}"
+        echo -e "   - Claude Code: rules, subagents, hooks (.claude/)"
+        echo -e "   - Cursor: rules (.cursor/rules/)"
+        echo -e "   - GitHub Copilot: instructions (.github/copilot-instructions.md)"
         echo ""
     fi
 }

@@ -167,11 +167,20 @@ This is your Azure DevOps organization name (the part after `dev.azure.com/`).
        workflows/       # Workflow files
        standards/       # Standards files
        framework/       # Framework files
+       formats/         # Output format templates (Confluence, Gherkin, Playwright)
        config.yml       # Your project configuration
        config.yml.template
-     .claude/           # Optional: For Claude Code/Cursor IDE only
+     .claude/
        commands/
-         agent-qa/      # IDE command recognition files
+         agent-qa/      # IDE command entry points (Claude Code/Cursor)
+       rules/           # QA rules (Claude Code)
+       agents/
+         agent-qa/      # Subagent definitions (Claude Code)
+       hooks.json       # Pre/post command hooks (Claude Code)
+     .cursor/
+       rules/           # QA rules (Cursor IDE)
+     .github/
+       copilot-instructions.md  # GitHub Copilot instructions
    ```
 
 2. **Creates/updates `agent-qa/config.yml`** with your selections
@@ -246,6 +255,34 @@ The project identifier for your git repository. Format depends on platform:
 
 Your Azure DevOps organization/account name.
 
+#### `output_formats`
+
+**Optional**: Object with boolean flags
+
+```yaml
+output_formats:
+  confluence: false   # Enable Confluence format generation
+  gherkin: false      # Enable Gherkin feature file generation
+```
+
+#### `confluence_space_key`
+
+**Optional**: String
+
+The Confluence space key for publishing deliverables (e.g., `"QA"`, `"TESTING"`). Required only for direct Confluence publishing.
+
+#### `confluence_parent_page_id`
+
+**Optional**: String
+
+The parent page ID under which to create Confluence pages. Required only for direct Confluence publishing.
+
+#### `playwright_base_url`
+
+**Optional**: String (default: `"http://localhost:3000"`)
+
+The base URL used in generated Playwright test navigation methods.
+
 ### Manual Configuration
 
 You can manually edit `agent-qa/config.yml`:
@@ -257,6 +294,15 @@ last_installed: 2025-01-16 10:30:00
 repository_platform: gitlab
 repository_project_id: "my-group/my-project"
 azure_devops_cloud_id: ""  # Leave empty if not using Azure DevOps
+
+output_formats:
+  confluence: false
+  gherkin: false
+
+confluence_space_key: ""
+confluence_parent_page_id: ""
+
+playwright_base_url: "http://localhost:3000"
 ```
 
 ### Updating Configuration

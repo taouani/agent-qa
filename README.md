@@ -4,17 +4,20 @@
 
 Agent-QA is an intelligent automation agent that helps QA analysts, managers, and release managers streamline their testing workflows by automatically analyzing Jira tickets, Confluence pages, and git repository changes to generate comprehensive test deliverables.
 
-## 🎯 What is Agent-QA?
+## What is Agent-QA?
 
 Agent-QA automates the entire QA documentation workflow by:
 
 - **Analyzing Requirements** from Jira tickets, epics, sprints, and releases
 - **Extracting Content** from linked Confluence pages
 - **Tracking Code Changes** from git commits and pull requests
-- **Generating Test Deliverables** including test charters, strategies, plans, test cases, and risk registers
+- **Generating Test Deliverables** including test cases, strategies, charters, plans, risk registers, and release notes
+- **Generating BDD Features** as Gherkin `.feature` files from test cases
+- **Generating Playwright Tests** as `.spec.ts` files with Page Object Model
+- **Publishing to Confluence** with automatic format conversion
 - **Maintaining Traceability** between requirements, code changes, and test cases
 
-## ✨ Key Features
+## Key Features
 
 ### Core Capabilities
 
@@ -26,14 +29,25 @@ Agent-QA automates the entire QA documentation workflow by:
 - **Risk Register Generation** - Automatically identifies, scores, and documents risks with mitigation strategies
 - **Commit Analysis** - Analyzes git commits and correlates them with Jira tickets
 - **Technical Release Notes** - Generates release notes with full requirement traceability
+- **Gherkin/BDD Generation** - Converts test cases to Given/When/Then `.feature` files
+- **Playwright Test Generation** - Generates `.spec.ts` files with Page Object Model from test cases
+- **Confluence Publishing** - Converts deliverables to Confluence format, optionally publishes via MCP
 
 ### Integration Support
 
 - **Atlassian MCP** - Jira and Confluence integration
 - **Git Repository MCP** - GitLab, GitHub, or Azure DevOps support
-- **Playwright MCP** - Test automation framework integration (planned)
 
-## 🚀 Quick Start
+### Multi-IDE Support
+
+| IDE | Integration |
+|-----|------------|
+| **Claude Code** | Slash commands, rules, subagents, hooks |
+| **Cursor** | Slash commands, rules |
+| **GitHub Copilot** | File references with copilot-instructions |
+| **Other IDEs** | Direct file reference |
+
+## Quick Start
 
 ### Prerequisites
 
@@ -78,7 +92,7 @@ If you get a 404 error, the repository is not yet on GitHub. Install from your l
 
 For detailed installation instructions, see [INSTALLATION.md](INSTALLATION.md).
 
-## 📖 Usage
+## Usage
 
 ### IDE-Specific Usage
 
@@ -89,7 +103,7 @@ Commands are recognized automatically. Type `/` followed by the command name:
 /generate-test-cases
 ```
 
-**VS Code / GitHub Copilot / Other IDEs:**
+**VS Code / GitHub Copilot:**
 Reference the command files directly. See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for details.
 
 ### Basic Workflow
@@ -112,7 +126,18 @@ Reference the command files directly. See [HOW_TO_USE.md](agent-qa/commands/HOW_
    /generate-risk-register
    ```
 
-3. **Generate Release Notes**:
+3. **Generate BDD / Playwright Tests** (from test cases):
+   ```
+   /generate-gherkin
+   /generate-playwright-tests
+   ```
+
+4. **Publish to Confluence**:
+   ```
+   /publish-to-confluence
+   ```
+
+5. **Generate Release Notes**:
    ```
    /generate-release-notes
    ```
@@ -132,19 +157,21 @@ agent-qa/
     risk-register/        # Risk registers
     release-notes/        # Technical release notes
     commits/              # Commit analysis (if enabled)
+    gherkin/              # Gherkin .feature files
+    playwright/           # Playwright .spec.ts and page objects
 ```
 
 Where `{folder-name}` is:
 - Issue key for single issues (e.g., `PROJ-123`)
 - `release` for multiple issues or JQL filters
 
-## 📚 Documentation
+## Documentation
 
 - **[Installation Guide](INSTALLATION.md)** - Detailed installation and configuration instructions
 - **[User Guide](USER_GUIDE.md)** - Comprehensive guide with examples and best practices
 - **[Commands Reference](agent-qa/commands/README.md)** - Complete command documentation
 
-## 🏗️ Architecture
+## Architecture
 
 Agent-QA follows the agent-os framework patterns:
 
@@ -152,8 +179,11 @@ Agent-QA follows the agent-os framework patterns:
 - **MCP Server Integration** - Uses Model Context Protocol for external tool integration
 - **Context-Aware Processing** - Automatically adapts terminology based on input type
 - **Modular Design** - Commands can be run independently or in sequence
+- **Rules** - `.claude/rules/` for QA conventions, MCP usage, output standards, language handling
+- **Subagents** - `.claude/agents/agent-qa/` for specialized QA tasks
+- **Hooks** - `.claude/hooks.json` for pre/post command validation
 
-## 🔧 Configuration
+## Configuration
 
 Configuration is stored in `agent-qa/config.yml`:
 
@@ -161,9 +191,18 @@ Configuration is stored in `agent-qa/config.yml`:
 repository_platform: gitlab  # gitlab, github, or azure-devops
 repository_project_id: "my-group/my-project"
 azure_devops_cloud_id: ""  # Only for Azure DevOps
+
+output_formats:
+  confluence: false
+  gherkin: false
+
+confluence_space_key: ""
+confluence_parent_page_id: ""
+
+playwright_base_url: "http://localhost:3000"
 ```
 
-## 📋 Available Commands
+## Available Commands
 
 | Command | Description | Input |
 |---------|-------------|-------|
@@ -175,8 +214,11 @@ azure_devops_cloud_id: ""  # Only for Azure DevOps
 | `generate-risk-register` | Generate risk register | User selection |
 | `analyze-commits` | Analyze git commits and correlate with tickets | Jira filter or tickets |
 | `generate-release-notes` | Generate technical release notes | User selection |
+| `generate-gherkin` | Generate Gherkin .feature files from test cases | User selection |
+| `generate-playwright-tests` | Generate Playwright .spec.ts from test cases | User selection |
+| `publish-to-confluence` | Convert and publish deliverables to Confluence | User selection |
 
-## 🎓 Best Practices
+## Best Practices
 
 1. **Start with Requirements Analysis** - Always run `analyze-requirements` first
 2. **Use Context** - Generate commands will automatically use previous outputs as context
@@ -184,7 +226,7 @@ azure_devops_cloud_id: ""  # Only for Azure DevOps
 4. **Maintain Traceability** - Use the generated traceability matrices to track coverage
 5. **Iterate** - Commands can be run multiple times as requirements evolve
 
-## 🤝 Contributing
+## Contributing
 
 Agent-QA is designed to be extensible. Key areas for contribution:
 
@@ -193,22 +235,21 @@ Agent-QA is designed to be extensible. Key areas for contribution:
 - Additional output formats
 - Integration with more testing tools
 
-## 📝 License
+## License
 
 [Add your license information here]
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 Agent-QA leverages:
 - The agent-os framework for command structure
 - MCP (Model Context Protocol) for tool integration
 - Best practices from senior QA architect templates
 
-## 📞 Support
+## Support
 
 For issues, questions, or contributions, please [open an issue](https://github.com/taouani/agent-qa/issues) or refer to the documentation.
 
 ---
 
 **Ready to get started?** Check out the [Installation Guide](INSTALLATION.md) and [User Guide](USER_GUIDE.md)!
-

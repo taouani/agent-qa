@@ -43,3 +43,44 @@ repository_project_id: ""
 # ================================================
 azure_devops_cloud_id: ""
 
+
+# ================================================
+# Output Formats
+# Enable additional output formats for generated deliverables.
+#
+# - confluence: Generate Confluence storage format (.confluence.html) files
+# - gherkin: Generate Gherkin .feature files from test cases
+#
+# These are disabled by default. Enable them to generate additional formats
+# alongside the standard markdown output.
+# ================================================
+output_formats:
+  confluence: false
+  gherkin: false
+
+
+# ================================================
+# Confluence Publishing
+# Configuration for publishing deliverables to Confluence.
+#
+# Required only if you want to publish deliverables directly to Confluence
+# via the Atlassian MCP server. Leave empty to generate .confluence.html
+# files without publishing.
+#
+# - confluence_space_key: The Confluence space key (e.g., "QA", "TESTING")
+# - confluence_parent_page_id: The parent page ID under which to create pages
+# ================================================
+confluence_space_key: ""
+confluence_parent_page_id: ""
+
+
+# ================================================
+# Playwright Configuration
+# Configuration for Playwright test generation.
+#
+# - playwright_base_url: The base URL for the application under test
+#   Used in Page Object goto() methods and test navigation.
+#   Example: "http://localhost:3000" or "https://staging.example.com"
+# ================================================
+playwright_base_url: "http://localhost:3000"
+
