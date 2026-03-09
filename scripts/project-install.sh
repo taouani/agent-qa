@@ -923,7 +923,7 @@ perform_installation() {
         echo -e "${GREEN}2) Ensure MCP servers are configured in your IDE:${NC}"
         echo -e "   - Atlassian MCP server (for Jira/Confluence)"
         local platform_name=$(echo "$REPOSITORY_PLATFORM" | sed 's/^./\U&/')
-        echo -e "   - ${platform_name^} MCP server (for git repository access)"
+        echo -e "   - ${platform_name} MCP server (for git repository access)"
         echo -e "   - Playwright MCP server (for test automation)"
         echo ""
         echo -e "${GREEN}3) Start using Agent QA commands:${NC}"
