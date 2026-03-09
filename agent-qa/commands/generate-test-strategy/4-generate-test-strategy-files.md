@@ -38,6 +38,14 @@ Write strategy files to:
 
 Create `test-strategy-index.md` with links to all strategies.
 
+### Step 6: Generate Output Index
+
+Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
+
+### Step 7: Execute Post-Generation Hooks
+
+Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to run any configured post-generation hooks.
+
 ## Important Constraints
 
 - Follow markdown standards

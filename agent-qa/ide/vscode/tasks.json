@@ -1,0 +1,142 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Agent-QA: Analyze Requirements",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/analyze-requirements/analyze-requirements.md'",
+      "problemMatcher": [],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "Agent-QA: Generate Test Cases",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-test-cases/generate-test-cases.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Test Strategy",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-test-strategy/generate-test-strategy.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Test Charter",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-test-charter/generate-test-charter.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Test Plan",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-test-plan/generate-test-plan.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Risk Register",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-risk-register/generate-risk-register.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Analyze Commits",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/analyze-commits/analyze-commits.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Release Notes",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-release-notes/generate-release-notes.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Gherkin",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-gherkin/generate-gherkin.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Playwright Tests",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-playwright-tests/generate-playwright-tests.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Publish to Confluence",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/publish-to-confluence/publish-to-confluence.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Health Check",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/health-check/health-check.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Validate Outputs",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/validate-outputs/validate-outputs.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Traceability Report",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-traceability-report/generate-traceability-report.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Test Data",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-test-data/generate-test-data.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Run Pipeline",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/run-pipeline/run-pipeline.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate API Tests",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-api-tests/generate-api-tests.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Generate Accessibility Tests",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/generate-accessibility-tests/generate-accessibility-tests.md'",
+      "problemMatcher": [],
+      "group": "none"
+    },
+    {
+      "label": "Agent-QA: Regenerate Deliverables",
+      "type": "shell",
+      "command": "echo 'Open GitHub Copilot Chat and reference: @agent-qa/commands/regenerate/regenerate.md'",
+      "problemMatcher": [],
+      "group": "none"
+    }
+  ]
+}

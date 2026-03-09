@@ -40,12 +40,13 @@ Agent-QA automates the entire QA documentation workflow by:
 
 ### Multi-IDE Support
 
-| IDE | Integration |
-|-----|------------|
-| **Claude Code** | Slash commands, rules, subagents, hooks |
-| **Cursor** | Slash commands, rules |
-| **GitHub Copilot** | File references with copilot-instructions |
-| **Other IDEs** | Direct file reference |
+| IDE | Integration | Installed To |
+|-----|------------|-------------|
+| **Claude Code** | Slash commands, rules, subagents, hooks | `.claude/` |
+| **Cursor** | Rules + Claude slash commands | `.cursor/`, `.claude/commands/` |
+| **VS Code** | Settings, tasks, extensions + Copilot | `.vscode/`, `.github/` |
+| **GitHub Copilot** | File references with copilot-instructions | `.github/` |
+| **Other IDEs** | Direct file reference | — |
 
 ## Quick Start
 
@@ -66,7 +67,9 @@ Agent-QA automates the entire QA documentation workflow by:
 
 2. **Project Installation** (in your project directory):
    ```bash
-   ~/agent-qa/scripts/project-install.sh
+   ~/agent-qa/scripts/project-install.sh                    # All IDEs (default)
+   ~/agent-qa/scripts/project-install.sh --ide claude        # Claude Code only
+   ~/agent-qa/scripts/project-install.sh --ide vscode,github # VS Code + Copilot
    ```
 
 #### Option 2: Install from Local Repository (if GitHub installation fails)
@@ -130,6 +133,8 @@ Reference the command files directly. See [HOW_TO_USE.md](agent-qa/commands/HOW_
    ```
    /generate-gherkin
    /generate-playwright-tests
+   /generate-api-tests
+   /generate-accessibility-tests
    ```
 
 4. **Publish to Confluence**:
@@ -173,15 +178,64 @@ Where `{folder-name}` is:
 
 ## Architecture
 
-Agent-QA follows these patterns:
+### Command Dependency Chain
 
-- **Multi-phase Commands** - Each command is broken down into numbered phases
-- **MCP Server Integration** - Uses Model Context Protocol for external tool integration
-- **Context-Aware Processing** - Automatically adapts terminology based on input type
-- **Modular Design** - Commands can be run independently or in sequence
-- **Rules** - `.claude/rules/` for QA conventions, MCP usage, output standards, language handling
-- **Subagents** - `.claude/agents/agent-qa/` for specialized QA tasks
-- **Hooks** - `.claude/hooks.json` for pre/post command validation
+```mermaid
+graph TD
+    AR[analyze-requirements<br/>8 phases] --> TC[generate-test-cases<br/>4 phases]
+    AR --> TCh[generate-test-charter<br/>4 phases]
+    AR --> TS[generate-test-strategy<br/>4 phases]
+    AR --> TP[generate-test-plan<br/>4 phases]
+    AR --> RR[generate-risk-register<br/>4 phases]
+    TC --> GK[generate-gherkin<br/>4 phases]
+    TC --> PW[generate-playwright-tests<br/>4 phases]
+    TC --> API[generate-api-tests<br/>4 phases]
+    TC --> A11Y[generate-accessibility-tests<br/>4 phases]
+    AR --> TD[generate-test-data<br/>4 phases]
+    AR --> PC[publish-to-confluence<br/>3 phases]
+
+    AC[analyze-commits<br/>6 phases] --> RN[generate-release-notes<br/>5 phases]
+    RN --> PC
+
+    style AR fill:#4CAF50,color:#fff
+    style AC fill:#4CAF50,color:#fff
+    style PC fill:#FF9800,color:#fff
+```
+
+### Project Structure
+
+```mermaid
+graph LR
+    subgraph "agent-qa/"
+        CMD[commands/] --> PHASES[Phase files]
+        RULES[rules/] --> QA[QA conventions]
+        AGENTS[agents/] --> SUB[Subagents]
+        FW[framework/] --> GIT[Git abstraction]
+        FMT[formats/] --> TPL[Templates]
+        IDE[ide/] --> CL[claude/]
+        IDE --> CU[cursor/]
+        IDE --> VS[vscode/]
+        IDE --> GH[github/]
+    end
+
+    subgraph "MCP Servers"
+        ATL[Atlassian MCP]
+        REPO[Repository MCP]
+    end
+
+    CMD --> ATL
+    CMD --> REPO
+```
+
+### Design Principles
+
+- **Multi-phase Commands** — Each command is broken down into numbered phases
+- **MCP Server Integration** — Uses Model Context Protocol for external tool integration
+- **Context-Aware Processing** — Automatically adapts terminology based on input type
+- **Modular Design** — Commands can be run independently or in sequence
+- **Centralized Structure** — All files live under `agent-qa/`, IDE integrations in `agent-qa/ide/`
+- **Rules** — `agent-qa/rules/` for QA conventions, MCP usage, output standards, language handling
+- **Subagents** — `agent-qa/agents/` for specialized QA tasks
 
 ## Configuration
 
@@ -217,6 +271,14 @@ playwright_base_url: "http://localhost:3000"
 | `generate-gherkin` | Generate Gherkin .feature files from test cases | User selection |
 | `generate-playwright-tests` | Generate Playwright .spec.ts from test cases | User selection |
 | `publish-to-confluence` | Convert and publish deliverables to Confluence | User selection |
+| `health-check` | Verify configuration and MCP connectivity | None |
+| `validate-outputs` | Validate deliverables against QA rules | User selection |
+| `generate-traceability-report` | Cross-deliverable coverage matrix | User selection |
+| `generate-test-data` | Generate structured test data sets | User selection |
+| `generate-api-tests` | Generate REST/GraphQL API test specifications | User selection |
+| `generate-accessibility-tests` | Generate WCAG 2.1 AA accessibility tests | User selection |
+| `regenerate` | Regenerate deliverables affected by requirement changes | User selection |
+| `run-pipeline` | Execute multiple commands in sequence | Pipeline spec |
 
 ## Best Practices
 

@@ -11,9 +11,12 @@
 
 ### Step 1: Load Feature Template
 
-Read the feature template from `agent-qa/formats/gherkin/feature-template.md` to apply mapping rules.
+Check for a custom template first, then fall back to the default:
 
-If the template is not found, use the default mapping rules described below.
+1. Check `agent-qa/custom-templates/gherkin/feature-template.md`
+2. If not found, read `agent-qa/formats/gherkin/feature-template.md`
+
+If neither template is found, use the default mapping rules described below.
 
 ### Step 2: Group Test Cases by Requirement
 

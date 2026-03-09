@@ -77,6 +77,10 @@ Create `requirements-index.md`:
 
 Write all files to the requirements folder.
 
+### Step 7: Generate Output Index
+
+Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
+
 ## Important Constraints
 
 - Follow markdown standards

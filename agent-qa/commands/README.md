@@ -125,10 +125,126 @@ Where `{folder-name}` is:
 2. **Then**: Run any of the generate commands, selecting the requirements analysis to use
 3. **Optional**: Generate commands can use outputs from previous generate commands as context
 
+### 7. health-check
+
+Verifies Agent-QA configuration, directory structure, and MCP server connectivity.
+
+**Input**: None
+**Output**: Health check report (displayed to user, no files generated)
+
+**Phases**:
+1. Validate configuration (config.yml, directories, IDE integrations)
+2. Test MCP connectivity (Atlassian, Repository)
+
+**Dependencies**: None
+
+### 8. validate-outputs
+
+Validates generated deliverables against QA conventions and output standards.
+
+**Input**: User selection of output folder
+**Output**: Validation report (displayed to user, no files generated)
+
+**Phases**:
+1. Find and select output folder
+2. Validate deliverables (YAML front matter, file naming, test case IDs, CSV format, cross-deliverable consistency)
+3. Generate validation report
+
+**Dependencies**: Requires at least one output folder to exist
+
+### 9. generate-traceability-report
+
+Generates a cross-deliverable coverage matrix showing requirements through all deliverables.
+
+**Input**: User selection of output folder
+**Output**: `agent-qa/YYYY-MM-DD-{folder-name}/traceability-report.md`
+
+**Phases**:
+1. Find and select output folder
+2. Build traceability matrix (requirements → test cases → gherkin → playwright)
+3. Generate report files with gap analysis
+
+**Dependencies**: Requires `analyze-requirements` to be run first
+
+### 10. generate-test-data
+
+Generates structured test data specifications (valid, invalid, boundary, null, security).
+
+**Input**: User selection of requirements analysis folder
+**Output**: `agent-qa/YYYY-MM-DD-{folder-name}/test-data/`
+
+**Phases**:
+1. Find and select requirements
+2. Analyze data requirements (fields, types, constraints)
+3. Generate data sets (valid, invalid, boundary, null/empty, security)
+4. Generate test data files
+
+**Dependencies**: Requires `analyze-requirements` to be run first. Optionally uses `generate-test-cases` output.
+
+### 11. run-pipeline
+
+Executes multiple commands in dependency order as a single pipeline.
+
+**Input**: Pipeline specification (predefined pipeline, range, or command list)
+**Output**: All deliverables from each command in the pipeline
+
+**Phases**:
+1. Parse pipeline configuration and resolve command order
+2. Execute commands sequentially with auto-context passing
+3. Generate pipeline summary
+
+**Dependencies**: None (first command must be a root command)
+
+### 12. generate-api-tests
+
+Generates REST/GraphQL API test specifications from analyzed test cases.
+
+**Input**: User selection of test cases folder
+**Output**: API test spec files in `agent-qa/YYYY-MM-DD-{context}/api-tests/`
+
+**Phases**:
+1. Find and select test cases with API interactions
+2. Analyze API endpoints from test cases and requirements
+3. Generate API test specifications (positive, negative, auth, edge cases)
+4. Generate API test files and index
+
+**Dependencies**: Requires `generate-test-cases` to be run first.
+
+### 13. generate-accessibility-tests
+
+Generates WCAG 2.1 AA accessibility test cases from UI-facing test cases.
+
+**Input**: User selection of test cases folder
+**Output**: Accessibility test files in `agent-qa/YYYY-MM-DD-{context}/accessibility-tests/`
+
+**Phases**:
+1. Find and select UI-facing test cases
+2. Analyze accessibility requirements and map to WCAG criteria
+3. Generate accessibility test cases per criterion per page
+4. Generate accessibility test files, WCAG compliance matrix, and index
+
+**Dependencies**: Requires `generate-test-cases` to be run first.
+
+### 14. regenerate
+
+Detects requirement changes and regenerates only affected deliverables.
+
+**Input**: User selection of existing output folder
+**Output**: Updated deliverables in the same output folder, change log
+
+**Phases**:
+1. Detect changes by comparing Jira issue timestamps against deliverable timestamps
+2. Identify affected deliverables and map change impact
+3. Back up and regenerate affected deliverables only
+4. Generate change report and update indexes
+
+**Dependencies**: Requires an existing output folder with generated deliverables.
+
 ## Notes
 
 - All commands follow multi-phase patterns
 - Commands are independent and can be run in any order (after analyze-requirements)
 - Each command prompts user to select which requirements analysis to use
 - Commands automatically detect and include related deliverables when available
+- Custom format templates can be placed in `agent-qa/custom-templates/` to override defaults
 

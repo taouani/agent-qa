@@ -8,9 +8,24 @@ Agent-QA is an AI-powered QA automation agent. It analyzes Jira tickets, Conflue
 
 ## Architecture
 
-### Two-Layer Structure
+### Centralized Structure
 
-- **`agent-qa/`** — QA-specific commands, framework utilities, format templates, and configuration. This is where most development happens.
+Everything lives under **`agent-qa/`** — commands, rules, agents, framework, formats, and IDE integration templates:
+
+```
+agent-qa/
+├── commands/              # Multi-phase command definitions (18 commands)
+├── rules/                 # QA conventions, output standards, MCP usage, language handling
+├── agents/                # Specialized subagent definitions
+├── framework/             # Git platform abstractions (GitLab, GitHub, Azure DevOps)
+├── formats/               # Output format templates (Confluence, Gherkin, Playwright)
+├── ide/                   # IDE-specific integration templates
+│   ├── claude/            # Claude Code (slash commands, hooks)
+│   ├── cursor/            # Cursor IDE (rules)
+│   ├── vscode/            # VS Code (settings, tasks, extensions)
+│   └── github/            # GitHub Copilot (instructions)
+└── config.yml.template    # Project configuration template
+```
 
 ### Command Pattern
 
@@ -32,21 +47,31 @@ Phases are referenced via `{{PHASE X: @path/file.md}}` markers. Each phase file 
 analyze-requirements (8 phases)
   ├── generate-test-cases (4 phases)
   │     ├── generate-gherkin (4 phases)
-  │     └── generate-playwright-tests (4 phases)
+  │     ├── generate-playwright-tests (4 phases)
+  │     ├── generate-api-tests (4 phases)
+  │     └── generate-accessibility-tests (4 phases)
   ├── generate-test-charter (4 phases)
   ├── generate-test-strategy (4 phases)
   ├── generate-test-plan (4 phases)
   ├── generate-risk-register (4 phases)
+  ├── generate-test-data (4 phases)
   └── publish-to-confluence (3 phases)   (any deliverable)
 
 analyze-commits (6 phases)
   └── generate-release-notes (5 phases)
         └── publish-to-confluence (3 phases)
+
+utility commands (independent):
+  ├── health-check (2 phases)
+  ├── validate-outputs (3 phases)
+  ├── generate-traceability-report (3 phases)
+  ├── run-pipeline (3 phases)
+  └── regenerate (4 phases)
 ```
 
 ### Rules
 
-`.claude/rules/` contains behavior rules loaded automatically by Claude Code:
+`agent-qa/rules/` contains behavior rules (copied to `.claude/rules/` during installation):
 - **`qa-conventions.md`** — Terminology, test case ID format, priority scheme, output folder naming, language detection
 - **`mcp-usage.md`** — Atlassian and Repository MCP tool patterns, error handling, fallback strategies
 - **`output-standards.md`** — Output directory structure, YAML front matter, markdown formatting, CSV/Xray format, file naming
@@ -54,16 +79,18 @@ analyze-commits (6 phases)
 
 ### Subagents
 
-`.claude/agents/agent-qa/` provides specialized agents:
+`agent-qa/agents/` provides specialized agents (copied to `.claude/agents/agent-qa/` during installation):
 - **`requirements-analyst.md`** — Jira/Confluence analysis, language detection
 - **`test-case-generator.md`** — Test case design (positive/negative/edge), Xray CSV
 - **`gherkin-writer.md`** — Map test cases to Given/When/Then .feature files
 - **`playwright-generator.md`** — Generate Playwright .spec.ts from test cases
 - **`confluence-publisher.md`** — Convert to Confluence format, publish via MCP
+- **`api-test-generator.md`** — Generate REST/GraphQL API test specifications
+- **`accessibility-tester.md`** — Generate WCAG 2.1 AA accessibility test cases
 
 ### Hooks
 
-`.claude/hooks.json` configures:
+`agent-qa/ide/claude/hooks.json` configures (copied to `.claude/hooks.json` during installation):
 - **Pre-command**: Validates `agent-qa/config.yml` exists
 - **Post-command**: Logs run metadata and output summary
 
@@ -81,17 +108,21 @@ analyze-commits (6 phases)
 - **`confluence/`** — Markdown-to-Confluence storage format (XHTML) mapping rules per deliverable type
 - **`gherkin/`** — Test case-to-Gherkin feature file mapping rules
 - **`playwright/`** — Test case-to-Playwright spec and Page Object mapping rules
+- **`xray/`** — Xray JSON import format templates
+- **`api-tests/`** — API test specification templates
+- **`accessibility/`** — WCAG 2.1 AA mapping templates
 
 ### IDE Integration
 
-Agent-QA supports multiple IDEs:
+IDE-specific templates live in `agent-qa/ide/` and are copied to project root during installation:
 
-| IDE | Integration Method | Config Location |
-|-----|-------------------|----------------|
-| Claude Code | Slash commands via `.claude/commands/agent-qa/` | `.claude/rules/`, `.claude/agents/`, `.claude/hooks.json` |
-| Cursor | Slash commands via `.claude/commands/agent-qa/` | `.cursor/rules/` |
-| GitHub Copilot | File references via `@agent-qa/commands/...` | `.github/copilot-instructions.md` |
-| Other IDEs | Direct file reference | `agent-qa/commands/HOW_TO_USE.md` |
+| IDE | Integration Method | Source Templates | Installed To |
+|-----|-------------------|-----------------|--------------|
+| Claude Code | Slash commands + rules + agents + hooks | `agent-qa/ide/claude/` | `.claude/` |
+| Cursor | Rules + Claude slash commands | `agent-qa/ide/cursor/` | `.cursor/`, `.claude/commands/` |
+| VS Code | Settings + tasks + extensions + Copilot | `agent-qa/ide/vscode/` | `.vscode/`, `.github/` |
+| GitHub Copilot | File references via `@agent-qa/commands/...` | `agent-qa/ide/github/` | `.github/` |
+| Other IDEs | Direct file reference | — | `agent-qa/commands/HOW_TO_USE.md` |
 
 ### MCP Server Dependencies
 
@@ -114,15 +145,29 @@ Context is the Jira issue key (single ticket) or `release` (JQL filter / multipl
 
 Located in `scripts/`:
 - `base-install.sh` — Downloads Agent-QA to `~/agent-qa` (one-time per machine)
-- `project-install.sh` — Per-project setup: creates `.claude/commands/agent-qa/`, `.claude/rules/`, `.claude/agents/agent-qa/`, `.cursor/rules/`, `.github/copilot-instructions.md`, generates `agent-qa/config.yml`
+- `project-install.sh` — Per-project setup with `--ide` flag to select IDEs (default: all). Copies core files + IDE-specific integrations
 - `install-from-local.sh` — Alternative to base-install using local repository
 - `project-update.sh` — Updates existing project configuration
+- `project-uninstall.sh` — Removes Agent-QA from a project
 - `common-functions.sh` — Shared bash utilities (color output, validation, config management)
+
+### IDE Selection (project-install.sh)
+
+```bash
+# Install all IDEs (default)
+./scripts/project-install.sh
+
+# Install specific IDEs
+./scripts/project-install.sh --ide claude
+./scripts/project-install.sh --ide claude,cursor
+./scripts/project-install.sh --ide vscode
+```
 
 ## Configuration
 
 Project-level config in `agent-qa/config.yml` (generated from `config.yml.template`):
 ```yaml
+installed_ides: "claude,cursor,vscode,github"  # IDEs configured during install
 repository_platform: gitlab    # gitlab | github | azure-devops
 repository_project_id: ""      # Platform-specific project identifier
 azure_devops_cloud_id: ""      # Only for Azure DevOps

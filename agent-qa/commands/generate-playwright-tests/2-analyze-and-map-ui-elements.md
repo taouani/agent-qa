@@ -11,11 +11,20 @@
 
 ### Step 1: Load Templates
 
-Read the format templates:
-- `agent-qa/formats/playwright/page-object-template.md` — for locator strategy and class structure
-- `agent-qa/formats/playwright/spec-file-template.md` — for test organization patterns
+Check for custom templates first, then fall back to defaults:
 
-If templates are not found, use the default patterns described in this phase.
+1. Check `agent-qa/custom-templates/playwright/page-object-template.md`, else use `agent-qa/formats/playwright/page-object-template.md`
+2. Check `agent-qa/custom-templates/playwright/spec-file-template.md`, else use `agent-qa/formats/playwright/spec-file-template.md`
+3. Read `agent-qa/formats/playwright/auth-fixture-template.md` — for authentication fixture patterns
+4. Read `agent-qa/formats/playwright/api-mock-template.md` — for API mocking patterns
+5. Read `agent-qa/formats/playwright/visual-regression-template.md` — for screenshot comparison patterns
+
+Also read `agent-qa/config.yml` for Playwright-specific settings:
+- `playwright_base_url` — base URL for navigation
+- `playwright_browser` — browser engine (chromium, firefox, webkit)
+- `playwright_viewport` — default viewport size
+
+If neither custom nor default templates are found, use the default patterns described in this phase.
 
 ### Step 2: Extract Page References
 

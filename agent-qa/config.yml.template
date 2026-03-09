@@ -2,6 +2,15 @@ version: 1.0.0
 last_installed: 2025-01-01 00:00:00
 
 
+# ================================================
+# Installed IDEs
+# Comma-separated list of IDEs configured during installation.
+# Managed by project-install.sh — do not edit manually.
+# Valid values: claude, cursor, vscode, github
+# ================================================
+installed_ides: ""
+
+
 # CONFIGURATION
 # Configure repository platform and project settings for Agent QA.
 
@@ -45,18 +54,49 @@ azure_devops_cloud_id: ""
 
 
 # ================================================
+# Default Language Override
+# Override automatic language detection for all deliverables.
+# Leave empty to use automatic detection (recommended).
+# Example values: "en", "fr", "ar", "es", "de", "pt", "nl", "it"
+# ================================================
+default_language: ""
+
+
+# ================================================
+# Test Types
+# Filter which test types to include in generated test cases.
+# Remove entries to exclude specific test types from generation.
+# ================================================
+test_types:
+  - functional
+  - security
+  - performance
+  - accessibility
+
+
+# ================================================
+# Custom Labels
+# Additional labels to add to all generated test cases.
+# These are appended to auto-generated labels in CSV/Xray exports.
+# Example: ["regression", "sprint-42", "team-alpha"]
+# ================================================
+custom_labels: []
+
+
+# ================================================
 # Output Formats
 # Enable additional output formats for generated deliverables.
-#
-# - confluence: Generate Confluence storage format (.confluence.html) files
-# - gherkin: Generate Gherkin .feature files from test cases
-#
 # These are disabled by default. Enable them to generate additional formats
 # alongside the standard markdown output.
 # ================================================
 output_formats:
-  confluence: false
-  gherkin: false
+  confluence: false              # Generate Confluence storage format (.confluence.html) files
+  gherkin: false                 # Generate Gherkin .feature files from test cases
+  playwright: false              # Generate Playwright .spec.ts and .page.ts files
+  xray_json: false               # Generate Xray JSON import file alongside CSV
+  api_tests: false               # Generate API test specifications
+  accessibility_tests: false     # Generate WCAG 2.1 AA accessibility tests
+  testrail: false                # Generate TestRail CSV import file
 
 
 # ================================================
@@ -66,9 +106,6 @@ output_formats:
 # Required only if you want to publish deliverables directly to Confluence
 # via the Atlassian MCP server. Leave empty to generate .confluence.html
 # files without publishing.
-#
-# - confluence_space_key: The Confluence space key (e.g., "QA", "TESTING")
-# - confluence_parent_page_id: The parent page ID under which to create pages
 # ================================================
 confluence_space_key: ""
 confluence_parent_page_id: ""
@@ -77,10 +114,30 @@ confluence_parent_page_id: ""
 # ================================================
 # Playwright Configuration
 # Configuration for Playwright test generation.
-#
-# - playwright_base_url: The base URL for the application under test
-#   Used in Page Object goto() methods and test navigation.
-#   Example: "http://localhost:3000" or "https://staging.example.com"
 # ================================================
+# ================================================
+# API Test Configuration
+# Configuration for API test generation.
+# ================================================
+api_test_base_url: ""                    # Base URL for API tests (e.g., "https://api.example.com/v1")
+
 playwright_base_url: "http://localhost:3000"
+playwright_browser: "chromium"               # chromium | firefox | webkit
+playwright_viewport: "1280x720"
+
+
+# ================================================
+# Post-Generation Hooks
+# Custom shell commands to run after deliverable generation.
+# Each hook runs in the project root directory.
+# Available variables: {output_folder}, {command_name}, {context}
+# ================================================
+hooks:
+  post_generate: []
+  # Example hooks:
+  # post_generate:
+  #   - "echo 'Generated {command_name} in {output_folder}'"
+  #   - "git add {output_folder}"
+  #   - "npm run lint -- {output_folder}/**/*.ts"
+  #   - "cp {output_folder}/test-cases/*.csv /shared/imports/"
 

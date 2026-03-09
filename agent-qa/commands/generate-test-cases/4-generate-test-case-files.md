@@ -118,7 +118,47 @@ language: en
 - **Related Tests**: TC-PROJ-123-002 (Invalid login), TC-PROJ-123-010 (Session timeout)
 ```
 
-### Step 3: Generate CSV Export for Xray
+### Step 3: Generate Xray JSON Export (if enabled)
+
+Check `agent-qa/config.yml` → `output_formats.xray_json`. If `true`:
+
+1. Read `agent-qa/formats/xray/xray-json-template.md` for the JSON structure and field mapping
+2. Check for custom template at `agent-qa/custom-templates/xray/xray-json-template.md` first
+3. Generate `xray-import.json` containing a `tests` array with all test cases
+
+**Key mapping rules** (see template for full details):
+- Priority: P1→Critical, P2→High, P3→Medium, P4→Low
+- Preconditions become separate entities with their own `fields.summary` and `fields.description`
+- Deduplicate shared preconditions across test cases
+- Steps map to `action`, `data`, `result` objects
+- Folder path: `/{REQUIREMENT-KEY}`
+- Labels from test case tags + `custom_labels` from config
+- `xray_test_sets` and `xray_test_plans` if grouping info is available
+
+**Output file**: `xray-import.json` in the test-cases folder.
+
+### Step 4: Generate TestRail CSV Export (if enabled)
+
+Check `agent-qa/config.yml` → `output_formats.testrail`. If `true`:
+
+1. Check for custom template at `agent-qa/custom-templates/testrail/testrail-csv-template.md` first
+2. If no custom template exists, read `agent-qa/formats/testrail/testrail-csv-template.md` for the CSV structure and field mapping
+3. Generate `testrail-import.csv` with TestRail column format
+
+**Key mapping rules** (see template for full details):
+- Title: `TC-{REQUIREMENT-KEY}-{NNN}: {summary}`
+- Section: requirement key (e.g., `PROJ-123`)
+- Type: mapped from test type (default: `Functional`)
+- Priority: P1→Critical, P2→High, P3→Medium, P4→Low
+- Estimate: converted from `estimatedDuration` (e.g., `5 minutes` → `5m`)
+- Steps: numbered format with each step on a new line (`1. Step text\n2. Step text`)
+- Expected Results: numbered format matching steps by position
+- Preconditions: plain text with line breaks
+- Custom Automation Type: `None` unless otherwise specified
+
+**Output file**: `testrail-import.csv` in the test-cases folder.
+
+### Step 5: Generate CSV Export for Xray
 
 Create CSV file `xray-bulk-import.csv` with **exact Xray column headers**:
 
@@ -164,7 +204,7 @@ Test Key,Summary,Test Type,Priority,Labels,Preconditions,Steps,Expected Result,R
 - Folder Path starts with forward slash
 - Proper CSV escaping for quotes (double quotes: `""`)
 
-### Step 4: Create Traceability Matrix
+### Step 6: Create Traceability Matrix
 
 Create `test-cases-traceability-matrix.md`:
 
@@ -179,7 +219,7 @@ Create `test-cases-traceability-matrix.md`:
 - Acceptance criteria coverage: X/Y AC items covered (Z%)
 - Gap analysis: Identify missing coverage areas
 
-### Step 5: Create Test Suite Index
+### Step 7: Create Test Suite Index
 
 Create `test-cases-index.md`:
 - Summary statistics (total tests, breakdown by priority, type, regression)
@@ -187,14 +227,24 @@ Create `test-cases-index.md`:
 - Coverage mapping to requirements
 - Regression suite recommendations with rationale
 
-### Step 6: Write Files
+### Step 8: Write Files
 
 Write all files to:
 - Output folder: `agent-qa/YYYY-MM-DD-{folder-name}/test-cases/`
 - Individual test case files: `test-cases-{KEY}.md`
 - CSV export: `xray-bulk-import.csv`
+- Xray JSON export (if enabled): `xray-import.json`
+- TestRail CSV export (if enabled): `testrail-import.csv`
 - Traceability matrix: `test-cases-traceability-matrix.md`
 - Test suite index: `test-cases-index.md`
+
+### Step 9: Generate Output Index
+
+Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
+
+### Step 10: Execute Post-Generation Hooks
+
+Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to run any configured post-generation hooks.
 
 ## Important Constraints
 

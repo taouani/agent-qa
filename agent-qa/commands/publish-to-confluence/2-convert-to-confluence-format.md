@@ -11,7 +11,9 @@
 
 ### Step 1: Load Format Templates
 
-Read the applicable format template from `agent-qa/formats/confluence/`:
+Check for custom templates first, then fall back to defaults. For each deliverable type, check:
+1. `agent-qa/custom-templates/confluence/{template-file}`
+2. `agent-qa/formats/confluence/{template-file}`
 
 | Deliverable Type | Template File |
 |-----------------|---------------|
@@ -22,7 +24,7 @@ Read the applicable format template from `agent-qa/formats/confluence/`:
 | Risk Register | `risk-register.confluence.md` |
 | Release Notes | `release-notes.confluence.md` |
 
-If a template file is not found, use the default conversion rules below.
+If neither custom nor default template is found, use the default conversion rules below.
 
 ### Step 2: Parse Deliverable Files
 

@@ -228,6 +228,14 @@ If file generation is successful, output:
    - Location: agent-qa/YYYY-MM-DD-{folder-name}/release-notes/
 ```
 
+### Step 16: Generate Output Index
+
+Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
+
+### Step 17: Execute Post-Generation Hooks
+
+Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to run any configured post-generation hooks.
+
 ## Important Constraints
 
 - Follow markdown formatting standards
