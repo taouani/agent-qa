@@ -38,8 +38,8 @@ Check for cloud ID in configuration files:
    - Look for `cloud_id` key at root level (alternative name)
    - If found, read cloud ID value
 
-2. **Check `agent-os/config.yml`** (fallback):
-   - If not found in `agent-qa/config.yml`, check `agent-os/config.yml`
+2. **Check `agent-qa/config.yml`** (primary):
+   - Read from `agent-qa/config.yml`
    - If found, read cloud ID value
 
 3. **Store Config Cloud ID**:
@@ -96,7 +96,7 @@ Validate cloud ID format:
 
 Please provide azure_devops_cloud_id in one of the following ways:
 
-1. Add to config file (agent-os/config.yml or agent-qa/config.yml):
+1. Add to config file (agent-qa/config.yml):
    azure_devops_cloud_id: [your-cloud-id]
 
 2. Provide as input parameter:

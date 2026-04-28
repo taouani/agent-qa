@@ -5,7 +5,7 @@ Generate individual requirement markdown files and summary index in the output f
 ## Core Responsibilities
 
 1. **Generate Individual Files**: Create markdown file for each requirement
-2. **Format Files**: Format following agent-os markdown standards
+2. **Format Files**: Format following markdown standards
 3. **Create Summary Index**: Generate index file with links and statistics
 4. **Write Files**: Store files in output folder
 
@@ -77,9 +77,13 @@ Create `requirements-index.md`:
 
 Write all files to the requirements folder.
 
+### Step 7: Generate Output Index
+
+Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
+
 ## Important Constraints
 
-- Follow agent-os markdown standards
+- Follow markdown standards
 - Use descriptive filenames
 - Include all requirement data
 - Create proper markdown links

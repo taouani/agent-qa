@@ -30,6 +30,7 @@ OVERWRITE_COMMANDS="false"
 OVERWRITE_WORKFLOWS="false"
 OVERWRITE_STANDARDS="false"
 OVERWRITE_FRAMEWORK="false"
+IDE_SELECTION=""  # Comma-separated: claude,cursor,vscode,github (empty = all)
 
 # -----------------------------------------------------------------------------
 # Help Function
@@ -42,6 +43,8 @@ Usage: $0 [OPTIONS]
 Install Agent QA into the current project directory.
 
 Options:
+    --ide IDE_LIST                       Comma-separated list of IDEs to install (claude,cursor,vscode,github)
+                                         Default: all IDEs are installed
     --repository-platform PLATFORM      Set repository platform (gitlab, github, azure-devops)
     --repository-project-id ID          Set repository project ID
     --azure-devops-cloud-id ID           Set Azure DevOps cloud ID (required if platform is azure-devops)
@@ -55,16 +58,24 @@ Options:
     --verbose                            Show detailed output
     -h, --help                           Show this help message
 
+IDE Selection:
+    claude    - Claude Code (.claude/commands/, .claude/rules/, .claude/agents/, .claude/hooks.json)
+    cursor    - Cursor IDE (.cursor/rules/, also installs .claude/commands/ since Cursor uses them)
+    vscode    - VS Code (.vscode/settings.json, .vscode/tasks.json, .vscode/extensions.json, .github/copilot-instructions.md)
+    github    - GitHub Copilot (.github/copilot-instructions.md)
+
 This script will:
 1. Prompt you to select your repository platform (GitLab, GitHub, or Azure DevOps) if not provided
 2. Prompt for repository project ID if not provided
 3. Prompt for Azure DevOps cloud ID (if Azure DevOps selected and not provided)
 4. Create/update agent-qa/config.yml with your selections
-5. Install agent-qa command files, workflows, standards, and framework into the project
+5. Install agent-qa core files (commands, rules, agents, framework, formats)
+6. Install IDE-specific integration files based on --ide selection
 
 Examples:
     $0
-    $0 --repository-platform gitlab --repository-project-id "12345"
+    $0 --ide claude,cursor
+    $0 --ide vscode --repository-platform github --repository-project-id "owner/repo"
     $0 --overwrite-all --dry-run
 
 EOF
@@ -78,6 +89,10 @@ EOF
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --ide)
+                IDE_SELECTION="$2"
+                shift 2
+                ;;
             --repository-platform)
                 REPOSITORY_PLATFORM="$2"
                 shift 2
@@ -248,6 +263,84 @@ prompt_azure_devops_cloud_id() {
     done
 
     print_verbose "Azure DevOps Cloud ID: $AZURE_DEVOPS_CLOUD_ID"
+}
+
+# -----------------------------------------------------------------------------
+# IDE Selection Functions
+# -----------------------------------------------------------------------------
+
+# Parse and validate IDE selection
+parse_ide_selection() {
+    if [[ -z "$IDE_SELECTION" ]]; then
+        # Default: install all IDEs
+        INSTALL_CLAUDE="true"
+        INSTALL_CURSOR="true"
+        INSTALL_VSCODE="true"
+        INSTALL_GITHUB="true"
+        return
+    fi
+
+    INSTALL_CLAUDE="false"
+    INSTALL_CURSOR="false"
+    INSTALL_VSCODE="false"
+    INSTALL_GITHUB="false"
+
+    IFS=',' read -ra IDE_ARRAY <<< "$IDE_SELECTION"
+    for ide in "${IDE_ARRAY[@]}"; do
+        ide=$(echo "$ide" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        case "$ide" in
+            claude)
+                INSTALL_CLAUDE="true"
+                ;;
+            cursor)
+                INSTALL_CURSOR="true"
+                ;;
+            vscode)
+                INSTALL_VSCODE="true"
+                ;;
+            github)
+                INSTALL_GITHUB="true"
+                ;;
+            *)
+                print_error "Unknown IDE: $ide"
+                print_error "Valid options: claude, cursor, vscode, github"
+                exit 1
+                ;;
+        esac
+    done
+
+    # Cursor auto-includes Claude commands (Cursor reads from .claude/)
+    if [[ "$INSTALL_CURSOR" == "true" && "$INSTALL_CLAUDE" != "true" ]]; then
+        print_verbose "Cursor requires .claude/commands/ — auto-including Claude Code commands"
+    fi
+
+    # VS Code auto-includes GitHub Copilot instructions
+    if [[ "$INSTALL_VSCODE" == "true" && "$INSTALL_GITHUB" != "true" ]]; then
+        INSTALL_GITHUB="true"
+        print_verbose "VS Code requires .github/copilot-instructions.md — auto-including GitHub Copilot"
+    fi
+}
+
+# Check if a specific IDE should be installed
+should_install_ide() {
+    local ide=$1
+    case "$ide" in
+        claude)  [[ "$INSTALL_CLAUDE" == "true" ]] ;;
+        cursor)  [[ "$INSTALL_CURSOR" == "true" ]] ;;
+        vscode)  [[ "$INSTALL_VSCODE" == "true" ]] ;;
+        github)  [[ "$INSTALL_GITHUB" == "true" ]] ;;
+        *)       return 1 ;;
+    esac
+}
+
+# Get list of installed IDEs as comma-separated string
+get_installed_ides_list() {
+    local ides=()
+    [[ "$INSTALL_CLAUDE" == "true" ]] && ides+=("claude")
+    [[ "$INSTALL_CURSOR" == "true" ]] && ides+=("cursor")
+    [[ "$INSTALL_VSCODE" == "true" ]] && ides+=("vscode")
+    [[ "$INSTALL_GITHUB" == "true" ]] && ides+=("github")
+    echo "${ides[*]}" | tr ' ' ','
 }
 
 # -----------------------------------------------------------------------------
@@ -463,55 +556,279 @@ install_config_template() {
     fi
 }
 
-# Install .claude/commands/agent-qa/ files for Claude Code/Cursor IDE recognition (optional)
-install_claude_commands() {
-    # This is optional and only needed for Claude Code/Cursor IDE
-    # Other IDEs can reference commands directly from agent-qa/commands/
-    
-    local claude_commands_count=0
-    local source_claude_dir="$BASE_DIR/.claude/commands/agent-qa"
-    local dest_claude_dir="$PROJECT_DIR/.claude/commands/agent-qa"
+# Install core rules to agent-qa/rules/ (always installed)
+install_rules() {
+    local source_rules_dir="$BASE_DIR/agent-qa/rules"
+    local dest_rules_dir="$PROJECT_DIR/agent-qa/rules"
 
-    # Check if source .claude directory exists (might not exist in base installation)
-    if [[ ! -d "$source_claude_dir" ]]; then
-        # Try to find it in the repository root (for local installations)
-        local repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-        if [[ -d "$repo_root/.claude/commands/agent-qa" ]]; then
-            source_claude_dir="$repo_root/.claude/commands/agent-qa"
-        else
-            # Not an error - .claude/commands/ is optional and IDE-specific
-            print_verbose "No .claude/commands/agent-qa directory found - skipping (optional for Claude Code/Cursor IDE only)"
-            return
-        fi
+    if [[ ! -d "$source_rules_dir" ]]; then
+        print_verbose "No agent-qa/rules directory found - skipping"
+        return
     fi
 
-    # Create .claude/commands/agent-qa directory
-    ensure_dir "$dest_claude_dir"
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing QA rules"
+    fi
 
-    # Copy all command files
-    if [[ -d "$source_claude_dir" ]]; then
-        if [[ "$DRY_RUN" != "true" ]]; then
-            print_status "Installing Claude Code/Cursor IDE command files (optional)"
+    ensure_dir "$dest_rules_dir"
+    local rules_count=0
+    find "$source_rules_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_rules_dir/}"
+        local dest_file="$dest_rules_dir/$relative_path"
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((rules_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
         fi
-        
-        find "$source_claude_dir" -type f -name "*.md" | while read -r source_file; do
-            local relative_path="${source_file#$source_claude_dir/}"
-            local dest_file="$dest_claude_dir/$relative_path"
+    done
 
+    if [[ "$DRY_RUN" != "true" ]]; then
+        echo "✓ Installed QA rules in agent-qa/rules/"
+    fi
+}
+
+# Install core agents to agent-qa/agents/ (always installed)
+install_agents() {
+    local source_agents_dir="$BASE_DIR/agent-qa/agents"
+    local dest_agents_dir="$PROJECT_DIR/agent-qa/agents"
+
+    if [[ ! -d "$source_agents_dir" ]]; then
+        print_verbose "No agent-qa/agents directory found - skipping"
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing QA agents"
+    fi
+
+    ensure_dir "$dest_agents_dir"
+    local agents_count=0
+    find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_agents_dir/}"
+        local dest_file="$dest_agents_dir/$relative_path"
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((agents_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        echo "✓ Installed QA agents in agent-qa/agents/"
+    fi
+}
+
+# Install Claude Code IDE integration
+install_ide_claude() {
+    if ! should_install_ide "claude" && ! should_install_ide "cursor"; then
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing Claude Code IDE integration"
+    fi
+
+    # Install slash commands from agent-qa/ide/claude/commands/agent-qa/
+    local source_commands_dir="$BASE_DIR/agent-qa/ide/claude/commands/agent-qa"
+    local dest_commands_dir="$PROJECT_DIR/.claude/commands/agent-qa"
+    if [[ -d "$source_commands_dir" ]]; then
+        ensure_dir "$dest_commands_dir"
+        local cmd_count=0
+        find "$source_commands_dir" -type f -name "*.md" | while read -r source_file; do
+            local relative_path="${source_file#$source_commands_dir/}"
+            local dest_file="$dest_commands_dir/$relative_path"
             if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
                 print_verbose "Skipped: $relative_path"
             else
                 if copy_file "$source_file" "$dest_file" > /dev/null; then
-                    ((claude_commands_count++)) || true
+                    ((cmd_count++)) || true
                     print_verbose "  Installed: $relative_path"
                 fi
             fi
         done
+        if [[ "$DRY_RUN" != "true" ]]; then
+            echo "✓ Installed Claude Code slash commands in .claude/commands/agent-qa/"
+        fi
+    fi
+
+    # Only install rules, agents, hooks if Claude is explicitly selected (not just for Cursor)
+    if should_install_ide "claude"; then
+        # Copy rules from agent-qa/rules/ to .claude/rules/
+        local dest_rules_dir="$PROJECT_DIR/.claude/rules"
+        local source_rules_dir="$BASE_DIR/agent-qa/rules"
+        if [[ -d "$source_rules_dir" ]]; then
+            ensure_dir "$dest_rules_dir"
+            find "$source_rules_dir" -type f -name "*.md" | while read -r source_file; do
+                local relative_path="${source_file#$source_rules_dir/}"
+                local dest_file="$dest_rules_dir/$relative_path"
+                if ! should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                    copy_file "$source_file" "$dest_file" > /dev/null
+                fi
+            done
+            if [[ "$DRY_RUN" != "true" ]]; then
+                echo "✓ Installed Claude Code rules in .claude/rules/"
+            fi
+        fi
+
+        # Copy agents from agent-qa/agents/ to .claude/agents/agent-qa/
+        local dest_agents_dir="$PROJECT_DIR/.claude/agents/agent-qa"
+        local source_agents_dir="$BASE_DIR/agent-qa/agents"
+        if [[ -d "$source_agents_dir" ]]; then
+            ensure_dir "$dest_agents_dir"
+            find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
+                local relative_path="${source_file#$source_agents_dir/}"
+                local dest_file="$dest_agents_dir/$relative_path"
+                if ! should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                    copy_file "$source_file" "$dest_file" > /dev/null
+                fi
+            done
+            if [[ "$DRY_RUN" != "true" ]]; then
+                echo "✓ Installed Claude Code agents in .claude/agents/agent-qa/"
+            fi
+        fi
+
+        # Install hooks.json from agent-qa/ide/claude/
+        local source_hooks="$BASE_DIR/agent-qa/ide/claude/hooks.json"
+        local dest_hooks="$PROJECT_DIR/.claude/hooks.json"
+        if [[ -f "$source_hooks" ]]; then
+            if ! should_skip_file "$dest_hooks" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                copy_file "$source_hooks" "$dest_hooks" > /dev/null
+                if [[ "$DRY_RUN" != "true" ]]; then
+                    echo "✓ Installed Claude Code hooks in .claude/hooks.json"
+                fi
+            fi
+        fi
+    fi
+}
+
+# Install Cursor IDE integration
+install_ide_cursor() {
+    if ! should_install_ide "cursor"; then
+        return
     fi
 
     if [[ "$DRY_RUN" != "true" ]]; then
-        if [[ $claude_commands_count -gt 0 ]]; then
-            echo "✓ Installed $claude_commands_count Claude Code/Cursor IDE command files (optional)"
+        print_status "Installing Cursor IDE integration"
+    fi
+
+    local source_cursor_dir="$BASE_DIR/agent-qa/ide/cursor/rules"
+    local dest_cursor_dir="$PROJECT_DIR/.cursor/rules"
+
+    if [[ -d "$source_cursor_dir" ]]; then
+        ensure_dir "$dest_cursor_dir"
+        local cursor_count=0
+        find "$source_cursor_dir" -type f -name "*.md" | while read -r source_file; do
+            local relative_path="${source_file#$source_cursor_dir/}"
+            local dest_file="$dest_cursor_dir/$relative_path"
+            if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                print_verbose "Skipped: $relative_path"
+            else
+                if copy_file "$source_file" "$dest_file" > /dev/null; then
+                    ((cursor_count++)) || true
+                    print_verbose "  Installed: $relative_path"
+                fi
+            fi
+        done
+        if [[ "$DRY_RUN" != "true" ]]; then
+            echo "✓ Installed Cursor IDE rules in .cursor/rules/"
+        fi
+    fi
+}
+
+# Install VS Code IDE integration
+install_ide_vscode() {
+    if ! should_install_ide "vscode"; then
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing VS Code IDE integration"
+    fi
+
+    local source_vscode_dir="$BASE_DIR/agent-qa/ide/vscode"
+    local dest_vscode_dir="$PROJECT_DIR/.vscode"
+
+    if [[ -d "$source_vscode_dir" ]]; then
+        ensure_dir "$dest_vscode_dir"
+
+        # Copy settings.json, tasks.json, extensions.json
+        for json_file in settings.json tasks.json extensions.json; do
+            local source_file="$source_vscode_dir/$json_file"
+            local dest_file="$dest_vscode_dir/$json_file"
+            if [[ -f "$source_file" ]]; then
+                if ! should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+                    copy_file "$source_file" "$dest_file" > /dev/null
+                    if [[ "$DRY_RUN" != "true" ]]; then
+                        echo "✓ Installed VS Code $json_file"
+                    fi
+                fi
+            fi
+        done
+    fi
+}
+
+# Install GitHub Copilot integration
+install_ide_github() {
+    if ! should_install_ide "github"; then
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing GitHub Copilot integration"
+    fi
+
+    local source_copilot="$BASE_DIR/agent-qa/ide/github/copilot-instructions.md"
+    local dest_copilot="$PROJECT_DIR/.github/copilot-instructions.md"
+
+    if [[ -f "$source_copilot" ]]; then
+        ensure_dir "$PROJECT_DIR/.github"
+        if ! should_skip_file "$dest_copilot" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            copy_file "$source_copilot" "$dest_copilot" > /dev/null
+            if [[ "$DRY_RUN" != "true" ]]; then
+                echo "✓ Installed GitHub Copilot instructions in .github/copilot-instructions.md"
+            fi
+        fi
+    fi
+}
+
+# Install agent-qa/formats/ directory
+install_formats() {
+    local source_formats_dir="$BASE_DIR/agent-qa/formats"
+    local dest_formats_dir="$PROJECT_DIR/agent-qa/formats"
+
+    if [[ ! -d "$source_formats_dir" ]]; then
+        print_verbose "No formats directory found - skipping"
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing format templates"
+    fi
+
+    local formats_count=0
+    find "$source_formats_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_formats_dir/}"
+        local dest_file="$dest_formats_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((formats_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $formats_count -gt 0 ]]; then
+            echo "✓ Installed $formats_count format template files in agent-qa/formats/"
         fi
     fi
 }
@@ -540,42 +857,59 @@ perform_installation() {
     # Prompt for Azure DevOps cloud ID if needed
     prompt_azure_devops_cloud_id
 
+    # Parse IDE selection
+    parse_ide_selection
+
     echo ""
     print_status "Installing Agent QA..."
+    echo ""
 
-    # Create directory structure
+    # Show IDE selection
+    local ides_list=$(get_installed_ides_list)
+    echo -e "  IDEs to install: ${YELLOW}${ides_list}${NC}"
+    echo ""
+
+    # Create core directory structure
     ensure_dir "$PROJECT_DIR/agent-qa/commands"
-    ensure_dir "$PROJECT_DIR/agent-qa/workflows"
-    ensure_dir "$PROJECT_DIR/agent-qa/standards"
+    ensure_dir "$PROJECT_DIR/agent-qa/rules"
+    ensure_dir "$PROJECT_DIR/agent-qa/agents"
     ensure_dir "$PROJECT_DIR/agent-qa/framework"
+    ensure_dir "$PROJECT_DIR/agent-qa/formats"
 
     # Create/update configuration file
     if [[ "$DRY_RUN" != "true" ]]; then
         print_status "Creating configuration file"
     fi
     create_or_update_config "$PROJECT_DIR" "$REPOSITORY_PLATFORM" "$REPOSITORY_PROJECT_ID" "$AZURE_DEVOPS_CLOUD_ID"
+    # Write installed IDEs to config
     if [[ "$DRY_RUN" != "true" ]]; then
+        write_yaml_value "$PROJECT_DIR/agent-qa/config.yml" "installed_ides" "$ides_list"
         echo "✓ Created/updated agent-qa/config.yml"
     fi
     echo ""
 
-    # Install files
+    # Install core files (always)
     install_commands
     echo ""
-    install_workflows
-    if [[ -d "$BASE_DIR/agent-qa/workflows" ]]; then
-        echo ""
-    fi
-    install_standards
-    if [[ -d "$BASE_DIR/agent-qa/standards" ]]; then
-        echo ""
-    fi
+    install_rules
+    echo ""
+    install_agents
+    echo ""
     install_framework
-    if [[ -d "$BASE_DIR/agent-qa/framework" ]]; then
-        echo ""
-    fi
+    echo ""
     install_config_template
-    install_claude_commands
+    install_formats
+    echo ""
+
+    # Install IDE-specific integrations
+    print_section "IDE Integrations"
+    install_ide_claude
+    echo ""
+    install_ide_cursor
+    echo ""
+    install_ide_vscode
+    echo ""
+    install_ide_github
 
     # Installation complete
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -586,20 +920,31 @@ perform_installation() {
         echo ""
         echo -e "${GREEN}1) Verify configuration in agent-qa/config.yml${NC}"
         echo ""
-        echo -e "${GREEN}2) Ensure MCP servers are configured in your IDE/Cursor:${NC}"
+        echo -e "${GREEN}2) Ensure MCP servers are configured in your IDE:${NC}"
         echo -e "   - Atlassian MCP server (for Jira/Confluence)"
         local platform_name=$(echo "$REPOSITORY_PLATFORM" | sed 's/^./\U&/')
-        echo -e "   - ${platform_name^} MCP server (for git repository access)"
+        echo -e "   - ${platform_name} MCP server (for git repository access)"
         echo -e "   - Playwright MCP server (for test automation)"
         echo ""
         echo -e "${GREEN}3) Start using Agent QA commands:${NC}"
-        echo -e "   - analyze-requirements"
-        echo -e "   - generate-test-cases"
-        echo -e "   - generate-test-charter"
-        echo -e "   - generate-test-strategy"
-        echo -e "   - generate-test-plan"
-        echo -e "   - generate-risk-register"
-        echo -e "   - generate-release-notes"
+        echo -e "   Core:   analyze-requirements, generate-test-cases, generate-test-strategy"
+        echo -e "           generate-test-charter, generate-test-plan, generate-risk-register"
+        echo -e "           analyze-commits, generate-release-notes"
+        echo -e "   Extra:  generate-gherkin, generate-playwright-tests, publish-to-confluence"
+        echo ""
+        echo -e "${GREEN}4) IDE integration installed for: ${ides_list}${NC}"
+        if should_install_ide "claude"; then
+            echo -e "   - Claude Code: .claude/ (commands, rules, agents, hooks)"
+        fi
+        if should_install_ide "cursor"; then
+            echo -e "   - Cursor: .cursor/rules/ + .claude/commands/"
+        fi
+        if should_install_ide "vscode"; then
+            echo -e "   - VS Code: .vscode/ (settings, tasks, extensions)"
+        fi
+        if should_install_ide "github"; then
+            echo -e "   - GitHub Copilot: .github/copilot-instructions.md"
+        fi
         echo ""
     fi
 }

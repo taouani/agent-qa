@@ -23,8 +23,8 @@ Check for project ID in configuration files:
    - Look for `repository_project_id` key at root level
    - If found, read project ID value
 
-2. **Check `agent-os/config.yml`** (fallback):
-   - If not found in `agent-qa/config.yml`, check `agent-os/config.yml`
+2. **Check `agent-qa/config.yml`** (primary):
+   - Read from `agent-qa/config.yml`
    - If found, read project ID value
 
 3. **Store Config Project ID**:
@@ -90,7 +90,7 @@ Validate project ID format based on platform:
 
 Please provide repository_project_id in one of the following ways:
 
-1. Add to config file (agent-os/config.yml or agent-qa/config.yml):
+1. Add to config file (agent-qa/config.yml):
    repository_project_id: [your-project-id]
 
 2. Provide as input parameter:

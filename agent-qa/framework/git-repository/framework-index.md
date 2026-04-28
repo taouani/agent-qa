@@ -7,7 +7,7 @@ Complete reference of all available framework operations, organized by category.
 ### Platform Configuration
 - **`config/read-platform-config.md`** - Read repository platform from YAML config
   - Supported platforms: `github`, `gitlab`, `azure-devops`
-  - Reads from: `agent-os/config.yml` or `agent-qa/config.yml`
+  - Reads from: `agent-qa/config.yml`
   - Returns: Platform identifier
 
 ### MCP Server Validation

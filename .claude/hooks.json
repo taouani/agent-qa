@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "matcher": "PreToolUse",
+      "description": "Validate agent-qa config exists before running agent-qa commands",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "test -f agent-qa/config.yml && echo 'Config validated' || echo 'WARN: agent-qa/config.yml not found. Run ~/agent-qa/scripts/project-install.sh to configure.'",
+          "timeout": 5000
+        }
+      ]
+    },
+    {
+      "matcher": "PostToolUse",
+      "description": "Log run metadata after agent-qa commands complete",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "if ls agent-qa/20*/ >/dev/null 2>&1; then echo \"Output folders: $(ls -d agent-qa/20*/ 2>/dev/null | wc -l | tr -d ' ') | Latest: $(ls -dt agent-qa/20*/ 2>/dev/null | head -1)\"; fi",
+          "timeout": 5000
+        }
+      ]
+    }
+  ]
+}

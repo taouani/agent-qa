@@ -6,11 +6,12 @@ Comprehensive guide to using Agent-QA for quality assurance automation.
 
 1. [Getting Started](#getting-started)
 2. [Core Commands](#core-commands)
-3. [Workflow Examples](#workflow-examples)
-4. [Output Structure](#output-structure)
-5. [Best Practices](#best-practices)
-6. [Advanced Usage](#advanced-usage)
-7. [Troubleshooting](#troubleshooting)
+3. [New Commands](#new-commands)
+4. [Workflow Examples](#workflow-examples)
+5. [Output Structure](#output-structure)
+6. [Best Practices](#best-practices)
+7. [Advanced Usage](#advanced-usage)
+8. [Troubleshooting](#troubleshooting)
 
 ## Getting Started
 
@@ -25,15 +26,26 @@ Before using Agent-QA, ensure:
 
 ### IDE-Specific Setup
 
-**Claude Code / Cursor IDE:**
-- Commands are automatically installed to `.claude/commands/agent-qa/` during installation
+**Claude Code:**
+- Commands installed to `.claude/commands/agent-qa/` during installation
+- Rules loaded from `.claude/rules/` (QA conventions, MCP usage, output standards, language handling)
+- Subagents available from `.claude/agents/agent-qa/` (requirements analyst, test case generator, etc.)
+- Hooks configured in `.claude/hooks.json` (config validation, output logging)
 - Type `/analyze-requirements` in the chat to use commands
-- If commands aren't recognized, see [Troubleshooting](#troubleshooting)
 
-**VS Code / GitHub Copilot / Other IDEs:**
+**Cursor IDE:**
+- Commands installed to `.claude/commands/agent-qa/` during installation
+- Rules loaded from `.cursor/rules/` (QA conventions, usage guide)
+- Type `/analyze-requirements` in the chat to use commands
+
+**VS Code / GitHub Copilot:**
+- Instructions loaded from `.github/copilot-instructions.md`
+- Reference command files with `@agent-qa/commands/analyze-requirements/analyze-requirements.md`
+- Ask Copilot to follow the instructions in the referenced file
+
+**Other IDEs:**
 - Commands can be used by referencing the markdown files directly
 - See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for detailed instructions
-- The `.claude/commands/` directory is optional and only for Claude Code/Cursor
 
 ### Your First Command
 
@@ -324,6 +336,78 @@ Generates technical release notes with full traceability.
 - Release notes: `release-notes/release-notes.md`
 - Traceability matrix: `release-notes/traceability-matrix.md`
 
+## New Commands
+
+### 9. generate-gherkin
+
+Generates Gherkin BDD `.feature` files from test cases.
+
+#### Syntax
+
+```
+/generate-gherkin
+```
+
+#### What It Does
+
+1. **Finds** available test case folders
+2. **Prompts** you to select which test cases to convert
+3. **Maps** test steps to Given/When/Then syntax
+4. **Groups** scenarios into Features by requirement key
+5. **Generates** `.feature` files with tags and traceability
+
+#### Output
+
+- Feature files: `gherkin/PROJ-123.feature`
+- Gherkin index: `gherkin/README.md`
+- Traceability report
+
+### 10. generate-playwright-tests
+
+Generates Playwright `.spec.ts` test files with Page Object Model.
+
+#### Syntax
+
+```
+/generate-playwright-tests
+```
+
+#### What It Does
+
+1. **Finds** available test case folders
+2. **Identifies** pages, UI elements, and navigation flows
+3. **Generates** Page Object classes with typed Locator properties
+4. **Generates** test spec files grouped by requirement
+5. **Handles** data-driven tests with parameterization
+
+#### Output
+
+- Page Objects: `playwright/pages/*.page.ts`
+- Test Specs: `playwright/tests/*.spec.ts`
+- README with setup instructions
+
+### 11. publish-to-confluence
+
+Converts deliverables to Confluence format and optionally publishes.
+
+#### Syntax
+
+```
+/publish-to-confluence
+```
+
+#### What It Does
+
+1. **Finds** available output folders
+2. **Prompts** you to select deliverables to convert
+3. **Converts** markdown to Confluence storage format (XHTML)
+4. **Publishes** pages via Atlassian MCP if configured
+
+#### Output
+
+- `.confluence.html` files alongside original markdown
+- Publication report with status and URLs
+
 ## Workflow Examples
 
 ### Example 1: Single Feature Analysis
@@ -464,6 +548,17 @@ agent-qa/
     commits/                    # (if --include-commits used)
       commit-analysis.md        # Commit analysis
       code-changes/             # Code change summaries
+
+    gherkin/                    # (if generate-gherkin used)
+      PROJ-123.feature          # Gherkin feature files
+      README.md                 # Gherkin index
+
+    playwright/                 # (if generate-playwright-tests used)
+      pages/                    # Page Object classes
+        login.page.ts
+      tests/                    # Test spec files
+        PROJ-123.spec.ts
+      README.md                 # Setup instructions
 ```
 
 ## Best Practices

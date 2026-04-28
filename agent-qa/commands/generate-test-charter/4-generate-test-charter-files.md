@@ -81,9 +81,17 @@ Create `test-charter-index.md`:
 - Include summary information
 - Link back to requirements
 
+### Step 6: Generate Output Index
+
+Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
+
+### Step 7: Execute Post-Generation Hooks
+
+Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to run any configured post-generation hooks.
+
 ## Important Constraints
 
-- Follow agent-os markdown standards
+- Follow markdown standards
 - Use appropriate file naming
 - Include all charter fields
 - Create proper markdown links
