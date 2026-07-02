@@ -7,7 +7,7 @@ set -e
 
 # Repository configuration
 REPO_URL="https://github.com/taouani/agent-qa"
-REPO_BRANCH="rework-agent-qa"
+REPO_BRANCH="master"
 
 # Installation paths
 BASE_DIR="$HOME/agent-qa"
