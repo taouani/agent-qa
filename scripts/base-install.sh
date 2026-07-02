@@ -101,11 +101,47 @@ download_file() {
 # Define exclusion patterns
 EXCLUSIONS=(
     "scripts/base-install.sh"
+    "scripts/base-install.ps1"
     ".git*"
     ".github/*"
     "node_modules/*"
     "*.log"
 )
+
+# Check if python3 is a real interpreter (not the Windows App Execution Alias stub)
+has_working_python3() {
+    if ! command -v python3 &> /dev/null; then
+        return 1
+    fi
+
+    python3 -c "import sys" &> /dev/null
+}
+
+# Parse GitHub tree API JSON and print blob file paths
+parse_tree_response() {
+    local response=$1
+
+    if command -v jq &> /dev/null; then
+        print_verbose "Using jq to parse JSON"
+        echo "$response" | jq -r '.tree[] | select(.type=="blob") | .path'
+        return 0
+    fi
+
+    if has_working_python3; then
+        print_verbose "Using python to parse JSON"
+        echo "$response" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for item in data.get('tree', []):
+    if item.get('type') == 'blob':
+        print(item.get('path', ''))
+"
+        return 0
+    fi
+
+    print_verbose "Using sed/awk to parse JSON (less reliable)"
+    echo "$response" | awk -F'"' '/"type":"blob"/{blob=1} blob && /"path":/{print $4; blob=0}'
+}
 
 # Check if a file should be excluded
 should_exclude() {
@@ -166,36 +202,11 @@ get_all_repo_files() {
         return 1
     fi
 
-    # Use jq if available, otherwise use python
-    if command -v jq &> /dev/null; then
-        print_verbose "Using jq to parse JSON"
-        echo "$response" | jq -r '.tree[] | select(.type=="blob") | .path' | while read -r file_path; do
-            if ! should_exclude "$file_path"; then
-                echo "$file_path"
-            fi
-        done
-    elif command -v python3 &> /dev/null; then
-        print_verbose "Using python to parse JSON"
-        echo "$response" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('tree', []):
-    if item.get('type') == 'blob':
-        print(item.get('path', ''))
-" | while read -r file_path; do
-            if [[ -n "$file_path" ]] && ! should_exclude "$file_path"; then
-                echo "$file_path"
-            fi
-        done
-    else
-        print_verbose "Using sed/awk to parse JSON (less reliable)"
-        # Parse JSON using sed and awk - less reliable but works for simple cases
-        echo "$response" | awk -F'"' '/"type":"blob"/{blob=1} blob && /"path":/{print $4; blob=0}' | while read -r file_path; do
-            if ! should_exclude "$file_path"; then
-                echo "$file_path"
-            fi
-        done
-    fi
+    parse_tree_response "$response" | while read -r file_path; do
+        if [[ -n "$file_path" ]] && ! should_exclude "$file_path"; then
+            echo "$file_path"
+        fi
+    done
 }
 
 # Download all files from the repository
