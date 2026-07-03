@@ -144,7 +144,7 @@ cd C:\path\to\your\project
 Optional IDE selection (default installs all IDEs):
 
 ```powershell
-& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" -Ide claude,cursor
+& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" --ide claude,cursor
 ```
 
 ### Step 3: Follow the Prompts

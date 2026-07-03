@@ -183,7 +183,7 @@ irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-insta
 
 Project-level config in `agent-qa/config.yml` (generated from `config.yml.template`):
 ```yaml
-installed_ides: "claude,cursor,vscode,github"  # IDEs configured during install
+installed_ides: "claude,cursor,vscode,copilot"  # IDEs configured during install
 repository_platform: gitlab    # gitlab | github | azure-devops
 repository_project_id: ""      # Platform-specific project identifier
 azure_devops_cloud_id: ""      # Only for Azure DevOps

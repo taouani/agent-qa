@@ -30,7 +30,7 @@ OVERWRITE_COMMANDS="false"
 OVERWRITE_WORKFLOWS="false"
 OVERWRITE_STANDARDS="false"
 OVERWRITE_FRAMEWORK="false"
-IDE_SELECTION=""  # Comma-separated: claude,cursor,vscode,github (empty = all)
+IDE_SELECTION=""  # Comma-separated: claude,cursor,vscode,copilot (empty = all)
 
 # -----------------------------------------------------------------------------
 # Help Function
@@ -43,7 +43,7 @@ Usage: $0 [OPTIONS]
 Install Agent QA into the current project directory.
 
 Options:
-    --ide IDE_LIST                       Comma-separated list of IDEs to install (claude,cursor,vscode,github)
+    --ide IDE_LIST                       Comma-separated list of IDEs to install (claude,cursor,vscode,copilot)
                                          Default: all IDEs are installed
     --repository-platform PLATFORM      Set repository platform (gitlab, github, azure-devops)
     --repository-project-id ID          Set repository project ID
@@ -62,7 +62,7 @@ IDE Selection:
     claude    - Claude Code (.claude/commands/, .claude/rules/, .claude/agents/, .claude/hooks.json)
     cursor    - Cursor IDE (.cursor/rules/, also installs .claude/commands/ since Cursor uses them)
     vscode    - VS Code (.vscode/settings.json, .vscode/tasks.json, .vscode/extensions.json, .github/copilot-instructions.md)
-    github    - GitHub Copilot (.github/copilot-instructions.md)
+    copilot   - GitHub Copilot (.github/copilot-instructions.md)
 
 This script will:
 1. Prompt you to select your repository platform (GitLab, GitHub, or Azure DevOps) if not provided
@@ -276,14 +276,14 @@ parse_ide_selection() {
         INSTALL_CLAUDE="true"
         INSTALL_CURSOR="true"
         INSTALL_VSCODE="true"
-        INSTALL_GITHUB="true"
+        INSTALL_COPILOT="true"
         return
     fi
 
     INSTALL_CLAUDE="false"
     INSTALL_CURSOR="false"
     INSTALL_VSCODE="false"
-    INSTALL_GITHUB="false"
+    INSTALL_COPILOT="false"
 
     IFS=',' read -ra IDE_ARRAY <<< "$IDE_SELECTION"
     for ide in "${IDE_ARRAY[@]}"; do
@@ -298,12 +298,12 @@ parse_ide_selection() {
             vscode)
                 INSTALL_VSCODE="true"
                 ;;
-            github)
-                INSTALL_GITHUB="true"
+            copilot|github)
+                INSTALL_COPILOT="true"
                 ;;
             *)
                 print_error "Unknown IDE: $ide"
-                print_error "Valid options: claude, cursor, vscode, github"
+                print_error "Valid options: claude, cursor, vscode, copilot"
                 exit 1
                 ;;
         esac
@@ -315,9 +315,9 @@ parse_ide_selection() {
     fi
 
     # VS Code auto-includes GitHub Copilot instructions
-    if [[ "$INSTALL_VSCODE" == "true" && "$INSTALL_GITHUB" != "true" ]]; then
-        INSTALL_GITHUB="true"
-        print_verbose "VS Code requires .github/copilot-instructions.md — auto-including GitHub Copilot"
+    if [[ "$INSTALL_VSCODE" == "true" && "$INSTALL_COPILOT" != "true" ]]; then
+        INSTALL_COPILOT="true"
+        print_verbose "VS Code requires .github/copilot-instructions.md — auto-including Copilot"
     fi
 }
 
@@ -328,7 +328,7 @@ should_install_ide() {
         claude)  [[ "$INSTALL_CLAUDE" == "true" ]] ;;
         cursor)  [[ "$INSTALL_CURSOR" == "true" ]] ;;
         vscode)  [[ "$INSTALL_VSCODE" == "true" ]] ;;
-        github)  [[ "$INSTALL_GITHUB" == "true" ]] ;;
+        copilot|github)  [[ "$INSTALL_COPILOT" == "true" ]] ;;
         *)       return 1 ;;
     esac
 }
@@ -339,7 +339,7 @@ get_installed_ides_list() {
     [[ "$INSTALL_CLAUDE" == "true" ]] && ides+=("claude")
     [[ "$INSTALL_CURSOR" == "true" ]] && ides+=("cursor")
     [[ "$INSTALL_VSCODE" == "true" ]] && ides+=("vscode")
-    [[ "$INSTALL_GITHUB" == "true" ]] && ides+=("github")
+    [[ "$INSTALL_COPILOT" == "true" ]] && ides+=("copilot")
     echo "${ides[*]}" | tr ' ' ','
 }
 
@@ -774,8 +774,8 @@ install_ide_vscode() {
 }
 
 # Install GitHub Copilot integration
-install_ide_github() {
-    if ! should_install_ide "github"; then
+install_ide_copilot() {
+    if ! should_install_ide "copilot"; then
         return
     fi
 
@@ -909,7 +909,7 @@ perform_installation() {
     echo ""
     install_ide_vscode
     echo ""
-    install_ide_github
+    install_ide_copilot
 
     # Installation complete
     if [[ "$DRY_RUN" != "true" ]]; then
@@ -942,8 +942,8 @@ perform_installation() {
         if should_install_ide "vscode"; then
             echo -e "   - VS Code: .vscode/ (settings, tasks, extensions)"
         fi
-        if should_install_ide "github"; then
-            echo -e "   - GitHub Copilot: .github/copilot-instructions.md"
+        if should_install_ide "copilot"; then
+            echo -e "   - Copilot: .github/copilot-instructions.md"
         fi
         echo ""
     fi

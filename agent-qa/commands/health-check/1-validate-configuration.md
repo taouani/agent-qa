@@ -49,7 +49,7 @@ Based on `installed_ides` in config.yml, verify the corresponding IDE directorie
 - **claude**: Check `.claude/commands/agent-qa/`, `.claude/rules/`, `.claude/agents/agent-qa/`, `.claude/hooks.json`
 - **cursor**: Check `.cursor/rules/`
 - **vscode**: Check `.vscode/settings.json`, `.vscode/extensions.json`
-- **github**: Check `.github/copilot-instructions.md`
+- **copilot**: Check `.github/copilot-instructions.md`
 
 For each configured IDE:
 - **PASS** if all expected files exist

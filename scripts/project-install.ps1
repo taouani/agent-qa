@@ -3,17 +3,20 @@
 # Installs Agent QA into a project's codebase
 # =============================================================================
 
-param(
-    [string]$Ide = "",
-    [string]$RepositoryPlatform = "",
-    [string]$RepositoryProjectId = "",
-    [string]$AzureDevOpsCloudId = "",
-    [switch]$DryRun,
-    [switch]$Verbose,
-    [switch]$Help
-)
-
 $ErrorActionPreference = "Stop"
+
+# Script state (set by Parse-Arguments)
+$script:DRY_RUN = $false
+$script:VERBOSE = $false
+$script:SHOW_HELP = $false
+$script:IdeSelection = ""
+$script:RepositoryPlatform = ""
+$script:RepositoryProjectId = ""
+$script:AzureDevOpsCloudId = ""
+$script:InstallClaude = $false
+$script:InstallCursor = $false
+$script:InstallVscode = $false
+$script:InstallCopilot = $false
 
 # Resolve script directory across invocation styles
 $ScriptDir = $PSScriptRoot
@@ -47,13 +50,6 @@ if (-not (Test-Path $commonFunctions)) {
 }
 . $commonFunctions
 
-$script:DRY_RUN = $DryRun.IsPresent
-$script:VERBOSE = $Verbose.IsPresent
-$script:InstallClaude = $false
-$script:InstallCursor = $false
-$script:InstallVscode = $false
-$script:InstallGithub = $false
-
 # -----------------------------------------------------------------------------
 # Help
 # -----------------------------------------------------------------------------
@@ -65,46 +61,124 @@ Usage: .\project-install.ps1 [OPTIONS]
 Install Agent QA into the current project directory.
 
 Options:
-    -Ide IDE_LIST                 Comma-separated IDEs: claude,cursor,vscode,github (default: all)
-    -RepositoryPlatform PLATFORM  Set repository platform (gitlab, github, azure-devops)
-    -RepositoryProjectId ID       Set repository project ID
-    -AzureDevOpsCloudId ID        Set Azure DevOps cloud ID
-    -DryRun                       Show what would be done without doing it
-    -Verbose                      Show detailed output
-    -Help                         Show this help message
+    --ide IDE_LIST                 Comma-separated IDEs: claude,cursor,vscode,copilot (default: all)
+    --repository-platform PLATFORM Set repository platform (gitlab, github, azure-devops)
+    --repository-project-id ID     Set repository project ID
+    --azure-devops-cloud-id ID     Set Azure DevOps cloud ID
+    --dry-run                      Show what would be done without doing it
+    --verbose                      Show detailed output
+    -h, --help                     Show this help message
 
 Examples:
     .\project-install.ps1
-    .\project-install.ps1 -Ide claude,cursor
-    .\project-install.ps1 -Ide vscode -RepositoryPlatform github -RepositoryProjectId "owner/repo"
+    .\project-install.ps1 --ide claude,cursor
+    .\project-install.ps1 --ide copilot
+    .\project-install.ps1 --ide vscode --repository-platform github --repository-project-id "owner/repo"
 
 "@
     exit 0
+}
+
+function Parse-Arguments {
+    param([string[]]$Arguments)
+
+    $i = 0
+    while ($i -lt $Arguments.Count) {
+        $arg = $Arguments[$i]
+
+        switch ($arg) {
+            { $_ -in '-Help', '--help', '-h' } {
+                $script:SHOW_HELP = $true
+                $i++
+            }
+            { $_ -in '-DryRun', '--dry-run' } {
+                $script:DRY_RUN = $true
+                $i++
+            }
+            { $_ -in '-Verbose', '--verbose' } {
+                $script:VERBOSE = $true
+                $i++
+            }
+            { $_ -in '-Ide', '--ide' } {
+                if ($i + 1 -ge $Arguments.Count) {
+                    Print-Error "Missing value for $arg"
+                    exit 1
+                }
+                $script:IdeSelection = $Arguments[$i + 1]
+                $i += 2
+            }
+            { $_ -in '-RepositoryPlatform', '--repository-platform' } {
+                if ($i + 1 -ge $Arguments.Count) {
+                    Print-Error "Missing value for $arg"
+                    exit 1
+                }
+                $script:RepositoryPlatform = $Arguments[$i + 1]
+                $i += 2
+            }
+            { $_ -in '-RepositoryProjectId', '--repository-project-id' } {
+                if ($i + 1 -ge $Arguments.Count) {
+                    Print-Error "Missing value for $arg"
+                    exit 1
+                }
+                $script:RepositoryProjectId = $Arguments[$i + 1]
+                $i += 2
+            }
+            { $_ -in '-AzureDevOpsCloudId', '--azure-devops-cloud-id' } {
+                if ($i + 1 -ge $Arguments.Count) {
+                    Print-Error "Missing value for $arg"
+                    exit 1
+                }
+                $script:AzureDevOpsCloudId = $Arguments[$i + 1]
+                $i += 2
+            }
+            default {
+                Print-Error "Unknown option: $arg"
+                Show-Help
+            }
+        }
+    }
+}
+
+Parse-Arguments -Arguments $args
+$script:VERBOSE = $script:VERBOSE
+
+if ($script:SHOW_HELP) {
+    Show-Help
 }
 
 # -----------------------------------------------------------------------------
 # IDE Selection
 # -----------------------------------------------------------------------------
 
+function Get-NormalizedIdeName {
+    param([string]$IdeName)
+
+    $normalized = $IdeName.Trim().ToLower()
+    if ($normalized -eq "github") {
+        return "copilot"
+    }
+    return $normalized
+}
+
 function Initialize-IdESelection {
-    if ([string]::IsNullOrWhiteSpace($Ide)) {
+    if ([string]::IsNullOrWhiteSpace($script:IdeSelection)) {
         $script:InstallClaude = $true
         $script:InstallCursor = $true
         $script:InstallVscode = $true
-        $script:InstallGithub = $true
+        $script:InstallCopilot = $true
         return
     }
 
-    foreach ($entry in ($Ide -split ',')) {
-        $ideName = $entry.Trim().ToLower()
+    foreach ($entry in ($script:IdeSelection -split ',')) {
+        $ideName = Get-NormalizedIdeName -IdeName $entry
         switch ($ideName) {
             "claude" { $script:InstallClaude = $true }
             "cursor" { $script:InstallCursor = $true }
             "vscode" { $script:InstallVscode = $true }
-            "github" { $script:InstallGithub = $true }
+            "copilot" { $script:InstallCopilot = $true }
             default {
                 Print-Error "Unknown IDE: $entry"
-                Print-Error "Valid options: claude, cursor, vscode, github"
+                Print-Error "Valid options: claude, cursor, vscode, copilot"
                 exit 1
             }
         }
@@ -114,20 +188,20 @@ function Initialize-IdESelection {
         Print-Verbose "Cursor requires .claude/commands/ - auto-including Claude Code commands"
     }
 
-    if ($script:InstallVscode -and -not $script:InstallGithub) {
-        $script:InstallGithub = $true
-        Print-Verbose "VS Code requires .github/copilot-instructions.md - auto-including GitHub Copilot"
+    if ($script:InstallVscode -and -not $script:InstallCopilot) {
+        $script:InstallCopilot = $true
+        Print-Verbose "VS Code requires .github/copilot-instructions.md - auto-including Copilot"
     }
 }
 
 function Test-ShouldInstallIde {
     param([string]$IdeName)
 
-    switch ($IdeName) {
+    switch ((Get-NormalizedIdeName -IdeName $IdeName)) {
         "claude" { return $script:InstallClaude }
         "cursor" { return $script:InstallCursor }
         "vscode" { return $script:InstallVscode }
-        "github" { return $script:InstallGithub }
+        "copilot" { return $script:InstallCopilot }
         default { return $false }
     }
 }
@@ -137,7 +211,7 @@ function Get-InstalledIdesList {
     if ($script:InstallClaude) { $ides += "claude" }
     if ($script:InstallCursor) { $ides += "cursor" }
     if ($script:InstallVscode) { $ides += "vscode" }
-    if ($script:InstallGithub) { $ides += "github" }
+    if ($script:InstallCopilot) { $ides += "copilot" }
     return ($ides -join ",")
 }
 
@@ -433,13 +507,13 @@ function Install-IdeVscode {
     }
 }
 
-function Install-IdeGithub {
-    if (-not (Test-ShouldInstallIde "github")) {
+function Install-IdeCopilot {
+    if (-not (Test-ShouldInstallIde "copilot")) {
         return
     }
 
     if (-not $script:DRY_RUN) {
-        Print-Status "Installing GitHub Copilot integration"
+        Print-Status "Installing Copilot integration"
     }
 
     $sourceCopilot = Join-Path $SourceDir "agent-qa\ide\github\copilot-instructions.md"
@@ -532,7 +606,7 @@ function Start-ProjectInstall {
     Write-Host ""
     Install-IdeVscode
     Write-Host ""
-    Install-IdeGithub
+    Install-IdeCopilot
 
     if (-not $script:DRY_RUN) {
         Write-Host ""
@@ -564,8 +638,8 @@ function Start-ProjectInstall {
         if (Test-ShouldInstallIde "vscode") {
             Write-Host "   - VS Code: .vscode/ (settings, tasks, extensions)"
         }
-        if (Test-ShouldInstallIde "github") {
-            Write-Host "   - GitHub Copilot: .github/copilot-instructions.md"
+        if (Test-ShouldInstallIde "copilot") {
+            Write-Host "   - Copilot: .github/copilot-instructions.md"
         }
         Write-Host ""
     }
@@ -574,14 +648,6 @@ function Start-ProjectInstall {
 # -----------------------------------------------------------------------------
 # Main Execution
 # -----------------------------------------------------------------------------
-
-if ($Help) {
-    Show-Help
-}
-
-$script:RepositoryPlatform = $RepositoryPlatform
-$script:RepositoryProjectId = $RepositoryProjectId
-$script:AzureDevOpsCloudId = $AzureDevOpsCloudId
 
 Test-BaseInstallation
 

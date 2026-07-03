@@ -78,15 +78,15 @@ Agent-QA automates the entire QA documentation workflow by:
    ```bash
    ~/agent-qa/scripts/project-install.sh                    # All IDEs (default)
    ~/agent-qa/scripts/project-install.sh --ide claude        # Claude Code only
-   ~/agent-qa/scripts/project-install.sh --ide vscode,github # VS Code + Copilot
+   ~/agent-qa/scripts/project-install.sh --ide vscode,copilot # VS Code + Copilot
    ```
 
    **Windows (PowerShell):**
    ```powershell
    cd C:\path\to\your\project
    & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"              # All IDEs (default)
-   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" -Ide claude  # Claude Code only
-   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" -Ide vscode,github
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" --ide claude  # Claude Code only
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" --ide vscode,copilot
    ```
 
 #### Option 2: Install from Local Repository (if GitHub installation fails)

@@ -65,7 +65,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 # Read installed IDEs from config
-INSTALLED_IDES=$(get_yaml_value "$PROJECT_DIR/agent-qa/config.yml" "installed_ides" "claude,cursor,vscode,github")
+INSTALLED_IDES=$(get_yaml_value "$PROJECT_DIR/agent-qa/config.yml" "installed_ides" "claude,cursor,vscode,copilot")
 
 echo -e "Installed IDEs: ${YELLOW}${INSTALLED_IDES}${NC}"
 echo ""
@@ -125,7 +125,7 @@ for ide in "${IDES[@]}"; do
                 remove_if_exists "$PROJECT_DIR/.vscode" ".vscode/"
             fi
             ;;
-        github)
+        copilot|github)
             remove_if_exists "$PROJECT_DIR/.github/copilot-instructions.md" ".github/copilot-instructions.md"
             if [[ -d "$PROJECT_DIR/.github" ]] && [[ -z "$(ls -A "$PROJECT_DIR/.github" 2>/dev/null)" ]]; then
                 remove_if_exists "$PROJECT_DIR/.github" ".github/"
