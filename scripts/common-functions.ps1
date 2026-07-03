@@ -43,17 +43,17 @@ function Print-Status {
 
 function Print-Success {
     param([string]$Message)
-    Print-Color -Color $script:GREEN -Message "✓ $Message"
+    Print-Color -Color $script:GREEN -Message (([char]0x2713) + ' ' + $Message)
 }
 
 function Print-Warning {
     param([string]$Message)
-    Print-Color -Color $script:YELLOW -Message "⚠️  $Message"
+    Print-Color -Color $script:YELLOW -Message (([char]0x26A0) + '  ' + $Message)
 }
 
 function Print-Error {
     param([string]$Message)
-    Print-Color -Color $script:RED -Message "✗ $Message"
+    Print-Color -Color $script:RED -Message (([char]0x2717) + ' ' + $Message)
 }
 
 function Print-Verbose {
@@ -91,7 +91,7 @@ function Get-YamlValue {
         if ($line -match "^$Key\s*:\s*(.+)$") {
             $value = $matches[1].Trim()
             # Remove quotes if present
-            $value = $value -replace '^["'']', '' -replace '["'']$', ''
+            $value = $value -replace '^[''"]', '' -replace '[''"]$', ''
             if ($value.Length -gt 0) {
                 return $value
             }
@@ -150,7 +150,7 @@ function Get-YamlArray {
                 if ($indent -eq $arrayIndent) {
                     $item = $matches[1].Trim()
                     # Remove quotes if present
-                    $item = $item -replace '^["'']', '' -replace '["'']$', ''
+                    $item = $item -replace '^[''"]', '' -replace '[''"]$', ''
                     $result += $item
                 }
             }
@@ -342,7 +342,7 @@ repository_platform: $(if ($RepositoryPlatform) { $RepositoryPlatform } else { '
 repository_project_id: "$RepositoryProjectId"
 "@
             if ($AzureDevOpsCloudId) {
-                $configContent += "`nazure_devops_cloud_id: `"$AzureDevOpsCloudId`""
+                $configContent += [Environment]::NewLine + "azure_devops_cloud_id: `"$AzureDevOpsCloudId`""
             }
             Write-File -Content $configContent -Dest $configFile
             Print-Verbose "Created minimal config.yml"

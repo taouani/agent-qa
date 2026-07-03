@@ -140,7 +140,22 @@ for item in data.get('tree', []):
     fi
 
     print_verbose "Using sed/awk to parse JSON (less reliable)"
-    echo "$response" | awk -F'"' '/"type":"blob"/{blob=1} blob && /"path":/{print $4; blob=0}'
+    echo "$response" | awk '
+/"path":/ {
+    line = $0
+    sub(/.*"path": *"/, "", line)
+    sub(/".*$/, "", line)
+    path = line
+}
+/"type": *"tree"/ {
+    path = ""
+}
+/"type": *"blob"/ {
+    if (path != "") {
+        print path
+        path = ""
+    }
+}'
 }
 
 # Check if a file should be excluded

@@ -35,23 +35,34 @@ function Write-Bootstrap {
 
 function Write-BootstrapError {
     param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
+    Write-Host (([char]0x2717) + ' ' + $Message) -ForegroundColor Red
 }
 
-function Import-CommonFunctions {
+function Get-CommonFunctionsScript {
+    $scriptRoot = $PSScriptRoot
+    if (-not $scriptRoot -and $MyInvocation.PSCommandPath) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.PSCommandPath
+    }
+
+    $localCommonFunctions = if ($scriptRoot) {
+        Join-Path $scriptRoot "common-functions.ps1"
+    } else {
+        $null
+    }
+
+    if ($localCommonFunctions -and (Test-Path $localCommonFunctions)) {
+        return $localCommonFunctions
+    }
+
     $functionsUrl = "$($script:RepoUrl)/raw/$($script:RepoBranch)/scripts/common-functions.ps1"
     $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) "agent-qa-common-functions.ps1"
 
     try {
         Invoke-WebRequest -Uri $functionsUrl -OutFile $tempFile -UseBasicParsing | Out-Null
-        . $tempFile
+        return $tempFile
     } catch {
         Write-BootstrapError "Failed to download common-functions.ps1"
         exit 1
-    } finally {
-        if (Test-Path $tempFile) {
-            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
-        }
     }
 }
 
@@ -318,7 +329,7 @@ function Show-OverwriteChoice {
     )
 
     Write-Host ""
-    Print-Color -Color $script:YELLOW -Message "=== ⚠️  Existing Installation Detected ==="
+    Print-Color -Color $script:YELLOW -Message ('=== ' + [char]0x26A0 + '  Existing Installation Detected ===')
     Write-Host ""
     Write-Host "You already have a base installation of Agent QA"
 
@@ -467,18 +478,23 @@ One-line install from GitHub:
     exit 0
 }
 
-function Start-BaseInstall {
-    if ($Help) {
-        Show-Help
-    }
-
-    $script:VERBOSE = [bool]$Verbose
-
-    Write-Bootstrap "Initializing..."
-    Import-CommonFunctions
-
-    Print-Section "Agent QA Base Installation"
-    Test-ExistingInstallation
+if ($Help) {
+    Show-Help
 }
 
-Start-BaseInstall
+$script:VERBOSE = [bool]$Verbose
+
+Write-Bootstrap "Initializing..."
+$commonFunctionsScript = Get-CommonFunctionsScript
+$removeCommonFunctionsScript = $commonFunctionsScript -like "$([System.IO.Path]::GetTempPath())*"
+try {
+    # Dot-source at script scope so functions are visible to all script functions
+    . $commonFunctionsScript
+} finally {
+    if ($removeCommonFunctionsScript -and (Test-Path $commonFunctionsScript)) {
+        Remove-Item $commonFunctionsScript -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Print-Section "Agent QA Base Installation"
+Test-ExistingInstallation
