@@ -161,11 +161,124 @@ function Save-RepoFile {
     }
 }
 
-function Install-AllRepoFiles {
-    param([string]$DestBase)
+$script:ArchivePrepared = $false
+$script:ArchiveRoot = ""
+$script:ArchiveFile = ""
+$script:ArchiveExtractDir = ""
+
+function Ensure-RepoArchive {
+    if ($script:ArchivePrepared) {
+        return $true
+    }
+
+    $archiveUrl = "$($script:RepoUrl)/archive/refs/heads/$($script:RepoBranch).zip"
+    $script:ArchiveFile = Join-Path ([System.IO.Path]::GetTempPath()) "agent-qa-$($script:RepoBranch).zip"
+    $script:ArchiveExtractDir = Join-Path ([System.IO.Path]::GetTempPath()) "agent-qa-extract-$([guid]::NewGuid().ToString())"
+
+    Print-Verbose "Downloading repository archive..."
+    try {
+        Invoke-WebRequest -Uri $archiveUrl -OutFile $script:ArchiveFile -UseBasicParsing | Out-Null
+    } catch {
+        Print-Verbose "Failed to download repository archive: $_"
+        return $false
+    }
+
+    Print-Verbose "Extracting repository archive..."
+    try {
+        New-Item -ItemType Directory -Path $script:ArchiveExtractDir -Force | Out-Null
+        Expand-Archive -Path $script:ArchiveFile -DestinationPath $script:ArchiveExtractDir -Force
+    } catch {
+        Print-Verbose "Failed to extract repository archive: $_"
+        return $false
+    }
+
+    $script:ArchiveRoot = Get-ChildItem -Path $script:ArchiveExtractDir -Directory | Select-Object -First 1 -ExpandProperty FullName
+    if (-not $script:ArchiveRoot) {
+        Print-Verbose "Could not locate extracted repository root"
+        return $false
+    }
+
+    $script:ArchivePrepared = $true
+    return $true
+}
+
+function Copy-FilesFromArchive {
+    param(
+        [string]$DestBase,
+        [string]$Prefix = ""
+    )
+
+    if (-not (Test-Path $DestBase)) {
+        New-Item -ItemType Directory -Path $DestBase -Force | Out-Null
+    }
+
+    if ($Prefix) {
+        $sourceDir = Join-Path $script:ArchiveRoot ($Prefix.TrimEnd('/'))
+        $destDir = Join-Path $DestBase ($Prefix.TrimEnd('/'))
+
+        if (-not (Test-Path $sourceDir)) {
+            return 0
+        }
+
+        $parentDir = Split-Path -Parent $destDir
+        if ($parentDir -and -not (Test-Path $parentDir)) {
+            New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+        }
+
+        Copy-Item -Path $sourceDir -Destination $destDir -Recurse -Force
+        if ($Prefix -like "scripts*") {
+            Remove-Item (Join-Path $destDir "base-install.sh") -Force -ErrorAction SilentlyContinue
+            Remove-Item (Join-Path $destDir "base-install.ps1") -Force -ErrorAction SilentlyContinue
+        }
+    } else {
+        Copy-Item -Path (Join-Path $script:ArchiveRoot '*') -Destination $DestBase -Recurse -Force
+        Remove-ExcludedFiles -Base $DestBase
+    }
+
+    return (Get-FilteredArchiveFileCount -Prefix $Prefix)
+}
+
+function Remove-ExcludedFiles {
+    param([string]$Base)
+
+    Remove-Item (Join-Path $Base "scripts\base-install.sh") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $Base "scripts\base-install.ps1") -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $Base ".github") -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $Base -Filter ".git*" -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $Base -Directory -Recurse -Filter "node_modules" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $Base -File -Recurse -Filter "*.log" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+function Get-FilteredArchiveFileCount {
+    param([string]$Prefix = "")
+
+    $fileCount = 0
+    foreach ($file in (Get-ChildItem -Path $script:ArchiveRoot -File -Recurse)) {
+        $relativePath = $file.FullName.Substring($script:ArchiveRoot.Length + 1) -replace '\\', '/'
+        if (Test-ShouldExclude -FilePath $relativePath) {
+            continue
+        }
+        if ($Prefix -and -not $relativePath.StartsWith($Prefix)) {
+            continue
+        }
+        $fileCount++
+    }
+
+    return $fileCount
+}
+
+function Install-RepoFilesIndividually {
+    param(
+        [string]$DestBase,
+        [string]$Prefix = ""
+    )
 
     Print-Verbose "Fetching repository file list..."
-    $allFiles = Get-AllRepoFiles
+    $allFiles = if ($Prefix) {
+        Get-AllRepoFiles | Where-Object { $_ -like "$Prefix*" }
+    } else {
+        Get-AllRepoFiles
+    }
 
     if ($allFiles.Count -eq 0) {
         return 0
@@ -187,24 +300,32 @@ function Install-AllRepoFiles {
     return $fileCount
 }
 
+function Install-AllRepoFiles {
+    param(
+        [string]$DestBase,
+        [string]$Prefix = ""
+    )
+
+    if (Ensure-RepoArchive) {
+        $fileCount = Copy-FilesFromArchive -DestBase $DestBase -Prefix $Prefix
+        if ($fileCount -gt 0) {
+            return $fileCount
+        }
+        Print-Verbose "Archive install produced no files, falling back to per-file download..."
+    } else {
+        Print-Verbose "Archive install unavailable, falling back to per-file download..."
+    }
+
+    return (Install-RepoFilesIndividually -DestBase $DestBase -Prefix $Prefix)
+}
+
 function Install-RepoFilesWithPrefix {
     param(
         [string]$DestBase,
         [string]$Prefix
     )
 
-    $fileCount = 0
-    $matchingFiles = Get-AllRepoFiles | Where-Object { $_ -like "$Prefix*" }
-
-    foreach ($filePath in $matchingFiles) {
-        $destFile = Join-Path $DestBase $filePath
-        if (Save-RepoFile -RelativePath $filePath -DestPath $destFile) {
-            $fileCount++
-            Print-Verbose "  Downloaded: $filePath"
-        }
-    }
-
-    return $fileCount
+    return (Install-AllRepoFiles -DestBase $DestBase -Prefix $Prefix)
 }
 
 # -----------------------------------------------------------------------------

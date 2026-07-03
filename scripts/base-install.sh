@@ -83,7 +83,16 @@ get_latest_version() {
 # Download Functions
 # -----------------------------------------------------------------------------
 
-# Download file from GitHub
+ARCHIVE_PREPARED=false
+ARCHIVE_ROOT=""
+ARCHIVE_FILE=""
+ARCHIVE_EXTRACT_DIR=""
+
+get_repo_path() {
+    echo "$REPO_URL" | sed 's|^https://github.com/||'
+}
+
+# Download file from GitHub (used for single-file updates and fallback)
 download_file() {
     local relative_path=$1
     local dest_path=$2
@@ -96,6 +105,105 @@ download_file() {
     else
         return 1
     fi
+}
+
+# Download and extract the full repository archive (single HTTP request)
+ensure_repo_archive() {
+    if [[ "$ARCHIVE_PREPARED" == "true" ]]; then
+        return 0
+    fi
+
+    if ! command -v tar &> /dev/null; then
+        print_verbose "tar not available for archive extraction"
+        return 1
+    fi
+
+    ARCHIVE_FILE="${TEMP_DIR}/repo-${REPO_BRANCH}.tar.gz"
+    ARCHIVE_EXTRACT_DIR="${TEMP_DIR}/extract"
+    local archive_url="${REPO_URL}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+
+    print_verbose "Downloading repository archive..."
+    if ! curl -sL --fail "$archive_url" -o "$ARCHIVE_FILE"; then
+        print_verbose "Failed to download repository archive"
+        return 1
+    fi
+
+    print_verbose "Extracting repository archive..."
+    mkdir -p "$ARCHIVE_EXTRACT_DIR"
+    if ! tar -xzf "$ARCHIVE_FILE" -C "$ARCHIVE_EXTRACT_DIR" 2>/dev/null; then
+        print_verbose "Failed to extract repository archive"
+        return 1
+    fi
+
+    ARCHIVE_ROOT=$(find "$ARCHIVE_EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
+    if [[ -z "$ARCHIVE_ROOT" || ! -d "$ARCHIVE_ROOT" ]]; then
+        print_verbose "Could not locate extracted repository root"
+        return 1
+    fi
+
+    ARCHIVE_PREPARED=true
+    return 0
+}
+
+# Remove excluded files after a bulk copy
+remove_excluded_files() {
+    local base=$1
+
+    rm -f "${base}/scripts/base-install.sh" "${base}/scripts/base-install.ps1" 2>/dev/null || true
+    rm -rf "${base}/.github" 2>/dev/null || true
+    find "$base" -maxdepth 1 -name '.git*' -exec rm -rf {} + 2>/dev/null || true
+    find "$base" -name 'node_modules' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$base" -name '*.log' -type f -delete 2>/dev/null || true
+}
+
+# Count non-excluded files in the extracted archive
+count_filtered_archive_files() {
+    local path_prefix=${1:-}
+    local file_count=0
+    local abs_path rel_path
+
+    while IFS= read -r -d '' abs_path; do
+        rel_path="${abs_path#"${ARCHIVE_ROOT}/"}"
+        [[ -z "$rel_path" ]] && continue
+        if should_exclude "$rel_path"; then
+            continue
+        fi
+        if [[ -n "$path_prefix" && "$rel_path" != "${path_prefix}"* ]]; then
+            continue
+        fi
+        ((file_count++)) || true
+    done < <(find "$ARCHIVE_ROOT" -type f -print0)
+
+    echo "$file_count"
+}
+
+# Copy files from extracted archive to destination, with optional path prefix
+copy_files_from_archive() {
+    local dest_base=$1
+    local path_prefix=${2:-}
+
+    mkdir -p "$dest_base"
+
+    if [[ -n "$path_prefix" ]]; then
+        local src_dir="${ARCHIVE_ROOT}/${path_prefix%/}"
+        local dest_dir="${dest_base}/${path_prefix%/}"
+
+        if [[ ! -d "$src_dir" ]]; then
+            echo "0"
+            return 0
+        fi
+
+        mkdir -p "$(dirname "$dest_dir")"
+        cp -R "$src_dir" "$dest_dir"
+        if [[ "$path_prefix" == scripts/* || "$path_prefix" == "scripts/" ]]; then
+            rm -f "${dest_dir}/base-install.sh" "${dest_dir}/base-install.ps1" 2>/dev/null || true
+        fi
+    else
+        cp -R "${ARCHIVE_ROOT}"/* "$dest_base/"
+        remove_excluded_files "$dest_base"
+    fi
+
+    count_filtered_archive_files "$path_prefix"
 }
 
 # Define exclusion patterns
@@ -224,28 +332,30 @@ get_all_repo_files() {
     done
 }
 
-# Download all files from the repository
-download_all_files() {
+# Download files individually (fallback when archive install is unavailable)
+download_files_individually() {
     local dest_base=$1
+    local path_prefix=${2:-}
     local file_count=0
+    local all_files file_path dest_file dir_path
 
     print_verbose "Fetching repository file list..."
 
-    # Get list of all files (excluding our exclusion list)
-    local all_files=$(get_all_repo_files)
+    if [[ -n "$path_prefix" ]]; then
+        all_files=$(get_all_repo_files | grep "^${path_prefix}" || true)
+    else
+        all_files=$(get_all_repo_files)
+    fi
 
     if [[ -z "$all_files" ]]; then
-        echo "0"  # Return 0 to indicate no files downloaded
+        echo "0"
         return 1
     fi
 
-    # Download each file
     while IFS= read -r file_path; do
         if [[ -n "$file_path" ]]; then
-            local dest_file="${dest_base}/${file_path}"
-
-            # Create directory if needed
-            local dir_path=$(dirname "$dest_file")
+            dest_file="${dest_base}/${file_path}"
+            dir_path=$(dirname "$dest_file")
             [[ -d "$dir_path" ]] || mkdir -p "$dir_path"
 
             if download_file "$file_path" "$dest_file"; then
@@ -258,6 +368,30 @@ download_all_files() {
     done <<< "$all_files"
 
     echo "$file_count"
+}
+
+# Download all files from the repository (archive-first, per-file fallback)
+download_all_files() {
+    local dest_base=$1
+    local path_prefix=${2:-}
+    local file_count=0
+
+    if ensure_repo_archive; then
+        file_count=$(copy_files_from_archive "$dest_base" "$path_prefix")
+        if [[ "$file_count" -gt 0 ]]; then
+            echo "$file_count"
+            return 0
+        fi
+        print_verbose "Archive install produced no files, falling back to per-file download..."
+    else
+        print_verbose "Archive install unavailable, falling back to per-file download..."
+    fi
+
+    file_count=$(download_files_individually "$dest_base" "$path_prefix")
+    local download_status=$?
+
+    echo "$file_count"
+    return $download_status
 }
 
 # -----------------------------------------------------------------------------
@@ -456,43 +590,16 @@ full_update() {
     # Update agent-qa files
     print_status "Updating agent-qa files..."
     rm -rf "$BASE_DIR/agent-qa"
-    local file_count=0
-    local all_files=$(get_all_repo_files | grep "^agent-qa/")
-    if [[ -n "$all_files" ]]; then
-        while IFS= read -r file_path; do
-            if [[ -n "$file_path" ]]; then
-                local dest_file="${BASE_DIR}/${file_path}"
-                local dir_path=$(dirname "$dest_file")
-                [[ -d "$dir_path" ]] || mkdir -p "$dir_path"
-                if download_file "$file_path" "$dest_file"; then
-                    ((file_count++)) || true
-                    print_verbose "  Downloaded: ${file_path}"
-                fi
-            fi
-        done <<< "$all_files"
-    fi
+    local file_count
+    file_count=$(download_all_files "$BASE_DIR" "agent-qa/")
     echo "✓ Updated agent-qa files ($file_count files)"
     echo ""
 
     # Update scripts
     print_status "Updating scripts..."
     rm -rf "$BASE_DIR/scripts"
-    file_count=0
-    all_files=$(get_all_repo_files | grep "^scripts/")
-    if [[ -n "$all_files" ]]; then
-        while IFS= read -r file_path; do
-            if [[ -n "$file_path" ]]; then
-                local dest_file="${BASE_DIR}/${file_path}"
-                local dir_path=$(dirname "$dest_file")
-                [[ -d "$dir_path" ]] || mkdir -p "$dir_path"
-                if download_file "$file_path" "$dest_file"; then
-                    ((file_count++)) || true
-                    print_verbose "  Downloaded: ${file_path}"
-                fi
-            fi
-        done <<< "$all_files"
-        chmod +x "$BASE_DIR/scripts/"*.sh 2>/dev/null || true
-    fi
+    file_count=$(download_all_files "$BASE_DIR" "scripts/")
+    chmod +x "$BASE_DIR/scripts/"*.sh 2>/dev/null || true
     echo "✓ Updated scripts ($file_count files)"
     echo ""
 
@@ -531,29 +638,9 @@ overwrite_scripts() {
     # Remove existing scripts
     rm -rf "$BASE_DIR/scripts"
 
-    # Download only script files
-    local file_count=0
-
-    # Get all files and filter for scripts/
-    local all_files=$(get_all_repo_files | grep "^scripts/")
-
-    if [[ -n "$all_files" ]]; then
-        while IFS= read -r file_path; do
-            if [[ -n "$file_path" ]]; then
-                local dest_file="${BASE_DIR}/${file_path}"
-                local dir_path=$(dirname "$dest_file")
-                [[ -d "$dir_path" ]] || mkdir -p "$dir_path"
-
-                if download_file "$file_path" "$dest_file"; then
-                    ((file_count++)) || true
-                    print_verbose "  Downloaded: ${file_path}"
-                fi
-            fi
-        done <<< "$all_files"
-
-        # Make scripts executable
-        chmod +x "$BASE_DIR/scripts/"*.sh 2>/dev/null || true
-    fi
+    local file_count
+    file_count=$(download_all_files "$BASE_DIR" "scripts/")
+    chmod +x "$BASE_DIR/scripts/"*.sh 2>/dev/null || true
 
     echo "✓ Updated scripts ($file_count files)"
     echo ""
