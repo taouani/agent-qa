@@ -46,7 +46,7 @@ Agent-QA automates the entire QA documentation workflow by:
 | **Cursor** | Rules + Claude slash commands | `.cursor/`, `.claude/commands/` |
 | **VS Code** | Settings, tasks, extensions + Copilot | `.vscode/`, `.github/` |
 | **GitHub Copilot** | File references with copilot-instructions | `.github/` |
-| **Other IDEs** | Direct file reference | — |
+| **Other IDEs** | Direct file reference — see [USER_GUIDE.md](USER_GUIDE.md) | — |
 
 ## Quick Start
 
@@ -131,7 +131,17 @@ Commands are recognized automatically. Type `/` followed by the command name:
 ```
 
 **VS Code / GitHub Copilot:**
-Reference the command files directly. See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for details.
+
+Reference command files directly in Copilot chat:
+
+```
+@agent-qa/commands/analyze-requirements/analyze-requirements.md
+Please analyze requirements for Jira ticket PROJ-123 following the instructions in this file.
+```
+
+Or use the command files as workflow documentation and ask Copilot to execute the described phases.
+
+**Other IDEs:** Read or reference markdown files in `agent-qa/commands/` directly. See [USER_GUIDE.md](USER_GUIDE.md) for details.
 
 ### Basic Workflow
 
@@ -197,8 +207,7 @@ Where `{folder-name}` is:
 ## Documentation
 
 - **[Installation Guide](INSTALLATION.md)** - Detailed installation and configuration instructions
-- **[User Guide](USER_GUIDE.md)** - Comprehensive guide with examples and best practices
-- **[Commands Reference](agent-qa/commands/README.md)** - Complete command documentation
+- **[User Guide](USER_GUIDE.md)** - Command reference, IDE usage, workflows, quality standards, and troubleshooting
 
 ## Architecture
 

@@ -5,13 +5,16 @@ Comprehensive guide to using Agent-QA for quality assurance automation.
 ## Table of Contents
 
 1. [Getting Started](#getting-started)
-2. [Core Commands](#core-commands)
-3. [New Commands](#new-commands)
-4. [Workflow Examples](#workflow-examples)
-5. [Output Structure](#output-structure)
-6. [Best Practices](#best-practices)
-7. [Advanced Usage](#advanced-usage)
-8. [Troubleshooting](#troubleshooting)
+2. [Command Structure](#command-structure)
+3. [Core Commands](#core-commands)
+4. [New Commands](#new-commands)
+5. [Utility & Pipeline Commands](#utility--pipeline-commands)
+6. [Workflow Examples](#workflow-examples)
+7. [Output Structure](#output-structure)
+8. [Quality Standards](#quality-standards)
+9. [Best Practices](#best-practices)
+10. [Advanced Usage](#advanced-usage)
+11. [Troubleshooting](#troubleshooting)
 
 ## Getting Started
 
@@ -26,28 +29,83 @@ Before using Agent-QA, ensure:
 
 **Windows users:** Use `project-install.ps1` in PowerShell (same structure as `project-install.sh`). See [INSTALLATION.md](INSTALLATION.md).
 
+### Command Location
+
+All Agent-QA commands live in `agent-qa/commands/`. Each command has an entry point file, for example:
+
+- `agent-qa/commands/analyze-requirements/analyze-requirements.md`
+- `agent-qa/commands/generate-test-cases/generate-test-cases.md`
+- `agent-qa/commands/generate-gherkin/generate-gherkin.md`
+
 ### IDE-Specific Setup
 
-**Claude Code:**
-- Commands installed to `.claude/commands/agent-qa/` during installation
-- Rules loaded from `.claude/rules/` (QA conventions, MCP usage, output standards, language handling)
-- Subagents available from `.claude/agents/agent-qa/` (requirements analyst, test case generator, etc.)
-- Hooks configured in `.claude/hooks.json` (config validation, output logging)
-- Type `/analyze-requirements` in the chat to use commands
+#### Claude Code
 
-**Cursor IDE:**
-- Commands installed to `.claude/commands/agent-qa/` during installation
-- Rules loaded from `.cursor/rules/` (QA conventions, usage guide)
-- Type `/analyze-requirements` in the chat to use commands
+Commands are automatically recognized as slash commands.
 
-**VS Code / GitHub Copilot:**
-- Instructions loaded from `.github/copilot-instructions.md`
-- Reference command files with `@agent-qa/commands/analyze-requirements/analyze-requirements.md`
-- Ask Copilot to follow the instructions in the referenced file
+**What gets installed:**
+- `.claude/commands/agent-qa/` — Slash command entry points
+- `.claude/rules/` — QA conventions, MCP usage, output standards, language handling
+- `.claude/agents/agent-qa/` — Specialized subagents (requirements analyst, test case generator, etc.)
+- `.claude/hooks.json` — Pre/post command hooks (config validation, output logging)
 
-**Other IDEs:**
-- Commands can be used by referencing the markdown files directly
-- See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for detailed instructions
+**Usage:**
+```
+/analyze-requirements PROJ-123
+/generate-test-cases
+/generate-gherkin
+/generate-playwright-tests
+/publish-to-confluence
+```
+
+**Manual setup (if needed):**
+```bash
+mkdir -p .claude/commands/agent-qa
+cp agent-qa/commands/*/*.md .claude/commands/agent-qa/
+```
+
+#### Cursor IDE
+
+Commands are recognized as slash commands (same entry points as Claude Code).
+
+**What gets installed:**
+- `.claude/commands/agent-qa/` — Slash command entry points
+- `.cursor/rules/` — QA conventions and usage guide adapted for Cursor
+
+**Usage:**
+```
+/analyze-requirements PROJ-123
+/generate-test-cases
+```
+
+#### VS Code with GitHub Copilot
+
+Instructions are loaded from `.github/copilot-instructions.md`.
+
+**Option 1: Direct file reference**
+```
+@agent-qa/commands/analyze-requirements/analyze-requirements.md
+Please help me analyze requirements for Jira ticket PROJ-123 following the instructions in this file.
+```
+
+**Option 2: Use as documentation**
+- Reference the command files as workflow documentation
+- Ask Copilot to help you execute the workflow described in the command file
+
+#### Other IDEs / AI Assistants
+
+1. **Read the command file** directly:
+   ```bash
+   cat agent-qa/commands/analyze-requirements/analyze-requirements.md
+   ```
+
+2. **Reference the file** in your AI assistant:
+   - Provide the path: `agent-qa/commands/analyze-requirements/analyze-requirements.md`
+   - Ask the assistant to follow the instructions in the file
+
+3. **Follow the phase structure** — each command file contains phase-by-phase instructions to execute sequentially
+
+The `.claude/commands/` and `.claude/rules/` directories are optional and IDE-specific. Commands work in any IDE by reading the markdown files directly.
 
 ### Your First Command
 
@@ -71,6 +129,48 @@ This will:
 5. Generate requirement markdown files
 
 Output will be in: `agent-qa/YYYY-MM-DD-PROJ-123/requirements/`
+
+## Command Structure
+
+Each command follows the multi-phase pattern:
+
+```
+agent-qa/commands/{command-name}/
+  {command-name}.md          # Main command file (entry point)
+  1-phase-name.md            # Phase 1 instructions
+  2-phase-name.md            # Phase 2 instructions
+  ...
+```
+
+The main command file references phase files using:
+```
+{{PHASE X: @agent-qa/commands/{command-name}/{phase-file}.md}}
+```
+
+### Command Dependency Chain
+
+```
+analyze-requirements ──┬── generate-test-cases ──┬── generate-gherkin
+                       │                         ├── generate-playwright-tests
+                       │                         ├── generate-api-tests
+                       │                         └── generate-accessibility-tests
+                       ├── generate-test-charter
+                       ├── generate-test-strategy
+                       ├── generate-test-plan
+                       ├── generate-risk-register
+                       ├── generate-test-data
+                       └── publish-to-confluence (any deliverable)
+
+analyze-commits ─── generate-release-notes ─── publish-to-confluence
+```
+
+### Workflow
+
+1. **First**: Run `analyze-requirements` with Jira issue(s) or a JQL filter
+2. **Then**: Run any generate command, selecting the requirements analysis to use
+3. **Optional**: Generate commands automatically include outputs from previous commands as context
+
+Commands are independent after `analyze-requirements` and can be run in any order. Each generate command prompts you to select which analysis folder to use. Custom format templates can be placed in `agent-qa/custom-templates/` to override defaults.
 
 ## Core Commands
 
@@ -410,6 +510,131 @@ Converts deliverables to Confluence format and optionally publishes.
 - `.confluence.html` files alongside original markdown
 - Publication report with status and URLs
 
+## Utility & Pipeline Commands
+
+### 12. health-check
+
+Verifies Agent-QA configuration, directory structure, and MCP server connectivity.
+
+**Syntax:** `/health-check`
+
+**Input:** None  
+**Output:** Health check report (displayed to user, no files generated)  
+**Dependencies:** None
+
+**Phases:**
+1. Validate configuration (`config.yml`, directories, IDE integrations)
+2. Test MCP connectivity (Atlassian, Repository)
+
+### 13. validate-outputs
+
+Validates generated deliverables against QA conventions and output standards.
+
+**Syntax:** `/validate-outputs`
+
+**Input:** User selection of output folder  
+**Output:** Validation report (displayed to user, no files generated)  
+**Dependencies:** Requires at least one output folder to exist
+
+**Phases:**
+1. Find and select output folder
+2. Validate deliverables (YAML front matter, file naming, test case IDs, CSV format, cross-deliverable consistency)
+3. Generate validation report
+
+### 14. generate-traceability-report
+
+Generates a cross-deliverable coverage matrix showing requirements through all deliverables.
+
+**Syntax:** `/generate-traceability-report`
+
+**Input:** User selection of output folder  
+**Output:** `agent-qa/YYYY-MM-DD-{folder-name}/traceability-report.md`  
+**Dependencies:** Requires `analyze-requirements` to be run first
+
+**Phases:**
+1. Find and select output folder
+2. Build traceability matrix (requirements → test cases → gherkin → playwright)
+3. Generate report files with gap analysis
+
+### 15. generate-test-data
+
+Generates structured test data specifications (valid, invalid, boundary, null, security).
+
+**Syntax:** `/generate-test-data`
+
+**Input:** User selection of requirements analysis folder  
+**Output:** `agent-qa/YYYY-MM-DD-{folder-name}/test-data/`  
+**Dependencies:** Requires `analyze-requirements`. Optionally uses `generate-test-cases` output.
+
+**Phases:**
+1. Find and select requirements
+2. Analyze data requirements (fields, types, constraints)
+3. Generate data sets (valid, invalid, boundary, null/empty, security)
+4. Generate test data files
+
+### 16. run-pipeline
+
+Executes multiple commands in dependency order as a single pipeline.
+
+**Syntax:** `/run-pipeline`
+
+**Input:** Pipeline specification (predefined pipeline, range, or command list)  
+**Output:** All deliverables from each command in the pipeline  
+**Dependencies:** None (first command must be a root command)
+
+**Phases:**
+1. Parse pipeline configuration and resolve command order
+2. Execute commands sequentially with auto-context passing
+3. Generate pipeline summary
+
+### 17. generate-api-tests
+
+Generates REST/GraphQL API test specifications from analyzed test cases.
+
+**Syntax:** `/generate-api-tests`
+
+**Input:** User selection of test cases folder  
+**Output:** API test spec files in `agent-qa/YYYY-MM-DD-{context}/api-tests/`  
+**Dependencies:** Requires `generate-test-cases` to be run first
+
+**Phases:**
+1. Find and select test cases with API interactions
+2. Analyze API endpoints from test cases and requirements
+3. Generate API test specifications (positive, negative, auth, edge cases)
+4. Generate API test files and index
+
+### 18. generate-accessibility-tests
+
+Generates WCAG 2.1 AA accessibility test cases from UI-facing test cases.
+
+**Syntax:** `/generate-accessibility-tests`
+
+**Input:** User selection of test cases folder  
+**Output:** Accessibility test files in `agent-qa/YYYY-MM-DD-{context}/accessibility-tests/`  
+**Dependencies:** Requires `generate-test-cases` to be run first
+
+**Phases:**
+1. Find and select UI-facing test cases
+2. Analyze accessibility requirements and map to WCAG criteria
+3. Generate accessibility test cases per criterion per page
+4. Generate accessibility test files, WCAG compliance matrix, and index
+
+### 19. regenerate
+
+Detects requirement changes and regenerates only affected deliverables.
+
+**Syntax:** `/regenerate`
+
+**Input:** User selection of existing output folder  
+**Output:** Updated deliverables in the same output folder, plus a change log  
+**Dependencies:** Requires an existing output folder with generated deliverables
+
+**Phases:**
+1. Detect changes by comparing Jira issue timestamps against deliverable timestamps
+2. Identify affected deliverables and map change impact
+3. Back up and regenerate affected deliverables only
+4. Generate change report and update indexes
+
 ## Workflow Examples
 
 ### Example 1: Single Feature Analysis
@@ -563,6 +788,80 @@ agent-qa/
       README.md                 # Setup instructions
 ```
 
+## Quality Standards
+
+Agent-QA commands follow senior QA architect best practices to produce professional, audit-compliant deliverables.
+
+### General Principles
+
+- **Accuracy threshold**: Ask for clarification when confidence is below 95%
+- **Think before acting**: Challenge assumptions and suggest improvements
+- **When in doubt, ask**: Do not guess — request clarification
+- **Risk-based testing**: Prioritize by business impact and risk
+- **Traceability**: Complete mapping between requirements and all deliverables
+
+### analyze-requirements
+
+- Automatic language detection and matching
+- Comprehensive requirement structure with quality analysis scoring
+- Enhanced error handling for MCP and data retrieval failures
+
+### generate-test-cases
+
+- **YAML front matter**: Complete metadata (id, summary, priority, tags, etc.)
+- **Test case structure**: Prerequisites, test data tables, detailed steps, expected results
+- **Priority assignment**: P1–P4 based on keyword analysis (security, payment, critical)
+- **Test case ID format**: `TC-{REQUIREMENT-KEY}-{NNN}`
+- **Xray CSV format**: Column headers `Test Key,Summary,Test Type,Priority,Labels,Preconditions,Steps,Expected Result,Requirement Keys,Folder Path`
+- **Pipe-separated steps**: `Number|Action|Data|Expected Result`
+- **Language detection**: Artifacts generated in the same language as requirements (70% confidence threshold)
+- **Quality validation**: Clarity, completeness, traceability, maintainability checks
+- **Regression recommendations**: Risk-based regression suite recommendations
+
+### generate-test-charter
+
+- Mission/goal, scope, areas to explore, test approach, risks, resources, time estimates
+- Session-based testing (90-minute sessions with debriefing)
+- Exploratory testing heuristics: SFDIPOT, CRUSSPIC STMPL, Touring heuristics
+- Independent risk identification from requirements
+
+### generate-test-strategy
+
+- Test levels (Integration, System, UAT) with entry/exit criteria
+- Test types: Functional, Security, Performance, Usability, Compatibility, Regression
+- Test design techniques: Equivalence Partitioning, Boundary Value Analysis, Decision Tables, State Transition
+- Playwright automation approach with Page Object Model
+- Coverage, defect, execution, and progress metrics
+
+### generate-test-plan
+
+- Executive summary, test objectives, scope definition
+- Test strategy integration with file linking
+- Environment requirements, schedules, milestones
+- Entry/exit criteria, deliverables list, risk management, approval process
+
+### generate-risk-register
+
+- Multi-source risk identification (requirements, strategies, charters, test cases)
+- Risk categories: Technical, Requirements, Process, Resource, Schedule, Quality, Business
+- Scoring scales: Probability 1–5, Impact 1–5, Risk Score = Probability × Impact (1–25)
+- Mitigation strategies and contingency plans for high-risk items (Risk Score ≥ 15)
+- Ownership suggestions and requirement traceability
+
+### Language Detection
+
+- Detect language from Jira fields or heuristic analysis
+- Generate all artifacts in the same language as requirements
+- Support multilingual requirements (per-requirement language)
+- Confidence threshold (70%) with user confirmation when uncertain
+
+### Xray Integration
+
+- Exact CSV column headers for Xray import
+- Pipe-separated step format
+- Preconditions separated from description
+- Proper CSV escaping and formatting
+
 ## Best Practices
 
 ### 1. Start with Requirements Analysis
@@ -676,18 +975,32 @@ Test cases are automatically exported to CSV format compatible with Jira Xray:
 
 **Issue**: Command not recognized in Claude Code/Cursor
 
-**Solution**: 
-- Verify Agent-QA is installed: `ls agent-qa/commands` (or `Get-ChildItem agent-qa\commands` on Windows)
-- Check if `.claude/commands/agent-qa/` exists: `ls .claude/commands/agent-qa/`
-- If missing, re-run project installation:
-  - Bash: `~/agent-qa/scripts/project-install.sh`
-  - PowerShell: `& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"`
-- Or manually copy command files (see [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md))
+**Solution**:
+1. Verify Agent-QA is installed: `ls agent-qa/commands` (or `Get-ChildItem agent-qa\commands` on Windows)
+2. Check if `.claude/commands/agent-qa/` exists: `ls .claude/commands/agent-qa/`
+3. Re-run project installation:
+   - Bash: `~/agent-qa/scripts/project-install.sh`
+   - PowerShell: `& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"`
+4. Or manually copy command files:
+   ```bash
+   mkdir -p .claude/commands/agent-qa
+   cp agent-qa/commands/analyze-requirements/analyze-requirements.md .claude/commands/agent-qa/analyze-requirements.md
+   cp agent-qa/commands/generate-test-cases/generate-test-cases.md .claude/commands/agent-qa/generate-test-cases.md
+   # ... repeat for other commands
+   ```
 
 **For VS Code / Other IDEs:**
-- Commands don't need to be in `.claude/commands/`
+- Commands do not need to be in `.claude/commands/`
 - Reference command files directly: `@agent-qa/commands/analyze-requirements/analyze-requirements.md`
-- See [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md) for IDE-specific instructions
+- Read the markdown files and follow phase-by-phase instructions
+
+### Rules Not Loading (Claude Code)
+
+**Issue**: QA rules or conventions not applied
+
+**Solution**:
+1. Check if `.claude/rules/` exists: `ls .claude/rules/`
+2. Re-run project installation to copy rules files
 
 ### MCP Server Errors
 
@@ -773,9 +1086,8 @@ Epics are automatically processed with child stories:
 
 ## Next Steps
 
-- Explore [Commands Reference](agent-qa/commands/README.md) for detailed command documentation
-- Check [IMPROVEMENTS.md](agent-qa/commands/IMPROVEMENTS.md) for latest enhancements
-- Review generated outputs to understand structure
+- Review [INSTALLATION.md](INSTALLATION.md) if you need to reconfigure or update Agent-QA
+- Run `/health-check` to verify your setup
 - Customize workflows for your team's needs
 
 ---

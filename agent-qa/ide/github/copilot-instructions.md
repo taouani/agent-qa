@@ -59,4 +59,4 @@ Commands require MCP servers configured in your IDE:
 
 Project-level config: `agent-qa/config.yml`
 
-For detailed usage, see `agent-qa/commands/HOW_TO_USE.md`.
+For detailed usage, see [USER_GUIDE.md](USER_GUIDE.md).

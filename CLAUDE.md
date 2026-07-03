@@ -122,7 +122,7 @@ IDE-specific templates live in `agent-qa/ide/` and are copied to project root du
 | Cursor | Rules + Claude slash commands | `agent-qa/ide/cursor/` | `.cursor/`, `.claude/commands/` |
 | VS Code | Settings + tasks + extensions + Copilot | `agent-qa/ide/vscode/` | `.vscode/`, `.github/` |
 | GitHub Copilot | File references via `@agent-qa/commands/...` | `agent-qa/ide/github/` | `.github/` |
-| Other IDEs | Direct file reference | — | `agent-qa/commands/HOW_TO_USE.md` |
+| Other IDEs | Direct file reference | — | [USER_GUIDE.md](USER_GUIDE.md) |
 
 ### MCP Server Dependencies
 

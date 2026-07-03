@@ -71,5 +71,5 @@ Project config is at `agent-qa/config.yml`. Template at `agent-qa/config.yml.tem
 ## File References
 
 For detailed command documentation, see:
-- `agent-qa/commands/HOW_TO_USE.md` — IDE-specific usage instructions
-- `agent-qa/commands/README.md` — Full command reference
+- [USER_GUIDE.md](USER_GUIDE.md) — Command reference, IDE usage, workflows, and quality standards
+- [INSTALLATION.md](INSTALLATION.md) — Installation and configuration

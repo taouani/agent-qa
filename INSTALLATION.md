@@ -523,6 +523,48 @@ ls agent-qa/commands
 
 If missing, run project installation.
 
+#### Commands not recognized in Claude Code/Cursor
+
+1. **Check if `.claude/commands/agent-qa/` exists:**
+   ```bash
+   ls -la .claude/commands/agent-qa/
+   ```
+
+2. **Re-run project installation:**
+   ```bash
+   ~/agent-qa/scripts/project-install.sh
+   ```
+   Or on Windows (PowerShell):
+   ```powershell
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"
+   ```
+
+3. **Manually copy command files:**
+   ```bash
+   mkdir -p .claude/commands/agent-qa
+   cp agent-qa/commands/analyze-requirements/analyze-requirements.md .claude/commands/agent-qa/analyze-requirements.md
+   cp agent-qa/commands/generate-test-cases/generate-test-cases.md .claude/commands/agent-qa/generate-test-cases.md
+   # ... repeat for other commands
+   ```
+
+#### Rules not loading in Claude Code
+
+1. **Check if `.claude/rules/` exists:**
+   ```bash
+   ls -la .claude/rules/
+   ```
+
+2. **Re-run project installation** to copy rules files.
+
+#### Using commands in VS Code / other IDEs
+
+Commands work in any IDE without `.claude/commands/`:
+- Read the markdown files in `agent-qa/commands/` directly
+- Reference command files in your AI assistant (e.g., `@agent-qa/commands/analyze-requirements/analyze-requirements.md`)
+- Follow the phase-by-phase instructions in each command file
+
+See [USER_GUIDE.md](USER_GUIDE.md) for IDE-specific usage details.
+
 #### "MCP tool not available"
 
 **Solution**: 
@@ -544,8 +586,7 @@ After installation:
 ## Support
 
 For additional help:
-- Check the [User Guide](USER_GUIDE.md)
-- Review [Commands Reference](agent-qa/commands/README.md)
+- Check the [User Guide](USER_GUIDE.md) for command reference, IDE usage, and quality standards
 - Open an issue on GitHub
 
 ---
