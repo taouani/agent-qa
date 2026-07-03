@@ -144,12 +144,18 @@ Context is the Jira issue key (single ticket) or `release` (JQL filter / multipl
 ## Installation Scripts
 
 Located in `scripts/`:
-- `base-install.sh` — Downloads Agent-QA to `~/agent-qa` (one-time per machine)
-- `project-install.sh` — Per-project setup with `--ide` flag to select IDEs (default: all). Copies core files + IDE-specific integrations
-- `install-from-local.sh` — Alternative to base-install using local repository
-- `project-update.sh` — Updates existing project configuration
-- `project-uninstall.sh` — Removes Agent-QA from a project
-- `common-functions.sh` — Shared bash utilities (color output, validation, config management)
+
+| Script | Platform | Purpose |
+|--------|----------|---------|
+| `base-install.sh` | Bash | Downloads Agent-QA to `~/agent-qa` (archive-based, fast) |
+| `base-install.ps1` | PowerShell | Windows-native base install to `%USERPROFILE%\agent-qa` |
+| `project-install.sh` | Bash | Per-project setup with `--ide` flag (default: all IDEs) |
+| `project-install.ps1` | PowerShell | Per-project setup with `-Ide` flag (default: all IDEs) |
+| `install-from-local.sh` | Bash | Alternative to base-install using local repository |
+| `project-update.sh` | Bash | Updates existing project installation |
+| `project-uninstall.sh` | Bash | Removes Agent-QA from a project |
+| `common-functions.sh` | Bash | Shared bash utilities |
+| `common-functions.ps1` | PowerShell | Shared PowerShell utilities |
 
 ### IDE Selection (project-install.sh)
 
@@ -161,6 +167,16 @@ Located in `scripts/`:
 ./scripts/project-install.sh --ide claude
 ./scripts/project-install.sh --ide claude,cursor
 ./scripts/project-install.sh --ide vscode
+```
+
+### Windows Quick Install
+
+```powershell
+# Base install (one-time)
+irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
+
+# Project install (from your project directory)
+& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"
 ```
 
 ## Configuration

@@ -24,6 +24,8 @@ Before using Agent-QA, ensure:
 3. ✅ You have access to Jira tickets and git repositories
 4. ✅ Your `agent-qa/config.yml` is configured correctly
 
+**Windows users:** Use `project-install.ps1` in PowerShell (same structure as `project-install.sh`). See [INSTALLATION.md](INSTALLATION.md).
+
 ### IDE-Specific Setup
 
 **Claude Code:**
@@ -675,9 +677,11 @@ Test cases are automatically exported to CSV format compatible with Jira Xray:
 **Issue**: Command not recognized in Claude Code/Cursor
 
 **Solution**: 
-- Verify Agent-QA is installed: `ls agent-qa/commands`
+- Verify Agent-QA is installed: `ls agent-qa/commands` (or `Get-ChildItem agent-qa\commands` on Windows)
 - Check if `.claude/commands/agent-qa/` exists: `ls .claude/commands/agent-qa/`
-- If missing, re-run project installation: `~/agent-qa/scripts/project-install.sh`
+- If missing, re-run project installation:
+  - Bash: `~/agent-qa/scripts/project-install.sh`
+  - PowerShell: `& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"`
 - Or manually copy command files (see [HOW_TO_USE.md](agent-qa/commands/HOW_TO_USE.md))
 
 **For VS Code / Other IDEs:**

@@ -563,7 +563,7 @@ function Start-FreshInstallation {
     Write-Host ""
     Print-Color -Color $script:GREEN -Message "2) Install Agent QA in your project by running:"
     Print-Color -Color $script:YELLOW -Message "   $($script:BaseDir)\scripts\project-install.sh"
-    Write-Host "   (Use Git Bash or WSL for project-install.sh, or install.ps1 for PowerShell project setup)"
+    Print-Color -Color $script:YELLOW -Message "   $([IO.Path]::Combine($script:BaseDir, 'scripts', 'project-install.ps1'))"
     Write-Host ""
 }
 

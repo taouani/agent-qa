@@ -17,8 +17,9 @@ Before installing Agent-QA, ensure you have:
 
 ### Required
 
-- **Bash** (macOS/Linux) or **PowerShell** (Windows)
-- **curl** command-line tool
+- **Bash** (macOS/Linux, or Git Bash on Windows) or **PowerShell 5.1+** (Windows)
+- **curl** command-line tool (bash installers) or **PowerShell** with network access (Windows installers)
+- **tar** (optional on Windows; used by `base-install.sh` for fast archive extraction in Git Bash)
 - **Access to your IDE** with MCP server support
 - **MCP Servers configured**:
   - Atlassian MCP server (for Jira and Confluence)
@@ -38,18 +39,25 @@ The base installation downloads Agent-QA to your home directory (`~/agent-qa`). 
 
 **Note**: This requires the repository to be available on GitHub. If you get a 404 error, the repository is not yet on GitHub - use Option 2 instead.
 
-#### macOS/Linux
+#### macOS/Linux / Git Bash (Windows)
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
 ```
 
-#### Windows (PowerShell)
+#### Windows (PowerShell) — Recommended
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh" -OutFile "$env:TEMP\base-install.sh"
-# Note: You may need to use WSL or Git Bash for bash scripts
+irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
 ```
+
+Or run locally after download:
+
+```powershell
+& "$env:USERPROFILE\agent-qa\scripts\base-install.ps1"
+```
+
+**Note**: On Windows, prefer `base-install.ps1` in PowerShell. Use `base-install.sh` in Git Bash or WSL if you prefer bash scripts.
 
 ### Option 2: Install from Local Repository (Use this if GitHub installation fails)
 
@@ -71,8 +79,9 @@ This will copy Agent-QA files from your local repository to `~/agent-qa`.
 
 ### What Happens During Base Installation
 
-1. **Downloads Agent-QA** from GitHub to `~/agent-qa`
-2. **Creates directory structure**:
+1. **Downloads Agent-QA** from GitHub to `~/agent-qa` (or `%USERPROFILE%\agent-qa` on Windows)
+2. **Uses a single repository archive** for fast installation (instead of downloading each file individually)
+3. **Creates directory structure**:
    ```
    ~/agent-qa/
      agent-qa/
@@ -81,7 +90,7 @@ This will copy Agent-QA files from your local repository to `~/agent-qa`.
        standards/       # Quality standards
        framework/       # Framework utilities
        config.yml.template
-     scripts/           # Installation scripts
+     scripts/           # Installation scripts (base-install, project-install, etc.)
    ```
 
 3. **Handles existing installations**:
@@ -93,8 +102,14 @@ This will copy Agent-QA files from your local repository to `~/agent-qa`.
 
 After base installation, verify it worked:
 
+**macOS/Linux / Git Bash:**
 ```bash
 ls ~/agent-qa/agent-qa/commands
+```
+
+**Windows (PowerShell):**
+```powershell
+Get-ChildItem "$env:USERPROFILE\agent-qa\agent-qa\commands"
 ```
 
 You should see command directories like `analyze-requirements`, `generate-test-cases`, etc.
@@ -113,8 +128,23 @@ cd /path/to/your/project
 
 ### Step 2: Run Project Installation
 
+**macOS/Linux / Git Bash** (full IDE selection support):
+
 ```bash
 ~/agent-qa/scripts/project-install.sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+cd C:\path\to\your\project
+& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"
+```
+
+Optional IDE selection (default installs all IDEs):
+
+```powershell
+& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" -Ide claude,cursor
 ```
 
 ### Step 3: Follow the Prompts
@@ -323,15 +353,17 @@ To update configuration, you can:
 
 ### Update Base Installation
 
-To update the base installation:
+To update the base installation, re-run the base install script. It detects existing installations and prompts for an update option.
 
+**macOS/Linux / Git Bash:**
 ```bash
-cd ~/agent-qa
-git pull  # If installed via git
-# OR re-run base-install.sh for updates
+curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
 ```
 
-Or re-run the base installation script - it will detect existing installation and prompt for update.
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
+```
 
 ### Update Project Installation
 
@@ -411,17 +443,39 @@ If using local installation and you get this error:
 chmod +x ~/agent-qa/scripts/*.sh
 ```
 
+#### "No files were downloaded" (Git Bash on Windows)
+
+**Cause**: Usually a JSON parsing or Python stub issue when falling back to per-file downloads.
+
+**Solution**:
+1. Prefer PowerShell: `irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex`
+2. Or install real Python/`jq` in Git Bash so archive fallback is not needed
+3. Or use local installation: `./scripts/install-from-local.sh`
+
 #### "Failed to download common-functions.sh"
 
 **Solution**: Check your internet connection and GitHub access. The script downloads files from GitHub. If the repository is not on GitHub, use local installation instead.
+
+#### PowerShell: "Print-Section is not recognized" or script parse errors
+
+**Cause**: Outdated `common-functions.ps1` or `base-install.ps1` from an earlier install.
+
+**Solution**: Re-run the latest base installation from GitHub to refresh scripts in `%USERPROFILE%\agent-qa\scripts\`.
 
 ### Project Installation Issues
 
 #### "Agent QA base installation not found"
 
 **Solution**: Run base installation first:
+
+**macOS/Linux / Git Bash:**
 ```bash
 curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
 ```
 
 #### "MCP server not available"
@@ -443,8 +497,15 @@ curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base
 #### "Configuration file not found"
 
 **Solution**: Run project installation:
+
 ```bash
 ~/agent-qa/scripts/project-install.sh
+```
+
+Or on Windows (PowerShell):
+
+```powershell
+& "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"
 ```
 
 #### "Invalid repository platform"

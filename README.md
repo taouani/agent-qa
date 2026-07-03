@@ -61,15 +61,32 @@ Agent-QA automates the entire QA documentation workflow by:
 #### Option 1: Install from GitHub (when repository is available)
 
 1. **Base Installation** (one-time setup):
+
+   **macOS/Linux / Git Bash:**
    ```bash
    curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
    ```
 
+   **Windows (PowerShell):**
+   ```powershell
+   irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
+   ```
+
 2. **Project Installation** (in your project directory):
+
+   **macOS/Linux / Git Bash** (all IDE integrations):
    ```bash
    ~/agent-qa/scripts/project-install.sh                    # All IDEs (default)
    ~/agent-qa/scripts/project-install.sh --ide claude        # Claude Code only
    ~/agent-qa/scripts/project-install.sh --ide vscode,github # VS Code + Copilot
+   ```
+
+   **Windows (PowerShell):**
+   ```powershell
+   cd C:\path\to\your\project
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"              # All IDEs (default)
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" -Ide claude  # Claude Code only
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1" -Ide vscode,github
    ```
 
 #### Option 2: Install from Local Repository (if GitHub installation fails)
@@ -87,11 +104,18 @@ If you get a 404 error, the repository is not yet on GitHub. Install from your l
    ```
 
 3. **Project Installation** (in your project directory):
+
    ```bash
    ~/agent-qa/scripts/project-install.sh
    ```
 
-3. Follow the prompts to configure your repository platform and project ID.
+   Or on Windows (PowerShell):
+
+   ```powershell
+   & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"
+   ```
+
+4. Follow the prompts to configure your repository platform and project ID.
 
 For detailed installation instructions, see [INSTALLATION.md](INSTALLATION.md).
 
