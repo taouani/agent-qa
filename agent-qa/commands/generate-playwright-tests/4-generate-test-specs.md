@@ -210,11 +210,19 @@ Next steps:
   3. Run tests: npx playwright test
 ```
 
-### Step 7: Generate Output Index
+### Step 7: Offer to Place Files in the Host Repository
+
+Skip this step entirely when `automation.allow_source_edits` is `false`.
+
+Otherwise list the generated files with their proposed destinations under `spec_dir` and
+`page_object_dir`, and ask which to place. For each accepted file that already exists, show a diff
+and ask again. Never place a file the user did not name.
+
+### Step 8: Generate Output Index
 
 Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
 
-### Step 8: Execute Post-Generation Hooks
+### Step 9: Execute Post-Generation Hooks
 
 Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to run any configured post-generation hooks.
 
@@ -223,6 +231,11 @@ Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to 
 - Only generate `.spec.ts` files (not full project scaffold)
 - Do NOT create `package.json`, `playwright.config.ts`, or other project files (only the README mentions them)
 - Do NOT generate step definition files or cucumber integration
-- Write files ONLY to the `playwright/` subdirectory of the selected output folder
+- Write files to the `playwright/` subdirectory of the selected output folder by default
+- Writing into the host repository's `spec_dir` or `page_object_dir` is permitted ONLY when all
+  of the following hold: `automation.allow_source_edits` is `true`, the framework profile has
+  `reviewed: true`, the resolved path is under `playwright_project_root`, and the user approved
+  this run when asked. When any condition fails, write to the output folder and say why
+- Never overwrite an existing host-repository file without showing the user a diff first
 - Do NOT modify existing test case files
 - Include TODO comments for all uncertain elements

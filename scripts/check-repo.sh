@@ -147,6 +147,19 @@ check_audit_framework() {
         && pass "framework-architect agent" || fail "missing agent: framework-architect.md"
 }
 
+check_playwright_upgrade() {
+    local d=agent-qa/commands/generate-playwright-tests
+    check_command_phases generate-playwright-tests \
+        1-find-and-select-test-cases.md 2-analyze-and-map-ui-elements.md \
+        3-generate-page-objects.md 4-generate-test-specs.md 5-run-and-stabilize.md
+    grep -q 'ui-snapshots/exploration.md' "$d/2-analyze-and-map-ui-elements.md" \
+        && pass "phase 2 consumes exploration report" \
+        || fail "generate-playwright-tests phase 2 does not consume exploration.md"
+    grep -q 'TODO' "$d/4-generate-test-specs.md" \
+        && pass "phase 4 retains TODO fallback" \
+        || fail "generate-playwright-tests lost its TODO fallback for the no-exploration path"
+}
+
 check_explore_ui() {
     check_command_phases explore-ui \
         1-find-and-select-test-cases.md 2-resolve-profile-and-session.md \
@@ -171,6 +184,7 @@ run_checks() {
     check_review_automation_code
     check_audit_framework
     check_explore_ui
+    check_playwright_upgrade
 }
 
 run_checks

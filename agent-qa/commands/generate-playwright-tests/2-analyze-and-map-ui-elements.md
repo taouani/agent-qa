@@ -26,7 +26,37 @@ Also read `agent-qa/config.yml` for Playwright-specific settings:
 
 If neither custom nor default templates are found, use the default patterns described in this phase.
 
-### Step 2: Extract Page References
+### Step 2: Load the Exploration Report If Present
+
+Check for `{selected_folder}/ui-snapshots/exploration.md`.
+
+**If it exists** — this is the exploration-backed path:
+
+1. Read the `## Locators` table. For each row, record element, locator expression, rank, and
+   source snapshot.
+2. Read the `## Waits` table and record each observable wait condition by page.
+3. Read `## Messages` and use the exact strings for assertions.
+4. Read `## Unverifiable Steps`. Steps listed there have NO observed locator — they keep the
+   TODO-comment treatment described in Phase 4. Never substitute a guess for an unverifiable step.
+5. Read `## Recovery Notes` and carry any forced-interaction requirement into the generated code
+   as a comment on the relevant action.
+
+Set `exploration_available: true` and use these locators in preference to any inference.
+
+**If it does not exist** — this is the inference path. Set `exploration_available: false` and
+continue with the remaining steps of this phase unchanged. Behaviour must be identical to before
+this feature existed. Mention once in the run summary:
+
+    No UI exploration found. Locators are inferred and marked with TODO comments.
+    Run /agent-qa:explore-ui first to generate real locators.
+
+Also resolve the framework profile by following
+`@agent-qa/commands/common/discover-framework-profile.md`, so page object directory, naming, and
+fixture import match the host repository. If no profile exists and none can be generated, fall
+back to the generic templates and say so in the summary. Missing profile must never block the
+inference path.
+
+### Step 3: Extract Page References
 
 Scan all test steps across selected test cases to identify pages/views:
 
@@ -39,7 +69,7 @@ Scan all test steps across selected test cases to identify pages/views:
 
 Build a list of unique pages referenced across all test cases.
 
-### Step 3: Extract UI Elements Per Page
+### Step 4: Extract UI Elements Per Page
 
 For each identified page, scan test steps to find referenced UI elements:
 
@@ -59,7 +89,7 @@ For each identified page, scan test steps to find referenced UI elements:
 | "The **table** contains rows" | table | `getByRole('table')` |
 | "Click the **Settings** menu" | menuitem | `getByRole('menuitem', { name: 'Settings' })` |
 
-### Step 4: Map Navigation Flows
+### Step 5: Map Navigation Flows
 
 Identify navigation patterns between pages:
 
@@ -75,7 +105,7 @@ Record:
 - Which pages are navigated to during the test
 - Expected URL patterns after navigation
 
-### Step 5: Map Test Data to Variables
+### Step 6: Map Test Data to Variables
 
 For test steps with concrete data values, identify TypeScript variable mappings:
 
@@ -95,7 +125,7 @@ interface LoginTestData {
 }
 ```
 
-### Step 6: Identify Shared Pages
+### Step 7: Identify Shared Pages
 
 Determine which Page Objects are used across multiple test cases:
 
