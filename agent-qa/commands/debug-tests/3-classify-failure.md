@@ -14,8 +14,11 @@ Read `## Failure Classification` in `@agent-qa/rules/automation-conventions.md`.
 
 Work through these questions in order. The first that answers decides the class.
 
-1. Does the application behave incorrectly, with the assertion being right?
+1. Does the application behave incorrectly — wrong output, wrong state, or materially slower
+   than the requirement or its own prior behaviour — with the assertion being right?
    → **Real defect**. Stop classifying.
+   A step that still completes but takes far longer than it used to is a candidate real defect,
+   not a synchronization problem. Timing that regressed is a symptom, not a test bug.
 2. Does the element exist in the current UI but the locator no longer matches it? Confirm against
    a `ui-snapshots/` entry or a trace, not by assumption.
    → **Selector**

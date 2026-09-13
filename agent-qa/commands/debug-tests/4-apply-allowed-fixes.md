@@ -25,7 +25,7 @@ stop. Do not apply a smaller version of the fix instead.
 | Class | Permitted fix |
 |-------|---------------|
 | Selector | Replace with a higher-ranked locator derived from a `ui-snapshots/` entry or a trace. If no snapshot covers the page, run `/agent-qa:explore-ui` for it rather than guessing |
-| Synchronization | Add a wait for a specific observable condition — a locator state, a response, a URL |
+| Synchronization | Add a wait for a specific observable condition — a locator state, a response, a URL. But if the condition eventually becomes true and simply takes materially longer than it previously did, STOP and report it as a candidate real defect: a wait would hide a performance regression |
 | Test data | Correct the data setup or generation. Never weaken the assertion to match bad data |
 | Flake | Remove the race. If the race cannot be identified, STOP and report |
 
