@@ -172,6 +172,17 @@ check_explore_ui() {
         || pass "explore-ui is playwright-cli only"
 }
 
+check_debug_tests() {
+    check_command_phases debug-tests \
+        1-select-failing-tests.md 2-reproduce.md 3-classify-failure.md \
+        4-apply-allowed-fixes.md 5-verify-and-report.md
+    [[ -f agent-qa/agents/playwright-debugger.md ]] \
+        && pass "playwright-debugger agent" || fail "missing agent: playwright-debugger.md"
+    grep -q 'waitForTimeout' agent-qa/commands/debug-tests/4-apply-allowed-fixes.md \
+        && pass "debug-tests names the forbidden sleep explicitly" \
+        || fail "debug-tests phase 4 must explicitly forbid waitForTimeout"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -185,6 +196,7 @@ run_checks() {
     check_audit_framework
     check_explore_ui
     check_playwright_upgrade
+    check_debug_tests
 }
 
 run_checks
