@@ -14,7 +14,10 @@ Read validation rules from:
 
 ### Step 2: Validate YAML Front Matter
 
-For each `.md` file in every deliverable subdirectory:
+For each `.md` file in the requirement-derived deliverable subdirectories — `requirements/`,
+`test-cases/`, `test-strategy/`, `test-charter/`, `test-plan/`, `risk-register/`,
+`release-notes/`, `commits/`, `gherkin/`, `playwright/`, `test-data/`, `api-tests/`,
+`accessibility-tests/`:
 
 1. **Presence check**: File starts with `---` and contains closing `---`
 2. **Required fields**: `type`, `generated`, `source_requirements`, `language`, `version`
@@ -23,6 +26,11 @@ For each `.md` file in every deliverable subdirectory:
 5. **Language code**: Must be a valid ISO 639-1 code (e.g., `en`, `fr`, `ar`, `es`)
 
 Record for each file: PASS or FAIL with specific issue.
+
+Files under `ui-snapshots/`, `reviews/`, and `debug/` are live automation deliverables. They
+carry a different front-matter contract — they are not derived from a single requirement and have
+no language or version field — and are validated by the "Live Automation Deliverables" section
+below instead. Skip Steps 2 and 3 for them; do not report them as failures here.
 
 ### Step 3: Validate File Naming
 
@@ -40,6 +48,9 @@ Check each file against the naming conventions:
 | `commits/` | `commit-analysis.md` |
 | `gherkin/` | `{REQUIREMENT-KEY}.feature`, `README.md` |
 | `playwright/` | `{REQUIREMENT-KEY}.spec.ts`, `{page-name}.page.ts`, `README.md` |
+| `ui-snapshots/` | `exploration.md`, `{TEST-CASE-ID}/{NN}-{state}.yml` |
+| `reviews/` | `code-review.md`, `architecture-review.md`, `refactor-plan.md`, `refactor-report.md` |
+| `debug/` | `report.md` |
 
 Record: PASS, FAIL (wrong name), or WARN (unexpected file).
 
