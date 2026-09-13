@@ -147,6 +147,18 @@ check_audit_framework() {
         && pass "framework-architect agent" || fail "missing agent: framework-architect.md"
 }
 
+check_explore_ui() {
+    check_command_phases explore-ui \
+        1-find-and-select-test-cases.md 2-resolve-profile-and-session.md \
+        3-walk-and-snapshot.md 4-extract-locators-and-observations.md \
+        5-write-exploration-report.md
+    [[ -f agent-qa/agents/ui-explorer.md ]] \
+        && pass "ui-explorer agent" || fail "missing agent: ui-explorer.md"
+    grep -rq 'Playwright MCP\|browser_snapshot\|mcp__.*playwright' agent-qa/commands/explore-ui/ \
+        && fail "explore-ui references Playwright MCP; the design is playwright-cli only" \
+        || pass "explore-ui is playwright-cli only"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -158,6 +170,7 @@ run_checks() {
     check_healthcheck_covers_automation
     check_review_automation_code
     check_audit_framework
+    check_explore_ui
 }
 
 run_checks
