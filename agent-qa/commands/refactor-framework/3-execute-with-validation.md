@@ -8,15 +8,16 @@ Apply the selected tasks one at a time, validating after each, and stopping on t
 
 ### Step 1: Checkpoint
 
-Before each task, create a restore point:
+Record `git rev-parse HEAD` once at the start of the phase. HEAD does not move during execution, so
+it is the restore point for every task in this phase.
 
-```bash
-cd "{playwright_project_root}" && git stash push -u -m "agent-qa-refactor-task-{n}"
-git stash pop
-```
+Before each task, confirm that none of the files it will modify were already modified by an earlier
+task in this phase. If any file overlaps, STOP and report the overlap instead of proceeding —
+reverting one task would discard the other's work.
 
-This records a recoverable state and immediately restores the tree, so the stash entry exists as a
-fallback while work continues.
+Do not use `git stash` for this. On the clean tree Phase 2 guarantees, `git stash push` saves
+nothing and a following `git stash pop` fails with "No stash entries found"; `pop` also drops the
+entry it applies, so it leaves no fallback. The targeted restore in Step 4 is the working rollback.
 
 ### Step 2: Apply One Task
 
@@ -31,10 +32,6 @@ Run, in order, stopping at the first failure:
    "none observed", skip this step and say so in the report rather than inventing a command
 2. Lint — the profile's `lint_command`, skipped the same way when not recorded
 3. Targeted tests — the tests covering the changed files, per the task's validation command
-
-```bash
-cd "{playwright_project_root}" && npx tsc --noEmit
-```
 
 ### Step 4: Stop on Failure
 
@@ -71,7 +68,8 @@ touched in this phase. Report the result.
 ## Constraints
 
 - One task at a time, validated before the next
-- Never modify `playwright.config.ts`
+- Never write to `.env*`, `**/.auth/*.json`, `node_modules/`, or CI configuration
+- Never modify `playwright.config.ts` — report the needed change instead
 - Never modify a file outside the current task's list
 - Never continue after a failed validation
 - Never commit — that is Phase 4 and the engineer's choice

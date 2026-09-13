@@ -30,6 +30,8 @@ Group findings into phases so that:
 - Each phase is independently valuable — the suite is healthy if work stops after any phase
 - High impact and low risk come first
 - A phase touching many files is split until each phase is reviewable
+- Tasks within a single phase must touch disjoint file sets, so that reverting one task cannot
+  discard another's work
 
 For each task within a phase record: the finding id it serves, the exact files to change, what
 changes, the validation command that proves it, and how to revert.

@@ -187,9 +187,9 @@ check_refactor_framework() {
     check_command_phases refactor-framework \
         1-load-audit-and-plan.md 2-select-phase-and-tasks.md \
         3-execute-with-validation.md 4-report-and-commit.md
-    grep -q 'git stash' agent-qa/commands/refactor-framework/3-execute-with-validation.md \
-        && pass "refactor-framework checkpoints before each task" \
-        || fail "refactor-framework phase 3 must checkpoint with git stash before each task"
+    grep -q 'git checkout --' agent-qa/commands/refactor-framework/3-execute-with-validation.md \
+        && pass "refactor-framework can targeted-restore a failed task" \
+        || fail "refactor-framework phase 3 must offer a targeted git checkout -- restore on failure"
 }
 
 run_checks() {
