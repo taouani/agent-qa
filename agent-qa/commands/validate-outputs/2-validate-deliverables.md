@@ -30,7 +30,8 @@ Record for each file: PASS or FAIL with specific issue.
 Files under `ui-snapshots/`, `reviews/`, and `debug/` are live automation deliverables. They
 carry a different front-matter contract — they are not derived from a single requirement and have
 no language or version field — and are validated by the "Live Automation Deliverables" section
-below instead. Skip Steps 2 and 3 for them; do not report them as failures here.
+below instead. Skip Step 2 for them; do not report them as failures here. They are still subject
+to the file naming checks in Step 3.
 
 ### Step 3: Validate File Naming
 
