@@ -183,6 +183,15 @@ check_debug_tests() {
         || fail "debug-tests phase 4 must explicitly forbid waitForTimeout"
 }
 
+check_refactor_framework() {
+    check_command_phases refactor-framework \
+        1-load-audit-and-plan.md 2-select-phase-and-tasks.md \
+        3-execute-with-validation.md 4-report-and-commit.md
+    grep -q 'git stash' agent-qa/commands/refactor-framework/3-execute-with-validation.md \
+        && pass "refactor-framework checkpoints before each task" \
+        || fail "refactor-framework phase 3 must checkpoint with git stash before each task"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -197,6 +206,7 @@ run_checks() {
     check_explore_ui
     check_playwright_upgrade
     check_debug_tests
+    check_refactor_framework
 }
 
 run_checks
