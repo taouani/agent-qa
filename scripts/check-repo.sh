@@ -140,6 +140,13 @@ check_review_automation_code() {
         && pass "automation-reviewer agent" || fail "missing agent: automation-reviewer.md"
 }
 
+check_audit_framework() {
+    check_command_phases audit-framework \
+        1-scope-and-inventory.md 2-analyze.md 3-score-and-prioritize.md 4-write-audit-report.md
+    [[ -f agent-qa/agents/framework-architect.md ]] \
+        && pass "framework-architect agent" || fail "missing agent: framework-architect.md"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -150,6 +157,7 @@ run_checks() {
     check_common_snippets
     check_healthcheck_covers_automation
     check_review_automation_code
+    check_audit_framework
 }
 
 run_checks
