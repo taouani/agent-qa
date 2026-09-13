@@ -61,11 +61,25 @@ check_required_rules() {
     done
 }
 
+check_config_template_keys() {
+    echo "== config template declares automation keys =="
+    local k
+    for k in 'playwright_project_root:' 'browser_cli_command:' 'allow_source_edits:' \
+             'auth_state_ttl_minutes:' 'stability_runs:'; do
+        if grep -q "^[[:space:]]*$k" agent-qa/config.yml.template; then
+            pass "config.yml.template declares $k"
+        else
+            fail "config.yml.template missing key: $k"
+        fi
+    done
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
     check_phase_numbering
     check_required_rules
+    check_config_template_keys
 }
 
 run_checks
