@@ -110,6 +110,36 @@ check_healthcheck_covers_automation() {
         || fail "health-check phase 2 does not probe the browser CLI"
 }
 
+check_command_phases() {
+    # usage: check_command_phases <command-name> <phase-file-basename>...
+    local name="$1"; shift
+    local dir="agent-qa/commands/$name"
+    echo "== command $name =="
+    [[ -f "$dir/$name.md" ]] && pass "$name entry point" || fail "$name: missing entry point"
+    [[ -f "agent-qa/ide/claude/commands/agent-qa/$name.md" ]] \
+        && pass "$name wrapper" || fail "$name: missing slash-command wrapper"
+    local phase
+    for phase in "$@"; do
+        [[ -f "$dir/$phase" ]] && pass "$name/$phase" || fail "$name: missing phase $phase"
+    done
+    # entry point and wrapper must reference the same phases
+    if ! diff <(grep -oE '\{\{PHASE [0-9]+: @[^}]+\}\}' "$dir/$name.md" 2>/dev/null) \
+              <(grep -oE '\{\{PHASE [0-9]+: @[^}]+\}\}' \
+                "agent-qa/ide/claude/commands/agent-qa/$name.md" 2>/dev/null) >/dev/null; then
+        fail "$name: entry point and wrapper reference different phases"
+    else
+        pass "$name twins agree"
+    fi
+}
+
+check_review_automation_code() {
+    check_command_phases review-automation-code \
+        1-select-files.md 2-classify-and-load-conventions.md 3-review.md \
+        4-report-and-optional-fix.md
+    [[ -f agent-qa/agents/automation-reviewer.md ]] \
+        && pass "automation-reviewer agent" || fail "missing agent: automation-reviewer.md"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -119,6 +149,7 @@ run_checks() {
     check_automation_rule_headings
     check_common_snippets
     check_healthcheck_covers_automation
+    check_review_automation_code
 }
 
 run_checks
