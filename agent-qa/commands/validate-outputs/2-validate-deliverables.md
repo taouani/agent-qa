@@ -80,6 +80,24 @@ If multiple deliverable types exist:
 
 Record: PASS, FAIL, or WARN (missing coverage).
 
+### Live Automation Deliverables
+
+| type | File | Required front matter | Required sections |
+|------|------|----------------------|-------------------|
+| `ui-exploration` | `ui-snapshots/exploration.md` | `test_cases_explored`, `steps_verified`, `steps_unverifiable`, `base_url` | `## Locators`, `## Waits`, `## Messages`, `## Deviations`, `## Unverifiable Steps` |
+| `code-review` | `reviews/code-review.md` | `files_reviewed`, `findings` | `## Applied Fixes` only when fixes were applied |
+| `architecture-review` | `reviews/architecture-review.md` | `project_root`, `files_sampled`, `findings` | `## Scope`, `## Summary`, `## Findings`, `## Ranking`, `## Not Assessed` |
+| `refactor-plan` | `reviews/refactor-plan.md` | `source_review`, `phases` | At least one `## Phase` section |
+| `refactor-report` | `reviews/refactor-report.md` | `source_plan`, `phase_executed` | `## Remaining` |
+| `debug-report` | `debug/report.md` | `targets`, `fixed`, `defects_found` | `## Defects Found` when `defects_found` is greater than zero |
+
+Additional checks:
+
+- Every locator row in an exploration report must name a source snapshot, and that file must exist
+- An exploration report claiming zero unverifiable steps must still contain the
+  `## Unverifiable Steps` section — its absence is a validation failure, because a missing section
+  reads as full coverage
+
 ## Data Storage
 
 Store all validation results in memory as a structured report:

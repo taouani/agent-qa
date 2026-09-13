@@ -52,6 +52,9 @@ All output folders follow: `YYYY-MM-DD-{context}/`
 | Test Data | `test-data/` |
 | API Tests | `api-tests/` |
 | Accessibility Tests | `accessibility-tests/` |
+| UI Exploration | `ui-snapshots/` |
+| Reviews and Audits | `reviews/` |
+| Debug Reports | `debug/` |
 
 ## Language Detection
 

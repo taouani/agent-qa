@@ -192,6 +192,26 @@ check_refactor_framework() {
         || fail "refactor-framework phase 3 must offer a targeted git checkout -- restore on failure"
 }
 
+check_new_deliverables_documented() {
+    echo "== new deliverable types are documented =="
+    local d
+    for d in 'ui-snapshots/' 'reviews/' 'debug/'; do
+        grep -qF "$d" agent-qa/rules/qa-conventions.md \
+            && pass "qa-conventions documents $d" || fail "qa-conventions missing subfolder: $d"
+        grep -qF "$d" agent-qa/rules/output-standards.md \
+            && pass "output-standards documents $d" || fail "output-standards missing subfolder: $d"
+    done
+    local f
+    for f in 'exploration.md' 'architecture-review.md' 'refactor-plan.md' 'code-review.md'; do
+        grep -qF "$f" agent-qa/rules/output-standards.md \
+            && pass "output-standards names $f" || fail "output-standards missing file name: $f"
+    done
+    grep -q 'ui-exploration\|architecture-review' \
+        agent-qa/commands/validate-outputs/2-validate-deliverables.md \
+        && pass "validate-outputs knows the new types" \
+        || fail "validate-outputs does not validate the new deliverable types"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -207,6 +227,7 @@ run_checks() {
     check_playwright_upgrade
     check_debug_tests
     check_refactor_framework
+    check_new_deliverables_documented
 }
 
 run_checks
