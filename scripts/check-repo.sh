@@ -88,6 +88,16 @@ check_automation_rule_headings() {
     done
 }
 
+check_common_snippets() {
+    echo "== shared command snippets exist =="
+    local f
+    for f in agent-qa/commands/common/generate-output-index.md \
+             agent-qa/commands/common/execute-post-hooks.md \
+             agent-qa/commands/common/discover-framework-profile.md; do
+        [[ -f "$f" ]] && pass "$f" || fail "missing shared snippet: $f"
+    done
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -95,6 +105,7 @@ run_checks() {
     check_required_rules
     check_config_template_keys
     check_automation_rule_headings
+    check_common_snippets
 }
 
 run_checks
