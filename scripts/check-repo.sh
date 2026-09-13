@@ -56,7 +56,8 @@ check_required_rules() {
     for f in agent-qa/rules/qa-conventions.md \
              agent-qa/rules/mcp-usage.md \
              agent-qa/rules/output-standards.md \
-             agent-qa/rules/language-handling.md; do
+             agent-qa/rules/language-handling.md \
+             agent-qa/rules/automation-conventions.md; do
         [[ -f "$f" ]] && pass "$f" || fail "missing rule file: $f"
     done
 }
@@ -74,12 +75,26 @@ check_config_template_keys() {
     done
 }
 
+check_automation_rule_headings() {
+    echo "== automation-conventions.md declares its referenced sections =="
+    local h
+    for h in '## Locator Priority' '## Allowed Fixes' '## Never-Apply Fixes' \
+             '## Failure Classification' '## Severity Levels'; do
+        if grep -qF "$h" agent-qa/rules/automation-conventions.md 2>/dev/null; then
+            pass "$h"
+        else
+            fail "automation-conventions.md missing section: $h"
+        fi
+    done
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
     check_phase_numbering
     check_required_rules
     check_config_template_keys
+    check_automation_rule_headings
 }
 
 run_checks
