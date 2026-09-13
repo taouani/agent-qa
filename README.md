@@ -133,8 +133,6 @@ Reference the command files directly. See [HOW_TO_USE.md](agent-qa/commands/HOW_
    ```
    /generate-gherkin
    /generate-playwright-tests
-   /generate-api-tests
-   /generate-accessibility-tests
    ```
 
 4. **Publish to Confluence**:
@@ -189,8 +187,6 @@ graph TD
     AR --> RR[generate-risk-register<br/>4 phases]
     TC --> GK[generate-gherkin<br/>4 phases]
     TC --> PW[generate-playwright-tests<br/>4 phases]
-    TC --> API[generate-api-tests<br/>4 phases]
-    TC --> A11Y[generate-accessibility-tests<br/>4 phases]
     AR --> TD[generate-test-data<br/>4 phases]
     AR --> PC[publish-to-confluence<br/>3 phases]
 
@@ -275,9 +271,6 @@ playwright_base_url: "http://localhost:3000"
 | `validate-outputs` | Validate deliverables against QA rules | User selection |
 | `generate-traceability-report` | Cross-deliverable coverage matrix | User selection |
 | `generate-test-data` | Generate structured test data sets | User selection |
-| `generate-api-tests` | Generate REST/GraphQL API test specifications | User selection |
-| `generate-accessibility-tests` | Generate WCAG 2.1 AA accessibility tests | User selection |
-| `regenerate` | Regenerate deliverables affected by requirement changes | User selection |
 | `run-pipeline` | Execute multiple commands in sequence | Pipeline spec |
 
 ## Best Practices
