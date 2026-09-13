@@ -35,7 +35,34 @@ Based on `repository_platform` from config.yml:
    - **PASS** — Azure DevOps MCP is connected, project accessible
    - **FAIL** — Azure DevOps MCP is not available or configuration is invalid
 
-### Step 3: Display final health check report
+### Step 3: Probe the browser session CLI
+
+Skip with **SKIP — live automation not configured** when `playwright_project_root` is empty.
+
+Read `browser_cli_command` from `agent-qa/config.yml` (default `playwright-cli`) and run:
+
+```bash
+command -v "$browser_cli_command" >/dev/null 2>&1 && "$browser_cli_command" --version
+```
+
+- **PASS** — report the version.
+- **FAIL** — report: "`{browser_cli_command}` not found on PATH. UI exploration is unavailable.
+  Install it with `npm install -g playwright-cli`. `generate-playwright-tests` still works and
+  will emit TODO locator comments."
+
+Then check the suite runner in `playwright_project_root`:
+
+```bash
+npx playwright --version
+```
+
+- **PASS** — report the version. **WARN** if it is absent: `debug-tests` and the run-and-stabilize
+  phase of `generate-playwright-tests` cannot execute.
+
+`playwright-cli` and `npx playwright` are different tools and both are needed. The first drives an
+interactive browser session for exploration; the second runs the suite.
+
+### Step 4: Display final health check report
 
 Display a complete health check report combining Phase 1 and Phase 2 results:
 

@@ -98,6 +98,18 @@ check_common_snippets() {
     done
 }
 
+check_healthcheck_covers_automation() {
+    echo "== health-check probes the automation prerequisites =="
+    local f1=agent-qa/commands/health-check/1-validate-configuration.md
+    local f2=agent-qa/commands/health-check/2-test-mcp-connectivity.md
+    grep -q 'playwright_project_root' "$f1" && pass "health-check validates project root" \
+        || fail "health-check phase 1 does not validate playwright_project_root"
+    grep -q 'framework-profile.md' "$f1" && pass "health-check validates profile" \
+        || fail "health-check phase 1 does not check framework-profile.md"
+    grep -q 'browser_cli_command\|playwright-cli' "$f2" && pass "health-check probes browser CLI" \
+        || fail "health-check phase 2 does not probe the browser CLI"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -106,6 +118,7 @@ run_checks() {
     check_config_template_keys
     check_automation_rule_headings
     check_common_snippets
+    check_healthcheck_covers_automation
 }
 
 run_checks
