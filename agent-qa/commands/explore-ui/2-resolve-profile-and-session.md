@@ -89,4 +89,4 @@ page, authentication did not take — return to Step 4 rather than continuing.
 - Never read the contents of an auth-state file
 - Never accept, type, or store credentials
 - Never proceed with an unauthenticated session — stop instead
-- This command is `playwright-cli` only — no other browser-automation tool is used
+- Never use Playwright MCP; this command is `playwright-cli` only

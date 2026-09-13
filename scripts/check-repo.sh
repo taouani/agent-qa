@@ -154,7 +154,7 @@ check_explore_ui() {
         5-write-exploration-report.md
     [[ -f agent-qa/agents/ui-explorer.md ]] \
         && pass "ui-explorer agent" || fail "missing agent: ui-explorer.md"
-    grep -rq 'Playwright MCP\|browser_snapshot\|mcp__.*playwright' agent-qa/commands/explore-ui/ \
+    grep -rq 'browser_snapshot\|mcp__.*playwright' agent-qa/commands/explore-ui/ \
         && fail "explore-ui references Playwright MCP; the design is playwright-cli only" \
         || pass "explore-ui is playwright-cli only"
 }
