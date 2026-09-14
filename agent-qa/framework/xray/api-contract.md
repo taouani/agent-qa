@@ -448,3 +448,38 @@ contract proper: the Cloud manual-step schema (`action`/`data`/`result`), the ex
    describes any atomic replace-all-steps operation — the v2.0 surface is per-step CRUD, so
    atomicity would have to come from the server and does not.
    **Mitigation:** do not update steps; state the limitation in the run report.
+
+7. **What `import_feature` matches on, and whether re-importing a feature file updates its tests
+   or creates second copies.** Both flavours name the success field `updatedOrCreatedTests`, which
+   asserts that updating is *possible* but never says what makes an incoming scenario "the same
+   test" as one already in the project — scenario name, a tag, the file name, the Test Repository
+   path, or nothing at all. Nor does either page say what happens on a second import of an
+   unchanged file.
+   *Why documentation cannot settle it:* this is server-side matching behaviour, not a request or
+   response contract. Neither vendor page describes the algorithm, and the single field name that
+   hints at it (`updatedOrCreated`) is deliberately non-committal — it is written to cover both
+   outcomes precisely so the vendor need not commit to which one occurs. No document can be read
+   to settle a behaviour the document declines to state; only importing the same file twice into a
+   live project and counting the resulting Test issues can.
+   **Mitigation:** do not attempt client-side deduplication, which would need the same unknown
+   matching rule to be correct. Send every `.feature` file on every run, classify each returned key
+   as "updated" when the label lookup already knew it, and **say so in the run report** so a user
+   who finds duplicates knows the cause. `upload.run()` emits that notice whenever a run imports
+   Gherkin.
+
+8. **Whether Xray Cloud's bulk test import honours a top-level `key` field as "update this issue".**
+   The contract's `import_tests` field table lists `testtype`, `fields`, `steps`, `gherkin_def`,
+   `unstructured_def`, `xray_test_sets`, `xray_test_repository_folder`, `xray_issue_type`, `update`
+   and `xray_id`. **`key` is not among them**, yet it is the only plausible way to aim a bulk-import
+   entry at an existing issue, and the payload builder sends it for every test the label lookup
+   already found.
+   *Why documentation cannot settle it:* the field table is a positive enumeration, not a closed
+   one — it never states that unlisted fields are rejected, ignored, or passed through to Jira. So
+   the documentation is equally consistent with `key` working, with it being silently dropped, and
+   with it being an error; absence from a list is not a statement about behaviour. Only a live
+   tenant can show which.
+   **Mitigation:** none needed beyond visibility, because this assumption fails *loudly enough*: if
+   `key` is ignored, the job returns new issue keys, they are not in the set of keys that were sent,
+   and the run reports them as **created** rather than updated. A user re-running an unchanged
+   folder sees a created count where they expected an updated count. Keep the top-level `key` and
+   keep classifying on the keys sent, never on response ordering.

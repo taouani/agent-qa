@@ -858,15 +858,14 @@ class XrayClient:
             with open(path, "rb") as fh:
                 content = fh.read()
         except OSError as e:
-            return {"created": [], "updated": [], "failed": [
-                {"tc_id": name, "reason": "could not read the feature file: %s" % e}]}
+            return self._feature_failure(
+                name, "could not read the feature file: %s" % e)
 
         max_bytes = LIMITS[self.platform]["max_feature_upload_bytes"]
         if max_bytes and len(content) > max_bytes:
-            return {"created": [], "updated": [], "failed": [
-                {"tc_id": name,
-                 "reason": "the feature file is %d bytes, over the documented "
-                           "%d byte upload limit" % (len(content), max_bytes)}]}
+            return self._feature_failure(
+                name, "the feature file is %d bytes, over the documented "
+                      "%d byte upload limit" % (len(content), max_bytes))
 
         parts = FEATURE_IMPORT_PARTS[self.platform]
         # Only the "file" part is sent. The optional precondition part is
@@ -885,35 +884,50 @@ class XrayClient:
         if status != 200:
             # Both flavours answer errors as text/plain, so there is no JSON
             # body to mine for a reason here.
-            return {"created": [], "updated": [], "failed": [
-                {"tc_id": name,
-                 "reason": "feature import returned HTTP %d" % status}]}
+            return self._feature_failure(
+                name, "feature import returned HTTP %d" % status)
         return self._feature_outcome(raw, name, existing_keys)
+
+    @staticmethod
+    def _feature_failure(name, reason):
+        """One failed feature file, in the same shape every other path returns.
+        Built from empty_results() rather than a literal so that a key added to
+        the result contract cannot be missed here."""
+        results = empty_results()
+        results["failed"].append({"tc_id": name, "reason": reason})
+        return results
 
     def _feature_outcome(self, raw, name, existing_keys):
         try:
             data = json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
-            return {"created": [], "updated": [], "failed": [
-                {"tc_id": name,
-                 "reason": "feature import answered 200 with a body that is "
-                           "not JSON, so nothing about it can be confirmed"}]}
+            return self._feature_failure(
+                name, "feature import answered 200 with a body that is not "
+                      "JSON, so nothing about it can be confirmed")
 
         # Cloud answers an object with three lists; Server answers a bare JSON
         # array of issues, and labels it application/octet-stream, so the
         # Content-Type header is not worth consulting -- branch on the parsed
-        # shape instead (api-contract.md, both "4. ... feature import").
+        # shape instead (api-contract.md, Cloud "4. Gherkin feature import"
+        # and Server/DC "5. Gherkin feature import").
         if isinstance(data, list):
             touched, errors = data, []
         elif isinstance(data, dict):
             touched = data.get("updatedOrCreatedTests") or []
             errors = data.get("errors") or []
         else:
-            return {"created": [], "updated": [], "failed": [
-                {"tc_id": name,
-                 "reason": "feature import answered 200 with an unexpected "
-                           "body shape (%s)" % type(data).__name__}]}
+            return self._feature_failure(
+                name, "feature import answered 200 with an unexpected body "
+                      "shape (%s)" % type(data).__name__)
 
+        # ASSUMPTION, not a documented behaviour: a feature file is sent in
+        # full on every run, and Xray is relied on to match each scenario to
+        # the test it already created and update it rather than create a
+        # second one. api-contract.md records no matching semantics for
+        # import_feature at all (## Unverified item 7) -- "updatedOrCreated"
+        # is as specific as the vendor gets. Everything below only CLASSIFIES
+        # what came back; nothing here can prevent a duplicate if Xray does
+        # not match. upload.run() states this in the run report.
         already = set((existing_keys or {}).values())
         results = empty_results()
         for issue in touched:

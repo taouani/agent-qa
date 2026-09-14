@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from xray_client import Transport, XrayClient, XrayError
-from xray_endpoints import DEFAULT_CLOUD_HOST, ENDPOINTS, SERVER_TEST_STEP_URL
+from xray_endpoints import DEFAULT_CLOUD_HOST, ENDPOINTS
 import upload
 
 
@@ -530,6 +530,168 @@ class TestCloudExecutePath(FastPollMixin):
         self.assertIn("(unreported)", report)
 
 
+class TestCloudImportBody(FastPollMixin):
+    """What is actually SENT to Cloud's bulk-import endpoint.
+
+    Cloud carries its manual steps inline in the import body, so nothing else
+    in the suite can notice if they go missing: strip "steps" from every entry
+    and the job still returns issue keys, the run still exits 0, and every
+    test lands in Jira empty. That is the Ruling 10 failure class on the
+    flavour that was never pinned, so the request body is pinned here by key
+    set AND by content, exactly as the Server step body is.
+    """
+
+    CREDENTIALS = {"client_id": "i", "client_secret": "s"}
+
+    def _sent_body(self, search_body=b'{"issues":[]}'):
+        self.use_fast_polling()
+        t = DetailedTransport([
+            (200, {}, b'"tok"'),
+            (200, {}, search_body),
+            (200, {}, b'{"jobId":"J"}'),
+            (200, {}, b'{"status":"successful","result":{"issues":'
+                      b'[{"key":"PROJ-501"},{"key":"PROJ-502"}],"errors":[]}}'),
+        ])
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        _make_folder(d, TWO_MANUAL_CASES)
+        rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                        base_url=None, credentials=self.CREDENTIALS,
+                        transport=t, execute=True)
+        sent = t.matching("POST", "/api/v2/import/test/bulk")
+        self.assertEqual(len(sent), 1, "expected exactly one bulk import POST")
+        return rc, json.loads(sent[0]["body"].decode())
+
+    def test_every_step_of_every_test_is_in_the_import_body(self):
+        _rc, body = self._sent_body()
+        self.assertEqual(len(body), 2)
+        for entry in body:
+            self.assertIn("steps", entry,
+                          "an import entry reached Cloud with no steps key at "
+                          "all -- the test would land in Jira empty")
+        self.assertEqual([len(entry["steps"]) for entry in body], [2, 1],
+                         "the import body must carry every step of every test")
+
+    def test_the_steps_carry_the_contracts_keys_and_the_real_content(self):
+        _rc, body = self._sent_body()
+        for entry in body:
+            self.assertTrue(entry.get("steps"),
+                            "an import entry reached Cloud with no steps")
+            for step in entry["steps"]:
+                # api-contract.md pins exactly three lowercase keys for a
+                # Cloud manual step: action, data, result. Renaming any of
+                # them is silently accepted and produces an empty step.
+                self.assertEqual(sorted(step), ["action", "data", "result"])
+        self.assertEqual(
+            [(s["action"], s["data"], s["result"]) for s in body[0]["steps"]],
+            [("Sign in", "valid user", "Dashboard"),
+             ("Open profile", "", "Profile shown")])
+        self.assertEqual(body[1]["steps"],
+                         [{"action": "Sign out", "data": "",
+                           "result": "Landing page"}])
+
+    def test_every_entry_carries_its_tc_id_label_and_test_type(self):
+        _rc, body = self._sent_body()
+        self.assertEqual([e["testtype"] for e in body], ["Manual", "Manual"])
+        self.assertEqual([e["fields"]["labels"] for e in body],
+                         [["TC-PROJ-123-001"], ["TC-PROJ-123-002"]])
+
+    def test_ASSUMPTION_an_existing_test_is_sent_with_a_top_level_key(self):
+        """PINNED ASSUMPTION, not a verified vendor behaviour.
+
+        The top-level "key" field is how this client asks Cloud's bulk import
+        to update an existing test instead of creating a new one -- but "key"
+        is NOT in the contract's import_tests field table
+        (api-contract.md, ## Unverified item 8). If Cloud ignores it, a re-run
+        creates duplicates. That failure is at least VISIBLE, since the new
+        keys are reported as created rather than updated, which is why this is
+        pinned rather than redesigned.
+
+        This test exists so the mechanism is asserted rather than incidental:
+        if someone removes the "key" field, idempotency on Cloud silently
+        becomes "create a duplicate every run" and this test fails.
+        """
+        _rc, body = self._sent_body(
+            search_body=b'{"issues":[{"key":"PROJ-441","fields":{"labels":'
+                        b'["TC-PROJ-123-001"]}}]}')
+        by_label = dict((e["fields"]["labels"][0], e) for e in body)
+        self.assertEqual(by_label["TC-PROJ-123-001"].get("key"), "PROJ-441")
+        self.assertNotIn("key", by_label["TC-PROJ-123-002"],
+                         "a test that does not exist yet must carry no key")
+
+
+class TestGherkinReimportAssumption(unittest.TestCase):
+    """Every .feature file is re-sent in full on every run, and Xray's own
+    scenario matching is the only thing stopping a re-run duplicating the
+    Cucumber tests. The vendor documents no matching semantics for
+    import_feature (api-contract.md, ## Unverified item 7)."""
+
+    FEATURE = ("Feature: Login\n"
+               "  Scenario: TC-PROJ-123-001 - First case\n"
+               "    Given a registered user\n")
+    NOTICE_MARKER = "re-imported in full"
+
+    def _run(self, search_body, feature_response):
+        t = DetailedTransport([
+            (200, {}, b'"tok"'),
+            (200, {}, search_body),
+            feature_response,
+        ])
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        _make_folder(d, [TWO_MANUAL_CASES[0]], self.FEATURE)
+        rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                        base_url=None,
+                        credentials={"client_id": "i", "client_secret": "s"},
+                        transport=t, execute=True)
+        return rc, t, _read_report(d)
+
+    EXISTING = (b'{"issues":[{"key":"PROJ-601","fields":{"labels":'
+                b'["TC-PROJ-123-001"]}}]}')
+    ALREADY_IMPORTED = (200, {}, b'{"errors":[],"updatedOrCreatedTests":'
+                                 b'[{"id":"1","key":"PROJ-601","self":"u"}],'
+                                 b'"updatedOrCreatedPreconditions":[]}')
+
+    def test_ASSUMPTION_a_feature_already_in_jira_is_still_re_imported(self):
+        """PINNED ASSUMPTION. There is deliberately NO client-side skipping:
+        even when the label lookup already found the feature's test in Jira,
+        the whole file is sent again and Xray is trusted to match it. If this
+        test starts failing because someone added skipping, that is a
+        deliberate design change and needs its own decision -- it is not a
+        bug in this test."""
+        rc, t, report = self._run(self.EXISTING, self.ALREADY_IMPORTED)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(t.matching("POST", "/api/v2/import/feature")), 1,
+                         "the feature file must be re-sent, not skipped")
+        # ...and the key that came back is classified as updated, because the
+        # label lookup already knew it. That classification is this client's
+        # only defence against reporting a duplicate as a fresh creation.
+        self.assertIn("updated: 1", report)
+        self.assertIn("created: 0", report)
+
+    def test_the_reimport_caveat_is_stated_in_the_report(self):
+        rc, _t, report = self._run(self.EXISTING, self.ALREADY_IMPORTED)
+        self.assertIn(self.NOTICE_MARKER, report)
+        self.assertIn("duplicated Cucumber tests", report)
+        self.assertEqual(rc, 0, "a caveat must not change the exit code")
+
+    def test_the_caveat_is_absent_when_no_feature_was_imported(self):
+        t = RecordingTransport([(200, {}, b'"tok"'), (200, {}, b'{"issues":[]}'),
+                                (200, {}, b'{"jobId":"J"}'),
+                                (200, {}, b'{"status":"successful","result":'
+                                          b'{"issues":[{"key":"PROJ-501"}],'
+                                          b'"errors":[]}}')])
+        with tempfile.TemporaryDirectory() as d:
+            _make_folder(d, [TWO_MANUAL_CASES[0]])      # no gherkin/ at all
+            rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                            base_url=None,
+                            credentials={"client_id": "i", "client_secret": "s"},
+                            transport=t, execute=True)
+            report = _read_report(d)
+        self.assertEqual(rc, 0)
+        self.assertNotIn(self.NOTICE_MARKER, report)
+
+
 class TestCloudPartialFailure(FastPollMixin):
 
     def test_one_rejected_test_keeps_the_rest_and_exits_non_zero(self):
@@ -614,12 +776,17 @@ class TestServerExecutePath(unittest.TestCase):
                          "3 steps across 2 tests must produce 3 step calls, "
                          "one per step -- got %d" % len(step_calls))
 
-        expected_url = SERVER_TEST_STEP_URL.replace("{base_url}", self.BASE)
+        # LITERAL ON PURPOSE. Deriving this from SERVER_TEST_STEP_URL would
+        # make the test read its expectation out of the very constant it is
+        # checking -- so the v1.0 -> v2.0 URL swap that this whole test exists
+        # to catch could never fail it. A test that takes its expectation from
+        # the thing under test is a test that cannot fail.
+        expected_url = "https://jira.example.com/rest/raven/1.0/api/test/%s/step"
         self.assertEqual(
             [c["url"] for c in step_calls],
-            [expected_url.replace("{testKey}", "PROJ-501"),
-             expected_url.replace("{testKey}", "PROJ-501"),
-             expected_url.replace("{testKey}", "PROJ-502")])
+            [expected_url % "PROJ-501",
+             expected_url % "PROJ-501",
+             expected_url % "PROJ-502"])
 
         bodies = [json.loads(c["body"].decode()) for c in step_calls]
         # v1.0's FLAT, lowercase body. If someone swaps the URL to the 2.0
@@ -708,10 +875,10 @@ class TestServerExecutePath(unittest.TestCase):
         full set of steps on every re-run."""
         _rc, t, _report = self._run(self.ONE_EXISTING)
         step_calls = t.matching("PUT", "/api/test/")
-        self.assertEqual([c["url"] for c in step_calls],
-                         [SERVER_TEST_STEP_URL.replace("{base_url}", self.BASE)
-                          .replace("{testKey}", "PROJ-502")],
-                         "only the newly created test may get step calls")
+        self.assertEqual(  # literal, for the reason given in the test above
+            [c["url"] for c in step_calls],
+            ["https://jira.example.com/rest/raven/1.0/api/test/PROJ-502/step"],
+            "only the newly created test may get step calls")
         self.assertEqual(t.matching("PUT", "/api/test/PROJ-441/"), [])
 
     def test_a_re_run_of_an_unchanged_folder_exits_zero(self):

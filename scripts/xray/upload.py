@@ -45,6 +45,22 @@ _SEPARATOR_CELL_PATTERN = re.compile(r"^:?-+:?$")
 
 _PLATFORM_LABELS = {"cloud": "Xray Cloud", "server": "Xray Server/DC"}
 
+# Emitted when a run imports Gherkin. Every .feature file is sent in full on
+# every run and Xray's own scenario matching is what stops a re-run creating a
+# second copy -- and the vendor documents no matching semantics for
+# import_feature at all (api-contract.md, ## Unverified item 7). That is an
+# assumption the user is entitled to know they are relying on, so it is said
+# out loud rather than left in a source comment. Like the Server step notice,
+# it reports something that SUCCEEDED and so must not change the exit code.
+GHERKIN_REIMPORT_NOTICE = (
+    "Gherkin: %d feature file(s) were re-imported in full. Agent-QA sends "
+    "every .feature file on every run and relies on Xray's own scenario "
+    "matching to update the existing Cucumber tests rather than duplicate "
+    "them; that matching is not documented by the vendor. If you find "
+    "duplicated Cucumber tests in the project after a re-run, this is the "
+    "cause -- check the project before the next run."
+)
+
 
 def _strip_front_matter(text):
     return _FRONT_MATTER_PATTERN.sub("", text, count=1)
@@ -403,11 +419,18 @@ def run(folder, project_key, platform, base_url, credentials, transport,
         if plan["manual_payload"]:
             merge_results(results,
                           client.import_manual_tests(plan["manual_payload"]))
+        imported_features = 0
         for feature_path in load_feature_paths(folder):
             # One file at a time, and one file's failure never stops the next:
             # a batch must not be abandoned at its first rejection.
-            merge_results(results, client.import_feature_file(
-                str(feature_path), project_key, existing_keys=existing_keys))
+            outcome = client.import_feature_file(
+                str(feature_path), project_key, existing_keys=existing_keys)
+            if outcome["created"] or outcome["updated"]:
+                imported_features += 1
+            merge_results(results, outcome)
+        if imported_features:
+            results["notices"].append(
+                GHERKIN_REIMPORT_NOTICE % imported_features)
 
         print(render_results(results))
         report_path = write_report(
