@@ -12,84 +12,12 @@ Analyze code changes to understand impact and context, generating summaries per 
 
 ## Workflow
 
-### Step 1: Analyze Code Changes
+### Step 1: Analyze the Code Changes
 
-For each commit/PR, analyze the code changes:
+Apply `@agent-qa/roles/code-change-analysis.md` to the diffs extracted in Phase 4. Supply: the
+per-file diffs, the commit and PR/MR metadata, and the ticket correlation from Phase 3.
 
-1. **Understand Change Context**:
-   - Analyze what functionality was added/modified/removed
-   - Identify affected components/modules
-   - Understand impact on existing codebase
-
-2. **Identify Change Type**:
-   - New feature addition
-   - Bug fix
-   - Refactoring
-   - Configuration change
-   - Test addition/modification
-   - Documentation update
-
-3. **Assess Change Impact**:
-   - Identify affected areas
-   - Assess risk level (high/medium/low)
-   - Note dependencies or related changes
-
-### Step 2: Generate Summary of Changes Per File
-
-For each file changed in each commit/PR:
-
-Generate summary:
-```
-File: src/components/Button.tsx
-Changes:
-- Added icon prop and icon rendering
-- Updated button styling to accommodate icon
-- Modified onClick handler to include icon click handling
-
-Lines: +15, -8, net: +7
-```
-
-Include:
-- File path
-- Summary of changes (what was changed and why)
-- Lines added/removed statistics
-- Change type (addition, modification, deletion)
-
-### Step 3: Generate Overall Change Summary Per Commit/PR
-
-For each commit/PR, generate overall summary:
-
-```
-Commit: abc123def456
-Author: John Doe
-Date: 2025-01-15
-Message: PROJ-123: Add icon support to Button component
-
-Summary:
-- Added icon prop to Button component
-- Updated Button component styling
-- Added icon click handling
-- Updated Button tests
-
-Files Changed: 3
-Lines Added: 45
-Lines Removed: 12
-Net Change: +33
-
-Affected Components:
-- Button component
-- Button tests
-- Icon component (dependency)
-```
-
-Include:
-- Commit/PR metadata (hash/ID, author, date, message/title)
-- Overall summary of changes
-- Statistics (files changed, lines added/removed, net change)
-- Affected components/modules
-- Change type and impact assessment
-
-### Step 4: Store Analysis Results for Future Enhancement
+### Step 2: Store Analysis Results for Future Enhancement
 
 Store analysis results in structured format for future requirement analysis enhancement:
 
@@ -108,7 +36,7 @@ Store analysis results in structured format for future requirement analysis enha
 }
 ```
 
-### Step 5: Format Code Diff Snippets for Markdown
+### Step 3: Format Code Diff Snippets for Markdown
 
 Format code diff snippets for markdown output:
 
@@ -134,13 +62,6 @@ Format code diff snippets for markdown output:
  );
 ```
 ````
-
-### Step 6: Group Analysis by Jira Ticket
-
-Group all analysis results by Jira ticket:
-- Combine all commits/PRs for each ticket
-- Aggregate statistics per ticket
-- Create ticket-level summary
 
 ## Important Constraints
 
