@@ -1,9 +1,13 @@
+import contextlib
+import io
+import json
 import os
+import shutil
 import tempfile
 import unittest
 
-from xray_client import Transport, XrayError
-from xray_endpoints import DEFAULT_CLOUD_HOST, ENDPOINTS
+from xray_client import Transport, XrayClient, XrayError
+from xray_endpoints import DEFAULT_CLOUD_HOST, ENDPOINTS, SERVER_TEST_STEP_URL
 import upload
 
 
@@ -49,6 +53,109 @@ class WriteForbiddenTransport(Transport):
             raise AssertionError(
                 "dry-run attempted a write: %s %s" % (method, url))
         return self.responses[url]
+
+
+class RecordingTransport(Transport):
+    """Records every call and returns queued responses. Forbids nothing."""
+
+    def __init__(self, responses=None):
+        self.calls = []
+        self.responses = list(responses or [])
+
+    def request(self, method, url, headers=None, body=None):
+        self.calls.append((method, url))
+        if self.responses:
+            return self.responses.pop(0)
+        return 200, {}, b"{}"
+
+
+class DetailedTransport(Transport):
+    """RecordingTransport's richer sibling: keeps the body and headers of
+    every call too, which is what the Server step assertions need -- a URL
+    alone cannot show that a step was written with its content intact."""
+
+    def __init__(self, responses=None):
+        self.requests = []
+        self.responses = list(responses or [])
+
+    def request(self, method, url, headers=None, body=None):
+        self.requests.append({"method": method, "url": url,
+                              "headers": headers or {}, "body": body})
+        if self.responses:
+            return self.responses.pop(0)
+        return 200, {}, b"{}"
+
+    def matching(self, method=None, url_contains=None):
+        return [r for r in self.requests
+                if (method is None or r["method"] == method)
+                and (url_contains is None or url_contains in r["url"])]
+
+
+def _case_markdown(tc_id, summary, steps):
+    lines = ["## %s - %s" % (tc_id, summary), "",
+             "| Step | Action | Data | Expected Result |",
+             "|------|--------|------|-----------------|"]
+    for number, (action, data, expected) in enumerate(steps, start=1):
+        lines.append("| %d | %s | %s | %s |" % (number, action, data, expected))
+    return "\n".join(lines) + "\n"
+
+
+def _make_folder(directory, cases, feature_text=None):
+    """Write a minimal Agent-QA output folder. `cases` is a list of
+    (tc_id, summary, [(action, data, expected), ...])."""
+    tc_dir = os.path.join(directory, "test-cases")
+    os.makedirs(tc_dir)
+    with open(os.path.join(tc_dir, "cases.md"), "w") as fh:
+        fh.write("\n".join(_case_markdown(*case) for case in cases))
+    if feature_text is not None:
+        gherkin_dir = os.path.join(directory, "gherkin")
+        os.makedirs(gherkin_dir)
+        with open(os.path.join(gherkin_dir, "f.feature"), "w") as fh:
+            fh.write(feature_text)
+    return directory
+
+
+def _read_report(folder):
+    """The upload report run() wrote into a folder, read and closed."""
+    with open(os.path.join(folder, "xray", "upload-report.md"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _quiet_run(**kwargs):
+    """upload.run() with its progress output captured, so a suite that
+    exercises the execute path does not bury its own failures in reports."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return upload.run(**kwargs)
+
+
+class FastPollMixin(unittest.TestCase):
+    """Collapse the Cloud poll ceiling for the duration of one test.
+
+    XrayClient's real defaults are 60 polls two seconds apart, and upload.run()
+    constructs its own client, so a timeout test driven through run() would
+    otherwise spend two real minutes asleep. Patched on the class and restored
+    afterwards, so the production defaults stay the production defaults.
+    """
+
+    POLLS = 3
+
+    def use_fast_polling(self):
+        original = (XrayClient.POLL_MAX_ATTEMPTS, XrayClient.POLL_INTERVAL_SECONDS)
+
+        def restore():
+            XrayClient.POLL_MAX_ATTEMPTS, XrayClient.POLL_INTERVAL_SECONDS = original
+
+        self.addCleanup(restore)
+        XrayClient.POLL_MAX_ATTEMPTS = self.POLLS
+        XrayClient.POLL_INTERVAL_SECONDS = 0.0
+
+
+TWO_MANUAL_CASES = [
+    ("TC-PROJ-123-001", "First case", [("Sign in", "valid user", "Dashboard"),
+                                       ("Open profile", "", "Profile shown")]),
+    ("TC-PROJ-123-002", "Second case", [("Sign out", "", "Landing page")]),
+]
 
 
 class TestPlanUpload(unittest.TestCase):
@@ -194,26 +301,474 @@ class TestDryRunPerformsNoWrite(unittest.TestCase):
         self.assertFalse(called_urls & write_urls,
                           "dry-run made a write call: %r" % (t.calls,))
 
-    def test_execute_flag_without_task_6_still_makes_no_write(self):
-        # Task 6 has not landed yet, so --execute must fail closed -- it
-        # must still never reach a write endpoint, and it must not report
-        # success.
+    # Task 5's test_execute_flag_without_task_6_still_makes_no_write was
+    # removed here, deliberately and with its own paragraph of explanation.
+    # It asserted that --execute fails closed *because Task 6 had not landed*
+    # -- its name says so. Task 6 is this change, so the behaviour it pinned
+    # is exactly the behaviour being replaced. The property worth keeping is
+    # the one above it: a DEFAULT invocation cannot write. That test is
+    # untouched, and the class TestExecuteCannotBeReachedByAccident below
+    # re-asserts from the other side that the write calls live only inside
+    # the --execute branch.
+
+
+class TestExecuteCannotBeReachedByAccident(unittest.TestCase):
+
+    def test_dry_run_and_execute_differ_only_in_the_writes(self):
+        """The dry-run safety property from the other direction: the same
+        folder, credentials and transport, run both ways, must produce write
+        calls in exactly one of the two runs."""
         auth_url = _resolved("cloud", "auth")
         search_url = _resolved("cloud", "search", base_url=None)
-        t = WriteForbiddenTransport({
-            auth_url: (200, {}, b'"fake-cloud-token"'),
-            search_url: (200, {}, b'{"issues":[]}'),
-        })
+        write_urls = {_resolved("cloud", "import_tests"),
+                      _resolved("cloud", "import_feature")}
+
+        def urls_for(execute, folder):
+            t = RecordingTransport([(200, {}, b'"tok"'),
+                                    (200, {}, b'{"issues":[]}')])
+            _quiet_run(folder=folder, project_key="PROJ", platform="cloud",
+                       base_url=None,
+                       credentials={"client_id": "i", "client_secret": "s"},
+                       transport=t, execute=execute)
+            return {url.split("?")[0] for _, url in t.calls}
+
+        with tempfile.TemporaryDirectory() as d:
+            _make_folder(d, TWO_MANUAL_CASES)
+            self.assertFalse(urls_for(False, d) & write_urls,
+                             "dry-run reached a write endpoint")
+            self.assertTrue(urls_for(True, d) & write_urls,
+                            "--execute reached no write endpoint")
+            self.assertTrue({auth_url, search_url} <= urls_for(False, d))
+
+
+class TestExecutePath(unittest.TestCase):
+
+    def tearDown(self):
+        # run() writes its report into {folder}/xray/. The test below runs
+        # against the checked-in fixture folder, so clean up after it rather
+        # than leaving an untracked artefact in the repository.
+        shutil.rmtree(os.path.join("tests", "fixture", "xray"),
+                      ignore_errors=True)
+
+    def test_execute_issues_the_import_request(self):
+        t = RecordingTransport([(200, {}, b'{"issues":[]}'),
+                                (200, {}, b'{"created":["PROJ-501"],"updated":[],"failed":[]}')])
         rc = upload.run(folder="tests/fixture", project_key="PROJ", platform="cloud",
-                         base_url=None, credentials={"client_id": "i", "client_secret": "s"},
-                         transport=t, execute=True)
-        self.assertNotEqual(rc, 0)
-        write_urls = {
-            _resolved("cloud", "import_tests"),
-            _resolved("cloud", "import_feature"),
-        }
-        called_urls = {url for _, url in t.calls}
-        self.assertFalse(called_urls & write_urls)
+                        base_url=None, credentials={"client_id": "i", "client_secret": "s"},
+                        transport=t, execute=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("import" in url for _, url in t.calls),
+                        "execute made no import call")
+
+    def test_partial_failure_is_reported_and_does_not_raise(self):
+        results = {"created": ["PROJ-501"], "updated": [],
+                   "failed": [{"tc_id": "TC-PROJ-123-002", "reason": "missing summary"}]}
+        text = upload.render_results(results)
+        self.assertIn("PROJ-501", text)
+        self.assertIn("TC-PROJ-123-002", text)
+        self.assertIn("missing summary", text)
+
+    def test_report_is_written_with_front_matter(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            path = upload.write_report(
+                {"created": ["PROJ-501"], "updated": [], "failed": []}, d)
+            body = open(path).read()
+            self.assertTrue(body.startswith("---"))
+            self.assertIn("type: xray-upload-report", body)
+            self.assertTrue(os.path.basename(path) == "upload-report.md")
+
+    def test_a_failed_run_still_writes_what_succeeded(self):
+        results = {"created": ["PROJ-501"], "updated": [],
+                   "failed": [{"tc_id": "TC-PROJ-123-002", "reason": "boom"}]}
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            body = open(upload.write_report(results, d)).read()
+            self.assertIn("PROJ-501", body)
+            self.assertIn("boom", body)
+
+
+class TestReportRedaction(unittest.TestCase):
+
+    def test_account_appears_only_as_a_prefix_and_never_the_secret(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = upload.write_report(
+                {"created": [], "updated": [], "failed": []}, d,
+                project_key="PROJ", platform="cloud",
+                account="abcdef-client-id")
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+            self.assertIn("account: abcd***", body)
+            self.assertNotIn("abcdef-client-id", body)
+
+    def test_no_credential_value_reaches_the_report(self):
+        credentials = {"client_id": "abcdef-client-id",
+                       "client_secret": "SUPERSECRET"}
+        t = RecordingTransport([(200, {}, b'"tok"'), (200, {}, b'{"issues":[]}'),
+                                (200, {}, b'{"jobId":"J1"}'),
+                                (200, {}, b'{"status":"successful","result":'
+                                          b'{"issues":[{"key":"PROJ-501"},'
+                                          b'{"key":"PROJ-502"}],"errors":[]}}')])
+        with tempfile.TemporaryDirectory() as d:
+            _make_folder(d, TWO_MANUAL_CASES)
+            _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                       base_url=None, credentials=credentials, transport=t,
+                       execute=True)
+            body = _read_report(d)
+        self.assertNotIn("SUPERSECRET", body)
+        self.assertNotIn("abcdef-client-id", body)
+
+
+class TestCloudExecutePath(FastPollMixin):
+    """Cloud is ONE asynchronous job: POST the batch, get a jobId, poll the
+    status URL until terminal, then read result.issues / result.errors."""
+
+    CREDENTIALS = {"client_id": "i", "client_secret": "s"}
+
+    def _run(self, responses, cases=None, feature_text=None):
+        t = RecordingTransport(responses)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        _make_folder(d, cases or TWO_MANUAL_CASES, feature_text)
+        rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                        base_url=None, credentials=self.CREDENTIALS,
+                        transport=t, execute=True)
+        report = _read_report(d)
+        return rc, t, report
+
+    def test_successful_job_posts_the_batch_then_polls_the_job(self):
+        rc, t, report = self._run([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[]}'),
+            (200, {}, b'{"jobId":"JOB-7"}'),
+            (200, {}, b'{"status":"successful","result":{"issues":'
+                      b'[{"key":"PROJ-501"},{"key":"PROJ-502"}],"errors":[]}}'),
+        ])
+        self.assertEqual(rc, 0)
+        import_url = _resolved("cloud", "import_tests")
+        self.assertIn(("POST", import_url), t.calls)
+        poll_calls = [c for c in t.calls
+                      if c[0] == "GET" and "JOB-7" in c[1] and c[1].endswith("/status")]
+        self.assertEqual(len(poll_calls), 1,
+                         "the jobId from the import response must be polled")
+        self.assertIn("created: 2", report)
+        self.assertIn("PROJ-501", report)
+
+    def test_a_job_that_never_resolves_is_a_failure_not_a_success(self):
+        working = (200, {}, b'{"status":"working"}')
+        client = XrayClient("cloud", None, self.CREDENTIALS,
+                            RecordingTransport([(200, {}, b'{"jobId":"J"}')]
+                                               + [working] * 5))
+        client._token = "tok"
+        client.POLL_MAX_ATTEMPTS = 4
+        client.POLL_INTERVAL_SECONDS = 0.0
+        slept = []
+        client._sleep = lambda seconds: slept.append(seconds)
+
+        payload = [{"testtype": "Manual",
+                    "fields": {"summary": "a", "labels": ["TC-PROJ-123-001"]},
+                    "steps": []}]
+        results = client.import_manual_tests(payload)
+
+        self.assertEqual(results["created"], [])
+        self.assertEqual(results["updated"], [])
+        self.assertEqual(len(results["failed"]), 1)
+        self.assertEqual(results["failed"][0]["tc_id"], "TC-PROJ-123-001")
+        self.assertIn("still running", results["failed"][0]["reason"])
+        self.assertEqual(len(slept), client.POLL_MAX_ATTEMPTS - 1,
+                         "the poll loop must wait between attempts")
+
+    def test_timeout_makes_the_whole_run_exit_non_zero(self):
+        self.use_fast_polling()
+        rc, _t, report = self._run([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[]}'),
+            (200, {}, b'{"jobId":"J"}'),
+        ] + [(200, {}, b'{"status":"working"}')] * 10)
+        self.assertEqual(rc, 1)
+        self.assertIn("failed: 2", report)
+
+    def test_an_unrecognised_job_status_stops_loudly(self):
+        client = XrayClient("cloud", None, self.CREDENTIALS, RecordingTransport([
+            (200, {}, b'{"jobId":"J"}'),
+            (200, {}, b'{"status":"probably_fine"}'),
+        ]))
+        client._token = "tok"
+        with self.assertRaises(XrayError) as ctx:
+            client.import_manual_tests(
+                [{"fields": {"labels": ["TC-PROJ-123-001"]}, "steps": []}])
+        self.assertIn("probably_fine", str(ctx.exception))
+
+    def test_an_existing_key_is_reported_as_updated_not_created(self):
+        # Idempotency, end to end: the label lookup finds TC-...-001 already
+        # in Jira, plan_upload sends it with its key, and the job's returned
+        # issue must land in "updated". If it landed in "created" the user
+        # would be told a duplicate had been made.
+        rc, _t, report = self._run([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[{"key":"PROJ-441","fields":{"labels":'
+                      b'["TC-PROJ-123-001"]}}]}'),
+            (200, {}, b'{"jobId":"J"}'),
+            (200, {}, b'{"status":"successful","result":{"issues":'
+                      b'[{"key":"PROJ-441"},{"key":"PROJ-502"}],"errors":[]}}'),
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIn("updated: 1", report)
+        self.assertIn("created: 1", report)
+
+    def test_a_job_reporting_fewer_outcomes_than_tests_sent_is_flagged(self):
+        # Two tests sent, one outcome reported, no errors: the missing one
+        # must not be allowed to vanish into a clean "1 created".
+        rc, _t, report = self._run([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[]}'),
+            (200, {}, b'{"jobId":"J"}'),
+            (200, {}, b'{"status":"successful","result":{"issues":'
+                      b'[{"key":"PROJ-501"}],"errors":[]}}'),
+        ])
+        self.assertEqual(rc, 1)
+        self.assertIn("(unreported)", report)
+
+
+class TestCloudPartialFailure(FastPollMixin):
+
+    def test_one_rejected_test_keeps_the_rest_and_exits_non_zero(self):
+        t = RecordingTransport([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[]}'),
+            (200, {}, b'{"jobId":"J"}'),
+            (200, {}, b'{"status":"partially_successful","result":{"issues":'
+                      b'[{"key":"PROJ-501"}],"errors":[{"elementNumber":1,'
+                      b'"message":"Field \'customfield_101\' is required"}]}}'),
+        ])
+        with tempfile.TemporaryDirectory() as d:
+            _make_folder(d, TWO_MANUAL_CASES)
+            rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                            base_url=None,
+                            credentials={"client_id": "i", "client_secret": "s"},
+                            transport=t, execute=True)
+            report = _read_report(d)
+
+        # The count split: one kept, one failed -- not an aborted batch.
+        self.assertEqual(rc, 1, "a partially failed run must not exit 0")
+        self.assertIn("created: 1", report)
+        self.assertIn("failed: 1", report)
+        # The failure names the test and says enough to act on it.
+        self.assertIn("TC-PROJ-123-002", report)
+        self.assertIn("customfield_101", report)
+        # ...and what succeeded is still recorded.
+        self.assertIn("PROJ-501", report)
+
+
+class TestServerExecutePath(unittest.TestCase):
+    """Server/DC is a different implementation behind the same result
+    contract: synchronous Jira bulk create, then N per-step calls."""
+
+    BASE = "https://jira.example.com"
+    CREDENTIALS = {"personal_access_token": "a-pat"}
+
+    def _run(self, responses, cases=None):
+        t = DetailedTransport(responses)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        _make_folder(d, cases or TWO_MANUAL_CASES)
+        rc = _quiet_run(folder=d, project_key="PROJ", platform="server",
+                        base_url=self.BASE, credentials=self.CREDENTIALS,
+                        transport=t, execute=True)
+        report = _read_report(d)
+        return rc, t, report
+
+    CREATE_OK = [
+        (200, {}, b'{"name":"a-user"}'),                       # auth probe
+        (200, {}, b'{"issues":[],"total":0}'),                 # label search
+        (200, {}, b'{"issues":[{"key":"PROJ-501"},{"key":"PROJ-502"}],'
+                  b'"errors":[]}'),                            # issue/bulk
+    ]
+
+    def test_bulk_create_goes_to_jiras_own_endpoint_not_an_xray_one(self):
+        rc, t, report = self._run(self.CREATE_OK)
+        self.assertEqual(rc, 0)
+        bulk = t.matching("POST", "/rest/api/2/issue/bulk")
+        self.assertEqual(len(bulk), 1)
+        self.assertEqual(bulk[0]["url"],
+                         _resolved("server", "import_tests", base_url=self.BASE))
+        body = json.loads(bulk[0]["body"].decode())
+        self.assertEqual(len(body["issueUpdates"]), 2)
+        # Jira's bulk create needs a Jira issuetype; the canonical payload's
+        # Xray "testtype" is not a Jira field and must not be forwarded.
+        self.assertEqual(body["issueUpdates"][0]["fields"]["issuetype"],
+                         {"name": "Test"})
+        self.assertNotIn("testtype", body["issueUpdates"][0])
+        self.assertIn("created: 2", report)
+
+    def test_every_step_of_every_test_gets_its_own_call(self):
+        """RULING 10, as a test. The fixture has three steps across two
+        tests. Jira's bulk create makes the ISSUES and nothing else, so a
+        version of _create_server_steps that dropped the loop, or that wrote
+        the steps to the v2.0 URL with the v1.0 body, would still produce two
+        happy-looking created tests. These assertions fail in that case."""
+        _rc, t, _report = self._run(self.CREATE_OK)
+
+        step_calls = t.matching("PUT", "/api/test/")
+        self.assertEqual(len(step_calls), 3,
+                         "3 steps across 2 tests must produce 3 step calls, "
+                         "one per step -- got %d" % len(step_calls))
+
+        expected_url = SERVER_TEST_STEP_URL.replace("{base_url}", self.BASE)
+        self.assertEqual(
+            [c["url"] for c in step_calls],
+            [expected_url.replace("{testKey}", "PROJ-501"),
+             expected_url.replace("{testKey}", "PROJ-501"),
+             expected_url.replace("{testKey}", "PROJ-502")])
+
+        bodies = [json.loads(c["body"].decode()) for c in step_calls]
+        # v1.0's FLAT, lowercase body. If someone swaps the URL to the 2.0
+        # "/steps" path and leaves this body shape, Xray answers 2xx and
+        # writes EMPTY steps -- so pin the shape here, not just the URL.
+        for body in bodies:
+            self.assertEqual(sorted(body), ["data", "result", "step"])
+            self.assertNotIn("fields", body)
+        self.assertEqual(
+            [(b["step"], b["data"], b["result"]) for b in bodies],
+            [("Sign in", "valid user", "Dashboard"),
+             ("Open profile", "", "Profile shown"),
+             ("Sign out", "", "Landing page")],
+            "step content must survive the Cloud-schema -> v1.0 translation")
+
+    def test_no_call_is_made_to_the_v2_plural_step_url(self):
+        _rc, t, _report = self._run(self.CREATE_OK)
+        self.assertEqual(t.matching(url_contains="/rest/raven/2.0/"), [])
+        self.assertEqual(t.matching(url_contains="/steps"), [])
+
+    def test_a_failing_step_call_fails_only_that_test(self):
+        responses = list(self.CREATE_OK) + [
+            (200, {}, b"{}"),      # PROJ-501 step 1 ok
+            (200, {}, b"{}"),      # PROJ-501 step 2 ok
+            (400, {}, b"nope"),    # PROJ-502 step 1 rejected
+        ]
+        rc, _t, report = self._run(responses)
+        self.assertEqual(rc, 1)
+        self.assertIn("created: 1", report)
+        self.assertIn("failed: 1", report)
+        self.assertIn("PROJ-501", report)
+        self.assertIn("TC-PROJ-123-002", report)
+        self.assertIn("step 1 of 1", report)
+
+    def test_a_rejected_issue_keeps_the_rest_and_names_the_test(self):
+        responses = [
+            (200, {}, b'{"name":"a-user"}'),
+            (200, {}, b'{"issues":[],"total":0}'),
+            (200, {}, b'{"issues":[{"key":"PROJ-501"}],"errors":[{'
+                      b'"status":400,"failedElementNumber":1,"elementErrors":'
+                      b'{"errorMessages":[],"errors":{"customfield_101":'
+                      b'"Field is required"}}}]}'),
+        ]
+        rc, _t, report = self._run(responses)
+        self.assertEqual(rc, 1)
+        self.assertIn("created: 1", report)
+        self.assertIn("failed: 1", report)
+        self.assertIn("TC-PROJ-123-002", report)
+        self.assertIn("customfield_101", report)
+
+    def test_an_existing_test_is_never_silently_duplicated(self):
+        # Xray Server/DC has no bulk test import and the contract records no
+        # update endpoint for an existing Test issue. The one thing that must
+        # NOT happen is a duplicate; the second thing that must not happen is
+        # a silent "updated" that changed nothing. So it is a named failure.
+        responses = [
+            (200, {}, b'{"name":"a-user"}'),
+            (200, {}, b'{"issues":[{"key":"PROJ-441","fields":{"labels":'
+                      b'["TC-PROJ-123-001"]}}],"total":1}'),
+            (200, {}, b'{"issues":[{"key":"PROJ-502"}],"errors":[]}'),
+        ]
+        rc, t, report = self._run(responses)
+        self.assertEqual(rc, 1)
+        bulk = t.matching("POST", "/rest/api/2/issue/bulk")
+        body = json.loads(bulk[0]["body"].decode())
+        self.assertEqual(len(body["issueUpdates"]), 1,
+                         "the already-existing test must not be re-created")
+        self.assertIn("TC-PROJ-123-001", report)
+        self.assertIn("PROJ-441", report)
+
+
+class TestFeatureImport(unittest.TestCase):
+
+    FEATURE = ("Feature: Login\n"
+               "  Scenario: TC-PROJ-123-001 - First case\n"
+               "    Given a registered user\n")
+
+    def test_cloud_feature_import_reads_the_object_response_shape(self):
+        t = RecordingTransport([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[]}'),
+            (200, {}, b'{"errors":[],"updatedOrCreatedTests":'
+                      b'[{"id":"1","key":"PROJ-601","self":"u"}],'
+                      b'"updatedOrCreatedPreconditions":[]}'),
+        ])
+        with tempfile.TemporaryDirectory() as d:
+            _make_folder(d, [TWO_MANUAL_CASES[0]], self.FEATURE)
+            rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                            base_url=None,
+                            credentials={"client_id": "i", "client_secret": "s"},
+                            transport=t, execute=True)
+            report = _read_report(d)
+        self.assertEqual(rc, 0)
+        self.assertIn("PROJ-601", report)
+        feature_calls = [c for c in t.calls if "import/feature" in c[1]]
+        self.assertEqual(len(feature_calls), 1)
+        self.assertIn("projectKey=PROJ", feature_calls[0][1])
+
+    def test_server_feature_import_reads_the_bare_array_response_shape(self):
+        # Server answers a JSON ARRAY, labelled application/octet-stream.
+        # A client that trusted the Content-Type, or that assumed Cloud's
+        # object-with-three-lists, would report zero tests imported.
+        t = DetailedTransport([
+            (200, {}, b'{"name":"a-user"}'),
+            (200, {}, b'{"issues":[],"total":0}'),
+            (200, {"Content-Type": "application/octet-stream"},
+             b'[{"id":"1","key":"PROJ-601","self":"u","issueType":"Test"}]'),
+        ])
+        with tempfile.TemporaryDirectory() as d:
+            _make_folder(d, [TWO_MANUAL_CASES[0]], self.FEATURE)
+            rc = _quiet_run(folder=d, project_key="PROJ", platform="server",
+                            base_url="https://jira.example.com",
+                            credentials={"personal_access_token": "a-pat"},
+                            transport=t, execute=True)
+            report = _read_report(d)
+        self.assertEqual(rc, 0)
+        self.assertIn("created: 1", report)
+        self.assertIn("PROJ-601", report)
+        sent = t.matching("POST", "/rest/raven/1.0/import/feature")
+        self.assertEqual(len(sent), 1)
+        self.assertIn("multipart/form-data; boundary=",
+                      sent[0]["headers"]["Content-Type"])
+        self.assertIn(b'name="file"; filename="f.feature"', sent[0]["body"])
+        self.assertIn(b"Given a registered user", sent[0]["body"])
+
+    def test_a_failing_feature_import_does_not_stop_the_run(self):
+        t = RecordingTransport([
+            (200, {}, b'"tok"'),
+            (200, {}, b'{"issues":[]}'),
+            (200, {}, b'{"jobId":"J"}'),
+            (200, {}, b'{"status":"successful","result":{"issues":'
+                      b'[{"key":"PROJ-501"}],"errors":[]}}'),
+            (400, {}, b"Bad Gherkin"),
+        ])
+        with tempfile.TemporaryDirectory() as d:
+            # Case 002 is in the feature file, so 001 is Manual and 002 is
+            # Cucumber: both paths run in one invocation.
+            _make_folder(d, TWO_MANUAL_CASES,
+                         "Feature: X\n  Scenario: TC-PROJ-123-002 - Second case\n")
+            rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
+                            base_url=None,
+                            credentials={"client_id": "i", "client_secret": "s"},
+                            transport=t, execute=True)
+            report = _read_report(d)
+        self.assertEqual(rc, 1)
+        self.assertIn("created: 1", report)      # the Manual test survived
+        self.assertIn("PROJ-501", report)
+        self.assertIn("f.feature", report)
+        self.assertIn("HTTP 400", report)
 
 
 if __name__ == "__main__":

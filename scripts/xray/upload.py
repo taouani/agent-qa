@@ -1,6 +1,7 @@
 """Xray upload CLI. Dry-run by default -- reaches Jira only to search for
-existing tests by label, never to write. `--execute` (Task 6) is the only
-way to actually create or update a test.
+existing tests by label, never to write. `--execute` is the only way to
+actually create or update a test, and every write call lives inside that
+branch of run().
 
 Python 3.8 floor, standard library only. This module is pure orchestration:
 classification and payload construction stay in xray_payloads.py, auth/HTTP
@@ -9,11 +10,19 @@ xray-upload-design.md for the design this implements.
 """
 
 import argparse
+import datetime
 import re
 import sys
 from pathlib import Path
 
-from xray_client import UrllibTransport, XrayClient, XrayError, read_credentials
+from xray_client import (
+    UrllibTransport,
+    XrayClient,
+    XrayError,
+    empty_results,
+    merge_results,
+    read_credentials,
+)
 from xray_payloads import TC_ID_PATTERN, build_manual_payload, classify
 
 # A test case heading, exactly as generate-test-cases writes it in this
@@ -162,6 +171,15 @@ def load_folder(folder):
     return test_cases, feature_texts
 
 
+def load_feature_paths(folder):
+    """The .feature files load_folder() read, as paths. The execute path
+    uploads the files themselves (feature import is a multipart file upload,
+    and the filename is part of the request), so it needs the paths, while
+    classification only ever needed the text. Same glob, same order, so the
+    two views cannot disagree about which files are in play."""
+    return sorted((Path(folder) / "gherkin").glob("*.feature"))
+
+
 def plan_upload(test_cases, feature_texts, existing_keys, project_key=None):
     """Decide, for each test case, whether it will be created or updated,
     and whether it is Cucumber or Manual. Classification comes from
@@ -224,14 +242,128 @@ def render_dry_run(plan, project_key, platform, folder):
     return "\n".join(lines) + "\n"
 
 
+def render_results(results):
+    """Render what --execute actually did. Every failure names its TC-ID and
+    its reason, because a run that reports "1 failed" and nothing else leaves
+    the user no way to act. No credential value reaches this function."""
+    created = list(results.get("created", []))
+    updated = list(results.get("updated", []))
+    failed = list(results.get("failed", []))
+
+    lines = [
+        "Xray upload — EXECUTED",
+        "",
+        "  CREATED  %d" % len(created),
+    ]
+    for key in created:
+        lines.append("    + %s" % key)
+    lines.append("  UPDATED  %d" % len(updated))
+    for key in updated:
+        lines.append("    ~ %s" % key)
+    lines.append("  FAILED   %d" % len(failed))
+    for failure in failed:
+        lines.append("    ! %s: %s" % (failure.get("tc_id", "(unknown)"),
+                                       failure.get("reason", "no reason given")))
+    lines.append("")
+    if failed:
+        lines.append(
+            "%d test(s) failed. What succeeded above is already in Jira and is "
+            "not rolled back; re-running updates it rather than duplicating it."
+            % len(failed))
+    else:
+        lines.append("All tests uploaded successfully.")
+    return "\n".join(lines) + "\n"
+
+
+def redact_account(value):
+    """A recognisable prefix of an account identifier and nothing more, so a
+    report can say WHICH account wrote without disclosing the identifier.
+    Never called on a secret -- secrets do not reach the report at all."""
+    if not value:
+        return ""
+    return (value[:4] + "***") if len(value) > 4 else "***"
+
+
+def write_report(results, folder, project_key=None, platform=None,
+                 account=None):
+    """Write {folder}/xray/upload-report.md and return its path.
+
+    Written whatever the outcome: a run where seventeen of thirty tests
+    failed still has twenty-nine successes worth recording, and the failures
+    are the whole reason someone opens this file.
+    """
+    created = list(results.get("created", []))
+    updated = list(results.get("updated", []))
+    failed = list(results.get("failed", []))
+
+    out_dir = Path(folder) / "xray"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "upload-report.md"
+
+    lines = [
+        "---",
+        "type: xray-upload-report",
+        "generated: %s" % datetime.date.today().isoformat(),
+        "platform: %s" % (platform or ""),
+        "project: %s" % (project_key or ""),
+    ]
+    if account:
+        # Redacted to a recognisable prefix. The secret itself is never
+        # passed to this function, let alone written.
+        lines.append("account: %s" % redact_account(account))
+    lines.extend([
+        "created: %d" % len(created),
+        "updated: %d" % len(updated),
+        "failed: %d" % len(failed),
+        "---",
+        "",
+        "# Xray upload report",
+        "",
+        "## Created (%d)" % len(created),
+        "",
+    ])
+    lines.extend(["- %s" % key for key in created] or ["_None._"])
+    lines.extend(["", "## Updated (%d)" % len(updated), ""])
+    lines.extend(["- %s" % key for key in updated] or ["_None._"])
+    lines.extend(["", "## Failed (%d)" % len(failed), ""])
+    if failed:
+        lines.append("| Test case | Reason |")
+        lines.append("|-----------|--------|")
+        for failure in failed:
+            reason = str(failure.get("reason", "no reason given"))
+            lines.append("| %s | %s |" % (failure.get("tc_id", "(unknown)"),
+                                          reason.replace("|", "\\|")))
+    else:
+        lines.append("_None._")
+    lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return str(path)
+
+
+def _account_identifier(credentials):
+    """The account identifier worth recording in the report, if there is one.
+    A Server/DC personal access token names no account, so nothing is
+    recorded there. A SECRET is never returned by this function."""
+    for key in ("client_id", "jira_email"):
+        value = (credentials or {}).get(key)
+        if value:
+            return value
+    return None
+
+
 def run(folder, project_key, platform, base_url, credentials, transport,
         execute=False, cloud_host=None):
     """Load a folder, plan the upload, and either print the dry-run report
-    (default) or apply it (--execute, implemented in Task 6). `transport`
-    is injected so callers -- tests included -- control exactly what this
-    reaches over the network. Returns 0 on success, non-zero on XrayError;
-    the error is printed without ever including a credential value, since
-    every XrayError raised anywhere in this call chain is built that way.
+    (default) or apply it (--execute). `transport` is injected so callers --
+    tests included -- control exactly what this reaches over the network.
+
+    Returns 0 only when the run is wholly successful. A run where some tests
+    uploaded and others were rejected returns 1: partial failure is the normal
+    case here, and reporting it as success is the one outcome that would let a
+    broken upload pass unnoticed. The error is printed without ever including
+    a credential value, since every XrayError raised anywhere in this call
+    chain is built that way.
     """
     try:
         test_cases, feature_texts = load_folder(folder)
@@ -246,12 +378,24 @@ def run(folder, project_key, platform, base_url, credentials, transport,
             print(render_dry_run(plan, project_key, platform, folder))
             return 0
 
-        # The write path lands in Task 6. Reaching here with --execute
-        # today would need a real import call this task does not provide,
-        # so it fails loudly rather than silently doing nothing.
-        raise XrayError(
-            "--execute is not implemented yet; only the dry-run path exists"
-        )
+        # Everything below this line writes to a live Jira. Nothing above it
+        # does, and nothing below it is reachable without --execute.
+        results = empty_results()
+        if plan["manual_payload"]:
+            merge_results(results,
+                          client.import_manual_tests(plan["manual_payload"]))
+        for feature_path in load_feature_paths(folder):
+            # One file at a time, and one file's failure never stops the next:
+            # a batch must not be abandoned at its first rejection.
+            merge_results(results, client.import_feature_file(
+                str(feature_path), project_key, existing_keys=existing_keys))
+
+        print(render_results(results))
+        report_path = write_report(
+            results, folder, project_key=project_key, platform=platform,
+            account=_account_identifier(credentials))
+        print("Report: %s" % report_path)
+        return 1 if results["failed"] else 0
     except XrayError as e:
         print("Error: %s" % e, file=sys.stderr)
         return 1
