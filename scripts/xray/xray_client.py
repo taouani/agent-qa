@@ -17,6 +17,7 @@ glance" and the per-flavour "1. Authentication -- auth" sections):
   no exchange call should be made and no token should be parsed out of the body.
 """
 
+import base64
 import json
 import subprocess
 import urllib.request
@@ -152,3 +153,121 @@ class XrayClient:
             return {field: self.credentials[field] for field in fields}
         except KeyError as e:
             raise XrayError("missing required credential field: %s" % e.args[0])
+
+    # ---- Label matching (api-contract.md, "2. JQL search") -----------------
+
+    JQL_BATCH = 50
+
+    def find_tests_by_label(self, project_key, labels):
+        """Map each label already present in Jira (as an issue label) to its
+        issue key. Labels with no match are simply absent from the result --
+        callers partition create-vs-update on that absence, so a truncated
+        page here must never be mistaken for "not found"."""
+        found = {}
+        if not labels:
+            return found
+        self._require_known_platform()
+        headers = self._search_auth_header()
+        for start in range(0, len(labels), self.JQL_BATCH):
+            chunk = labels[start:start + self.JQL_BATCH]
+            quoted = ", ".join('"%s"' % label for label in chunk)
+            jql = 'project = %s AND labels in (%s)' % (project_key, quoted)
+            for issue in self._search_all_pages(jql, headers):
+                for label in issue.get("fields", {}).get("labels", []):
+                    if label in chunk:
+                        found[label] = issue["key"]
+        return found
+
+    def _search_auth_header(self):
+        # Cloud search is a Jira endpoint secured by Jira credentials, not the
+        # Xray bearer token (api-contract.md, "Xray Cloud" > "2. JQL search").
+        # Whether the Xray token is also accepted is genuinely unverified
+        # (contract's ## Unverified, item 2), so this does not demand Jira
+        # credentials speculatively: it prefers them when configured, and
+        # otherwise tries the Xray token, turning a 401/403 into a
+        # self-diagnosing error rather than guessing up front.
+        if self.platform == "cloud":
+            email = self.credentials.get("jira_email")
+            api_token = self.credentials.get("jira_api_token")
+            if email and api_token:
+                basic = base64.b64encode(
+                    ("%s:%s" % (email, api_token)).encode()
+                ).decode()
+                return {"Authorization": "Basic %s" % basic}
+            return {"Authorization": "Bearer %s" % self.authenticate()}
+        # Server/DC: the same Jira credential used on every other request.
+        return {"Authorization": self.authenticate()}
+
+    def _post_json(self, url, headers, body):
+        all_headers = {"Content-Type": "application/json"}
+        all_headers.update(headers or {})
+        return self.transport.request(
+            "POST", url, headers=all_headers, body=json.dumps(body).encode()
+        )
+
+    def _search_all_pages(self, jql, headers):
+        if self.platform == "cloud":
+            return self._search_cloud_all_pages(jql, headers)
+        return self._search_server_all_pages(jql, headers)
+
+    def _search_cloud_all_pages(self, jql, headers):
+        # Cloud search/jql paginates with a returned nextPageToken, not
+        # startAt (api-contract.md: "Pagination is token-based
+        # (nextPageToken), not startAt-based"). The response schema for the
+        # token itself is not spelled out in the contract beyond naming the
+        # SearchAndReconcileResults shape, so continuation is keyed off the
+        # presence of a nextPageToken in the response, mirroring the
+        # request-side field of the same name; its absence is the terminal
+        # condition. See task-3-report.md for this inference.
+        issues = []
+        body = {"jql": jql, "fields": ["labels"], "maxResults": 100}
+        page_token = None
+        while True:
+            if page_token:
+                body["nextPageToken"] = page_token
+            url = self._endpoint("search")
+            status, _, payload = self._post_json(url, headers, body)
+            self._raise_for_search_status(status)
+            data = json.loads(payload.decode())
+            issues.extend(data.get("issues", []))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        return issues
+
+    def _search_server_all_pages(self, jql, headers):
+        # Server/DC search is offset-based: {"startAt", "maxResults",
+        # "total", "issues"} (api-contract.md, Server "2. JQL search",
+        # quoting the documented request/response shape). Keep requesting
+        # while fewer issues have been seen than "total" reports.
+        issues = []
+        start_at = 0
+        max_results = 50
+        while True:
+            body = {
+                "jql": jql,
+                "startAt": start_at,
+                "maxResults": max_results,
+                "fields": ["labels"],
+            }
+            url = self._endpoint("search")
+            status, _, payload = self._post_json(url, headers, body)
+            self._raise_for_search_status(status)
+            data = json.loads(payload.decode())
+            page = data.get("issues", [])
+            issues.extend(page)
+            start_at += len(page)
+            total = data.get("total")
+            if not page or total is None or start_at >= total:
+                break
+        return issues
+
+    def _raise_for_search_status(self, status):
+        if status == 200:
+            return
+        if self.platform == "cloud" and status in (401, 403):
+            raise XrayError(
+                "Jira search rejected the Xray token -- add jira_email and "
+                "jira_api_token to agent-qa/.xray-credentials"
+            )
+        raise XrayError("Jira search failed with HTTP %d" % status)
