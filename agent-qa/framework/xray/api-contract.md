@@ -327,7 +327,39 @@ https://github.com/Xray-App/xray-postman-collections `Xray_REST_API_v2.0.postman
     `POST /rest/api/2/issue/bulk`
   - https://docs.getxray.app/display/XRAY/Test+Steps+-+REST (2026-09-14) — step creation
 
-### 4. Gherkin feature import — `import_feature`
+### 4. Updating an existing Test — `update_issue`
+
+Xray Server/DC documents no endpoint that updates an existing Test *definition*. A Test is an
+ordinary Jira issue, so its fields are updated through core Jira, exactly as its creation goes
+through core Jira's `issue/bulk` rather than through Xray.
+
+- **Method / URL:** `PUT {base_url}/rest/api/2/issue/{issueKey}`
+- **Request body:** `{"fields": {...}}` — only the fields being changed.
+- **SYNCHRONOUS.** Returns `204 No Content` on success, with no body.
+- `project` and `issuetype` must **not** be sent on an update; Jira rejects attempts to change them
+  through this resource.
+- Exported as `SERVER_ISSUE_URL`.
+
+**Steps are deliberately not updated through this path, and the client tells the user so.** The
+reasons are load-bearing:
+
+- v1.0's `PUT .../api/test/{testKey}/step` documents step **creation** only. Calling it against a
+  Test that already has steps appends a second copy, so a re-run would duplicate every step.
+- v2.0 can list, update and delete steps, but its field keys are Jira display names whose casing is
+  unconfirmed ([`## Unverified`](#unverified) item 3) — and a failure partway through a
+  delete-then-recreate leaves a customer's Test with **no steps at all**. Losing real data to avoid
+  stale data is not an acceptable trade.
+
+The consequence is a real, stated limitation: on Server/DC an edited test step does not propagate on
+re-upload and must be applied by hand. Settling Unverified item 3 against a live instance is what
+would let a safe step-replace take its place; until then the notice is the honest behaviour. See
+[`## Unverified`](#unverified) item 6.
+
+- **Sources:**
+  - https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/ (2026-09-15) —
+    `PUT /rest/api/2/issue/{issueIdOrKey}`
+
+### 5. Gherkin feature import — `import_feature`
 
 - **Method / URL:** `POST {base_url}/rest/raven/1.0/import/feature`
 - **SYNCHRONOUS.** A blocking request; `200 OK` means it completed.
@@ -408,3 +440,11 @@ contract proper: the Cloud manual-step schema (`action`/`data`/`result`), the ex
    request, one concurrent Cloud import job per user, ~100 MB feature upload, GraphQL `limit` 1–100.
    **Mitigation:** the client should honour `Retry-After` and back off on 429 rather than assume a
    ceiling.
+
+6. **A safe step-replace on Server/DC.** Updating the steps of an existing Test needs either a
+   verified v2.0 field-key casing (item 3) or a transactional replace that cannot leave a Test
+   empty. Neither exists today.
+   *Why documentation cannot settle it:* item 3 is instance-specific by nature, and no vendor page
+   describes any atomic replace-all-steps operation — the v2.0 surface is per-step CRUD, so
+   atomicity would have to come from the server and does not.
+   **Mitigation:** do not update steps; state the limitation in the run report.
