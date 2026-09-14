@@ -17,7 +17,7 @@ for test *sets*, not for plain tests (see api-contract.md, footnote on the
 
 import re
 
-from xray_endpoints import CLOUD_TEST_STEP_FIELDS
+from xray_endpoints import BULK_IMPORT_TEST_TYPE, CLOUD_TEST_STEP_FIELDS
 
 # TC-{KEY}-{NNN}: "TC-", a project key (letter, then letters/digits/underscores),
 # a dash-separated numeric issue part, a dash, then the zero-padded sequence
@@ -60,6 +60,12 @@ def build_manual_payload(test_cases, existing_keys, project_key):
     for case in test_cases:
         tc_id = case["id"]
         entry = {
+            # Top-level, sibling to "fields"/"steps" -- the contract's
+            # import_tests field table lists testtype as a per-object field,
+            # not nested inside "fields". Required on every object; every
+            # test this function builds is Manual (Cucumber tests go through
+            # feature-import instead), so the value is a fixed constant.
+            "testtype": BULK_IMPORT_TEST_TYPE,
             "fields": {
                 "project": {"key": project_key},
                 "summary": case["summary"],

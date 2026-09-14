@@ -155,6 +155,11 @@ IMPORT_TESTS_STATUS = {
 # Per-step keys inside a Cloud import_tests manual test's "steps" array. Documented, not inferred.
 CLOUD_TEST_STEP_FIELDS = ["action", "data", "result"]
 
+# Xray test type for tests created through bulk import. Cucumber tests are
+# created through the feature-import endpoint instead, so bulk import only
+# ever carries Manual tests. See api-contract.md, "required fields".
+BULK_IMPORT_TEST_TYPE = "Manual"
+
 # Terminal and non-terminal states of a Cloud import job.
 IMPORT_JOB_STATUSES = {
     "pending": "not_started",

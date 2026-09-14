@@ -1,5 +1,6 @@
 import unittest
 from xray_payloads import classify, build_manual_payload
+from xray_endpoints import BULK_IMPORT_TEST_TYPE
 
 
 FEATURE = """Feature: Login
@@ -64,6 +65,15 @@ class TestManualPayload(unittest.TestCase):
         payload = build_manual_payload(self.CASES, {}, "PROJ")
         self.assertEqual(payload[0]["fields"]["summary"], "Reject an empty password")
         self.assertEqual(len(payload[0]["steps"]), 1)
+
+    def test_new_test_carries_required_testtype(self):
+        payload = build_manual_payload(self.CASES, {}, "PROJ")
+        self.assertEqual(payload[0]["testtype"], BULK_IMPORT_TEST_TYPE)
+
+    def test_existing_test_still_carries_required_testtype(self):
+        payload = build_manual_payload(
+            self.CASES, {"TC-PROJ-123-002": "PROJ-441"}, "PROJ")
+        self.assertEqual(payload[0]["testtype"], BULK_IMPORT_TEST_TYPE)
 
 
 if __name__ == "__main__":
