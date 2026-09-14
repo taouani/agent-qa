@@ -30,73 +30,11 @@ test.describe('{REQUIREMENT-KEY}: {Requirement Summary}', () => {
 
 ### Step 2: Map Test Steps to Playwright Code
 
-For each test case within the spec:
+Apply `@agent-qa/roles/playwright-authoring.md` — sections `## Spec Structure`, `## Assertions` —
+to each test case in the spec, including data-driven parameterization where a test case carries
+multiple data sets.
 
-#### Prerequisites → beforeEach or inline setup
-
-If multiple test cases share the same prerequisites, use `test.beforeEach`:
-
-```typescript
-test.beforeEach(async ({ page }) => {
-  const loginPage = new LoginPage(page);
-  await loginPage.goto();
-  await loginPage.login('test@example.com', 'Password123!');
-});
-```
-
-Otherwise, include setup steps at the beginning of each test.
-
-#### Navigation steps → Page Object goto()
-
-```typescript
-const loginPage = new LoginPage(page);
-await loginPage.goto();
-```
-
-#### Input steps → fill() / selectOption() / check()
-
-```typescript
-await loginPage.emailInput.fill('test@example.com');
-await settingsPage.countrySelect.selectOption('France');
-await formPage.agreeCheckbox.check();
-```
-
-#### Click steps → click()
-
-```typescript
-await loginPage.submitButton.click();
-```
-
-#### Verification steps → expect() assertions
-
-```typescript
-await expect(page).toHaveURL(/dashboard/);
-await expect(dashboardPage.welcomeMessage).toBeVisible();
-await expect(loginPage.errorMessage).toHaveText('Invalid credentials');
-await expect(page.getByRole('row')).toHaveCount(6);
-```
-
-### Step 3: Handle Data-Driven Tests
-
-For test cases with multiple data sets, use parameterization:
-
-```typescript
-const testData = [
-  { email: 'admin@example.com', password: 'AdminPass1!', expectedRole: 'Admin' },
-  { email: 'user@example.com', password: 'UserPass1!', expectedRole: 'Standard' },
-];
-
-for (const data of testData) {
-  test(`TC-PROJ-123-005: Login as ${data.expectedRole}`, async ({ page }) => {
-    const loginPage = new LoginPage(page);
-    await loginPage.goto();
-    await loginPage.login(data.email, data.password);
-    await expect(page.getByRole('heading', { level: 1 })).toContainText(data.expectedRole);
-  });
-}
-```
-
-### Step 4: Write Spec Files
+### Step 3: Write Spec Files
 
 Write each spec file to:
 
@@ -106,7 +44,7 @@ Write each spec file to:
 
 File naming: `{REQUIREMENT-KEY}.spec.ts` (e.g., `PROJ-123.spec.ts`)
 
-### Step 5: Generate README
+### Step 4: Generate README
 
 Create `{selected_folder}/playwright/README.md`:
 
@@ -183,7 +121,7 @@ npx playwright test --headed
 - Page Object `goto()` URLs may need correction based on actual routing
 ```
 
-### Step 6: Present Results
+### Step 5: Present Results
 
 Present a summary to the user:
 
@@ -210,7 +148,7 @@ Next steps:
   3. Run tests: npx playwright test
 ```
 
-### Step 7: Offer to Place Files in the Host Repository
+### Step 6: Offer to Place Files in the Host Repository
 
 Skip this step entirely when `automation.allow_source_edits` is `false`.
 
@@ -225,11 +163,11 @@ Before placing any file, verify the full write gate in `## Constraints`: `allow_
 this file. A `page_object_dir` or `spec_dir` that resolves onto a deny-listed path is refused, not
 adjusted. These conditions are defined once in `## Write Gate` of `@agent-qa/rules/automation-conventions.md`.
 
-### Step 8: Generate Output Index
+### Step 7: Generate Output Index
 
 Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
 
-### Step 9: Execute Post-Generation Hooks
+### Step 8: Execute Post-Generation Hooks
 
 Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to run any configured post-generation hooks.
 

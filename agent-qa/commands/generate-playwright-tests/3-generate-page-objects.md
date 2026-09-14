@@ -20,106 +20,13 @@ If the profile exists and its front matter says `reviewed: true`, read its `## L
 defaults used in the steps below. If the profile is absent, or exists with `reviewed: false`, keep
 the defaults in this phase unchanged and say so once in the run summary.
 
-### Step 2: Generate Page Object Classes
+### Step 2: Generate Page Objects
 
-For each page in `page_inventory`, generate a TypeScript Page Object class:
+Apply `@agent-qa/roles/playwright-authoring.md` — sections `## Page Object Design`,
+`## Locator Properties`, `## Navigation Methods`, `## Action Methods` — to each page in
+`page_inventory`, using the locator strategy from Phase 2.
 
-```typescript
-import { type Locator, type Page } from '@playwright/test';
-
-export class {PageName}Page {
-  readonly page: Page;
-  {locator_properties}
-
-  constructor(page: Page) {
-    this.page = page;
-    {locator_initializations}
-  }
-
-  {methods}
-}
-```
-
-### Step 3: Define Locator Properties
-
-For each UI element identified on the page:
-
-1. Create a `readonly` property with the `Locator` type
-2. Use camelCase naming derived from the element name:
-   - "Email field" → `emailInput`
-   - "Submit button" → `submitButton`
-   - "Country dropdown" → `countrySelect`
-   - "Error message" → `errorMessage`
-
-3. Initialize in constructor using the recommended locator strategy from Phase 2.
-
-A locator carried from the exploration report with a `Source Snapshot` is provenance-backed: emit
-it with NO TODO comment. Only a locator inferred from test-step wording gets one.
-
-```typescript
-constructor(page: Page) {
-  this.page = page;
-  // Observed in the exploration report — no TODO
-  this.emailInput = page.getByRole('textbox', { name: 'Email' });
-  this.passwordInput = page.getByRole('textbox', { name: 'Password' });
-  this.submitButton = page.getByRole('button', { name: 'Submit' });
-  // TODO: Verify this locator — element name inferred from test steps
-  this.errorMessage = page.getByText(/invalid|error/i);
-}
-```
-
-### Step 4: Generate Navigation Methods
-
-Add a `goto()` method using `playwright_base_url` from config:
-
-```typescript
-async goto() {
-  await this.page.goto('{page_path}');
-}
-```
-
-Where `{page_path}` is the relative path inferred from navigation flows (e.g., `/login`, `/dashboard`).
-
-If the path is uncertain, add a TODO:
-
-```typescript
-// TODO: Confirm the correct URL path for this page
-async goto() {
-  await this.page.goto('/assumed-path');
-}
-```
-
-### Step 5: Generate Action Methods
-
-Create action methods that combine multiple element interactions:
-
-**Form submission patterns:**
-```typescript
-async login(email: string, password: string) {
-  await this.emailInput.fill(email);
-  await this.passwordInput.fill(password);
-  await this.loginButton.click();
-}
-```
-
-**Search patterns:**
-```typescript
-async searchFor(query: string) {
-  await this.searchInput.fill(query);
-  await this.searchButton.click();
-}
-```
-
-**Selection patterns:**
-```typescript
-async selectCountry(country: string) {
-  await this.countrySelect.selectOption(country);
-}
-```
-
-Only create action methods for interaction patterns that appear in the test steps. Do not generate speculative methods.
-
-### Step 6: Add TODO Comments
+### Step 3: Add TODO Comments
 
 Add TODO comments to the generated code, but only where the item is actually uncertain:
 
@@ -132,7 +39,7 @@ Add TODO comments to the generated code, but only where the item is actually unc
   generated scaffold — review and adjust locators after running against the actual application".
   Omit this header entirely from a file whose every locator came from an exploration snapshot
 
-### Step 7: Write Page Object Files
+### Step 4: Write Page Object Files
 
 Write each Page Object class to:
 
@@ -147,7 +54,7 @@ File naming:
 When Step 1 resolved a reviewed profile, prefer its `page_object_naming` over the kebab-case
 default, mirror its `page_object_dir` as the subdirectory layout inside the output folder, and use
 its `fixture_import` in place of the generic `@playwright/test` import. The deliverable is still
-written under `{selected_folder}`; placing files into the host repository is Phase 4's Step 7 and
+written under `{selected_folder}`; placing files into the host repository is Phase 4's Step 6 and
 is gated there.
 
 ## Data Storage
