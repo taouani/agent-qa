@@ -35,92 +35,15 @@ For each requirement:
 - If acceptance criteria not found or not relevant → Use requirement description
 - Extract business rules and implicit requirements from description
 
-### Step 3: Generate Positive Test Cases
+### Step 3: Generate the Test Cases
 
-For each requirement, generate positive/happy path test cases:
+Apply `@agent-qa/roles/test-case-design.md` to the requirements loaded in Phase 2. Supply: the
+requirement set with its acceptance criteria, the language detected in Step 1, the `test_types`
+configured in `agent-qa/config.yml`, and any test charter or test strategy present in the selected
+output folder.
 
-**Test Case Structure**:
-- **Test Case ID**: Format `TC-{REQUIREMENT-KEY}-{NNN}` (e.g., `TC-PROJ-123-001`)
-- **Summary**: Concise test case title describing the scenario
-- **Description**: Brief test objective (EXCLUDE preconditions - keep separate)
-- **Priority**: Assign based on keyword analysis:
-  - **P1 (Critical)**: Security, payment, authentication, data integrity, regulatory, critical
-  - **P2 (High)**: Standard business flows and core functionality
-  - **P3 (Medium)**: Standard features, UI validations
-  - **P4 (Low)**: Cosmetic, edge cases with minimal business impact
-- **Preconditions**: Separate section with bulleted prerequisites
-- **Test Data Requirements**: Table with specific test data values
-- **Test Steps**: Numbered list with clear imperative verbs:
-  - Allowed verbs: Open, Navigate, Enter, Input, Select, Choose, Click, Press, Upload, Submit, Verify, Validate, Confirm, Observe
-  - Maximum 200 characters per step
-  - Each step should contain only ONE action
-- **Expected Results**: Clear, measurable expected outcomes
-- **Postconditions**: State after test execution
-
-**Test Data Generation**:
-- Generate specific, realistic test data values based on requirement context
-- Use placeholders in format `<PLACEHOLDER_NAME>` for reusable data
-- Create test data table with actual values and notes
-
-### Step 4: Generate Negative Test Cases
-
-For each requirement, generate negative test cases:
-
-**Coverage Areas**:
-- Invalid inputs and error conditions
-- Boundary violations
-- Missing required fields
-- Invalid data formats
-- Error handling scenarios
-- Permission/authorization failures
-
-**Structure**: Same as positive test cases, but focus on failure scenarios
-
-### Step 5: Generate Edge Cases
-
-For each requirement, generate edge case test cases:
-
-**Coverage Areas**:
-- Boundary conditions (min/max values)
-- Extreme values
-- Empty/null inputs
-- Special characters and encoding
-- Concurrent operations
-- State transitions
-
-**Structure**: Same as positive test cases, but focus on edge conditions
-
-### Step 6: Assign Priority and Risk Classification
-
-For each test case:
-- **Priority Assignment**: Based on keyword analysis (P1-P4)
-- **Risk Level**: Assess business risk if this area fails (High/Medium/Low)
-- **Effort**: Estimate execution complexity (High/Medium/Low)
-- **Regression Recommendation**: Recommend for regression suite (High/Medium/Low/None) based on:
-  - Business impact
-  - Change frequency
-  - Integration complexity
-  - Historical defects
-  - User traffic
-
-### Step 7: Include Traceability
-
-For each test case:
-- **Requirement Reference**: Explicit requirement key (e.g., `PROJ-123`)
-- **Acceptance Criteria Reference**: Link to specific AC items if applicable
-- **Business Rules**: Reference business rules covered
-- **Related Tests**: Link to related test cases
-
-### Step 8: Quality Validation
-
-Validate each test case against quality criteria:
-- **Clarity**: Each step is unambiguous and actionable
-- **Completeness**: All necessary setup, execution, and validation steps included
-- **Traceability**: Clear mapping to source requirements and business rules
-- **Maintainability**: Test data and steps are easily updatable
-- **Reusability**: Common patterns extracted for efficiency
-- **Step Length**: Maximum 200 characters per step
-- **Flow Splitting**: Break tests with >15 steps into multiple test cases
+The role owns how cases are derived, prioritised and validated. This phase owns only what is
+supplied to it and what happens next.
 
 ## Important Constraints
 

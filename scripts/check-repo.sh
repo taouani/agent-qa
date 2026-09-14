@@ -296,6 +296,37 @@ check_inference_path_never_stops() {
     pass "phases 1-4 never halt on profile state"
 }
 
+check_roles_wired() {
+    echo "== every role exists and is referenced by a phase =="
+    local role name
+    # Tasks 2-11 append their role's basename to this list.
+    for name in test-case-design; do
+        role="agent-qa/roles/$name.md"
+        if [[ ! -f "$role" ]]; then
+            fail "missing role file: $role"
+            continue
+        fi
+        pass "$role exists"
+        if grep -rq "@agent-qa/roles/$name.md" agent-qa/commands/; then
+            pass "$name is referenced by a phase"
+        else
+            fail "orphan role, no phase references it: $role"
+        fi
+    done
+}
+
+check_role_refs_resolve() {
+    echo "== every @agent-qa/roles reference resolves =="
+    local ref path found=0
+    while read -r ref; do
+        found=1
+        path="${ref#@}"
+        [[ -f "$path" ]] && pass "$path" || fail "role reference not found: $path"
+    done < <(grep -rhoE '@agent-qa/roles/[a-z-]+\.md' agent-qa/commands/ | sort -u)
+    (( found == 0 )) && fail "no role references found in any command — the refactor is not wired"
+    return 0
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -315,6 +346,8 @@ run_checks() {
     check_docs_updated
     check_write_gate_present
     check_inference_path_never_stops
+    check_roles_wired
+    check_role_refs_resolve
 }
 
 run_checks
