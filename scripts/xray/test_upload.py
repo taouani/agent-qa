@@ -670,25 +670,124 @@ class TestServerExecutePath(unittest.TestCase):
         self.assertIn("TC-PROJ-123-002", report)
         self.assertIn("customfield_101", report)
 
-    def test_an_existing_test_is_never_silently_duplicated(self):
-        # Xray Server/DC has no bulk test import and the contract records no
-        # update endpoint for an existing Test issue. The one thing that must
-        # NOT happen is a duplicate; the second thing that must not happen is
-        # a silent "updated" that changed nothing. So it is a named failure.
+    # One test already in Jira (TC-...-001 -> PROJ-441), one not.
+    ONE_EXISTING = [
+        (200, {}, b'{"name":"a-user"}'),                        # auth probe
+        (200, {}, b'{"issues":[{"key":"PROJ-441","fields":{"labels":'
+                  b'["TC-PROJ-123-001"]}}],"total":1}'),        # label search
+        (204, {}, b""),                                         # PUT issue/PROJ-441
+        (200, {}, b'{"issues":[{"key":"PROJ-502"}],"errors":[]}'),   # issue/bulk
+    ]
+
+    def test_an_existing_test_is_updated_in_place_not_duplicated(self):
+        rc, t, report = self._run(self.ONE_EXISTING)
+        self.assertEqual(rc, 0, "an unchanged existing test is not a failure")
+        self.assertIn("updated: 1", report)
+        self.assertIn("created: 1", report)
+        self.assertIn("failed: 0", report)
+
+        # Updated through Jira core PUT /rest/api/2/issue/{key}...
+        put = t.matching("PUT", "/rest/api/2/issue/PROJ-441")
+        self.assertEqual(len(put), 1)
+        body = json.loads(put[0]["body"].decode())
+        self.assertEqual(body["fields"]["summary"], "First case")
+        self.assertIn("TC-PROJ-123-001", body["fields"]["labels"])
+        # ...with the two fields Jira refuses on an existing issue stripped.
+        self.assertNotIn("project", body["fields"])
+        self.assertNotIn("issuetype", body["fields"])
+
+        # ...and NOT re-created through bulk create.
+        bulk = t.matching("POST", "/rest/api/2/issue/bulk")
+        created_body = json.loads(bulk[0]["body"].decode())
+        self.assertEqual(len(created_body["issueUpdates"]), 1,
+                         "the already-existing test must not be re-created")
+
+    def test_no_step_call_is_issued_for_an_updated_test(self):
+        """Steps on an updated test are deliberately untouched: the pinned
+        v1.0 step API only creates, so a step call here would append a second
+        full set of steps on every re-run."""
+        _rc, t, _report = self._run(self.ONE_EXISTING)
+        step_calls = t.matching("PUT", "/api/test/")
+        self.assertEqual([c["url"] for c in step_calls],
+                         [SERVER_TEST_STEP_URL.replace("{base_url}", self.BASE)
+                          .replace("{testKey}", "PROJ-502")],
+                         "only the newly created test may get step calls")
+        self.assertEqual(t.matching("PUT", "/api/test/PROJ-441/"), [])
+
+    def test_a_re_run_of_an_unchanged_folder_exits_zero(self):
+        """The idempotency promise, end to end: run the same folder twice
+        against a Jira that now holds both tests. Nothing is created, nothing
+        fails, and the process exits 0 -- so a non-zero exit stays meaningful."""
         responses = [
             (200, {}, b'{"name":"a-user"}'),
-            (200, {}, b'{"issues":[{"key":"PROJ-441","fields":{"labels":'
-                      b'["TC-PROJ-123-001"]}}],"total":1}'),
-            (200, {}, b'{"issues":[{"key":"PROJ-502"}],"errors":[]}'),
+            (200, {}, b'{"issues":['
+                      b'{"key":"PROJ-441","fields":{"labels":["TC-PROJ-123-001"]}},'
+                      b'{"key":"PROJ-442","fields":{"labels":["TC-PROJ-123-002"]}}'
+                      b'],"total":2}'),
+            (204, {}, b""),      # PUT issue/PROJ-441
+            (204, {}, b""),      # PUT issue/PROJ-442
         ]
         rc, t, report = self._run(responses)
+        self.assertEqual(rc, 0)
+        self.assertIn("updated: 2", report)
+        self.assertIn("created: 0", report)
+        self.assertIn("failed: 0", report)
+        self.assertEqual(t.matching("POST", "/rest/api/2/issue/bulk"), [],
+                         "a re-run must create nothing")
+        self.assertEqual(t.matching("PUT", "/api/test/"), [],
+                         "a re-run must not append steps to existing tests")
+
+    def test_a_failed_field_update_is_reported_and_does_not_stop_the_rest(self):
+        responses = list(self.ONE_EXISTING)
+        responses[2] = (400, {}, b"nope")       # the PUT is rejected
+        rc, _t, report = self._run(responses)
         self.assertEqual(rc, 1)
-        bulk = t.matching("POST", "/rest/api/2/issue/bulk")
-        body = json.loads(bulk[0]["body"].decode())
-        self.assertEqual(len(body["issueUpdates"]), 1,
-                         "the already-existing test must not be re-created")
+        self.assertIn("updated: 0", report)
+        self.assertIn("created: 1", report)     # the other test still landed
         self.assertIn("TC-PROJ-123-001", report)
         self.assertIn("PROJ-441", report)
+
+
+class TestServerStepLimitationNotice(unittest.TestCase):
+    """On Server/DC an edited step does not propagate on re-run. That is a
+    real functional gap, so it has to be visible OUTPUT, not a code comment --
+    and it must not be emitted when it does not apply, or it becomes noise
+    people learn to skip."""
+
+    BASE = "https://jira.example.com"
+    MARKER = "STEPS were NOT modified"
+
+    def _report_for(self, responses, cases):
+        t = DetailedTransport(responses)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        _make_folder(d, cases)
+        rc = _quiet_run(folder=d, project_key="PROJ", platform="server",
+                        base_url=self.BASE,
+                        credentials={"personal_access_token": "a-pat"},
+                        transport=t, execute=True)
+        return rc, _read_report(d)
+
+    def test_the_notice_appears_when_a_test_was_updated(self):
+        rc, report = self._report_for(TestServerExecutePath.ONE_EXISTING,
+                                      TWO_MANUAL_CASES)
+        self.assertIn(self.MARKER, report)
+        self.assertIn("apply that change by hand in Jira", report)
+        self.assertEqual(rc, 0, "the notice must not change the exit code")
+
+    def test_the_notice_is_absent_when_nothing_was_updated(self):
+        rc, report = self._report_for(TestServerExecutePath.CREATE_OK,
+                                      TWO_MANUAL_CASES)
+        self.assertNotIn(self.MARKER, report)
+        self.assertEqual(rc, 0)
+
+    def test_the_notice_also_reaches_the_printed_output(self):
+        results = {"created": [], "updated": ["PROJ-441"], "failed": [],
+                   "notices": ["Xray Server/DC: 1 existing test(s) ... "
+                               "STEPS were NOT modified."]}
+        text = upload.render_results(results)
+        self.assertIn(self.MARKER, text)
+        self.assertIn("All tests uploaded successfully.", text)
 
 
 class TestFeatureImport(unittest.TestCase):

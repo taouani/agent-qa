@@ -249,6 +249,7 @@ def render_results(results):
     created = list(results.get("created", []))
     updated = list(results.get("updated", []))
     failed = list(results.get("failed", []))
+    notices = list(results.get("notices", []))
 
     lines = [
         "Xray upload — EXECUTED",
@@ -265,6 +266,13 @@ def render_results(results):
         lines.append("    ! %s: %s" % (failure.get("tc_id", "(unknown)"),
                                        failure.get("reason", "no reason given")))
     lines.append("")
+    # Notices describe work that SUCCEEDED but did less than a reader would
+    # assume. They print above the pass/fail line so they cannot be mistaken
+    # for a failure, and they never change the exit code.
+    for notice in notices:
+        lines.append("  NOTE  %s" % notice)
+    if notices:
+        lines.append("")
     if failed:
         lines.append(
             "%d test(s) failed. What succeeded above is already in Jira and is "
@@ -295,6 +303,7 @@ def write_report(results, folder, project_key=None, platform=None,
     created = list(results.get("created", []))
     updated = list(results.get("updated", []))
     failed = list(results.get("failed", []))
+    notices = list(results.get("notices", []))
 
     out_dir = Path(folder) / "xray"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -319,6 +328,16 @@ def write_report(results, folder, project_key=None, platform=None,
         "",
         "# Xray upload report",
         "",
+    ])
+    # Notices go first, before the counts, because a caveat about work that
+    # succeeded is exactly the kind of thing that gets missed at the bottom.
+    if notices:
+        lines.append("## Read this")
+        lines.append("")
+        for notice in notices:
+            lines.append("> %s" % notice)
+            lines.append("")
+    lines.extend([
         "## Created (%d)" % len(created),
         "",
     ])

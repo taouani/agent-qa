@@ -35,6 +35,7 @@ from xray_endpoints import (
     IMPORT_JOB_STATUSES,
     IMPORT_TESTS_STATUS,
     LIMITS,
+    SERVER_ISSUE_URL,
     SERVER_TEST_STEP_URL,
 )
 
@@ -62,15 +63,22 @@ class UrllibTransport(Transport):
             raise XrayError("could not reach Xray: %s" % e.reason)
 
 
+# "notices" carries a plain-language caveat about work that SUCCEEDED but did
+# something less than the user might assume -- currently only the Server/DC
+# field-only update. It is deliberately not part of "failed": it must reach the
+# user's eyes, and it must not change the exit code, because nothing failed.
+RESULT_KEYS = ("created", "updated", "failed", "notices")
+
+
 def empty_results():
     """The unified result contract every import path returns, whatever the
     flavour. Callers never branch on platform to read a result."""
-    return {"created": [], "updated": [], "failed": []}
+    return {"created": [], "updated": [], "failed": [], "notices": []}
 
 
 def merge_results(target, addition):
     """Accumulate one import's outcome into a running total, in place."""
-    for key in ("created", "updated", "failed"):
+    for key in RESULT_KEYS:
         target[key].extend(addition.get(key, []))
     return target
 
@@ -613,21 +621,82 @@ class XrayClient:
 
         results = empty_results()
         for entry in updates:
-            # Xray Server/DC has no bulk test import and the contract records
-            # no update endpoint for an existing Test issue. Rather than
-            # quietly re-creating it (a duplicate) or quietly doing nothing and
-            # calling it "updated" (a silent success), say so, per test, and
-            # let the non-zero exit carry the news.
-            results["failed"].append({
-                "tc_id": self._entry_tc_id(entry),
-                "reason": "already exists in Jira as %s, and no update "
-                          "endpoint for an existing Test issue is recorded in "
-                          "%s for Xray Server/DC. It was left untouched -- "
-                          "edit it in Jira, or delete it and re-run to "
-                          "recreate it." % (entry["key"], CONTRACT_DOC),
-            })
+            merge_results(results, self._update_server_issue(entry, headers))
+        if results["updated"]:
+            # The limitation has to be visible OUTPUT, not a code comment: on
+            # Server/DC an edited step does not propagate on re-run, and a
+            # report that said only "updated: 3" would be exactly the silent
+            # half-success this project keeps having to dig out. Emitted only
+            # when something was actually updated, and it changes no count and
+            # no exit code -- the field update genuinely succeeded.
+            results["notices"].append(
+                "Xray Server/DC: %d existing test(s) were updated IN FIELDS "
+                "ONLY (summary and labels). Their STEPS were NOT modified. "
+                "Xray Server/DC's pinned v1.0 step API documents creation "
+                "only, so re-sending steps would append a duplicate set on "
+                "every run, and the v2.0 delete-and-recreate alternative can "
+                "leave a test with no steps at all if it fails partway. If "
+                "you changed the steps of a test case that was updated above, "
+                "apply that change by hand in Jira."
+                % len(results["updated"]))
         if creates:
             merge_results(results, self._bulk_create_server(creates, headers))
+        return results
+
+    def _update_server_issue(self, entry, headers):
+        """Update an EXISTING Server/DC Test issue's fields in place, so a
+        re-run updates rather than duplicating.
+
+        ============ WHY THIS DOES NOT TOUCH THE TEST'S STEPS ============
+        It would be very natural to "finish" this method by adding a call to
+        _create_server_steps() below. Do not. Each of the three ways to do it
+        is worse than the staleness it would fix:
+
+          * PUT the pinned v1.0 .../test/{key}/step again -- v1.0 documents
+            step CREATION only (api-contract.md, "Server step API"). It has no
+            replace semantics, so every re-run APPENDS another full set of
+            steps. Run an unchanged folder three times and the test has its
+            steps three times over.
+          * Use the v2.0 surface to list, delete and re-create -- v2.0 nests
+            Jira DISPLAY-NAME keys whose casing is unconfirmed against a live
+            instance (api-contract.md, "## Unverified" item 3), and a failure
+            between the delete and the create leaves a customer's Test with NO
+            steps at all. Destroying real data to avoid cosmetic staleness is
+            not a trade worth taking.
+          * Delete and re-create the issue -- loses its key, its history, and
+            every test execution linked to it.
+
+        So: fields only, and the caller emits a user-visible notice saying so.
+        If you are here because step edits do not propagate, the fix is a
+        verified v2.0 step-replace contract entry, not a call added here.
+        ==================================================================
+
+        Jira core PUT /rest/api/2/issue/{key} -- the same API family as the
+        POST /rest/api/2/issue/bulk that creates them. "project" and
+        "issuetype" are not editable on an existing issue and are stripped;
+        sending either is a 400.
+        """
+        key = entry["key"]
+        fields = dict(entry.get("fields") or {})
+        fields.pop("project", None)
+        fields.pop("issuetype", None)
+
+        url = self._substitute(SERVER_ISSUE_URL).replace("{issueKey}", key)
+        status, _, _ = self.transport.request(
+            "PUT", url,
+            headers=dict(list(headers.items())
+                         + [("Content-Type", "application/json")]),
+            body=json.dumps({"fields": fields}).encode(),
+        )
+        results = empty_results()
+        if status in (200, 204):
+            results["updated"].append(key)
+        else:
+            results["failed"].append({
+                "tc_id": self._entry_tc_id(entry),
+                "reason": "updating the existing test %s returned HTTP %d; it "
+                          "was left as it was in Jira" % (key, status),
+            })
         return results
 
     def _server_issue_update(self, entry):

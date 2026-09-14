@@ -177,6 +177,18 @@ FEATURE_IMPORT_PARTS = {
     "server": {"file": "file", "test_info": "testInfo", "precondition_info": "preCondInfo"},
 }
 
+# Server/DC only: Jira core issue update, for an EXISTING Test issue's fields.
+# Same API family and same source as the import_tests value above -- Jira's own
+# platform REST v2 (https://docs.atlassian.com/software/jira/docs/api/REST/9.12.0/),
+# which api-contract.md already cites for POST /rest/api/2/issue/bulk. It is recorded
+# here rather than in ENDPOINTS because it has no Cloud counterpart: Cloud updates an
+# existing test through the same bulk import that creates one, by sending its key.
+# PUT; body {"fields": {...}}; 204 No Content on success. "project" and "issuetype"
+# are not editable on an existing issue and must not be sent.
+# This updates FIELDS ONLY. Steps are deliberately not touched -- see
+# XrayClient._update_server_issue() for why.
+SERVER_ISSUE_URL = "{base_url}/rest/api/2/issue/{issueKey}"
+
 # Server/DC only: manual test steps are added one call at a time after bulk issue create.
 # PINNED: v1.0. PUT; flat body {"step": ..., "data": ..., "result": ..., "attachments": [...]}.
 SERVER_TEST_STEP_URL = "{base_url}/rest/raven/1.0/api/test/{testKey}/step"
