@@ -255,12 +255,45 @@ check_write_gate_present() {
 }
 
 check_inference_path_never_stops() {
-    echo "== generate-playwright-tests never delegates to profile discovery =="
-    if grep -rq 'discover-framework-profile' agent-qa/commands/generate-playwright-tests/; then
+    echo "== generate-playwright-tests never stops on profile state =="
+    local dir=agent-qa/commands/generate-playwright-tests
+    local f flat hits
+
+    # Markdown wraps sentences across lines, so every text assertion below runs against
+    # a whitespace-flattened copy of the file. A line-oriented grep silently misses a
+    # prohibition that happens to wrap, which reads as a missing prohibition.
+    flatten() { tr '\n' ' ' < "$1" | tr -s ' '; }
+
+    # 1. The exact regression this guards: delegating to the discovery snippet, which
+    #    STOPS the command on all three of its branches.
+    if grep -rq 'discover-framework-profile' "$dir/"; then
         fail "generate-playwright-tests delegates to discover-framework-profile, which STOPS the command"
     else
-        pass "generate-playwright-tests does not delegate to discovery"
+        pass "no delegation to profile discovery"
     fi
+
+    # 2. Positive assertion: the prohibition must still be stated where it matters.
+    #    An absence-only check passes vacuously once someone deletes the text it guards.
+    for f in "$dir/2-analyze-and-map-ui-elements.md" "$dir/3-generate-page-objects.md"; do
+        flatten "$f" | grep -q 'never stop this command' \
+            && pass "$(basename "$f") states the no-stop prohibition" \
+            || fail "$(basename "$f") lost the 'never stop this command' prohibition"
+    done
+
+    # 3. Negative scan of phases 1-4: no instruction may halt the command because of
+    #    profile state. Phase 5 is exempt - it is terminal and SKIPs after every
+    #    deliverable is written. Matches containing "never stop" are excluded, or this
+    #    check would flag the very sentences that forbid the thing - a trap this
+    #    repository has fallen into before.
+    for f in "$dir"/[1-4]-*.md; do
+        hits=$(flatten "$f" \
+            | grep -oE '(STOP|and stop|FAIL).{0,200}(framework-profile|reviewed: *true|profile is missing|profile is absent|no Playwright project)|(framework-profile|reviewed: *true|profile is missing|profile is absent|no Playwright project).{0,200}(STOP|and stop|FAIL)' \
+            | grep -iv 'never stop' || true)
+        if [[ -n "$hits" ]]; then
+            fail "$(basename "$f") halts on profile state: $hits"
+        fi
+    done
+    pass "phases 1-4 never halt on profile state"
 }
 
 run_checks() {
