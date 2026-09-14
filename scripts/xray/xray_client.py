@@ -172,7 +172,7 @@ class XrayClient:
             chunk = labels[start:start + self.JQL_BATCH]
             quoted = ", ".join('"%s"' % label for label in chunk)
             jql = 'project = %s AND labels in (%s)' % (project_key, quoted)
-            for issue in self._search_all_pages(jql, headers):
+            for issue in self._search_all_pages(jql, headers, project_key):
                 for label in issue.get("fields", {}).get("labels", []):
                     if label in chunk:
                         found[label] = issue["key"]
@@ -205,12 +205,12 @@ class XrayClient:
             "POST", url, headers=all_headers, body=json.dumps(body).encode()
         )
 
-    def _search_all_pages(self, jql, headers):
+    def _search_all_pages(self, jql, headers, project_key):
         if self.platform == "cloud":
-            return self._search_cloud_all_pages(jql, headers)
-        return self._search_server_all_pages(jql, headers)
+            return self._search_cloud_all_pages(jql, headers, project_key)
+        return self._search_server_all_pages(jql, headers, project_key)
 
-    def _search_cloud_all_pages(self, jql, headers):
+    def _search_cloud_all_pages(self, jql, headers, project_key):
         # Cloud search/jql paginates with a returned nextPageToken, not
         # startAt (api-contract.md: "Pagination is token-based
         # (nextPageToken), not startAt-based"). The response schema for the
@@ -227,7 +227,7 @@ class XrayClient:
                 body["nextPageToken"] = page_token
             url = self._endpoint("search")
             status, _, payload = self._post_json(url, headers, body)
-            self._raise_for_search_status(status)
+            self._raise_for_search_status(status, project_key)
             data = json.loads(payload.decode())
             issues.extend(data.get("issues", []))
             page_token = data.get("nextPageToken")
@@ -235,7 +235,7 @@ class XrayClient:
                 break
         return issues
 
-    def _search_server_all_pages(self, jql, headers):
+    def _search_server_all_pages(self, jql, headers, project_key):
         # Server/DC search is offset-based: {"startAt", "maxResults",
         # "total", "issues"} (api-contract.md, Server "2. JQL search",
         # quoting the documented request/response shape). Keep requesting
@@ -252,7 +252,7 @@ class XrayClient:
             }
             url = self._endpoint("search")
             status, _, payload = self._post_json(url, headers, body)
-            self._raise_for_search_status(status)
+            self._raise_for_search_status(status, project_key)
             data = json.loads(payload.decode())
             page = data.get("issues", [])
             issues.extend(page)
@@ -262,12 +262,28 @@ class XrayClient:
                 break
         return issues
 
-    def _raise_for_search_status(self, status):
+    def _raise_for_search_status(self, status, project_key):
         if status == 200:
             return
         if self.platform == "cloud" and status in (401, 403):
+            # Branch the diagnosis on whether Jira credentials are already
+            # configured. A confident wrong diagnosis is worse than a vague
+            # one: telling a user who already has jira_email/jira_api_token
+            # to "add" them sends them down a path that cannot help.
+            email = self.credentials.get("jira_email")
+            api_token = self.credentials.get("jira_api_token")
+            if email and api_token:
+                raise XrayError(
+                    "Jira search returned %d with the Jira credentials from "
+                    "agent-qa/.xray-credentials. Check that jira_email and "
+                    "jira_api_token are correct and that the account can "
+                    "browse project %s." % (status, project_key)
+                )
             raise XrayError(
-                "Jira search rejected the Xray token -- add jira_email and "
-                "jira_api_token to agent-qa/.xray-credentials"
+                "Jira search returned %d. Xray Cloud search is a Jira "
+                "endpoint and may not accept the Xray token. Add jira_email "
+                "and jira_api_token to agent-qa/.xray-credentials. If the "
+                "problem persists after adding them, the Xray token may "
+                "have expired." % status
             )
         raise XrayError("Jira search failed with HTTP %d" % status)

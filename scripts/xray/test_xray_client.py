@@ -133,11 +133,11 @@ class TestLabelMatching(unittest.TestCase):
         self._client(t).find_tests_by_label("PROJ", ["TC-PROJ-123-001"])
         self.assertEqual(t.calls[0]["method"], "POST")
 
-    def test_cloud_search_401_gives_self_diagnosing_message(self):
+    def test_cloud_search_401_without_jira_creds_says_add_them(self):
         # Cloud search is a Jira endpoint, not an Xray one (api-contract.md,
         # "Xray Cloud" > "2. JQL search"), and whether the Xray bearer token
-        # is accepted there is genuinely unverified. A 401/403 must not leak
-        # any credential, but it should tell the engineer exactly what to add.
+        # is accepted there is genuinely unverified. When no Jira credentials
+        # are configured at all, that's the missing piece to name.
         t = FakeTransport([(401, {}, b'{}')])
         with self.assertRaises(XrayError) as ctx:
             self._client(t).find_tests_by_label("PROJ", ["TC-PROJ-123-001"])
@@ -145,6 +145,31 @@ class TestLabelMatching(unittest.TestCase):
         self.assertIn("jira_email", message)
         self.assertIn("jira_api_token", message)
         self.assertIn("agent-qa/.xray-credentials", message)
+        self.assertIn("Add jira_email", message)
+        self.assertNotIn("SUPERSECRET", message)
+
+    def test_cloud_search_401_with_jira_creds_says_check_them(self):
+        # A confident wrong diagnosis is worse than a vague one: a user who
+        # already configured jira_email/jira_api_token must not be told to
+        # "add" them -- they need to be told to check correctness/permissions
+        # instead. The credential VALUES must still never appear.
+        t = FakeTransport([(403, {}, b'{}')])
+        c = XrayClient("cloud", None, {
+            "client_id": "i", "client_secret": "s",
+            "jira_email": "person@example.com",
+            "jira_api_token": "SUPERSECRETJIRATOKEN",
+        }, t)
+        c._token = "cached"
+        with self.assertRaises(XrayError) as ctx:
+            c.find_tests_by_label("PROJ", ["TC-PROJ-123-001"])
+        message = str(ctx.exception)
+        self.assertIn("jira_email", message)
+        self.assertIn("jira_api_token", message)
+        self.assertIn("agent-qa/.xray-credentials", message)
+        self.assertIn("Check that jira_email", message)
+        self.assertIn("PROJ", message)
+        self.assertNotIn("SUPERSECRETJIRATOKEN", message)
+        self.assertNotIn("person@example.com", message)
 
     def test_search_server_error_raises_without_leaking_status_as_data(self):
         t = FakeTransport([(500, {}, b'{}')])
