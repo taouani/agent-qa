@@ -4,7 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Agent-QA is an AI-powered QA automation agent. It analyzes Jira tickets, Confluence pages, and git repository changes to generate test deliverables (test cases, strategies, charters, plans, risk registers, release notes, Gherkin features, Playwright specs). The project is entirely markdown and YAML — no application runtime, no package manager, no compiled code.
+Agent-QA is an AI-powered QA automation agent. It analyzes Jira tickets, Confluence pages, and git repository changes to generate test deliverables (test cases, strategies, charters, plans, risk registers, release notes, Gherkin features, Playwright specs). The project is entirely markdown and YAML — no application runtime, no package manager, no compiled code. "Source code" here means prompt instructions: editing a phase file changes agent behavior.
+
+## Working In This Repo
+
+There is no build, no test runner, and no linter. Verification is manual:
+
+```bash
+bash -n scripts/project-install.sh          # syntax-check any modified shell script
+./scripts/install-from-local.sh             # install this working copy into a test project
+grep -rn "{{PHASE" agent-qa/commands/       # verify phase markers resolve to real files
+bash scripts/check-repo.sh            # structural integrity: phase refs, command twins, rules
+```
+
+After changing commands or phases, exercise them from an installed project via the slash commands
+`/agent-qa:health-check` (validates config + MCP connectivity) and `/agent-qa:validate-outputs`
+(validates generated deliverables). Those are the closest thing to a test suite.
 
 ## Architecture
 
@@ -14,11 +29,13 @@ Everything lives under **`agent-qa/`** — commands, rules, agents, framework, f
 
 ```
 agent-qa/
-├── commands/              # Multi-phase command definitions (18 commands)
+├── commands/              # Multi-phase command definitions (24 commands + common/)
 ├── rules/                 # QA conventions, output standards, MCP usage, language handling
 ├── agents/                # Specialized subagent definitions
 ├── framework/             # Git platform abstractions (GitLab, GitHub, Azure DevOps)
-├── formats/               # Output format templates (Confluence, Gherkin, Playwright)
+├── formats/               # Output format templates (Confluence, Gherkin, Playwright, Xray, TestRail, ...)
+├── custom-templates/      # Per-project overrides of formats/ (checked first, survives updates)
+├── examples/              # Reference outputs for every deliverable type
 ├── ide/                   # IDE-specific integration templates
 │   ├── claude/            # Claude Code (slash commands, hooks)
 │   ├── cursor/            # Cursor IDE (rules)
@@ -39,6 +56,18 @@ agent-qa/commands/{command-name}/
 ```
 
 Phases are referenced via `{{PHASE X: @path/file.md}}` markers. Each phase file contains: core responsibilities, workflow steps, MCP server calls, data storage instructions, and constraints.
+
+Every command has a **duplicate entry point** in `agent-qa/ide/claude/commands/agent-qa/{command-name}.md` (the slash-command wrapper, installed to `.claude/commands/agent-qa/`). The two files are near-identical — **when adding or renaming a command or phase, update both**, or the slash command will point at missing phase files.
+
+### Shared Phase Snippets
+
+`agent-qa/commands/common/` holds instructions referenced from other commands' final phases:
+- **`generate-output-index.md`** — Builds/updates the `README.md` index inside the output folder. Referenced at the END of every generating command's last phase.
+- **`execute-post-hooks.md`** — Runs `hooks.post_generate` shell commands from `config.yml`, expanding `{output_folder}`, `{command_name}`, `{context}`.
+- **`discover-framework-profile.md`** — Resolves or generates `agent-qa/framework-profile.md`, the
+  record of how the host repository writes Playwright tests. Referenced from phase 1 of every
+  command that reads or modifies real test code. Stops for engineer review when the profile is new
+  or unreviewed.
 
 ### Command Dependency Chain
 
@@ -67,15 +96,26 @@ utility commands (independent):
   ├── generate-traceability-report (3 phases)
   ├── run-pipeline (3 phases)
   └── regenerate (4 phases)
+
+live automation (operate on the host project's Playwright repo):
+  generate-test-cases
+    └── explore-ui (5) ──gate──> generate-playwright-tests (5) ──> debug-tests (5)
+  review-automation-code (4)
+  audit-framework (4) ──gate──> refactor-framework (4)
 ```
+
+Downstream commands do not take a ticket key — their phase 1 is always "find and select" an existing output folder, and they load sibling deliverables from it as extra context.
 
 ### Rules
 
 `agent-qa/rules/` contains behavior rules (copied to `.claude/rules/` during installation):
-- **`qa-conventions.md`** — Terminology, test case ID format, priority scheme, output folder naming, language detection
+- **`qa-conventions.md`** — Terminology, test case ID format, P1–P4 priority scheme, output folder naming, deliverable subfolder names, language detection
 - **`mcp-usage.md`** — Atlassian and Repository MCP tool patterns, error handling, fallback strategies
 - **`output-standards.md`** — Output directory structure, YAML front matter, markdown formatting, CSV/Xray format, file naming
 - **`language-handling.md`** — Language detection rules, per-requirement handling, no-translation policy
+- **`automation-conventions.md`** — Locator priority, allowed vs never-apply fixes, failure
+  classification, severity levels, stop conditions. Generic; host-repository specifics live in
+  `agent-qa/framework-profile.md`
 
 ### Subagents
 
@@ -87,30 +127,41 @@ utility commands (independent):
 - **`confluence-publisher.md`** — Convert to Confluence format, publish via MCP
 - **`api-test-generator.md`** — Generate REST/GraphQL API test specifications
 - **`accessibility-tester.md`** — Generate WCAG 2.1 AA accessibility test cases
+- **`ui-explorer.md`** — Reproduces test cases in a live browser via the playwright-cli session tool and converts accessibility snapshots into ranked, provenance-backed locators
+- **`playwright-debugger.md`** — Classifies Playwright test failures by root cause and applies only minimal, allowed stabilization fixes — never fixes that mask a real defect
+- **`automation-reviewer.md`** — Reviews Playwright automation files for correctness, reliability, and convention adherence, producing severity-tagged findings with concrete fixes
+- **`framework-architect.md`** — Assesses a Playwright test framework repository-wide across architecture, patterns, duplication, locators, synchronization, test data, naming, and scalability
 
 ### Hooks
 
 `agent-qa/ide/claude/hooks.json` configures (copied to `.claude/hooks.json` during installation):
-- **Pre-command**: Validates `agent-qa/config.yml` exists
-- **Post-command**: Logs run metadata and output summary
+- **PreToolUse**: Validates `agent-qa/config.yml` exists
+- **PostToolUse**: Logs output folder count and latest output folder
+
+Not to be confused with `hooks.post_generate` in `config.yml`, which is executed by the agent itself via `commands/common/execute-post-hooks.md`.
 
 ### Git Repository Framework
 
-`agent-qa/framework/git-repository/` provides platform-agnostic abstractions across GitLab, GitHub, and Azure DevOps:
-- **`config/`** — Platform detection, MCP validation, project ID management
-- **`operations/`** — Commit search, PR/MR retrieval, branch listing, diff extraction (platform-specific implementations)
-- **`correlation/`** — Jira-to-commit matching via branch names, commit messages, PR/MR metadata
+`agent-qa/framework/git-repository/` provides platform-agnostic abstractions across GitLab, GitHub, and Azure DevOps. Commands call the platform-neutral file, which dispatches by `repository_platform` from `config.yml`:
+- **`config/`** — Platform detection, MCP validation, project ID management, Azure cloud ID
+- **`operations/`** — Commit search, PR/MR retrieval, branch listing, diff extraction. `commit-search.md` and `platform-abstraction.md` are the neutral entry points; `*-gitlab.md` / `*-github.md` / `*-azure-devops.md` hold the per-platform MCP tool mappings
+- **`correlation/`** — Jira-to-commit matching via branch names, commit messages, PR/MR metadata (`unified-correlation.md` combines them)
 - **`formats/`** — Output format specifications for commits, PRs, code changes
+- **`errors/`** — Shared error handling for MCP/platform failures
+- **`framework-index.md`** — Entry map for the framework
 
 ### Format Templates
 
 `agent-qa/formats/` contains conversion templates for additional output formats:
 - **`confluence/`** — Markdown-to-Confluence storage format (XHTML) mapping rules per deliverable type
-- **`gherkin/`** — Test case-to-Gherkin feature file mapping rules
-- **`playwright/`** — Test case-to-Playwright spec and Page Object mapping rules
+- **`gherkin/`** — Test case-to-Gherkin feature file mapping rules, step definition guide
+- **`playwright/`** — Spec file, Page Object, auth fixture, API mock, visual regression templates
 - **`xray/`** — Xray JSON import format templates
+- **`testrail/`** — TestRail CSV template and field mapping
 - **`api-tests/`** — API test specification templates
 - **`accessibility/`** — WCAG 2.1 AA mapping templates
+
+`agent-qa/custom-templates/` mirrors this structure. Commands check it **first** and fall back to `formats/`; it is not overwritten by `project-update.sh`. Keep the original filename when overriding.
 
 ### IDE Integration
 
@@ -134,12 +185,26 @@ IDE-specific templates live in `agent-qa/ide/` and are copied to project root du
 All generated deliverables go to:
 ```
 agent-qa/YYYY-MM-DD-{context}/
-├── requirements/    test-cases/    test-strategy/
-├── test-charter/    test-plan/     risk-register/
-├── release-notes/   commits/       gherkin/
-└── playwright/
+├── README.md         # Auto-generated index (see commands/common/generate-output-index.md)
+├── requirements/     test-cases/            test-strategy/
+├── test-charter/     test-plan/             risk-register/
+├── release-notes/    commits/               gherkin/
+├── playwright/       test-data/             api-tests/
+└── accessibility-tests/
 ```
-Context is the Jira issue key (single ticket) or `release` (JQL filter / multiple tickets).
+Context is the Jira issue key (single ticket) or `release` (JQL filter / multiple tickets). Subfolder names are fixed by `rules/qa-conventions.md` — do not invent new ones.
+
+### Two Write Zones
+
+Most commands only write deliverables into `agent-qa/YYYY-MM-DD-{context}/`. The live automation
+commands can also modify the host project's Playwright source, but only when all of these hold:
+`automation.allow_source_edits: true`, `agent-qa/framework-profile.md` has `reviewed: true`, the
+target path is under `playwright_project_root`, and the engineer approved that run. `.env*`,
+`**/.auth/*.json`, `node_modules/`, CI configuration, and `playwright.config.ts` are never written,
+regardless of the switch.
+
+`agent-qa/framework-profile.md` lives at the repository root, like `config.yml`. It is generated,
+engineer-edited, and never shipped or overwritten by the install and update scripts.
 
 ## Installation Scripts
 
@@ -156,6 +221,8 @@ Located in `scripts/`:
 | `project-uninstall.sh` | Bash | Removes Agent-QA from a project |
 | `common-functions.sh` | Bash | Shared bash utilities |
 | `common-functions.ps1` | PowerShell | Shared PowerShell utilities |
+
+Bash and PowerShell scripts are parallel implementations — a behavior change in `project-install.sh` must be mirrored in `project-install.ps1` (same for `base-install` and `common-functions`).
 
 ### IDE Selection (project-install.sh)
 
@@ -181,27 +248,54 @@ irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-insta
 
 ## Configuration
 
-Project-level config in `agent-qa/config.yml` (generated from `config.yml.template`):
+Project-level config in `agent-qa/config.yml` (generated from `config.yml.template`). Phases read it directly — when adding a config key, add it to the template **and** to the phase that consumes it.
+
 ```yaml
-installed_ides: "claude,cursor,vscode,copilot"  # IDEs configured during install
+installed_ides: ""             # Managed by project-install.sh — do not hand-edit
 repository_platform: gitlab    # gitlab | github | azure-devops
 repository_project_id: ""      # Platform-specific project identifier
 azure_devops_cloud_id: ""      # Only for Azure DevOps
 
-output_formats:
-  confluence: false             # Generate Confluence format files
-  gherkin: false                # Generate Gherkin .feature files
+default_language: ""           # Empty = auto-detect (recommended)
+test_types: [functional, security, performance, accessibility]
+custom_labels: []              # Appended to labels in CSV/Xray exports
 
-confluence_space_key: ""        # For Confluence publishing
-confluence_parent_page_id: ""   # Parent page for published deliverables
+output_formats:                # All false by default
+  confluence: false            # .confluence.html storage format
+  gherkin: false               # .feature files
+  playwright: false            # .spec.ts + .page.ts
+  xray_json: false             # Xray JSON alongside CSV
+  api_tests: false
+  accessibility_tests: false
+  testrail: false              # TestRail CSV
 
-playwright_base_url: "http://localhost:3000"  # Base URL for Playwright tests
+confluence_space_key: ""       # For Confluence publishing
+confluence_parent_page_id: ""  # Parent page for published deliverables
+
+api_test_base_url: ""
+playwright_base_url: "http://localhost:3000"
+playwright_browser: "chromium" # chromium | firefox | webkit
+playwright_viewport: "1280x720"
+
+playwright_project_root: ""    # Path to the Playwright project; "." if it IS the project root
+browser_cli_command: "playwright-cli"  # Stateful session CLI for UI exploration (not npx playwright)
+
+automation:
+  allow_source_edits: false    # Master switch. While false, all commands are report-only
+  auth_state_ttl_minutes: 60   # Reuse a saved browser auth state younger than this
+  stability_runs: 3            # Consecutive passing runs required before a fix is stable
+
+hooks:
+  post_generate: []            # Shell commands; vars: {output_folder} {command_name} {context}
 ```
 
 ## Development Conventions
 
 - All commands and documentation are pure markdown files
 - Phase files use 1-based numbering: `1-init.md`, `2-retrieve.md`, etc.
-- Test case IDs follow: `TC-{REQUIREMENT-KEY}-{NNN}`
+- Test case IDs follow: `TC-{REQUIREMENT-KEY}-{NNN}` (zero-padded from `001`)
+- Priorities are P1–P4, defined in `rules/qa-conventions.md`
 - CSV exports target Jira Xray import format
 - Commands auto-detect and reuse previous outputs as context
+- Deliverables are written in the source requirement's language — never translate
+- `agent-qa/examples/` holds a reference output per deliverable type; match their shape when changing generation phases

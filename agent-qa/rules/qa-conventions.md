@@ -33,6 +33,8 @@ All output folders follow: `YYYY-MM-DD-{context}/`
 
 - `{context}` is the Jira issue key for single-ticket analysis (e.g., `PROJ-123`)
 - `{context}` is `release` for JQL filter or multi-ticket analysis
+- `{context}` is `automation` for repository-scoped runs that take no Jira input
+  (`review-automation-code`, `audit-framework`, `refactor-framework`, `debug-tests`)
 - Output root: `agent-qa/YYYY-MM-DD-{context}/`
 
 ## Deliverable Subfolder Names
@@ -52,6 +54,9 @@ All output folders follow: `YYYY-MM-DD-{context}/`
 | Test Data | `test-data/` |
 | API Tests | `api-tests/` |
 | Accessibility Tests | `accessibility-tests/` |
+| UI Exploration | `ui-snapshots/` |
+| Reviews and Audits | `reviews/` |
+| Debug Reports | `debug/` |
 
 ## Language Detection
 

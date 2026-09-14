@@ -18,3 +18,5 @@ Instructions to follow in sequence:
 {{PHASE 3: @agent-qa/commands/generate-playwright-tests/3-generate-page-objects.md}}
 
 {{PHASE 4: @agent-qa/commands/generate-playwright-tests/4-generate-test-specs.md}}
+
+{{PHASE 5: @agent-qa/commands/generate-playwright-tests/5-run-and-stabilize.md}}

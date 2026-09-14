@@ -26,7 +26,42 @@ Also read `agent-qa/config.yml` for Playwright-specific settings:
 
 If neither custom nor default templates are found, use the default patterns described in this phase.
 
-### Step 2: Extract Page References
+### Step 2: Load the Exploration Report If Present
+
+Check for `{selected_folder}/ui-snapshots/exploration.md`.
+
+**If it exists** — this is the exploration-backed path:
+
+1. Read the `## Locators` table. For each row, record element, locator expression, rank, and
+   source snapshot.
+2. Read the `## Waits` table and record each observable wait condition by page.
+3. Read `## Messages` and use the exact strings for assertions.
+4. Read `## Unverifiable Steps`. Steps listed there have NO observed locator — they keep the
+   TODO-comment treatment described in Phase 4. Never substitute a guess for an unverifiable step.
+5. Read `## Recovery Notes` and carry any forced-interaction requirement into the generated code
+   as a comment on the relevant action.
+
+Set `exploration_available: true` and use these locators in preference to any inference.
+
+**If it does not exist** — this is the inference path. Set `exploration_available: false` and
+continue with the remaining steps of this phase unchanged. Behaviour must be identical to before
+this feature existed. Mention once in the run summary:
+
+    No UI exploration found. Locators are inferred and marked with TODO comments.
+    Run /agent-qa:explore-ui first to generate real locators.
+
+Then read the framework profile WITHOUT running discovery. If `agent-qa/framework-profile.md`
+exists and its front matter says `reviewed: true`, read its `## Layout` section for
+`page_object_dir`, `page_object_naming`, `fixture_import`, `spec_dir` and `spec_naming`, and
+prefer those over the generic templates. If the profile is absent, or exists with
+`reviewed: false`, use the generic templates and say so once in the run summary.
+
+Do NOT delegate to the shared profile-discovery snippet under `agent-qa/commands/common/` from
+this command — it STOPS on every branch — and never stop this command because a profile is
+missing, unreviewed, or because no Playwright project could be found. This command must run to
+completion for projects that have never opted into live automation.
+
+### Step 3: Extract Page References
 
 Scan all test steps across selected test cases to identify pages/views:
 
@@ -39,7 +74,7 @@ Scan all test steps across selected test cases to identify pages/views:
 
 Build a list of unique pages referenced across all test cases.
 
-### Step 3: Extract UI Elements Per Page
+### Step 4: Extract UI Elements Per Page
 
 For each identified page, scan test steps to find referenced UI elements:
 
@@ -59,7 +94,7 @@ For each identified page, scan test steps to find referenced UI elements:
 | "The **table** contains rows" | table | `getByRole('table')` |
 | "Click the **Settings** menu" | menuitem | `getByRole('menuitem', { name: 'Settings' })` |
 
-### Step 4: Map Navigation Flows
+### Step 5: Map Navigation Flows
 
 Identify navigation patterns between pages:
 
@@ -75,7 +110,7 @@ Record:
 - Which pages are navigated to during the test
 - Expected URL patterns after navigation
 
-### Step 5: Map Test Data to Variables
+### Step 6: Map Test Data to Variables
 
 For test steps with concrete data values, identify TypeScript variable mappings:
 
@@ -95,7 +130,7 @@ interface LoginTestData {
 }
 ```
 
-### Step 6: Identify Shared Pages
+### Step 7: Identify Shared Pages
 
 Determine which Page Objects are used across multiple test cases:
 

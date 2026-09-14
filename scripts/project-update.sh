@@ -550,6 +550,12 @@ perform_update() {
     fi
     echo ""
 
+    # The framework profile is generated per project and hand-edited. It is never shipped
+    # from the base installation and must never be overwritten by an update.
+    if [[ -f "$PROJECT_DIR/agent-qa/framework-profile.md" ]]; then
+        print_verbose "Preserving agent-qa/framework-profile.md"
+    fi
+
     # Update agent-qa folder and configuration
     update_agent_qa_folder
     echo ""
@@ -672,6 +678,7 @@ prompt_update_confirmation() {
     echo -e "${GREEN}✔ These will remain intact:${NC}"
     echo ""
     echo "  - agent-qa/config.yml (settings preserved unless explicitly changed)"
+    echo "  - agent-qa/framework-profile.md (generated locally, never overwritten)"
     echo ""
     echo -e "${YELLOW}⚠️  These will be updated:${NC}"
     echo ""
