@@ -8,6 +8,11 @@ when a scenario should be an outline, and which tags apply.
 Loaded by `generate-gherkin` phase 2 (Map Test Cases to Scenarios) and phase 3 (Generate Feature
 Files), after the feature template is loaded and test cases are grouped by requirement.
 
+`agent-qa/formats/gherkin/feature-template.md` is authoritative for feature-file syntax and
+layout — tag placement, keyword order, indentation, and the priority-to-tag mapping. Any
+skeleton shown below is illustrative of the judgement being described, not a specification of
+the file format. Where the two differ, the template wins.
+
 ## Step Classification
 
 ### Identify Shared Preconditions
@@ -83,7 +88,7 @@ Additional tags:
 
 ## Authoring Feature Content
 
-### Generate the Feature Content
+### Generate Feature Content
 
 For each requirement key in the `features` map, generate a `.feature` file:
 
