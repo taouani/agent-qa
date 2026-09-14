@@ -8,80 +8,12 @@
 
 ## Workflow Steps
 
-### Step 1: Generate Feature Content
+### Step 1: Generate the Feature Content
 
-For each requirement key in the `features` map, generate a `.feature` file:
+Apply `@agent-qa/roles/gherkin-authoring.md`, section `## Authoring Feature Content`, to the
+scenario mapping from Phase 2, using the template loaded there.
 
-```gherkin
-@{REQUIREMENT-KEY} @regression
-Feature: {Requirement Summary}
-  As a {user role}
-  I want {objective}
-  So that {business value}
-
-  Background:
-    Given {shared_precondition_1}
-    And {shared_precondition_2}
-
-  {scenarios}
-```
-
-#### Feature Header
-
-- Tag line: `@{REQUIREMENT-KEY}` plus `@regression` if applicable
-- Feature name: requirement summary
-- User story format (As a / I want / So that):
-  - Extract from the requirement description if available
-  - If not available, derive from the requirement summary
-
-#### Background Section
-
-- Include only if shared preconditions were identified in Phase 2
-- Use `Given` for the first step and `And` for subsequent steps
-- Omit the Background section entirely if no shared preconditions exist
-
-### Step 2: Generate Scenarios
-
-For each test case mapped to this feature:
-
-#### Simple Scenario
-
-```gherkin
-  @{priority_tag}
-  Scenario: {TC-ID} - {Test Case Summary}
-    Given {precondition_step}
-    And {additional_precondition}
-    When {action_step}
-    And {additional_action}
-    Then {verification_step}
-    And {additional_verification}
-```
-
-- Priority tag on its own line before the Scenario
-- Scenario name includes test case ID and summary
-- Use `And` for consecutive steps of the same type (Given/When/Then)
-- Use `But` for negative assertions within a Then block
-
-#### Scenario Outline
-
-```gherkin
-  @{priority_tag}
-  Scenario Outline: {TC-ID} - {Test Case Summary}
-    Given {step_with_<variable>}
-    When {step_with_<variable>}
-    Then {step_with_<variable>}
-
-    Examples:
-      | variable1 | variable2 | ... |
-      | value1a   | value2a   | ... |
-      | value1b   | value2b   | ... |
-```
-
-- Variable placeholders use angle brackets: `<variable_name>`
-- Examples table header matches variable names
-- Each row represents one test data combination
-
-### Step 3: Format and Indent
+### Step 2: Format and Indent
 
 Apply proper Gherkin formatting:
 
@@ -98,7 +30,7 @@ Apply proper Gherkin formatting:
 - Blank line between Scenarios
 - Blank line after Background
 
-### Step 4: Validate Gherkin Syntax
+### Step 3: Validate Gherkin Syntax
 
 For each generated `.feature` file content, verify:
 
