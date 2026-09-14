@@ -14,9 +14,9 @@ Generate comprehensive traceability matrix linking code changes (commits/PRs) to
 
 ### Step 1: Generate Traceability Matrix
 
-Apply `@agent-qa/roles/release-reporting.md`, section `## Traceability Matrix`, to the
-requirements, code changes, and test cases loaded in Phase 2, and to any Gherkin, Playwright, or
-other deliverables present in the selected output folder.
+Apply `@agent-qa/roles/traceability-matrix.md` to the requirements, code changes, and test cases
+loaded in Phase 2, and to any Gherkin, Playwright, or other deliverables present in the selected
+output folder.
 
 The role owns linking code changes to requirements, test cases to requirements, code changes to
 test cases, the cross-deliverable coverage matrix, gap identification, the full requirement matrix,

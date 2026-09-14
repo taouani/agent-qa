@@ -1,227 +1,26 @@
-# Release Reporting
+# Traceability Matrix
 
-You write the narrative content of a release note and you build the traceability matrix that links
-requirements to code changes, test cases, and other deliverables — whether that matrix lives inside
-a release note or stands alone as a traceability report.
+You build the traceability matrix that links requirements to code changes, test cases, Gherkin
+scenarios, Playwright specs, and other deliverables — whether that matrix lives inside a release
+note or stands alone as a traceability report.
 
 ## When This Applies
 
-Loaded by `generate-release-notes` phase 3 for `## Release Note Content`; by `generate-release-notes`
-phase 4, `generate-traceability-report` phase 2, and `generate-test-cases` phase 4 for
-`## Traceability Matrix`. Each caller supplies the requirements, code changes, test cases, and other
-deliverables already loaded or discovered in its own earlier phases.
+Loaded by `generate-release-notes` phase 4, `generate-traceability-report` phase 2, and
+`generate-test-cases` phase 4. Each caller supplies the requirements, code changes, test cases, and
+other deliverables already loaded or discovered in its own earlier phases.
 
-## Release Note Content
+Two callers order these subsections differently:
 
-### Executive Summary
+When invoked by `generate-release-notes`: apply them in this order — Code Changes to Requirements,
+Test Cases to Requirements, Code Changes to Test Cases, Full Requirement Traceability Matrix,
+Artifact Links, Format Traceability Matrix as Markdown Table.
 
-Create executive summary:
+When invoked by `generate-traceability-report`: apply them in this order — Test Cases to
+Requirements, Gherkin Scenarios to Requirements, Playwright Specs to Requirements, Other
+Deliverables to Requirements, Cross-Deliverable Coverage Matrix, Identify Gaps.
 
-```markdown
-## Executive Summary
-
-This release includes [N] requirements, [M] code changes (commits/PRs), and [K] test cases.
-
-**Key Highlights:**
-- [Feature 1]: [Brief description]
-- [Feature 2]: [Brief description]
-- [Bug Fix]: [Brief description]
-
-**Scope:**
-- Requirements: [N] tickets
-- Code Changes: [M] commits, [P] PRs/MRs
-- Test Coverage: [K] test cases
-- Affected Components: [List of components]
-```
-
-Include:
-- High-level overview of release
-- Key highlights (major features, bug fixes)
-- Scope summary (requirements count, code changes count, test coverage)
-
-### Requirements Summary
-
-Generate requirements summary from Jira tickets:
-
-```markdown
-## Requirements Summary
-
-### Requirements Overview
-- **Total Requirements**: [N]
-- **Requirements with Code Changes**: [M]
-- **Requirements without Code Changes**: [K]
-
-### Requirements Details
-
-#### PROJ-123: [Requirement Summary]
-- **Status**: [Status]
-- **Assignee**: [Assignee]
-- **Description**: [Brief description]
-- **Acceptance Criteria**: [List of AC]
-- **Code Changes**: [Link to commit analysis]
-- **Test Cases**: [Link to test cases]
-
-[Repeat for each requirement]
-```
-
-Include:
-- Requirements overview statistics
-- Individual requirement details
-- Links to code changes and test cases
-- Requirement status and assignee
-
-### Code Changes Summary
-
-Generate code changes summary from commits/PRs:
-
-```markdown
-## Code Changes Summary
-
-### Code Changes Overview
-- **Total Commits**: [N]
-- **Total PRs/MRs**: [M]
-- **Total Files Changed**: [K]
-- **Total Lines Added**: [L]
-- **Total Lines Removed**: [R]
-- **Net Change**: [+/-N]
-
-### Code Changes by Requirement
-
-#### PROJ-123
-- **Commits**: [N] commits
-- **PRs/MRs**: [M] PRs/MRs
-- **Files Changed**: [K] files
-- **Summary**: [Brief summary of changes]
-- **Link**: [Link to commit analysis file]
-
-[Repeat for each requirement with code changes]
-```
-
-Include:
-- Code changes overview statistics
-- Code changes grouped by requirement
-- Links to detailed commit analysis files
-- Summary of changes per requirement
-
-### Test Coverage
-
-If test cases available, include test coverage section:
-
-```markdown
-## Test Coverage
-
-### Test Coverage Overview
-- **Total Test Cases**: [N]
-- **Test Cases by Requirement**: [M] requirements covered
-- **Test Coverage**: [Percentage or ratio]
-
-### Test Cases by Requirement
-
-#### PROJ-123
-- **Test Cases**: [N] test cases
-- **Test Types**: [Positive, Negative, Edge Cases]
-- **Link**: [Link to test cases file]
-
-[Repeat for each requirement with test cases]
-```
-
-Include:
-- Test coverage overview statistics
-- Test cases grouped by requirement
-- Links to test case files
-- Test coverage metrics
-
-### Affected Components
-
-Identify affected components/modules from code changes:
-
-```markdown
-## Affected Components
-
-### Components Overview
-- **Total Components Affected**: [N]
-
-### Components Details
-
-#### Component: [Component Name]
-- **Files Changed**: [List of files]
-- **Changes Summary**: [Brief summary]
-- **Requirements**: [List of related requirements]
-- **Impact**: [High/Medium/Low]
-
-[Repeat for each affected component]
-```
-
-Include:
-- List of affected components/modules
-- Files changed per component
-- Related requirements per component
-- Impact assessment per component
-
-### Impact Analysis
-
-Generate impact analysis based on requirements and code changes:
-
-```markdown
-## Impact Analysis
-
-### Overall Impact Assessment
-- **Risk Level**: [High/Medium/Low]
-- **Affected Areas**: [List of areas]
-- **Dependencies**: [List of dependencies]
-
-### Impact by Requirement
-
-#### PROJ-123
-- **Impact Level**: [High/Medium/Low]
-- **Affected Areas**: [List of areas]
-- **Dependencies**: [List of dependencies]
-- **Risk Factors**: [List of risk factors]
-
-[Repeat for each requirement]
-```
-
-Include:
-- Overall impact assessment
-- Impact analysis per requirement
-- Affected areas and dependencies
-- Risk factors
-
-### Reference Existing Deliverables
-
-Reference existing deliverables (test cases, test plans, strategies, charters):
-
-```markdown
-## Related Deliverables
-
-### Test Deliverables
-- **Test Cases**: [Link to test-cases folder]
-- **Test Plans**: [Link to test-plan folder]
-- **Test Strategies**: [Link to test-strategy folder]
-- **Test Charters**: [Link to test-charter folder]
-- **Risk Registers**: [Link to risk-register folder]
-
-### Analysis Deliverables
-- **Requirements Analysis**: [Link to requirements folder]
-- **Commit Analysis**: [Link to commits folder]
-```
-
-Include:
-- Links to all generated deliverables
-- Brief description of each deliverable
-- Organization by type (test deliverables, analysis deliverables)
-
-### Exclude Out-of-Scope Content
-
-Ensure out-of-scope content is NOT included:
-- ❌ Deployment notes
-- ❌ Breaking changes documentation
-- ❌ Migration requirements documentation
-- ❌ Performance impacts documentation
-
-## Traceability Matrix
-
-### Code Changes to Requirements
+## Code Changes to Requirements
 
 Create mapping between code changes and requirements:
 
@@ -251,7 +50,9 @@ Include:
 - Detailed mapping with commit/PR links
 - Status indicators (Complete, No code changes)
 
-### Test Cases to Requirements
+## Test Cases to Requirements
+
+When invoked by `generate-release-notes`:
 
 Create traceability matrix for test cases:
 
@@ -281,6 +82,8 @@ Include:
 - Test type breakdown (positive, negative, edge cases)
 - Coverage metrics
 
+When invoked by `generate-traceability-report`:
+
 If `test-cases/` exists:
 - Read each test case file
 - Extract all test case IDs (`TC-{KEY}-{NNN}`)
@@ -290,7 +93,7 @@ If `test-cases/` exists:
 
 Build: `requirement_key → [test_case_ids]`
 
-### Test Case Coverage by Requirement
+## Test Case Coverage by Requirement
 
 Create `test-cases-traceability-matrix.md`:
 
@@ -305,7 +108,7 @@ Create `test-cases-traceability-matrix.md`:
 - Acceptance criteria coverage: X/Y AC items covered (Z%)
 - Gap analysis: Identify missing coverage areas
 
-### Code Changes to Test Cases
+## Code Changes to Test Cases
 
 Show what code is covered by which tests:
 
@@ -341,7 +144,7 @@ Include:
 - Coverage status indicators
 - Coverage details per code change
 
-### Gherkin Scenarios to Requirements
+## Gherkin Scenarios to Requirements
 
 If `gherkin/` exists:
 - Read each `.feature` file
@@ -351,7 +154,7 @@ If `gherkin/` exists:
 
 Build: `requirement_key → {feature_file, scenario_count, tags}`
 
-### Playwright Specs to Requirements
+## Playwright Specs to Requirements
 
 If `playwright/` exists:
 - Read each `.spec.ts` file
@@ -361,14 +164,16 @@ If `playwright/` exists:
 
 Build: `requirement_key → {spec_file, test_count, page_objects}`
 
-### Other Deliverables to Requirements
+## Other Deliverables to Requirements
 
 For each of: `test-strategy/`, `test-charter/`, `test-plan/`, `risk-register/`, `release-notes/`:
 - Check if the deliverable exists
 - Extract `source_requirements` from YAML front matter
 - Note which requirements are covered
 
-### Full Requirement Traceability Matrix
+## Full Requirement Traceability Matrix
+
+When invoked by `generate-release-notes`:
 
 Create comprehensive traceability matrix:
 
@@ -395,7 +200,9 @@ Include:
 - Status indicators (Complete, Incomplete, Not traced)
 - Traceability summary statistics
 
-### Cross-Deliverable Coverage Matrix
+## Cross-Deliverable Coverage Matrix
+
+When invoked by `generate-traceability-report`:
 
 Combine all mappings into a single matrix:
 
@@ -413,7 +220,9 @@ requirement_key → {
 }
 ```
 
-### Identify Gaps
+## Identify Gaps
+
+When invoked by `generate-traceability-report`:
 
 For each requirement:
 1. **No test cases**: Requirement exists but no test cases generated
@@ -421,7 +230,7 @@ For each requirement:
 3. **No Playwright**: Test cases exist but no `.spec.ts` file (if `playwright/` folder exists)
 4. **Orphaned test cases**: Test case IDs referencing requirement keys not in `requirements/`
 
-### Artifact Links
+## Artifact Links
 
 Include links to all related artifacts:
 
@@ -458,7 +267,9 @@ Include:
 - Links to all test case files
 - Links to test plans, strategies, charters, risk registers
 
-### Format Traceability Matrix as Markdown Table
+## Format Traceability Matrix as Markdown Table
+
+When invoked by `generate-release-notes`:
 
 Format all traceability matrices as markdown tables:
 
@@ -470,6 +281,5 @@ Format all traceability matrices as markdown tables:
 ## What This Role Never Does
 
 - Never fabricate a commit, PR, test case, or link that the loaded deliverables do not contain
-- Never include out-of-scope content (deployment notes, breaking changes, migration, performance)
 - Never translate requirement content — deliverables stay in the source language
 - Never flag a gap for a deliverable type that does not exist in the output folder

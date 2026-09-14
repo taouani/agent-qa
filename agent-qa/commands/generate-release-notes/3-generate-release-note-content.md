@@ -16,8 +16,8 @@ Generate release note content including executive summary, requirements summary,
 
 ### Step 1: Generate Release Note Content
 
-Apply `@agent-qa/roles/release-reporting.md`, section `## Release Note Content`, to the
-requirements, code changes, test cases, and other deliverables loaded in Phase 2.
+Apply `@agent-qa/roles/release-notes-content.md` to the requirements, code changes, test cases, and
+other deliverables loaded in Phase 2.
 
 The role owns the executive summary, requirements summary, code changes summary, test coverage,
 affected components, impact analysis, deliverable references, and scope exclusions. This phase owns

@@ -206,8 +206,8 @@ Test Key,Summary,Test Type,Priority,Labels,Preconditions,Steps,Expected Result,R
 
 ### Step 6: Create Traceability Matrix
 
-Build the matrix using `@agent-qa/roles/release-reporting.md`, section `## Traceability Matrix`,
-scoped to the requirements and test cases generated in this run.
+Build the matrix using `@agent-qa/roles/traceability-matrix.md`, scoped to the requirements and
+test cases generated in this run.
 
 ### Step 7: Create Test Suite Index
 

@@ -15,8 +15,8 @@ Read all files in `requirements/`:
 
 ### Step 2: Build Traceability Matrix
 
-Apply `@agent-qa/roles/release-reporting.md`, section `## Traceability Matrix`, to the requirement
-keys extracted in Step 1 and the deliverables present in the selected output folder.
+Apply `@agent-qa/roles/traceability-matrix.md` to the requirement keys extracted in Step 1 and the
+deliverables present in the selected output folder.
 
 The role owns mapping test cases, Gherkin scenarios, Playwright specs, and other deliverables to
 requirements, building the cross-deliverable coverage matrix, and identifying gaps. This phase owns

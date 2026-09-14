@@ -300,7 +300,7 @@ check_roles_wired() {
     echo "== every role exists and is referenced by a phase =="
     local role name
     # Tasks 2-11 append their role's basename to this list.
-    for name in test-case-design test-strategy test-plan test-charter risk-analysis release-reporting; do
+    for name in test-case-design test-strategy test-plan test-charter risk-analysis release-notes-content traceability-matrix; do
         role="agent-qa/roles/$name.md"
         if [[ ! -f "$role" ]]; then
             fail "missing role file: $role"
