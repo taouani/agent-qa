@@ -14,6 +14,7 @@ There is no build, no test runner, and no linter. Verification is manual:
 bash -n scripts/project-install.sh          # syntax-check any modified shell script
 ./scripts/install-from-local.sh             # install this working copy into a test project
 grep -rn "{{PHASE" agent-qa/commands/       # verify phase markers resolve to real files
+bash scripts/check-repo.sh            # structural integrity: phase refs, command twins, rules
 ```
 
 After changing commands or phases, exercise them from an installed project via the slash commands
@@ -28,7 +29,7 @@ Everything lives under **`agent-qa/`** — commands, rules, agents, framework, f
 
 ```
 agent-qa/
-├── commands/              # Multi-phase command definitions (19 commands + common/)
+├── commands/              # Multi-phase command definitions (24 commands + common/)
 ├── rules/                 # QA conventions, output standards, MCP usage, language handling
 ├── agents/                # Specialized subagent definitions
 ├── framework/             # Git platform abstractions (GitLab, GitHub, Azure DevOps)
@@ -63,6 +64,10 @@ Every command has a **duplicate entry point** in `agent-qa/ide/claude/commands/a
 `agent-qa/commands/common/` holds instructions referenced from other commands' final phases:
 - **`generate-output-index.md`** — Builds/updates the `README.md` index inside the output folder. Referenced at the END of every generating command's last phase.
 - **`execute-post-hooks.md`** — Runs `hooks.post_generate` shell commands from `config.yml`, expanding `{output_folder}`, `{command_name}`, `{context}`.
+- **`discover-framework-profile.md`** — Resolves or generates `agent-qa/framework-profile.md`, the
+  record of how the host repository writes Playwright tests. Referenced from phase 1 of every
+  command that reads or modifies real test code. Stops for engineer review when the profile is new
+  or unreviewed.
 
 ### Command Dependency Chain
 
@@ -91,6 +96,12 @@ utility commands (independent):
   ├── generate-traceability-report (3 phases)
   ├── run-pipeline (3 phases)
   └── regenerate (4 phases)
+
+live automation (operate on the host project's Playwright repo):
+  generate-test-cases
+    └── explore-ui (5) ──gate──> generate-playwright-tests (5) ──> debug-tests (5)
+  review-automation-code (4)
+  audit-framework (4) ──gate──> refactor-framework (4)
 ```
 
 Downstream commands do not take a ticket key — their phase 1 is always "find and select" an existing output folder, and they load sibling deliverables from it as extra context.
@@ -102,6 +113,9 @@ Downstream commands do not take a ticket key — their phase 1 is always "find a
 - **`mcp-usage.md`** — Atlassian and Repository MCP tool patterns, error handling, fallback strategies
 - **`output-standards.md`** — Output directory structure, YAML front matter, markdown formatting, CSV/Xray format, file naming
 - **`language-handling.md`** — Language detection rules, per-requirement handling, no-translation policy
+- **`automation-conventions.md`** — Locator priority, allowed vs never-apply fixes, failure
+  classification, severity levels, stop conditions. Generic; host-repository specifics live in
+  `agent-qa/framework-profile.md`
 
 ### Subagents
 
@@ -113,6 +127,10 @@ Downstream commands do not take a ticket key — their phase 1 is always "find a
 - **`confluence-publisher.md`** — Convert to Confluence format, publish via MCP
 - **`api-test-generator.md`** — Generate REST/GraphQL API test specifications
 - **`accessibility-tester.md`** — Generate WCAG 2.1 AA accessibility test cases
+- **`ui-explorer.md`** — Reproduces test cases in a live browser via the playwright-cli session tool and converts accessibility snapshots into ranked, provenance-backed locators
+- **`playwright-debugger.md`** — Classifies Playwright test failures by root cause and applies only minimal, allowed stabilization fixes — never fixes that mask a real defect
+- **`automation-reviewer.md`** — Reviews Playwright automation files for correctness, reliability, and convention adherence, producing severity-tagged findings with concrete fixes
+- **`framework-architect.md`** — Assesses a Playwright test framework repository-wide across architecture, patterns, duplication, locators, synchronization, test data, naming, and scalability
 
 ### Hooks
 
@@ -175,6 +193,18 @@ agent-qa/YYYY-MM-DD-{context}/
 └── accessibility-tests/
 ```
 Context is the Jira issue key (single ticket) or `release` (JQL filter / multiple tickets). Subfolder names are fixed by `rules/qa-conventions.md` — do not invent new ones.
+
+### Two Write Zones
+
+Most commands only write deliverables into `agent-qa/YYYY-MM-DD-{context}/`. The live automation
+commands can also modify the host project's Playwright source, but only when all of these hold:
+`automation.allow_source_edits: true`, `agent-qa/framework-profile.md` has `reviewed: true`, the
+target path is under `playwright_project_root`, and the engineer approved that run. `.env*`,
+`**/.auth/*.json`, `node_modules/`, CI configuration, and `playwright.config.ts` are never written,
+regardless of the switch.
+
+`agent-qa/framework-profile.md` lives at the repository root, like `config.yml`. It is generated,
+engineer-edited, and never shipped or overwritten by the install and update scripts.
 
 ## Installation Scripts
 
@@ -246,6 +276,14 @@ api_test_base_url: ""
 playwright_base_url: "http://localhost:3000"
 playwright_browser: "chromium" # chromium | firefox | webkit
 playwright_viewport: "1280x720"
+
+playwright_project_root: ""    # Path to the Playwright project; "." if it IS the project root
+browser_cli_command: "playwright-cli"  # Stateful session CLI for UI exploration (not npx playwright)
+
+automation:
+  allow_source_edits: false    # Master switch. While false, all commands are report-only
+  auth_state_ttl_minutes: 60   # Reuse a saved browser auth state younger than this
+  stability_runs: 3            # Consecutive passing runs required before a fix is stable
 
 hooks:
   post_generate: []            # Shell commands; vars: {output_folder} {command_name} {context}

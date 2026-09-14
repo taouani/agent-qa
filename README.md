@@ -33,6 +33,18 @@ Agent-QA automates the entire QA documentation workflow by:
 - **Playwright Test Generation** - Generates `.spec.ts` files with Page Object Model from test cases
 - **Confluence Publishing** - Converts deliverables to Confluence format, optionally publishes via MCP
 
+### Live Automation
+
+Commands that drive a real browser and operate on the host project's Playwright repository, gated
+behind `automation.allow_source_edits` and an engineer-reviewed `agent-qa/framework-profile.md`.
+Requires the `playwright-cli` prerequisite (see [INSTALLATION.md](INSTALLATION.md)):
+
+- **UI Exploration** - Drives a live browser to capture real locators and accessibility snapshots
+- **Playwright Debugging** - Classifies test failures by root cause and applies only allowed fixes
+- **Automation Code Review** - Reviews changed Playwright files against repository conventions
+- **Framework Audit & Refactor** - Assesses the framework repository-wide, then executes an
+  approved refactor plan with validation and rollback
+
 ### Integration Support
 
 - **Atlassian MCP** - Jira and Confluence integration
@@ -312,6 +324,11 @@ playwright_base_url: "http://localhost:3000"
 | `generate-accessibility-tests` | Generate WCAG 2.1 AA accessibility tests | User selection |
 | `regenerate` | Regenerate deliverables affected by requirement changes | User selection |
 | `run-pipeline` | Execute multiple commands in sequence | Pipeline spec |
+| `explore-ui` | Drive a live browser to capture real locators and snapshots | Test case selection |
+| `debug-tests` | Classify a Playwright failure and apply only allowed fixes | Failing test selection |
+| `review-automation-code` | Review changed Playwright automation files for conventions | Git diff |
+| `audit-framework` | Assess a Playwright framework repository-wide | None |
+| `refactor-framework` | Execute an audit's refactor plan with validation and rollback | Audit report |
 
 ## Best Practices
 

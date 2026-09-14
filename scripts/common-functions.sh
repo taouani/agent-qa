@@ -325,6 +325,67 @@ is_agent_qa_installed() {
     fi
 }
 
+# Backfill automation config keys into an existing config.yml.
+# Projects installed before the live-automation feature was added never had
+# these keys written by their original install, and the update path below
+# only rewrites a handful of known keys. This appends any of the five keys
+# that are missing, using the same defaults as config.yml.template. It never
+# touches a key that is already present (whatever its value), and is safe to
+# run repeatedly - already-present keys are left exactly as they are.
+backfill_automation_config() {
+    local config_file=$1
+
+    [[ -f "$config_file" ]] || return
+
+    if ! grep -q "^playwright_project_root[[:space:]]*:" "$config_file"; then
+        printf '\nplaywright_project_root: ""\n' >> "$config_file"
+        print_verbose "Added missing config key: playwright_project_root"
+    fi
+
+    if ! grep -q "^browser_cli_command[[:space:]]*:" "$config_file"; then
+        printf 'browser_cli_command: "playwright-cli"\n' >> "$config_file"
+        print_verbose "Added missing config key: browser_cli_command"
+    fi
+
+    if ! grep -q "^automation[[:space:]]*:[[:space:]]*$" "$config_file"; then
+        {
+            printf '\n'
+            printf 'automation:\n'
+            printf '  allow_source_edits: false      # Master switch. While false, all commands are report-only and never write outside agent-qa/.\n'
+            printf '  auth_state_ttl_minutes: 60     # Reuse a saved browser auth state younger than this.\n'
+            printf '  stability_runs: 3              # Consecutive passing runs required before a fix is considered stable.\n'
+        } >> "$config_file"
+        print_verbose "Added missing config block: automation"
+        return
+    fi
+
+    # automation: already exists - append only the sub-keys that are missing,
+    # right after the automation: line, without touching existing sub-keys.
+    local -a missing_lines=()
+    grep -q "^[[:space:]]\+allow_source_edits[[:space:]]*:" "$config_file" \
+        || missing_lines+=("  allow_source_edits: false      # Master switch. While false, all commands are report-only and never write outside agent-qa/.")
+    grep -q "^[[:space:]]\+auth_state_ttl_minutes[[:space:]]*:" "$config_file" \
+        || missing_lines+=("  auth_state_ttl_minutes: 60     # Reuse a saved browser auth state younger than this.")
+    grep -q "^[[:space:]]\+stability_runs[[:space:]]*:" "$config_file" \
+        || missing_lines+=("  stability_runs: 3              # Consecutive passing runs required before a fix is considered stable.")
+
+    if [[ ${#missing_lines[@]} -gt 0 ]]; then
+        local tmp_file inserted=0 line add
+        tmp_file="$(mktemp)"
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            printf '%s\n' "$line" >> "$tmp_file"
+            if [[ $inserted -eq 0 && "$line" =~ ^automation:[[:space:]]*$ ]]; then
+                for add in "${missing_lines[@]}"; do
+                    printf '%s\n' "$add" >> "$tmp_file"
+                done
+                inserted=1
+            fi
+        done < "$config_file"
+        mv "$tmp_file" "$config_file"
+        print_verbose "Added missing automation sub-key(s)"
+    fi
+}
+
 # Create or update agent-qa config.yml
 # Preserves existing settings when updating
 create_or_update_config() {
@@ -364,6 +425,10 @@ create_or_update_config() {
         fi
 
         print_verbose "Updated existing config.yml"
+
+        # Backfill automation keys that did not exist when this project was
+        # first installed. Only adds missing keys; never rewrites existing ones.
+        backfill_automation_config "$config_file"
     else
         # Create new config from template
         if [[ -f "$template_file" ]]; then

@@ -212,6 +212,25 @@ check_new_deliverables_documented() {
         || fail "validate-outputs does not validate the new deliverable types"
 }
 
+check_docs_updated() {
+    echo "== documentation reflects the new commands =="
+    local cmd_count
+    cmd_count=$(find agent-qa/commands -maxdepth 1 -mindepth 1 -type d ! -name common | wc -l | tr -d ' ')
+    grep -q "$cmd_count commands" CLAUDE.md \
+        && pass "CLAUDE.md states $cmd_count commands" \
+        || fail "CLAUDE.md does not state the current command count ($cmd_count)"
+    local c
+    for c in explore-ui debug-tests review-automation-code audit-framework refactor-framework; do
+        grep -q "$c" CLAUDE.md || fail "CLAUDE.md does not mention $c"
+    done
+    grep -q 'playwright-cli' INSTALLATION.md \
+        && pass "INSTALLATION.md documents the prerequisite" \
+        || fail "INSTALLATION.md does not document the playwright-cli prerequisite"
+    grep -q 'framework-profile.md' scripts/project-update.sh \
+        && pass "project-update.sh accounts for the profile" \
+        || fail "project-update.sh does not mention framework-profile.md"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -228,6 +247,7 @@ run_checks() {
     check_debug_tests
     check_refactor_framework
     check_new_deliverables_documented
+    check_docs_updated
 }
 
 run_checks

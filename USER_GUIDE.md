@@ -172,6 +172,23 @@ analyze-commits ─── generate-release-notes ─── publish-to-confluence
 
 Commands are independent after `analyze-requirements` and can be run in any order. Each generate command prompts you to select which analysis folder to use. Custom format templates can be placed in `agent-qa/custom-templates/` to override defaults.
 
+### Live Automation Workflow
+
+1. `/agent-qa:analyze-requirements PROJ-123`
+2. `/agent-qa:generate-test-cases`
+3. `/agent-qa:explore-ui` — drives the real app, captures snapshots and real locators
+   → review `ui-snapshots/exploration.md`
+4. `/agent-qa:generate-playwright-tests` — generates specs using those locators
+5. `/agent-qa:debug-tests` — when a generated or existing test fails
+
+Framework health, independent of any ticket:
+
+- `/agent-qa:review-automation-code` — review changed automation files
+- `/agent-qa:audit-framework` → review the report → `/agent-qa:refactor-framework`
+
+The first of these commands to run generates `agent-qa/framework-profile.md` and stops. Review it,
+set `reviewed: true`, and re-run.
+
 ## Core Commands
 
 ### 1. analyze-requirements
