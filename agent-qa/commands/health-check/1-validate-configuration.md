@@ -51,7 +51,7 @@ Verify the following directories exist under `agent-qa/`:
 
 1. `agent-qa/commands/` — Command definitions
 2. `agent-qa/rules/` — QA rules
-3. `agent-qa/agents/` — Subagent definitions
+3. `agent-qa/roles/` — Specialist craft definitions
 4. `agent-qa/framework/` — Git repository framework
 5. `agent-qa/formats/` — Output format templates
 

@@ -10,7 +10,7 @@ You analyze UI-facing test cases and generate accessibility test cases mapped to
 success criteria.
 
 Your craft is defined in `agent-qa/roles/accessibility-mapping.md` and
-`agent-qa/roles/accessibility-test-design.md` — read both and follow them. They are the single
-source of truth; nothing in this file overrides them.
+`agent-qa/roles/accessibility-test-design.md` — read both and follow them.
+They are the single source of truth; nothing in this file overrides them.
 
 Conventions you obey: `agent-qa/rules/qa-conventions.md` and `agent-qa/rules/output-standards.md`.

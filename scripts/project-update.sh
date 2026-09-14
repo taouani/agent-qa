@@ -383,6 +383,129 @@ update_standards() {
     fi
 }
 
+# Update role files.
+# Roles are IDE-neutral craft definitions read by every tool, so they live in
+# the project alongside rules rather than under any one IDE's directory.
+update_roles() {
+    local source_roles_dir="$BASE_DIR/agent-qa/roles"
+    local dest_roles_dir="$PROJECT_DIR/agent-qa/roles"
+
+    if [[ ! -d "$source_roles_dir" ]]; then
+        print_verbose "No roles directory found - skipping"
+        return
+    fi
+
+    print_status "Updating role files"
+
+    local roles_updated=0
+    local roles_skipped=0
+    local roles_new=0
+
+    ensure_dir "$dest_roles_dir"
+
+    find "$source_roles_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_roles_dir/}"
+        local dest_file="$dest_roles_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_STANDARDS" "standard"; then
+            SKIPPED_FILES+=("$dest_file")
+            ((roles_skipped++)) || true
+            print_verbose "Skipped: $relative_path"
+        else
+            if [[ -f "$dest_file" ]]; then
+                UPDATED_FILES+=("$dest_file")
+                ((roles_updated++)) || true
+                print_verbose "Updated: $relative_path"
+            else
+                NEW_FILES+=("$dest_file")
+                ((roles_new++)) || true
+                print_verbose "New file: $relative_path"
+            fi
+            if [[ "$DRY_RUN" != "true" ]]; then
+                copy_file "$source_file" "$dest_file" > /dev/null
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $roles_new -gt 0 ]]; then
+            echo "✓ Added $roles_new role files"
+        fi
+        if [[ $roles_updated -gt 0 ]]; then
+            echo "✓ Updated $roles_updated role files"
+        fi
+        if [[ $roles_skipped -gt 0 ]]; then
+            echo -e "${YELLOW}$roles_skipped role files were not updated. To update these, re-run with --overwrite-standards flag.${NC}"
+        fi
+    fi
+}
+
+# Update the Claude Code agent wrappers in .claude/agents/agent-qa/.
+# These are Claude-Code-specific and ship only from agent-qa/ide/claude/agents/.
+# Any pre-refactor fat agent is dropped first so the old definition cannot win
+# on specificity over the thin wrapper that replaces it.
+update_claude_agents() {
+    local source_agents_dir="$BASE_DIR/agent-qa/ide/claude/agents"
+    local dest_agents_dir="$PROJECT_DIR/.claude/agents/agent-qa"
+
+    if [[ ! -d "$source_agents_dir" ]]; then
+        print_verbose "No agent-qa/ide/claude/agents directory found - skipping"
+        return
+    fi
+
+    # Only touch the Claude agents directory if this project has one.
+    if [[ ! -d "$dest_agents_dir" ]]; then
+        print_verbose "No .claude/agents/agent-qa directory found - skipping (Claude Code only)"
+        return
+    fi
+
+    print_status "Updating Claude Code agent wrappers"
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        remove_stale_agents "$PROJECT_DIR"
+    fi
+
+    local agents_updated=0
+    local agents_skipped=0
+    local agents_new=0
+
+    find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_agents_dir/}"
+        local dest_file="$dest_agents_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
+            SKIPPED_FILES+=("$dest_file")
+            ((agents_skipped++)) || true
+            print_verbose "Skipped: $relative_path"
+        else
+            if [[ -f "$dest_file" ]]; then
+                UPDATED_FILES+=("$dest_file")
+                ((agents_updated++)) || true
+                print_verbose "Updated: $relative_path"
+            else
+                NEW_FILES+=("$dest_file")
+                ((agents_new++)) || true
+                print_verbose "New file: $relative_path"
+            fi
+            if [[ "$DRY_RUN" != "true" ]]; then
+                copy_file "$source_file" "$dest_file" > /dev/null
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $agents_new -gt 0 ]]; then
+            echo "✓ Added $agents_new agent files"
+        fi
+        if [[ $agents_updated -gt 0 ]]; then
+            echo "✓ Updated $agents_updated agent files"
+        fi
+        if [[ $agents_skipped -gt 0 ]]; then
+            echo -e "${YELLOW}$agents_skipped agent files were not updated. To update these, re-run with --overwrite-commands flag.${NC}"
+        fi
+    fi
+}
+
 # Update framework files
 update_framework() {
     local source_framework_dir="$BASE_DIR/agent-qa/framework"
@@ -571,6 +694,14 @@ perform_update() {
     if [[ -d "$BASE_DIR/agent-qa/standards" ]]; then
         echo ""
     fi
+    update_roles
+    if [[ -d "$BASE_DIR/agent-qa/roles" ]]; then
+        echo ""
+    fi
+    update_claude_agents
+    if [[ -d "$BASE_DIR/agent-qa/ide/claude/agents" ]]; then
+        echo ""
+    fi
     update_framework
     if [[ -d "$BASE_DIR/agent-qa/framework" ]]; then
         echo ""
@@ -688,6 +819,13 @@ prompt_update_confirmation() {
     fi
     if [[ -d "$BASE_DIR/agent-qa/standards" ]]; then
         echo "  - agent-qa/standards/"
+    fi
+    if [[ -d "$BASE_DIR/agent-qa/roles" ]]; then
+        echo "  - agent-qa/roles/"
+    fi
+    if [[ -d "$BASE_DIR/agent-qa/ide/claude/agents" ]] \
+       && [[ -d "$PROJECT_DIR/.claude/agents/agent-qa" ]]; then
+        echo "  - .claude/agents/agent-qa/ (agents superseded by roles are removed)"
     fi
     if [[ -d "$BASE_DIR/agent-qa/framework" ]]; then
         echo "  - agent-qa/framework/"

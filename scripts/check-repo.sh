@@ -328,6 +328,11 @@ check_wrappers_defer() {
             fail "$(basename "$f") names no role, rule or format to defer to"
         fi
         (( $(wc -l < "$f") <= 25 )) || fail "$(basename "$f") is not a thin wrapper ($(wc -l < "$f") lines)"
+        # The installers' stale-agent removal keeps a wrapper only when this
+        # marker is present on a single line. Line-wrapping it makes an update
+        # delete the wrapper as though it were a pre-refactor fat agent.
+        grep -q 'single source of truth' "$f" \
+            || fail "$(basename "$f") lacks the 'single source of truth' marker on one line"
     done
 }
 
@@ -356,6 +361,28 @@ check_role_refs_resolve() {
     return 0
 }
 
+check_roles_installed() {
+    echo "== installers sync agent-qa/roles/ and the moved agents =="
+    grep -q 'agent-qa/roles\|"roles"\|/roles' scripts/project-install.sh \
+        && pass "project-install.sh syncs roles" || fail "project-install.sh does not sync agent-qa/roles/"
+    grep -q 'agent-qa\\roles\|agent-qa/roles' scripts/project-install.ps1 \
+        && pass "project-install.ps1 syncs roles" || fail "project-install.ps1 does not sync agent-qa/roles/"
+    grep -q 'agent-qa/roles\|"roles"\|/roles' scripts/project-update.sh \
+        && pass "project-update.sh syncs roles" || fail "project-update.sh does not sync agent-qa/roles/"
+    grep -q 'ide/claude/agents' scripts/project-install.sh \
+        && pass "install reads agents from ide/claude/agents" \
+        || fail "project-install.sh still reads agents from the old agent-qa/agents/ path"
+    grep -q 'ide\\claude\\agents\|ide/claude/agents' scripts/project-install.ps1 \
+        && pass "ps1 install reads agents from ide/claude/agents" \
+        || fail "project-install.ps1 still reads agents from the old agent-qa/agents/ path"
+    grep -q 'remove_stale_agents\|stale agent' scripts/project-update.sh \
+        && pass "update removes superseded agent files" \
+        || fail "project-update.sh does not remove the superseded agent files"
+    grep -q 'Remove-StaleAgents\|stale agent' scripts/project-install.ps1 \
+        && pass "ps1 update removes superseded agent files" \
+        || fail "project-install.ps1 does not remove the superseded agent files"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -379,6 +406,7 @@ run_checks() {
     check_role_refs_resolve
     check_wrappers_defer
     check_todo_policy_guarded
+    check_roles_installed
 }
 
 run_checks

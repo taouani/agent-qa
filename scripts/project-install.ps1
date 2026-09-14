@@ -381,16 +381,52 @@ function Install-Rules {
     if (-not $script:DRY_RUN) { Print-Success "Installed QA rules in agent-qa/rules/" }
 }
 
-function Install-Agents {
-    $source = Join-Path $SourceDir "agent-qa\agents"
-    $dest = Join-Path $ProjectDir "agent-qa\agents"
+# Roles are IDE-neutral craft definitions read by every tool, so they are
+# installed into the project exactly the way rules are.
+function Install-Roles {
+    $source = Join-Path $SourceDir "agent-qa\roles"
+    $dest = Join-Path $ProjectDir "agent-qa\roles"
     if (-not (Test-Path $source)) {
-        Print-Verbose "No agent-qa/agents directory found - skipping"
+        Print-Verbose "No agent-qa/roles directory found - skipping"
         return
     }
-    if (-not $script:DRY_RUN) { Print-Status "Installing QA agents" }
-    Copy-SourceMarkdownTree -SourceDir $source -DestDir $dest -Label "QA agents in agent-qa/agents" | Out-Null
-    if (-not $script:DRY_RUN) { Print-Success "Installed QA agents in agent-qa/agents/" }
+    if (-not $script:DRY_RUN) { Print-Status "Installing QA roles" }
+    Copy-SourceMarkdownTree -SourceDir $source -DestDir $dest -Label "QA roles in agent-qa/roles" | Out-Null
+    if (-not $script:DRY_RUN) { Print-Success "Installed QA roles in agent-qa/roles/" }
+}
+
+# Remove stale agent files superseded by the thin Claude wrappers.
+#
+# The craft that used to live inside each agent now lives in agent-qa/roles/,
+# and the agents shipped in .claude/agents/agent-qa/ are thin wrappers that
+# defer to it. An install copies files in but never deletes files that vanished
+# upstream, so a project set up before that refactor would keep the old fat
+# agent beside the new wrapper -- and the old one wins on specificity.
+#
+# Windows has no project-update.ps1: updates run through this script, so the
+# removal lives here. Listed by exact name -- a user's own agents live in this
+# directory too and must never be touched. The marker test means only the old
+# fat form is removed; a wrapper already carrying the marker is left alone,
+# which makes this idempotent and safe on an already-migrated project.
+function Remove-StaleAgents {
+    $dest = Join-Path $ProjectDir ".claude\agents\agent-qa"
+    if (-not (Test-Path $dest)) { return }
+
+    $stale = @(
+        "requirements-analyst", "test-case-generator", "gherkin-writer", "playwright-generator",
+        "confluence-publisher", "api-test-generator", "accessibility-tester",
+        "ui-explorer", "playwright-debugger", "automation-reviewer", "framework-architect"
+    )
+
+    foreach ($name in $stale) {
+        $file = Join-Path $dest "$name.md"
+        if (-not (Test-Path $file)) { continue }
+        if (Select-String -Path $file -Pattern 'single source of truth' -SimpleMatch -Quiet) { continue }
+        if (-not $script:DRY_RUN) {
+            Remove-Item -LiteralPath $file -Force
+        }
+        Print-Verbose "Removed superseded agent: $name.md"
+    }
 }
 
 function Install-Framework {
@@ -448,9 +484,13 @@ function Install-IdeClaude {
             }
         }
 
-        $sourceAgents = Join-Path $SourceDir "agent-qa\agents"
+        # These wrappers are Claude-Code-specific and live only here; the craft
+        # they defer to is installed project-wide by Install-Roles.
+        $sourceAgents = Join-Path $SourceDir "agent-qa\ide\claude\agents"
         $destAgents = Join-Path $ProjectDir ".claude\agents\agent-qa"
         if (Test-Path $sourceAgents) {
+            # Drop pre-refactor fat agents before the wrappers land beside them.
+            Remove-StaleAgents
             Ensure-Dir -Dir $destAgents
             Copy-SourceMarkdownTree -SourceDir $sourceAgents -DestDir $destAgents -Label "Claude Code agents" | Out-Null
             if (-not $script:DRY_RUN) {
@@ -573,7 +613,7 @@ function Start-ProjectInstall {
 
     Ensure-Dir -Dir (Join-Path $ProjectDir "agent-qa\commands")
     Ensure-Dir -Dir (Join-Path $ProjectDir "agent-qa\rules")
-    Ensure-Dir -Dir (Join-Path $ProjectDir "agent-qa\agents")
+    Ensure-Dir -Dir (Join-Path $ProjectDir "agent-qa\roles")
     Ensure-Dir -Dir (Join-Path $ProjectDir "agent-qa\framework")
     Ensure-Dir -Dir (Join-Path $ProjectDir "agent-qa\formats")
 
@@ -591,7 +631,7 @@ function Start-ProjectInstall {
     Write-Host ""
     Install-Rules
     Write-Host ""
-    Install-Agents
+    Install-Roles
     Write-Host ""
     Install-Framework
     Write-Host ""

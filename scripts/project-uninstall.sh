@@ -33,7 +33,7 @@ Options:
 This script will:
 1. Read installed_ides from agent-qa/config.yml
 2. Remove IDE-specific folders (.claude/, .cursor/, .vscode/, .github/) created by Agent QA
-3. Remove agent-qa/ core files (commands, rules, agents, framework, formats)
+3. Remove agent-qa/ core files (commands, rules, roles, framework, formats)
 4. Optionally remove generated output folders
 
 EOF
@@ -138,7 +138,8 @@ echo ""
 print_status "Removing Agent QA core files..."
 
 # Remove core directories (preserve output folders unless --remove-outputs)
-for dir in commands rules agents framework formats ide; do
+# "agents" is kept for projects installed before roles/ replaced it.
+for dir in commands rules roles agents framework formats ide; do
     remove_if_exists "$PROJECT_DIR/agent-qa/$dir" "agent-qa/$dir/"
 done
 remove_if_exists "$PROJECT_DIR/agent-qa/config.yml" "agent-qa/config.yml"

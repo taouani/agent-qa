@@ -69,7 +69,7 @@ This script will:
 2. Prompt for repository project ID if not provided
 3. Prompt for Azure DevOps cloud ID (if Azure DevOps selected and not provided)
 4. Create/update agent-qa/config.yml with your selections
-5. Install agent-qa core files (commands, rules, agents, framework, formats)
+5. Install agent-qa core files (commands, rules, roles, framework, formats)
 6. Install IDE-specific integration files based on --ide selection
 
 Examples:
@@ -590,37 +590,39 @@ install_rules() {
     fi
 }
 
-# Install core agents to agent-qa/agents/ (always installed)
-install_agents() {
-    local source_agents_dir="$BASE_DIR/agent-qa/agents"
-    local dest_agents_dir="$PROJECT_DIR/agent-qa/agents"
+# Install core roles to agent-qa/roles/ (always installed).
+# Roles are IDE-neutral craft definitions read by every tool, so they are
+# installed into the project exactly the way rules are.
+install_roles() {
+    local source_roles_dir="$BASE_DIR/agent-qa/roles"
+    local dest_roles_dir="$PROJECT_DIR/agent-qa/roles"
 
-    if [[ ! -d "$source_agents_dir" ]]; then
-        print_verbose "No agent-qa/agents directory found - skipping"
+    if [[ ! -d "$source_roles_dir" ]]; then
+        print_verbose "No agent-qa/roles directory found - skipping"
         return
     fi
 
     if [[ "$DRY_RUN" != "true" ]]; then
-        print_status "Installing QA agents"
+        print_status "Installing QA roles"
     fi
 
-    ensure_dir "$dest_agents_dir"
-    local agents_count=0
-    find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
-        local relative_path="${source_file#$source_agents_dir/}"
-        local dest_file="$dest_agents_dir/$relative_path"
+    ensure_dir "$dest_roles_dir"
+    local roles_count=0
+    find "$source_roles_dir" -type f -name "*.md" | while read -r source_file; do
+        local relative_path="${source_file#$source_roles_dir/}"
+        local dest_file="$dest_roles_dir/$relative_path"
         if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_COMMANDS" "command"; then
             print_verbose "Skipped: $relative_path"
         else
             if copy_file "$source_file" "$dest_file" > /dev/null; then
-                ((agents_count++)) || true
+                ((roles_count++)) || true
                 print_verbose "  Installed: $relative_path"
             fi
         fi
     done
 
     if [[ "$DRY_RUN" != "true" ]]; then
-        echo "✓ Installed QA agents in agent-qa/agents/"
+        echo "✓ Installed QA roles in agent-qa/roles/"
     fi
 }
 
@@ -676,10 +678,16 @@ install_ide_claude() {
             fi
         fi
 
-        # Copy agents from agent-qa/agents/ to .claude/agents/agent-qa/
+        # Copy agents from agent-qa/ide/claude/agents/ to .claude/agents/agent-qa/.
+        # These wrappers are Claude-Code-specific and live only here; the craft
+        # they defer to is installed project-wide by install_roles.
         local dest_agents_dir="$PROJECT_DIR/.claude/agents/agent-qa"
-        local source_agents_dir="$BASE_DIR/agent-qa/agents"
+        local source_agents_dir="$BASE_DIR/agent-qa/ide/claude/agents"
         if [[ -d "$source_agents_dir" ]]; then
+            # Drop pre-refactor fat agents before the wrappers land beside them.
+            if [[ "$DRY_RUN" != "true" ]]; then
+                remove_stale_agents "$PROJECT_DIR"
+            fi
             ensure_dir "$dest_agents_dir"
             find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
                 local relative_path="${source_file#$source_agents_dir/}"
@@ -872,7 +880,7 @@ perform_installation() {
     # Create core directory structure
     ensure_dir "$PROJECT_DIR/agent-qa/commands"
     ensure_dir "$PROJECT_DIR/agent-qa/rules"
-    ensure_dir "$PROJECT_DIR/agent-qa/agents"
+    ensure_dir "$PROJECT_DIR/agent-qa/roles"
     ensure_dir "$PROJECT_DIR/agent-qa/framework"
     ensure_dir "$PROJECT_DIR/agent-qa/formats"
 
@@ -893,7 +901,7 @@ perform_installation() {
     echo ""
     install_rules
     echo ""
-    install_agents
+    install_roles
     echo ""
     install_framework
     echo ""

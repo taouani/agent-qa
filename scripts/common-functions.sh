@@ -460,3 +460,36 @@ azure_devops_cloud_id: \"$azure_devops_cloud_id\""
     fi
 }
 
+
+# -----------------------------------------------------------------------------
+# Remove stale agent files superseded by the thin Claude wrappers.
+#
+# The craft that used to live inside each agent now lives in agent-qa/roles/,
+# and the agents shipped in .claude/agents/agent-qa/ are thin wrappers that
+# defer to it. An install or update copies files in but never deletes files
+# that vanished upstream, so a project installed before that refactor would
+# keep the old fat agent beside the new wrapper.
+#
+# Listed by exact name: a user's own agents live in this directory too and must
+# never be touched. The marker grep means only the old fat form is removed --
+# a wrapper already carrying the marker is left alone, which makes this
+# idempotent and safe to run on an already-migrated project.
+#
+# Usage: remove_stale_agents <project_dir>
+# -----------------------------------------------------------------------------
+remove_stale_agents() {
+    local project_dir="$1"
+    local dest="$project_dir/.claude/agents/agent-qa"
+    [[ -d "$dest" ]] || return 0
+
+    local name
+    for name in requirements-analyst test-case-generator gherkin-writer playwright-generator \
+                confluence-publisher api-test-generator accessibility-tester \
+                ui-explorer playwright-debugger automation-reviewer framework-architect; do
+        if [[ -f "$dest/$name.md" ]] && ! grep -q 'single source of truth' "$dest/$name.md"; then
+            rm -f "$dest/$name.md"
+            print_verbose "Removed superseded agent: $name.md"
+        fi
+    done
+    return 0
+}
