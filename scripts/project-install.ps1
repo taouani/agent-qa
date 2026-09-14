@@ -418,10 +418,19 @@ function Remove-StaleAgents {
         "ui-explorer", "playwright-debugger", "automation-reviewer", "framework-architect"
     )
 
+    # Line count is a second, reflow-immune signal. The marker check alone
+    # already misfired once: two wrappers line-wrapped "single source of truth",
+    # and a line-oriented match read them as pre-refactor agents. Any future
+    # reformatting would re-arm that bug, and its failure mode is deleting a
+    # file the user can see. Thin wrappers run 14-16 lines; the smallest fat
+    # agent was 23; 20 sits in the gap. All three conditions -- known name,
+    # no marker, over the threshold -- must hold to delete.
     foreach ($name in $stale) {
         $file = Join-Path $dest "$name.md"
         if (-not (Test-Path $file)) { continue }
         if (Select-String -Path $file -Pattern 'single source of truth' -SimpleMatch -Quiet) { continue }
+        $lines = @(Get-Content -LiteralPath $file).Count
+        if ($lines -le 20) { continue }
         if (-not $script:DRY_RUN) {
             Remove-Item -LiteralPath $file -Force
         }

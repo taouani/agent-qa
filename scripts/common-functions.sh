@@ -482,12 +482,24 @@ remove_stale_agents() {
     local dest="$project_dir/.claude/agents/agent-qa"
     [[ -d "$dest" ]] || return 0
 
-    local name
+    # Three conditions must all hold before a file is deleted: the name is on
+    # the list above, the marker is absent, and the file is over 20 lines.
+    #
+    # The line count is a second, reflow-immune signal. The marker check alone
+    # already misfired once -- two wrappers line-wrapped "single source of
+    # truth", and a line-oriented grep read them as pre-refactor agents. Any
+    # future reformatting would re-arm that bug, and its failure mode is
+    # deleting a file the user can see. Thin wrappers run 14-16 lines, the
+    # smallest fat agent was 23, so 20 sits cleanly in the gap.
+    local name file lines
     for name in requirements-analyst test-case-generator gherkin-writer playwright-generator \
                 confluence-publisher api-test-generator accessibility-tester \
                 ui-explorer playwright-debugger automation-reviewer framework-architect; do
-        if [[ -f "$dest/$name.md" ]] && ! grep -q 'single source of truth' "$dest/$name.md"; then
-            rm -f "$dest/$name.md"
+        file="$dest/$name.md"
+        [[ -f "$file" ]] || continue
+        lines=$(wc -l < "$file")
+        if ! grep -q 'single source of truth' "$file" && (( lines > 20 )); then
+            rm -f "$file"
             print_verbose "Removed superseded agent: $name.md"
         fi
     done
