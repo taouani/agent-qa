@@ -11,7 +11,15 @@
 
 Follow `@agent-qa/commands/common/discover-framework-profile.md`. If it stops, this command stops.
 
-### Step 2: Find the Failures
+### Step 2: Resolve the Output Folder
+
+Set `selected_folder` to `agent-qa/{today's date as YYYY-MM-DD}-automation/`, creating it if it
+does not exist. Reuse an existing folder for the same date rather than creating a second one.
+
+If any `agent-qa/*/ui-snapshots/` folder exists, prefer the most recent one as `selected_folder`,
+so snapshots captured by `explore-ui` are found by the locator lookups in later phases.
+
+### Step 3: Find the Failures
 
 Use the first available source, in this order:
 
@@ -23,7 +31,7 @@ Use the first available source, in this order:
 If none resolves, ask the user for a spec path. Do not run the whole suite to discover failures —
 that is expensive and the user may already know which test is failing.
 
-### Step 3: Present and Confirm
+### Step 4: Present and Confirm
 
 List the failing tests with their file, title, and the first line of the error. Ask which to
 debug. Default to one. Debugging several at once mixes evidence.

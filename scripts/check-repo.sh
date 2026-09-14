@@ -231,6 +231,38 @@ check_docs_updated() {
         || fail "project-update.sh does not mention framework-profile.md"
 }
 
+check_write_gate_present() {
+    echo "== commands that can write host source still carry the write gate =="
+    local f
+    for f in agent-qa/commands/generate-playwright-tests/4-generate-test-specs.md \
+             agent-qa/commands/review-automation-code/4-report-and-optional-fix.md \
+             agent-qa/commands/debug-tests/4-apply-allowed-fixes.md \
+             agent-qa/commands/refactor-framework/2-select-phase-and-tasks.md; do
+        grep -q 'allow_source_edits' "$f" \
+            && pass "$f gates on allow_source_edits" \
+            || fail "$f lost its allow_source_edits gate"
+    done
+    for f in agent-qa/commands/review-automation-code/4-report-and-optional-fix.md \
+             agent-qa/commands/debug-tests/4-apply-allowed-fixes.md \
+             agent-qa/commands/generate-playwright-tests/4-generate-test-specs.md; do
+        grep -q '\.auth\|deny-list' "$f" \
+            && pass "$f names the deny-list" \
+            || fail "$f lost its deny-list reference"
+    done
+    grep -q '## Write Gate' agent-qa/rules/automation-conventions.md \
+        && pass "canonical write gate defined" \
+        || fail "automation-conventions.md missing ## Write Gate"
+}
+
+check_inference_path_never_stops() {
+    echo "== generate-playwright-tests never delegates to profile discovery =="
+    if grep -rq 'discover-framework-profile' agent-qa/commands/generate-playwright-tests/; then
+        fail "generate-playwright-tests delegates to discover-framework-profile, which STOPS the command"
+    else
+        pass "generate-playwright-tests does not delegate to discovery"
+    fi
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -248,6 +280,8 @@ run_checks() {
     check_refactor_framework
     check_new_deliverables_documented
     check_docs_updated
+    check_write_gate_present
+    check_inference_path_never_stops
 }
 
 run_checks

@@ -13,7 +13,12 @@
 Follow the instructions in `@agent-qa/commands/common/discover-framework-profile.md`.
 If that instruction stops, this command stops.
 
-### Step 2: Determine the File Set
+### Step 2: Resolve the Output Folder
+
+Set `selected_folder` to `agent-qa/{today's date as YYYY-MM-DD}-automation/`, creating it if it
+does not exist. Reuse an existing folder for the same date rather than creating a second one.
+
+### Step 3: Determine the File Set
 
 Use the first source the user supplied, in this order:
 
@@ -30,7 +35,7 @@ matching the deny-list in `## Constraints`.
 
 If the resulting set is empty, report "No automation files to review." and stop.
 
-### Step 3: Confirm
+### Step 4: Confirm
 
 Present the file list with counts by type and ask the user to confirm before reading contents.
 

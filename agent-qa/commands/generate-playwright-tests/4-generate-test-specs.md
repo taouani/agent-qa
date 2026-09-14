@@ -218,6 +218,13 @@ Otherwise list the generated files with their proposed destinations under `spec_
 `page_object_dir`, and ask which to place. For each accepted file that already exists, show a diff
 and ask again. Never place a file the user did not name.
 
+Before placing any file, verify the full write gate in `## Constraints`: `allow_source_edits` is
+`true`, the profile has `reviewed: true`, the resolved destination is under
+`playwright_project_root`, the destination matches nothing on the deny-list (`.env*`,
+`**/.auth/*.json`, `node_modules/`, CI configuration, `playwright.config.ts`), and the user named
+this file. A `page_object_dir` or `spec_dir` that resolves onto a deny-listed path is refused, not
+adjusted. These conditions are defined once in `## Write Gate` of `@agent-qa/rules/automation-conventions.md`.
+
 ### Step 8: Generate Output Index
 
 Follow the instructions in `@agent-qa/commands/common/generate-output-index.md` to generate or update the `README.md` index file in the output folder.
@@ -234,8 +241,10 @@ Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md` to 
 - Write files to the `playwright/` subdirectory of the selected output folder by default
 - Writing into the host repository's `spec_dir` or `page_object_dir` is permitted ONLY when all
   of the following hold: `automation.allow_source_edits` is `true`, the framework profile has
-  `reviewed: true`, the resolved path is under `playwright_project_root`, and the user approved
-  this run when asked. When any condition fails, write to the output folder and say why
+  `reviewed: true`, the resolved path is under `playwright_project_root`, the resolved path
+  matches nothing on the deny-list (`.env*`, `**/.auth/*.json`, `node_modules/`, CI configuration,
+  `playwright.config.ts`), and the user approved this run when asked. When any condition fails,
+  write to the output folder and say why. These conditions are defined once in `## Write Gate` of `@agent-qa/rules/automation-conventions.md`.
 - Never overwrite an existing host-repository file without showing the user a diff first
 - Do NOT modify existing test case files
 - Include TODO comments for all uncertain elements

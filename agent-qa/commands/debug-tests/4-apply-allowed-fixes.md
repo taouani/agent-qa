@@ -17,6 +17,8 @@ A fix may be applied ONLY when ALL of the following hold:
    CI configuration, `playwright.config.ts`
 5. The user approved this specific fix when asked in Step 3
 
+These conditions are defined once in `## Write Gate` of `@agent-qa/rules/automation-conventions.md`.
+
 If any condition fails, report which one, write the report with the proposed fix as a diff, and
 stop. Do not apply a smaller version of the fix instead.
 

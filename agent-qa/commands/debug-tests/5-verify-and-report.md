@@ -13,8 +13,9 @@ cd "{playwright_project_root}" && {run_command} "{spec_path}" -g "{test_title}" 
   --retries=0 --workers=1
 ```
 
-If it still fails, the classification was wrong. Revert the change, return to Phase 3 with the new
-evidence, and say so in the report. Do not stack a second fix on top of a failed one.
+If it still fails, the classification was wrong. Revert the change with
+`git checkout -- {spec_path}`, return to Phase 3 with the new evidence, and say so in the report.
+Do not stack a second fix on top of a failed one.
 
 ### Step 2: Confirm Stability
 

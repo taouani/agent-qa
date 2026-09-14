@@ -12,7 +12,12 @@
 
 Follow `@agent-qa/commands/common/discover-framework-profile.md`. If it stops, this command stops.
 
-### Step 2: Locate the Architecture Review
+### Step 2: Resolve the Output Folder
+
+Set `selected_folder` to `agent-qa/{today's date as YYYY-MM-DD}-automation/`, creating it if it
+does not exist. Reuse an existing folder for the same date rather than creating a second one.
+
+### Step 3: Locate the Architecture Review
 
 Find the most recent `agent-qa/*/reviews/architecture-review.md`. If none exists, report and stop:
 
@@ -20,7 +25,7 @@ Find the most recent `agent-qa/*/reviews/architecture-review.md`. If none exists
 
 Never assess the framework here — that is a different command with a different method.
 
-### Step 3: Build the Plan
+### Step 4: Build the Plan
 
 Read every `### AF-NNN` finding with its severity, impact, risk, effort, and `depends_on`.
 
@@ -36,7 +41,7 @@ Group findings into phases so that:
 For each task within a phase record: the finding id it serves, the exact files to change, what
 changes, the validation command that proves it, and how to revert.
 
-### Step 4: Write the Plan
+### Step 5: Write the Plan
 
 Write `{selected_folder}/reviews/refactor-plan.md`:
 
@@ -50,7 +55,7 @@ Write `{selected_folder}/reviews/refactor-plan.md`:
 Body: one `## Phase N — {goal}` section per phase, each listing numbered tasks with finding id,
 files, change description, validation command, and revert note.
 
-### Step 5: Stop for Approval
+### Step 6: Stop for Approval
 
 Report:
 
@@ -61,6 +66,7 @@ Do not execute anything in this phase.
 
 ## Data Storage
 
+- `selected_folder`: the dated output folder for this run
 - `plan`: parsed phases and tasks
 - `plan_path`
 

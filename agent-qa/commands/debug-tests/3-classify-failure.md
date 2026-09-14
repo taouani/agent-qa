@@ -22,10 +22,15 @@ Work through these questions in order. The first that answers decides the class.
 2. Does the element exist in the current UI but the locator no longer matches it? Confirm against
    a `ui-snapshots/` entry or a trace, not by assumption.
    → **Selector**
+   If the UI difference cannot be traced to an intended change — a requirement, a design note, or
+   a commit — it is a candidate real defect, not a selector problem. A snapshot tells you what the
+   UI is, never whether it should be that.
 3. Does the element appear correctly but after the assertion ran?
    → **Synchronization**
 4. Is a required record missing, stale, or already consumed by another test?
    → **Test data**
+   If the record is missing because the application failed to create it, that is a real defect.
+   Classify as Test data only when the data was never created by the system under test.
 5. Is the base URL, auth state, or a dependency service wrong or unavailable?
    → **Environment**
 6. Does it pass and fail without any change?

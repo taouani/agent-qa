@@ -239,6 +239,10 @@ Playwright runner for suite execution.
 - Deny-list enforced regardless of the switch: `.env*`, `**/.auth/*.json`, `node_modules/`, CI
   configuration, and `playwright.config.ts` — changes to the Playwright config are reported,
   never applied automatically.
+  - One sanctioned exception: `explore-ui` writes the browser auth state to the `auth_state_path`
+    the profile records, because it must live where the host project's Playwright config expects
+    it. It is gated on an explicit path (never invented), confirmation before overwrite, and the
+    path being gitignored.
 - Auth-state files: existence and modification time only. Contents are never read into context
   and never copied into deliverables. `health-check` warns when `.auth/` is not gitignored.
 - `refactor-framework` takes a `git stash` checkpoint before each task. The first validation

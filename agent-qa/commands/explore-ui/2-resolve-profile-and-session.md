@@ -39,6 +39,20 @@ host name.
 
 Read `auth_state_path` from the profile and `automation.auth_state_ttl_minutes` from config.
 
+**This is the only file Agent-QA writes outside `agent-qa/`.** It is sanctioned because a
+browser auth state must live where the host project's Playwright config expects it. It is
+gated regardless of `automation.allow_source_edits`:
+
+1. If the profile records no `auth_state_path`, or records `none observed`, STOP and ask the
+   engineer for the path their Playwright setup uses. Never invent a path for a file that will
+   hold credentials.
+2. If a file already exists at that path, show its path and modification time and ask before
+   overwriting. Never silently replace an existing auth state.
+3. If the path's directory is not matched by `.gitignore`, STOP and report it. A browser auth
+   state must never be committed. Do not write it and then warn.
+
+These three conditions apply to the `state-save` call below and to nothing else in this command.
+
 Check existence and age. Check the modification time only — never read the file's contents.
 
 ```bash
@@ -89,4 +103,6 @@ page, authentication did not take — return to Step 4 rather than continuing.
 - Never read the contents of an auth-state file
 - Never accept, type, or store credentials
 - Never proceed with an unauthenticated session — stop instead
+- The browser auth state at the profile's `auth_state_path` is the ONLY file this command may
+  write outside `agent-qa/`, and only under the three conditions in Step 4
 - Never use Playwright MCP; this command is `playwright-cli` only

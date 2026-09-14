@@ -12,7 +12,12 @@
 
 Follow `@agent-qa/commands/common/discover-framework-profile.md`. If it stops, this command stops.
 
-### Step 2: Inventory
+### Step 2: Resolve the Output Folder
+
+Set `selected_folder` to `agent-qa/{today's date as YYYY-MM-DD}-automation/`, creating it if it
+does not exist. Reuse an existing folder for the same date rather than creating a second one.
+
+### Step 3: Inventory
 
 Under `playwright_project_root`, excluding `node_modules/`, count and list:
 
@@ -21,7 +26,7 @@ Under `playwright_project_root`, excluding `node_modules/`, count and list:
 - Entry points: `playwright.config.ts`, global setup and teardown, `package.json` scripts
 - Total lines per category, and the ten largest files by line count
 
-### Step 3: Define the Sample
+### Step 4: Define the Sample
 
 A full read is not feasible on a large suite and not necessary. Select:
 

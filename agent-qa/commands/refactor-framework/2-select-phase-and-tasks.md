@@ -15,6 +15,12 @@ Execution requires ALL of:
 2. The framework profile has `reviewed: true`
 3. A refactor plan exists
 4. The git working tree under `playwright_project_root` is clean
+5. Every file in `files_in_scope` resolves under `playwright_project_root`
+6. No file in `files_in_scope` matches the deny-list: `.env*`, `**/.auth/*.json`, `node_modules/`,
+   CI configuration, `playwright.config.ts`
+7. The engineer confirmed the scope in Step 4 before any edit
+
+These conditions are defined once in `## Write Gate` of `@agent-qa/rules/automation-conventions.md`.
 
 Check the tree with:
 

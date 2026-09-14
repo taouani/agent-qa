@@ -28,8 +28,14 @@ Fixes may be applied ONLY when ALL of the following hold:
 
 1. `automation.allow_source_edits` is `true` in `agent-qa/config.yml`.
 2. Every target path resolves under `playwright_project_root`.
-3. No target path matches the deny-list.
+3. No target path matches the deny-list: `.env*`, `**/.auth/*.json`, `node_modules/`, CI
+   configuration, `playwright.config.ts`.
 4. The framework profile has `reviewed: true`.
+5. The git working tree under `playwright_project_root` is clean (`git status --porcelain` is
+   empty), so a failed fix can be reverted.
+6. The engineer approved this specific change in this run, as asked in Step 3.
+
+These conditions are defined once in `## Write Gate` of `@agent-qa/rules/automation-conventions.md`.
 
 If any condition fails, report which one and stop after the report. Do not offer a partial
 workaround.
@@ -47,6 +53,9 @@ so — never improvise a different change.
 
 After all fixes, run the profile's `typecheck_command` if it records one other than "none
 observed", and report the result. Do not run the full suite here; that is `debug-tests`.
+
+If the type check now fails where it passed before the fixes, revert them with
+`git checkout -- {files}` and report the failure. Never leave a failing type check behind.
 
 ### Step 5: Write the Applied-Fixes Record
 
@@ -68,7 +77,8 @@ Follow the instructions in `@agent-qa/commands/common/execute-post-hooks.md`.
 
 ## Constraints
 
-- Never write outside `agent-qa/` unless all four gate conditions in Step 2 hold
+- Never write outside `agent-qa/` unless all six gate conditions in Step 2 hold, including the
+  engineer's approval of this specific change in this run
 - Never modify `playwright.config.ts` — report the needed change instead
 - Never apply a fix listed under `## Never-Apply Fixes` in `automation-conventions.md`
 - Never commit; committing is the engineer's decision

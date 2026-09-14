@@ -50,11 +50,16 @@ this feature existed. Mention once in the run summary:
     No UI exploration found. Locators are inferred and marked with TODO comments.
     Run /agent-qa:explore-ui first to generate real locators.
 
-Also resolve the framework profile by following
-`@agent-qa/commands/common/discover-framework-profile.md`, so page object directory, naming, and
-fixture import match the host repository. If no profile exists and none can be generated, fall
-back to the generic templates and say so in the summary. Missing profile must never block the
-inference path.
+Then read the framework profile WITHOUT running discovery. If `agent-qa/framework-profile.md`
+exists and its front matter says `reviewed: true`, read its `## Layout` section for
+`page_object_dir`, `page_object_naming`, `fixture_import`, `spec_dir` and `spec_naming`, and
+prefer those over the generic templates. If the profile is absent, or exists with
+`reviewed: false`, use the generic templates and say so once in the run summary.
+
+Do NOT delegate to the shared profile-discovery snippet under `agent-qa/commands/common/` from
+this command — it STOPS on every branch — and never stop this command because a profile is
+missing, unreviewed, or because no Playwright project could be found. This command must run to
+completion for projects that have never opted into live automation.
 
 ### Step 3: Extract Page References
 

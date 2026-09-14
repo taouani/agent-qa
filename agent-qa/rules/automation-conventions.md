@@ -48,6 +48,22 @@ These mask defects rather than fix them. A command must refuse, report, and stop
 | Loosening an expected value to match actual output | The test then asserts nothing |
 | Editing `playwright.config.ts` to change global timeouts or retries | Repository-wide impact from a single-test symptom. Report it instead |
 
+## Write Gate
+
+A command may write outside `agent-qa/` only when ALL of these hold. They are not independently
+re-derived per command — this is the single definition.
+
+| # | Condition |
+|---|-----------|
+| 1 | `automation.allow_source_edits` is `true` in `agent-qa/config.yml` |
+| 2 | `agent-qa/framework-profile.md` exists with `reviewed: true` |
+| 3 | Every target path resolves under `playwright_project_root` |
+| 4 | No target path matches the deny-list: `.env*`, `**/.auth/*.json`, `node_modules/`, CI configuration, `playwright.config.ts` |
+| 5 | The engineer approved this specific change in this run |
+
+If any condition fails, report which one and stop. Do not offer a partial workaround, and do not
+apply a smaller version of the change instead.
+
 ## Failure Classification
 
 Classify every failure before proposing any change:
