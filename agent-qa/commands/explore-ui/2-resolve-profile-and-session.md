@@ -90,8 +90,11 @@ refuse to use them and repeat the manual login instruction.
 
 ### Step 5: Confirm the Session
 
-Navigate to the base URL and take one snapshot to a temporary path. If the snapshot shows a login
-page, authentication did not take — return to Step 4 rather than continuing.
+Navigate to the base URL and capture one snapshot to
+`{selected_folder}/ui-snapshots/00-session-check.yml`. Write it there and nowhere else — it is a
+snapshot of an authenticated page, so it belongs inside the output folder like every other
+snapshot. If the snapshot shows a login page, authentication did not take — return to Step 4
+rather than continuing.
 
 ## Data Storage
 

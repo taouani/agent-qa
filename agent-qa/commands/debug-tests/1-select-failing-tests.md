@@ -16,8 +16,10 @@ Follow `@agent-qa/commands/common/discover-framework-profile.md`. If it stops, t
 Set `selected_folder` to `agent-qa/{today's date as YYYY-MM-DD}-automation/`, creating it if it
 does not exist. Reuse an existing folder for the same date rather than creating a second one.
 
-If any `agent-qa/*/ui-snapshots/` folder exists, prefer the most recent one as `selected_folder`,
-so snapshots captured by `explore-ui` are found by the locator lookups in later phases.
+If any `agent-qa/*/ui-snapshots/` folder exists, prefer the PARENT of the most recent one as
+`selected_folder`, so snapshots captured by `explore-ui` are found by the locator lookups in later
+phases. Take the parent, never the `ui-snapshots/` folder itself — this command writes its report
+to `{selected_folder}/debug/report.md`, which must sit beside `ui-snapshots/`, not inside it.
 
 ### Step 3: Find the Failures
 
