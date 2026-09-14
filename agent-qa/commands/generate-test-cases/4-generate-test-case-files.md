@@ -206,18 +206,8 @@ Test Key,Summary,Test Type,Priority,Labels,Preconditions,Steps,Expected Result,R
 
 ### Step 6: Create Traceability Matrix
 
-Create `test-cases-traceability-matrix.md`:
-
-**Coverage Matrix**:
-| Requirement Key | Total Tests | Positive | Negative | Edge Cases | Coverage % |
-|----------------|-------------|----------|----------|------------|------------|
-| PROJ-123 | 8 | 3 | 3 | 2 | 100% |
-| PROJ-124 | 6 | 2 | 2 | 2 | 95% |
-
-**Coverage Analysis**:
-- Requirements coverage: X/Y requirements covered (Z%)
-- Acceptance criteria coverage: X/Y AC items covered (Z%)
-- Gap analysis: Identify missing coverage areas
+Build the matrix using `@agent-qa/roles/release-reporting.md`, section `## Traceability Matrix`,
+scoped to the requirements and test cases generated in this run.
 
 ### Step 7: Create Test Suite Index
 
