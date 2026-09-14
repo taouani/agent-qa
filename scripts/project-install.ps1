@@ -403,14 +403,22 @@ function Install-Roles {
 # upstream, so a project set up before that refactor would keep the old fat
 # agent beside the new wrapper -- and the old one wins on specificity.
 #
+# The pre-refactor installer wrote the fat agents to TWO destinations:
+# .claude\agents\agent-qa\ AND the IDE-neutral agent-qa\agents\. Both must be
+# cleaned; cleaning only the first leaves the eleven superseded agents beside
+# agent-qa\roles\ in the tree every IDE reads.
+#
 # Windows has no project-update.ps1: updates run through this script, so the
-# removal lives here. Listed by exact name -- a user's own agents live in this
-# directory too and must never be touched. The marker test means only the old
+# removal lives here. Listed by exact name -- a user's own agents live in these
+# directories too and must never be touched. The marker test means only the old
 # fat form is removed; a wrapper already carrying the marker is left alone,
 # which makes this idempotent and safe on an already-migrated project.
 function Remove-StaleAgents {
-    $dest = Join-Path $ProjectDir ".claude\agents\agent-qa"
-    if (-not (Test-Path $dest)) { return }
+    $legacyDir = Join-Path $ProjectDir "agent-qa\agents"
+    $targets = @(
+        (Join-Path $ProjectDir ".claude\agents\agent-qa"),
+        $legacyDir
+    )
 
     $stale = @(
         "requirements-analyst", "test-case-generator", "gherkin-writer", "playwright-generator",
@@ -424,17 +432,36 @@ function Remove-StaleAgents {
     # reformatting would re-arm that bug, and its failure mode is deleting a
     # file the user can see. Thin wrappers run 14-16 lines; the smallest fat
     # agent was 23; 20 sits in the gap. All three conditions -- known name,
-    # no marker, over the threshold -- must hold to delete.
-    foreach ($name in $stale) {
-        $file = Join-Path $dest "$name.md"
-        if (-not (Test-Path $file)) { continue }
-        if (Select-String -Path $file -Pattern 'single source of truth' -SimpleMatch -Quiet) { continue }
-        $lines = @(Get-Content -LiteralPath $file).Count
-        if ($lines -le 20) { continue }
-        if (-not $script:DRY_RUN) {
-            Remove-Item -LiteralPath $file -Force
+    # no marker, over the threshold -- must hold to delete, in EITHER directory.
+    foreach ($dest in $targets) {
+        if (-not (Test-Path $dest)) { continue }
+        foreach ($name in $stale) {
+            $file = Join-Path $dest "$name.md"
+            if (-not (Test-Path $file)) { continue }
+            if (Select-String -Path $file -Pattern 'single source of truth' -SimpleMatch -Quiet) { continue }
+            $lines = @(Get-Content -LiteralPath $file).Count
+            if ($lines -le 20) { continue }
+            if (-not $script:DRY_RUN) {
+                Remove-Item -LiteralPath $file -Force
+                # The message stays inside the guard: a dry run that reports
+                # removals it never performed is a false report.
+                Print-Verbose "Removed superseded agent: $file"
+            }
         }
-        Print-Verbose "Removed superseded agent: $name.md"
+    }
+
+    # agent-qa\agents\ is retired outright by the refactor, so drop the
+    # directory once the superseded files are gone -- but ONLY when it is
+    # empty. Never recursively: a user may have left their own file there, and
+    # an empty directory is a cosmetic wart while deleting someone's file is
+    # not recoverable.
+    if ((Test-Path $legacyDir) -and -not $script:DRY_RUN) {
+        if (@(Get-ChildItem -LiteralPath $legacyDir -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $legacyDir -Force
+            Print-Verbose "Removed empty legacy directory: agent-qa/agents/"
+        } else {
+            Print-Verbose "Kept agent-qa/agents/ - it is not empty"
+        }
     }
 }
 

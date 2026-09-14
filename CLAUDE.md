@@ -151,7 +151,7 @@ exists:
 - **`playwright-generator.md`** — defers to `agent-qa/roles/playwright-authoring.md`
 - **`confluence-publisher.md`** — defers to `agent-qa/formats/confluence/`
 - **`api-test-generator.md`** — defers to `agent-qa/roles/api-test-design.md`
-- **`accessibility-tester.md`** — defers to `agent-qa/roles/accessibility-mapping.md`
+- **`accessibility-tester.md`** — defers to `agent-qa/roles/accessibility-mapping.md` and `agent-qa/roles/accessibility-test-design.md`
 - **`ui-explorer.md`** — defers to `agent-qa/rules/automation-conventions.md`
 - **`playwright-debugger.md`** — defers to `agent-qa/rules/automation-conventions.md`
 - **`automation-reviewer.md`** — defers to `agent-qa/rules/automation-conventions.md`

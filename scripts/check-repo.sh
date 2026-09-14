@@ -297,36 +297,52 @@ check_inference_path_never_stops() {
 }
 
 check_roles_wired() {
-    echo "== every role exists and is referenced by a phase =="
-    local role name
-    # Tasks 2-11 append their role's basename to this list.
-    for name in test-case-design test-strategy test-plan test-charter risk-analysis release-notes-content traceability-matrix requirements-analysis code-change-analysis gherkin-authoring api-test-design accessibility-mapping accessibility-test-design test-data-design playwright-authoring; do
-        role="agent-qa/roles/$name.md"
-        if [[ ! -f "$role" ]]; then
-            fail "missing role file: $role"
-            continue
-        fi
-        pass "$role exists"
+    echo "== every role is referenced by a phase =="
+    local role name found=0
+    # The roles are read from the filesystem, never from a fixed list. A
+    # hardcoded list can only ever confirm roles someone already knew about,
+    # so a NEW role that no phase references -- precisely the orphan this
+    # check exists to catch -- was invisible to it.
+    #
+    # A role file that is DELETED is caught elsewhere: check_role_refs_resolve
+    # fails on any @agent-qa/roles/ reference with no file behind it, and
+    # check_roles_documented fails on the role count in CLAUDE.md.
+    for role in agent-qa/roles/*.md; do
+        [[ -f "$role" ]] || continue
+        found=1
+        name="$(basename "$role" .md)"
         if grep -rq "@agent-qa/roles/$name.md" agent-qa/commands/; then
             pass "$name is referenced by a phase"
         else
             fail "orphan role, no phase references it: $role"
         fi
     done
+    (( found == 1 )) || fail "no role files found in agent-qa/roles/"
+    return 0
 }
 
 check_wrappers_defer() {
     echo "== every Claude agent wrapper defers to a role or rule =="
-    local f target
+    local f target named
     [[ -d agent-qa/ide/claude/agents ]] || { fail "missing agent-qa/ide/claude/agents/"; return; }
     [[ -d agent-qa/agents ]] && fail "old agent-qa/agents/ still present - wrappers were not moved"
     for f in agent-qa/ide/claude/agents/*.md; do
-        target=$(grep -oE 'agent-qa/(roles|rules|formats)/[a-z/-]+(\.md)?' "$f" | head -1)
-        if [[ -n "$target" ]]; then
-            pass "$(basename "$f") defers to $target"
-        else
-            fail "$(basename "$f") names no role, rule or format to defer to"
-        fi
+        # EVERY path the wrapper names is resolved, not just the first. With
+        # `head -1` a wrapper deferring to two roles was only ever validated on
+        # one of them, so the second could name a file that does not exist --
+        # and the CLAUDE.md mapping table drifted from a two-role wrapper
+        # without anything noticing.
+        named=0
+        while read -r target; do
+            [[ -n "$target" ]] || continue
+            named=$((named + 1))
+            if [[ -e "$target" ]]; then
+                pass "$(basename "$f") defers to $target"
+            else
+                fail "$(basename "$f") defers to a path that does not exist: $target"
+            fi
+        done < <(grep -oE 'agent-qa/(roles|rules|formats)/[a-z/-]+(\.md)?' "$f" | sort -u)
+        (( named > 0 )) || fail "$(basename "$f") names no role, rule or format to defer to"
         (( $(wc -l < "$f") <= 25 )) || fail "$(basename "$f") is not a thin wrapper ($(wc -l < "$f") lines)"
         # The installers' stale-agent removal keeps a wrapper only when this
         # marker is present on a single line. Line-wrapping it makes an update
@@ -361,26 +377,116 @@ check_role_refs_resolve() {
     return 0
 }
 
+# Assert that a script both DEFINES a routine and CALLS it, looking only at
+# code -- every comment line is stripped before either grep runs.
+#
+# This exists because the previous form of check_roles_installed greped the
+# installers for the bare string 'roles'. It reported "project-install.sh syncs
+# roles" while install_roles() and its call site had been deleted outright:
+# leftover comments and log strings matched, so an installer that shipped ZERO
+# roles -- silently breaking every refactored command -- kept the harness green.
+# A guard that cannot fail is worse than no guard, so nothing here may match
+# prose.
+assert_defines_and_calls() {
+    local script="$1" def_re="$2" call_re="$3" label="$4"
+    local code have_def=0 have_call=0
+    if [[ ! -f "$script" ]]; then
+        fail "$script is missing, so it cannot define or call $label"
+        return
+    fi
+    code="$(grep -v '^[[:space:]]*#' "$script")"
+    grep -qE "$def_re" <<< "$code" && have_def=1
+    grep -qE "$call_re" <<< "$code" && have_call=1
+    if (( have_def == 1 && have_call == 1 )); then
+        pass "$(basename "$script") defines and calls $label"
+    elif (( have_def == 0 && have_call == 0 )); then
+        fail "$(basename "$script") neither defines nor calls $label"
+    elif (( have_def == 0 )); then
+        fail "$(basename "$script") calls $label but no longer defines it"
+    else
+        fail "$(basename "$script") defines $label but never calls it"
+    fi
+}
+
+# Assert a string appears in $script as code rather than in a comment.
+#
+# The comment-stripped text is captured into a variable rather than piped
+# straight into `grep -q`. This file runs under `pipefail`, and `grep -q` exits
+# the moment it matches -- which SIGPIPEs the upstream `grep -v` whenever the
+# match is early in a long file, making the whole pipeline report failure on a
+# string that is plainly there. Piping here produces a check that fails at
+# random depending on where in the file the match happens to sit.
+assert_code_contains() {
+    local script="$1" re="$2" message="$3" code
+    if [[ ! -f "$script" ]]; then
+        fail "$script is missing"
+        return
+    fi
+    code="$(grep -v '^[[:space:]]*#' "$script")"
+    if grep -qE "$re" <<< "$code"; then
+        pass "$message"
+    else
+        fail "$(basename "$script"): $message -- not found outside comments"
+    fi
+}
+
 check_roles_installed() {
-    echo "== installers sync agent-qa/roles/ and the moved agents =="
-    grep -q 'agent-qa/roles\|"roles"\|/roles' scripts/project-install.sh \
-        && pass "project-install.sh syncs roles" || fail "project-install.sh does not sync agent-qa/roles/"
-    grep -q 'agent-qa\\roles\|agent-qa/roles' scripts/project-install.ps1 \
-        && pass "project-install.ps1 syncs roles" || fail "project-install.ps1 does not sync agent-qa/roles/"
-    grep -q 'agent-qa/roles\|"roles"\|/roles' scripts/project-update.sh \
-        && pass "project-update.sh syncs roles" || fail "project-update.sh does not sync agent-qa/roles/"
-    grep -q 'ide/claude/agents' scripts/project-install.sh \
-        && pass "install reads agents from ide/claude/agents" \
-        || fail "project-install.sh still reads agents from the old agent-qa/agents/ path"
-    grep -q 'ide\\claude\\agents\|ide/claude/agents' scripts/project-install.ps1 \
-        && pass "ps1 install reads agents from ide/claude/agents" \
-        || fail "project-install.ps1 still reads agents from the old agent-qa/agents/ path"
-    grep -q 'remove_stale_agents\|stale agent' scripts/project-update.sh \
-        && pass "update removes superseded agent files" \
-        || fail "project-update.sh does not remove the superseded agent files"
-    grep -q 'Remove-StaleAgents\|stale agent' scripts/project-install.ps1 \
-        && pass "ps1 update removes superseded agent files" \
-        || fail "project-install.ps1 does not remove the superseded agent files"
+    echo "== installers define and call a roles sync =="
+    assert_defines_and_calls scripts/project-install.sh \
+        '^[[:space:]]*install_roles\(\)' '^[[:space:]]*install_roles([[:space:]]|$)' install_roles
+    assert_defines_and_calls scripts/project-update.sh \
+        '^[[:space:]]*update_roles\(\)' '^[[:space:]]*update_roles([[:space:]]|$)' update_roles
+    # The PowerShell names need an explicit right-hand boundary: without one,
+    # `Install-Roles` matches a renamed `Install-RolesX` and the check reports
+    # a definition that no longer exists under that name.
+    assert_defines_and_calls scripts/project-install.ps1 \
+        '^[[:space:]]*function[[:space:]]+Install-Roles([[:space:]]|\{|$)' \
+        '^[[:space:]]*Install-Roles([[:space:]]|$)' Install-Roles
+    assert_defines_and_calls scripts/project-install.ps1 \
+        '^[[:space:]]*function[[:space:]]+Remove-StaleAgents([[:space:]]|\{|$)' \
+        '^[[:space:]]*Remove-StaleAgents([[:space:]]|$)' Remove-StaleAgents
+
+    assert_code_contains scripts/common-functions.sh '^[[:space:]]*remove_stale_agents\(\)' \
+        "common-functions.sh defines remove_stale_agents"
+    assert_code_contains scripts/project-install.sh '^[[:space:]]*remove_stale_agents[[:space:]]' \
+        "install removes superseded agent files"
+    assert_code_contains scripts/project-update.sh '^[[:space:]]*remove_stale_agents[[:space:]]' \
+        "update removes superseded agent files"
+
+    assert_code_contains scripts/project-install.sh 'ide/claude/agents' \
+        "install reads agents from ide/claude/agents"
+    assert_code_contains scripts/project-install.ps1 'ide\\claude\\agents|ide/claude/agents' \
+        "ps1 install reads agents from ide/claude/agents"
+
+    # remove_stale_agents must clean BOTH pre-refactor destinations. The old
+    # installer wrote agents to .claude/agents/agent-qa/ AND to the IDE-neutral
+    # agent-qa/agents/; cleaning only the first leaves the superseded fat agents
+    # sitting beside agent-qa/roles/, which is the duplication this branch exists
+    # to remove.
+    assert_code_contains scripts/common-functions.sh '\.claude/agents/agent-qa' \
+        "remove_stale_agents cleans .claude/agents/agent-qa/"
+    assert_code_contains scripts/common-functions.sh 'agent-qa/agents' \
+        "remove_stale_agents cleans agent-qa/agents/"
+    assert_code_contains scripts/project-install.ps1 '\.claude\\agents\\agent-qa' \
+        "Remove-StaleAgents cleans .claude/agents/agent-qa/"
+    assert_code_contains scripts/project-install.ps1 'agent-qa\\agents' \
+        "Remove-StaleAgents cleans agent-qa/agents/"
+}
+
+check_shell_syntax() {
+    echo "== every shell script parses =="
+    # bash -n was documented as a manual step, and check-repo.sh is the only
+    # thing anyone actually runs -- so a script broken into a syntax error
+    # passed the harness. Parsing is now part of the harness.
+    local f
+    for f in scripts/*.sh; do
+        [[ -f "$f" ]] || continue
+        if bash -n "$f" 2>/dev/null; then
+            pass "$(basename "$f") parses"
+        else
+            fail "$(basename "$f") does not parse (bash -n)"
+        fi
+    done
 }
 
 check_roles_documented() {
@@ -393,6 +499,7 @@ check_roles_documented() {
 }
 
 run_checks() {
+    check_shell_syntax
     check_phase_refs
     check_command_twins
     check_phase_numbering

@@ -470,20 +470,27 @@ azure_devops_cloud_id: \"$azure_devops_cloud_id\""
 # that vanished upstream, so a project installed before that refactor would
 # keep the old fat agent beside the new wrapper.
 #
-# Listed by exact name: a user's own agents live in this directory too and must
-# never be touched. The marker grep means only the old fat form is removed --
-# a wrapper already carrying the marker is left alone, which makes this
+# The pre-refactor installer wrote the fat agents to TWO destinations:
+# .claude/agents/agent-qa/ AND the IDE-neutral $PROJECT_DIR/agent-qa/agents/.
+# Both must be cleaned. Cleaning only the first leaves the eleven superseded
+# agents sitting next to agent-qa/roles/ in the tree every IDE reads, so a
+# Copilot or Codex user browsing it finds two competing bodies of craft --
+# exactly the duplication this refactor exists to remove.
+#
+# Listed by exact name: a user's own agents live in these directories too and
+# must never be touched. The marker grep means only the old fat form is removed
+# -- a wrapper already carrying the marker is left alone, which makes this
 # idempotent and safe to run on an already-migrated project.
 #
 # Usage: remove_stale_agents <project_dir>
 # -----------------------------------------------------------------------------
 remove_stale_agents() {
     local project_dir="$1"
-    local dest="$project_dir/.claude/agents/agent-qa"
-    [[ -d "$dest" ]] || return 0
+    local legacy_dir="$project_dir/agent-qa/agents"
 
-    # Three conditions must all hold before a file is deleted: the name is on
-    # the list above, the marker is absent, and the file is over 20 lines.
+    # Three conditions must all hold before a file is deleted, in EITHER
+    # directory: the name is on the list below, the marker is absent, and the
+    # file is over 20 lines.
     #
     # The line count is a second, reflow-immune signal. The marker check alone
     # already misfired once -- two wrappers line-wrapped "single source of
@@ -491,17 +498,34 @@ remove_stale_agents() {
     # future reformatting would re-arm that bug, and its failure mode is
     # deleting a file the user can see. Thin wrappers run 14-16 lines, the
     # smallest fat agent was 23, so 20 sits cleanly in the gap.
-    local name file lines
-    for name in requirements-analyst test-case-generator gherkin-writer playwright-generator \
-                confluence-publisher api-test-generator accessibility-tester \
-                ui-explorer playwright-debugger automation-reviewer framework-architect; do
-        file="$dest/$name.md"
-        [[ -f "$file" ]] || continue
-        lines=$(wc -l < "$file")
-        if ! grep -q 'single source of truth' "$file" && (( lines > 20 )); then
-            rm -f "$file"
-            print_verbose "Removed superseded agent: $name.md"
-        fi
+    local dest name file lines
+    for dest in "$project_dir/.claude/agents/agent-qa" "$legacy_dir"; do
+        [[ -d "$dest" ]] || continue
+        for name in requirements-analyst test-case-generator gherkin-writer playwright-generator \
+                    confluence-publisher api-test-generator accessibility-tester \
+                    ui-explorer playwright-debugger automation-reviewer framework-architect; do
+            file="$dest/$name.md"
+            [[ -f "$file" ]] || continue
+            lines=$(wc -l < "$file")
+            if ! grep -q 'single source of truth' "$file" && (( lines > 20 )); then
+                rm -f "$file"
+                print_verbose "Removed superseded agent: $file"
+            fi
+        done
     done
+
+    # agent-qa/agents/ is retired outright by the refactor, so drop the
+    # directory once the superseded files are gone -- but ONLY when rmdir
+    # succeeds, which is to say only when it is empty. Never recursively and
+    # never conditionally-forced: a user may have left their own file in there,
+    # and an empty directory is a cosmetic wart while deleting someone's file
+    # is not recoverable.
+    if [[ -d "$legacy_dir" ]]; then
+        if rmdir "$legacy_dir" 2>/dev/null; then
+            print_verbose "Removed empty legacy directory: agent-qa/agents/"
+        else
+            print_verbose "Kept agent-qa/agents/ - it is not empty"
+        fi
+    fi
     return 0
 }
