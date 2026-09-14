@@ -136,14 +136,14 @@ check_review_automation_code() {
     check_command_phases review-automation-code \
         1-select-files.md 2-classify-and-load-conventions.md 3-review.md \
         4-report-and-optional-fix.md
-    [[ -f agent-qa/agents/automation-reviewer.md ]] \
+    [[ -f agent-qa/ide/claude/agents/automation-reviewer.md ]] \
         && pass "automation-reviewer agent" || fail "missing agent: automation-reviewer.md"
 }
 
 check_audit_framework() {
     check_command_phases audit-framework \
         1-scope-and-inventory.md 2-analyze.md 3-score-and-prioritize.md 4-write-audit-report.md
-    [[ -f agent-qa/agents/framework-architect.md ]] \
+    [[ -f agent-qa/ide/claude/agents/framework-architect.md ]] \
         && pass "framework-architect agent" || fail "missing agent: framework-architect.md"
 }
 
@@ -165,7 +165,7 @@ check_explore_ui() {
         1-find-and-select-test-cases.md 2-resolve-profile-and-session.md \
         3-walk-and-snapshot.md 4-extract-locators-and-observations.md \
         5-write-exploration-report.md
-    [[ -f agent-qa/agents/ui-explorer.md ]] \
+    [[ -f agent-qa/ide/claude/agents/ui-explorer.md ]] \
         && pass "ui-explorer agent" || fail "missing agent: ui-explorer.md"
     grep -rq 'browser_snapshot\|mcp__.*playwright' agent-qa/commands/explore-ui/ \
         && fail "explore-ui references Playwright MCP; the design is playwright-cli only" \
@@ -176,7 +176,7 @@ check_debug_tests() {
     check_command_phases debug-tests \
         1-select-failing-tests.md 2-reproduce.md 3-classify-failure.md \
         4-apply-allowed-fixes.md 5-verify-and-report.md
-    [[ -f agent-qa/agents/playwright-debugger.md ]] \
+    [[ -f agent-qa/ide/claude/agents/playwright-debugger.md ]] \
         && pass "playwright-debugger agent" || fail "missing agent: playwright-debugger.md"
     grep -q 'waitForTimeout' agent-qa/commands/debug-tests/4-apply-allowed-fixes.md \
         && pass "debug-tests names the forbidden sleep explicitly" \
@@ -315,6 +315,35 @@ check_roles_wired() {
     done
 }
 
+check_wrappers_defer() {
+    echo "== every Claude agent wrapper defers to a role or rule =="
+    local f target
+    [[ -d agent-qa/ide/claude/agents ]] || { fail "missing agent-qa/ide/claude/agents/"; return; }
+    [[ -d agent-qa/agents ]] && fail "old agent-qa/agents/ still present - wrappers were not moved"
+    for f in agent-qa/ide/claude/agents/*.md; do
+        target=$(grep -oE 'agent-qa/(roles|rules|formats)/[a-z/-]+(\.md)?' "$f" | head -1)
+        if [[ -n "$target" ]]; then
+            pass "$(basename "$f") defers to $target"
+        else
+            fail "$(basename "$f") names no role, rule or format to defer to"
+        fi
+        (( $(wc -l < "$f") <= 25 )) || fail "$(basename "$f") is not a thin wrapper ($(wc -l < "$f") lines)"
+    done
+}
+
+check_todo_policy_guarded() {
+    echo "== the provenance no-TODO rule survives in both its homes =="
+    local f
+    for f in agent-qa/commands/generate-playwright-tests/3-generate-page-objects.md \
+             agent-qa/roles/playwright-authoring.md; do
+        if grep -q 'Source Snapshot' "$f" && grep -qi 'no TODO\|NO TODO comment' "$f"; then
+            pass "$(basename "$f") states the provenance no-TODO rule"
+        else
+            fail "$(basename "$f") lost the provenance no-TODO rule"
+        fi
+    done
+}
+
 check_role_refs_resolve() {
     echo "== every @agent-qa/roles reference resolves =="
     local ref path found=0
@@ -348,6 +377,8 @@ run_checks() {
     check_inference_path_never_stops
     check_roles_wired
     check_role_refs_resolve
+    check_wrappers_defer
+    check_todo_policy_guarded
 }
 
 run_checks

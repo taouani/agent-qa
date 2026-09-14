@@ -31,8 +31,8 @@ Apply `@agent-qa/roles/playwright-authoring.md` — sections `## Page Object Des
 Add TODO comments to the generated code, but only where the item is actually uncertain:
 
 - For every INFERRED locator: "TODO: Verify this locator matches the actual UI element". A locator
-  carried from the exploration report with a `Source Snapshot` is provenance-backed and gets NO
-  TODO comment
+  carried from the exploration report with a `Source Snapshot` is provenance-backed and gets
+  NO TODO comment
 - For uncertain paths: "TODO: Confirm the correct URL path"
 - For inferred element names: "TODO: Element name inferred from test steps — verify"
 - At the file level, ONLY when the file contains at least one inferred locator: "TODO: This is a
