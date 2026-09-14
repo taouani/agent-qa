@@ -19,9 +19,9 @@ Generate comprehensive test plan content based on requirements and related deliv
 
 ### Step 1: Generate the Test Plan Content
 
-Apply `@agent-qa/roles/test-planning.md`, using its `## Test Plan` section, to the requirements
-loaded in Phase 2. Supply: the requirement set, the detected language, the configured `test_types`,
-and any sibling deliverables already present in the selected output folder.
+Apply `@agent-qa/roles/test-plan.md` to the requirements loaded in Phase 2. Supply: the
+requirement set, the detected language, the configured `test_types`, and any sibling deliverables
+already present in the selected output folder.
 
 The role owns how the test plan is shaped. This phase owns what is supplied to it, where the
 result lands, and the order of the remaining steps.

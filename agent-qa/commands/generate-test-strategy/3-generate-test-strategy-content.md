@@ -16,9 +16,9 @@ Generate comprehensive test strategy content based on requirements and test char
 
 ### Step 1: Generate the Test Strategy Content
 
-Apply `@agent-qa/roles/test-planning.md`, using its `## Test Strategy` section, to the requirements
-loaded in Phase 2. Supply: the requirement set, the detected language, the configured `test_types`,
-and any sibling deliverables already present in the selected output folder.
+Apply `@agent-qa/roles/test-strategy.md` to the requirements loaded in Phase 2. Supply: the
+requirement set, the detected language, the configured `test_types`, and any sibling deliverables
+already present in the selected output folder.
 
 The role owns how the test strategy is shaped. This phase owns what is supplied to it, where the
 result lands, and the order of the remaining steps.
