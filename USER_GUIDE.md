@@ -46,8 +46,14 @@ Commands are automatically recognized as slash commands.
 **What gets installed:**
 - `.claude/commands/agent-qa/` — Slash command entry points
 - `.claude/rules/` — QA conventions, MCP usage, output standards, language handling
-- `.claude/agents/agent-qa/` — Specialized subagents (requirements analyst, test case generator, etc.)
+- `agent-qa/roles/` — IDE-neutral craft definitions (requirements analysis, test case design, playwright authoring, etc.), referenced by path from command phases
+- `.claude/agents/agent-qa/` — Thin subagent wrappers (requirements analyst, test case generator, etc.) that defer to `agent-qa/roles/` for their actual instructions
 - `.claude/hooks.json` — Pre/post command hooks (config validation, output logging)
+
+**Roles are portable.** `agent-qa/roles/` is not Claude-specific — it is a set of plain markdown
+files at fixed repository paths. The Claude Code subagents above are thin wrappers that point at
+these files, but Copilot, Codex, Cursor, or any other tool can read the same role file directly by
+path and get the identical craft instructions, with no wrapper required.
 
 **Usage:**
 ```

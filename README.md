@@ -254,7 +254,7 @@ graph LR
     subgraph "agent-qa/"
         CMD[commands/] --> PHASES[Phase files]
         RULES[rules/] --> QA[QA conventions]
-        AGENTS[agents/] --> SUB[Subagents]
+        ROLES[roles/] --> CRAFT[Specialist craft]
         FW[framework/] --> GIT[Git abstraction]
         FMT[formats/] --> TPL[Templates]
         IDE[ide/] --> CL[claude/]
@@ -280,7 +280,8 @@ graph LR
 - **Modular Design** — Commands can be run independently or in sequence
 - **Centralized Structure** — All files live under `agent-qa/`, IDE integrations in `agent-qa/ide/`
 - **Rules** — `agent-qa/rules/` for QA conventions, MCP usage, output standards, language handling
-- **Subagents** — `agent-qa/agents/` for specialized QA tasks
+- **Roles** — `agent-qa/roles/` for IDE-neutral specialist craft (test case design, playwright authoring, risk analysis, ...), read by path from command phases and by any tool
+- **Subagents** — `agent-qa/ide/claude/agents/` for thin Claude Code wrappers that defer to roles
 
 ## Configuration
 

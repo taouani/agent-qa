@@ -383,6 +383,15 @@ check_roles_installed() {
         || fail "project-install.ps1 does not remove the superseded agent files"
 }
 
+check_roles_documented() {
+    echo "== documentation describes the roles layer =="
+    local n
+    n=$(find agent-qa/roles -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+    grep -q 'agent-qa/roles/' CLAUDE.md && pass "CLAUDE.md documents roles/" || fail "CLAUDE.md does not document agent-qa/roles/"
+    grep -q "$n roles" CLAUDE.md && pass "CLAUDE.md states $n roles" || fail "CLAUDE.md does not state the role count ($n)"
+    grep -q 'agent-qa/roles/' USER_GUIDE.md && pass "USER_GUIDE.md documents roles/" || fail "USER_GUIDE.md does not document roles/"
+}
+
 run_checks() {
     check_phase_refs
     check_command_twins
@@ -407,6 +416,7 @@ run_checks() {
     check_wrappers_defer
     check_todo_policy_guarded
     check_roles_installed
+    check_roles_documented
 }
 
 run_checks

@@ -4,11 +4,11 @@ Generate comprehensive test strategy content based on requirements and test char
 
 ## Core Responsibilities
 
-1. **Generate Scope/Context**: Generate based on overall scope being tested (entire release/filter scope)
-2. **Cover Test Levels**: Cover integration, system, and UAT levels with detailed approaches
-3. **Cover Test Types**: Focus on specific types based on requirements
-4. **Describe Test Design Techniques**: Based on requirement characteristics
-5. **Generate Automation Approach**: High-level guidance with Playwright for automation
+1. **Generate Scope/Context**: Apply the test-strategy role's scope-and-context craft, based on overall scope being tested (entire release/filter scope)
+2. **Cover Test Levels**: Apply the role's craft to cover integration, system, and UAT levels with detailed approaches
+3. **Cover Test Types**: Apply the role's craft to focus on specific types based on requirements
+4. **Describe Test Design Techniques**: Apply the role's craft, based on requirement characteristics
+5. **Generate Automation Approach**: Apply the role's craft for high-level guidance with Playwright for automation
 6. **Define Metrics**: Include coverage, defect, test execution, and progress metrics
 7. **Risk-Based Testing**: Describe risk-based testing approach
 

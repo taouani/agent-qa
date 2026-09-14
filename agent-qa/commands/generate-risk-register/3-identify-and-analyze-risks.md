@@ -4,17 +4,17 @@ Identify risks from all sources and analyze/categorize them comprehensively, fol
 
 ## Core Responsibilities
 
-1. **Identify Risks from Requirements**: Identify risks from requirements analysis
-2. **Identify Risks from Test Strategies**: Identify risks from test strategies (if available)
-3. **Identify Risks from Test Charters**: Identify risks from test charters (if available)
-4. **Identify Risks from Test Cases**: Identify risks from test case analysis (if available)
-5. **Combine and Deduplicate**: Combine risks from all sources, remove duplicates
-6. **Categorize Risks**: Generate categories based on context
-7. **Score Risks**: Use predefined scales for probability and impact, calculate risk score
-8. **Generate Mitigation Strategies**: High-level guidance, generated automatically
-9. **Generate Contingency Plans**: Only for high-risk items, necessary details
-10. **Suggest Ownership**: Generate suggestions based on risk type
-11. **Prioritize Risks**: By risk score (highest first)
+1. **Identify Risks from Requirements**: Apply the risk-analysis role to identify risks from requirements analysis
+2. **Identify Risks from Test Strategies**: Apply the role's craft to identify risks from test strategies (if available)
+3. **Identify Risks from Test Charters**: Apply the role's craft to identify risks from test charters (if available)
+4. **Identify Risks from Test Cases**: Apply the role's craft to identify risks from test case analysis (if available)
+5. **Combine and Deduplicate**: Apply the role's craft to combine risks from all sources and remove duplicates
+6. **Categorize Risks**: Apply the role's categorisation craft to generate categories based on context
+7. **Score Risks**: Apply the role's scoring craft — predefined scales for probability and impact, calculated risk score
+8. **Generate Mitigation Strategies**: Apply the role's mitigation craft for high-level guidance, generated automatically
+9. **Generate Contingency Plans**: Apply the role's contingency craft, only for high-risk items, with necessary details
+10. **Suggest Ownership**: Apply the role's ownership craft to generate suggestions based on risk type
+11. **Prioritize Risks**: Apply the role's prioritisation craft, by risk score (highest first)
 12. **Link to Requirements**: Link/trace risks back to specific requirements
 
 ## Workflow
@@ -48,12 +48,12 @@ Link each risk to specific requirements:
 
 ## Important Constraints
 
-- Combination of all sources (requirements, test strategies, test charters, test cases)
-- Generate categories based on context
-- Use predefined scales (1-5 for probability and impact)
-- Generate mitigation strategies automatically
-- Only contingency plans for high-risk items (Risk Score ≥ 15)
-- Prioritize by risk score (highest first)
+- The applied role combines all sources (requirements, test strategies, test charters, test cases)
+- The applied role generates categories based on context
+- The applied role uses predefined scales (1-5 for probability and impact)
+- The applied role generates mitigation strategies automatically
+- The applied role generates contingency plans only for high-risk items (Risk Score ≥ 15)
+- The applied role prioritizes by risk score (highest first)
 - Link to requirements for traceability
 - Format as structured table or document
 - Include risk status tracking (Open, Mitigated, Closed)

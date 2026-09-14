@@ -5,12 +5,12 @@ Generate comprehensive test cases (positive, negative, edge cases) based on requ
 ## Core Responsibilities
 
 1. **Determine Test Case Source**: Use acceptance criteria if available, otherwise use requirement description
-2. **Generate Positive Test Cases**: Generate positive/happy path test cases with proper structure
-3. **Generate Negative Test Cases**: Generate negative test cases covering failure scenarios
-4. **Generate Edge Cases**: Generate edge case test cases with boundary conditions
-5. **Generate Test Data**: Generate specific test data values based on requirement context
-6. **Assign Priority**: Assign priority based on business impact and risk (P1-P4)
-7. **Include Traceability**: Include explicit requirement references in test cases
+2. **Generate Positive Test Cases**: Apply the test-case-design role's positive-cases craft to derive positive/happy path test cases with proper structure
+3. **Generate Negative Test Cases**: Apply the role's negative-cases craft to derive test cases covering failure scenarios
+4. **Generate Edge Cases**: Apply the role's edge-cases craft to derive test cases with boundary conditions
+5. **Generate Test Data**: Apply the role's craft to generate specific test data values based on requirement context
+6. **Assign Priority**: Apply the role's priority-and-risk-classification craft to assign priority based on business impact and risk (P1-P4)
+7. **Include Traceability**: Apply the role's traceability craft to include explicit requirement references in test cases
 8. **Language Detection**: Detect and match language of original requirements
 
 ## Workflow
@@ -47,13 +47,13 @@ supplied to it and what happens next.
 
 ## Important Constraints
 
-- Generate all three types automatically (positive, negative, edge cases)
-- Generate specific test data values when possible
-- Include requirement traceability with explicit references
+- The applied role generates all three types automatically (positive, negative, edge cases)
+- The applied role generates specific test data values when possible
+- The applied role includes requirement traceability with explicit references
 - Use in-memory requirement structures
 - Match language of original requirements (automatic detection)
-- Follow senior QA architect best practices from templates
-- Assign priorities based on business impact and risk
-- Include regression suite recommendations
-- Validate against quality criteria before finalizing
+- The applied role follows senior QA architect best practices
+- The applied role assigns priorities based on business impact and risk
+- The applied role includes regression suite recommendations
+- The applied role validates against quality criteria before finalizing
 

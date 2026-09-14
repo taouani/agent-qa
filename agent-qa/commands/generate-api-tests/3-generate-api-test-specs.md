@@ -2,8 +2,8 @@
 
 ## Core Responsibilities
 
-- Generate structured API test specifications for each endpoint group
-- Cover positive, negative, auth, edge case, and error handling scenarios
+- Apply the api-test-design role to generate structured API test specifications for each endpoint group
+- Apply the role's per-scenario craft to cover positive, negative, auth, edge case, and error handling scenarios
 - Follow the api-spec-template format
 - Assign test IDs using the `API-{ENDPOINT-GROUP}-{NNN}` pattern
 

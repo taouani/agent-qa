@@ -2,7 +2,8 @@
 
 ## Core Responsibilities
 
-Extract data fields, types, constraints, and validation rules from requirements and test cases.
+Extract data fields, types, constraints, and validation rules from requirements and test cases,
+then apply the test-data-design role to group them into entities with applicable data categories.
 
 ## Workflow
 

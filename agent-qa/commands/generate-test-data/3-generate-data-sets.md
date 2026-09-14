@@ -2,7 +2,7 @@
 
 ## Core Responsibilities
 
-Generate structured test data sets for each entity and field.
+Apply the test-data-design role to generate structured test data sets for each entity and field.
 
 ## Workflow
 

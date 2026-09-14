@@ -2,9 +2,9 @@
 
 ## Core Responsibilities
 
-- Generate Gherkin `.feature` file content per requirement
+- Apply the gherkin-authoring role's feature-content craft to generate Gherkin `.feature` file content per requirement
 - Apply proper indentation and formatting
-- Include all tags, Background, Scenarios, and Scenario Outlines
+- Apply the role's craft so the generated content includes all tags, Background, Scenarios, and Scenario Outlines
 
 ## Workflow Steps
 

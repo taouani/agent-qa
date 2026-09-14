@@ -4,10 +4,10 @@ Generate comprehensive test charter content based on the loaded requirements, fo
 
 ## Core Responsibilities
 
-1. **Generate Mission/Goal**: Create mission statement based on requirements scope
-2. **Define Scope**: Define in-scope and out-of-scope items comprehensively
-3. **Identify Areas to Explore**: Analyze requirements for complex areas, edge cases, integration points
-4. **Describe Test Approach**: Describe exploratory testing techniques and session-based testing
+1. **Generate Mission/Goal**: Apply the test-charter role to create a mission statement based on requirements scope
+2. **Define Scope**: Apply the role's craft to define in-scope and out-of-scope items comprehensively
+3. **Identify Areas to Explore**: Apply the role's craft to analyze requirements for complex areas, edge cases, integration points
+4. **Describe Test Approach**: Apply the role's craft to describe exploratory testing techniques and session-based testing
 5. **Generate Risks**: Generate risks independently based on requirements and test cases being analyzed
 6. **Specify Resources**: Specify tester roles, skills needed, and tools required
 7. **Calculate Time Estimates**: Based on number of requirements and complexity analysis

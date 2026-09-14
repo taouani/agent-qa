@@ -2,9 +2,9 @@
 
 ## Core Responsibilities
 
-- Classify test steps as Given, When, or Then
-- Identify shared preconditions for Background sections
-- Determine Scenario vs Scenario Outline based on test data
+- Apply the gherkin-authoring role's step-classification craft to classify test steps as Given, When, or Then
+- Apply the role's craft to identify shared preconditions for Background sections
+- Apply the role's craft to determine Scenario vs Scenario Outline based on test data
 - Group test cases into Features by requirement key
 
 ## Workflow Steps

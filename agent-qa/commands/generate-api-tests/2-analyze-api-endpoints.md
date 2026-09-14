@@ -2,11 +2,11 @@
 
 ## Core Responsibilities
 
-- Extract API endpoint information from filtered test cases and their source requirements
-- Identify HTTP methods, URL paths, request/response structures
-- Handle both REST and GraphQL patterns
-- Group endpoints by resource or domain
-- Identify shared authentication patterns
+- Apply the api-test-design role's endpoint-analysis craft to extract API endpoint information from filtered test cases and their source requirements
+- Apply the role's craft to identify HTTP methods, URL paths, request/response structures
+- Apply the role's craft to handle both REST and GraphQL patterns
+- Apply the role's craft to group endpoints by resource or domain
+- Apply the role's craft to identify shared authentication patterns
 
 ## Workflow Steps
 

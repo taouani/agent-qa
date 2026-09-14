@@ -3,8 +3,8 @@
 ## Core Responsibilities
 
 - Generate `.spec.ts` files grouped by requirement key
-- Map test case steps to Playwright API calls
-- Handle data-driven tests with parameterization
+- Apply the playwright-authoring role's spec-structure and assertions craft to map test case steps to Playwright API calls
+- Apply the role's craft to handle data-driven tests with parameterization
 - Generate a README with setup instructions
 
 ## Workflow Steps

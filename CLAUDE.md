@@ -25,13 +25,13 @@ After changing commands or phases, exercise them from an installed project via t
 
 ### Centralized Structure
 
-Everything lives under **`agent-qa/`** — commands, rules, agents, framework, formats, and IDE integration templates:
+Everything lives under **`agent-qa/`** — commands, rules, roles, framework, formats, and IDE integration templates:
 
 ```
 agent-qa/
 ├── commands/              # Multi-phase command definitions (24 commands + common/)
 ├── rules/                 # QA conventions, output standards, MCP usage, language handling
-├── agents/                # Specialized subagent definitions
+├── roles/                 # 15 IDE-neutral craft definitions (test case design, playwright authoring, ...)
 ├── framework/             # Git platform abstractions (GitLab, GitHub, Azure DevOps)
 ├── formats/               # Output format templates (Confluence, Gherkin, Playwright, Xray, TestRail, ...)
 ├── custom-templates/      # Per-project overrides of formats/ (checked first, survives updates)
@@ -117,20 +117,45 @@ Downstream commands do not take a ticket key — their phase 1 is always "find a
   classification, severity levels, stop conditions. Generic; host-repository specifics live in
   `agent-qa/framework-profile.md`
 
+### Roles
+
+`agent-qa/roles/` holds 15 roles — IDE-neutral craft definitions (test case design, requirements
+analysis, playwright authoring, risk analysis, and so on). A role is where the specialist judgement
+for one kind of work lives: how to derive a positive test case, how to score a risk, how to shape a
+Page Object. Command phase files reference a role by plain path
+(`@agent-qa/roles/test-case-design.md`) and supply it with inputs; the role owns the craft, the
+phase owns what is supplied and what happens to the result. Because a role is nothing more than a
+markdown file at a fixed repository path, the craft is portable: any tool that can read a file by
+path — Claude Code, Cursor, GitHub Copilot, Codex, or a human — reads the exact same instructions,
+with no IDE-specific wrapper in between.
+
+### The Four-Way Boundary
+
+| Layer | Holds | Consumed by |
+|-------|-------|-------------|
+| `rules/` | Conventions everything obeys — terminology, ID formats, output standards, MCP usage | Every command, phase, and role |
+| `roles/` | Craft a specialist applies — how to design, analyze, or author one kind of deliverable | Command phases, via `@agent-qa/roles/*.md`; any tool reading by path |
+| `formats/` | Output templates — the shape of a Confluence page, a Gherkin feature, an Xray JSON payload | Command phases producing that output type |
+| `commands/` | Orchestration — phase sequencing, what to load, where to write, when to gate or stop | The IDE's command runner (slash command or direct file reference) |
+
 ### Subagents
 
-`agent-qa/agents/` provides specialized agents (copied to `.claude/agents/agent-qa/` during installation):
-- **`requirements-analyst.md`** — Jira/Confluence analysis, language detection
-- **`test-case-generator.md`** — Test case design (positive/negative/edge), Xray CSV
-- **`gherkin-writer.md`** — Map test cases to Given/When/Then .feature files
-- **`playwright-generator.md`** — Generate Playwright .spec.ts from test cases
-- **`confluence-publisher.md`** — Convert to Confluence format, publish via MCP
-- **`api-test-generator.md`** — Generate REST/GraphQL API test specifications
-- **`accessibility-tester.md`** — Generate WCAG 2.1 AA accessibility test cases
-- **`ui-explorer.md`** — Reproduces test cases in a live browser via the playwright-cli session tool and converts accessibility snapshots into ranked, provenance-backed locators
-- **`playwright-debugger.md`** — Classifies Playwright test failures by root cause and applies only minimal, allowed stabilization fixes — never fixes that mask a real defect
-- **`automation-reviewer.md`** — Reviews Playwright automation files for correctness, reliability, and convention adherence, producing severity-tagged findings with concrete fixes
-- **`framework-architect.md`** — Assesses a Playwright test framework repository-wide across architecture, patterns, duplication, locators, synchronization, test data, naming, and scalability
+`agent-qa/ide/claude/agents/` holds eleven thin Claude Code wrapper files (copied to
+`.claude/agents/agent-qa/` during installation). Each wrapper is a short trigger definition that
+defers to a role or rule file for its actual instructions — the wrappers are not definitions in
+their own right, and `agent-qa/agents/` (the old location for full agent definitions) no longer
+exists:
+- **`requirements-analyst.md`** — defers to `agent-qa/roles/requirements-analysis.md`
+- **`test-case-generator.md`** — defers to `agent-qa/roles/test-case-design.md`
+- **`gherkin-writer.md`** — defers to `agent-qa/roles/gherkin-authoring.md`
+- **`playwright-generator.md`** — defers to `agent-qa/roles/playwright-authoring.md`
+- **`confluence-publisher.md`** — defers to `agent-qa/formats/confluence/`
+- **`api-test-generator.md`** — defers to `agent-qa/roles/api-test-design.md`
+- **`accessibility-tester.md`** — defers to `agent-qa/roles/accessibility-mapping.md`
+- **`ui-explorer.md`** — defers to `agent-qa/rules/automation-conventions.md`
+- **`playwright-debugger.md`** — defers to `agent-qa/rules/automation-conventions.md`
+- **`automation-reviewer.md`** — defers to `agent-qa/rules/automation-conventions.md`
+- **`framework-architect.md`** — defers to `agent-qa/rules/automation-conventions.md`
 
 ### Hooks
 

@@ -4,11 +4,11 @@ Generate comprehensive traceability matrix linking code changes (commits/PRs) to
 
 ## Core Responsibilities
 
-1. **Link Code Changes to Requirements**: Create explicit references between commits/PRs and requirements
-2. **Link Test Cases to Requirements**: Create traceability matrix for test cases
-3. **Link Code Changes to Test Cases**: Show what code is covered by which tests
-4. **Generate Full Traceability Matrix**: Create comprehensive traceability matrix/summary
-5. **Include Links to Artifacts**: Include links to all related artifacts
+1. **Link Code Changes to Requirements**: Apply the traceability-matrix role to create explicit references between commits/PRs and requirements
+2. **Link Test Cases to Requirements**: Apply the role's craft to build the traceability matrix for test cases
+3. **Link Code Changes to Test Cases**: Apply the role's craft to show what code is covered by which tests
+4. **Generate Full Traceability Matrix**: Apply the role's craft to create the comprehensive traceability matrix/summary
+5. **Include Links to Artifacts**: Apply the role's craft to include links to all related artifacts
 
 ## Workflow
 
@@ -25,10 +25,10 @@ traceability matrix is written.
 
 ## Important Constraints
 
-- Create comprehensive traceability linking all artifacts
-- Format traceability matrices as markdown tables
-- Include links to all related artifacts
-- Show coverage status clearly
+- The applied role creates comprehensive traceability linking all artifacts
+- The applied role formats traceability matrices as markdown tables
+- The applied role includes links to all related artifacts
+- The applied role shows coverage status clearly
 - Group traceability by requirement for clarity
 
 ## Error Handling

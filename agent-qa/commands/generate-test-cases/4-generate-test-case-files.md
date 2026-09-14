@@ -7,7 +7,7 @@ Generate test case markdown files and CSV export in the appropriate output folde
 1. **Group Test Cases**: Group test cases by requirement
 2. **Generate Markdown Files**: Create markdown files with YAML front matter
 3. **Generate CSV Export**: Create CSV file for Xray bulk import with proper format
-4. **Create Traceability Matrix**: Create traceability matrix/summary
+4. **Create Traceability Matrix**: Apply the traceability-matrix role to build the matrix/summary
 5. **Write Files**: Write files to test-cases folder
 
 ## Workflow

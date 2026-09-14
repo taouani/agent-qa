@@ -4,11 +4,11 @@ Generate comprehensive test plan content based on requirements and related deliv
 
 ## Core Responsibilities
 
-1. **Generate Executive Summary**: Create comprehensive executive summary
-2. **Derive Test Objectives**: From test cases/test strategies with clear alignment
-3. **Define Scope**: Based on requirements analyzed and test cases generated
-4. **Integrate Test Strategy**: Reference or incorporate generated test strategies (link to files)
-5. **Generate Environment Requirements**: High-level guidance for test environments
+1. **Generate Executive Summary**: Apply the test-plan role to create a comprehensive executive summary
+2. **Derive Test Objectives**: Apply the role's craft to derive objectives from test cases/test strategies with clear alignment
+3. **Define Scope**: Apply the role's craft, based on requirements analyzed and test cases generated
+4. **Integrate Test Strategy**: Apply the role's craft to reference or incorporate generated test strategies (link to files)
+5. **Generate Environment Requirements**: Apply the role's craft for high-level guidance on test environments
 6. **Generate Schedules**: Provide time estimates/ranges, include milestones, phases
 7. **Generate Entry/Exit Criteria**: Prerequisites for starting testing and completion conditions
 8. **List Deliverables**: All deliverables, referencing generated deliverables

@@ -4,14 +4,14 @@ Generate accessibility test cases for each applicable WCAG 2.1 AA criterion per 
 
 ## Core Responsibilities
 
-1. **Generate Keyboard Navigation Tests**: Tab order, focus visibility, keyboard traps, skip links
-2. **Generate Screen Reader Tests**: ARIA labels, roles, live regions, heading hierarchy
-3. **Generate Color and Contrast Tests**: Contrast ratios, color-only information
-4. **Generate Form Accessibility Tests**: Labels, error identification, error suggestions, input purpose
-5. **Generate Image Accessibility Tests**: Alt text, decorative images, complex images
-6. **Generate Dynamic Content Tests**: Status messages, loading states, alerts
-7. **Generate Responsive Design Tests**: Reflow, text resize, orientation
-8. **Assign Priority and Test Method**: Map Level A to P1, Level AA to P2, mark manual vs automated
+1. **Generate Keyboard Navigation Tests**: Apply the accessibility-test-design role's keyboard-navigation craft — tab order, focus visibility, keyboard traps, skip links
+2. **Generate Screen Reader Tests**: Apply the role's screen-reader craft — ARIA labels, roles, live regions, heading hierarchy
+3. **Generate Color and Contrast Tests**: Apply the role's colour-and-contrast craft — contrast ratios, color-only information
+4. **Generate Form Accessibility Tests**: Apply the role's forms craft — labels, error identification, error suggestions, input purpose
+5. **Generate Image Accessibility Tests**: Apply the role's images craft — alt text, decorative images, complex images
+6. **Generate Dynamic Content Tests**: Apply the role's dynamic-content craft — status messages, loading states, alerts
+7. **Generate Responsive Design Tests**: Apply the role's responsive-design craft — reflow, text resize, orientation
+8. **Assign Priority and Test Method**: Apply the role's classification-and-validation craft to map Level A to P1, Level AA to P2, and mark manual vs automated
 9. **Language Detection**: Match language of source requirements
 
 ## Workflow

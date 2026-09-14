@@ -5,10 +5,10 @@ Analyze each UI-facing test case to identify pages, UI elements, interaction pat
 ## Core Responsibilities
 
 1. **Identify Pages and Views**: Extract pages/views referenced in each test case
-2. **Catalog UI Elements**: Identify all UI element types per page
-3. **Identify Interaction Patterns**: Determine how users interact with each element
-4. **Identify Content Types**: Classify content types present on each page
-5. **Map to WCAG 2.1 AA Criteria**: Determine applicable success criteria per page
+2. **Catalog UI Elements**: Apply the accessibility-mapping role to identify all UI element types per page
+3. **Identify Interaction Patterns**: Apply the role's cataloguing craft to determine how users interact with each element
+4. **Identify Content Types**: Apply the role's cataloguing craft to classify content types present on each page
+5. **Map to WCAG 2.1 AA Criteria**: Apply the role's WCAG mapping craft to determine applicable success criteria per page
 6. **Load WCAG Mapping Template**: Load format template for accessibility test structure
 
 ## Workflow

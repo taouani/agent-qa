@@ -4,13 +4,13 @@ Generate release note content including executive summary, requirements summary,
 
 ## Core Responsibilities
 
-1. **Generate Executive Summary**: Create high-level summary of the release
-2. **Generate Requirements Summary**: Summarize requirements from Jira tickets
-3. **Generate Code Changes Summary**: Summarize code changes from commits/PRs
-4. **Include Test Coverage**: Include test cases generated (if available)
-5. **Identify Affected Components**: Identify affected components/modules from code changes
-6. **Generate Impact Analysis**: Generate impact analysis based on requirements and code changes
-7. **Exclude Out-of-Scope Content**: Exclude deployment notes, breaking changes, migration requirements, performance impacts
+1. **Generate Executive Summary**: Apply the release-notes-content role to create a high-level summary of the release
+2. **Generate Requirements Summary**: Apply the role's craft to summarize requirements from Jira tickets
+3. **Generate Code Changes Summary**: Apply the role's craft to summarize code changes from commits/PRs
+4. **Include Test Coverage**: Apply the role's craft to include test cases generated (if available)
+5. **Identify Affected Components**: Apply the role's craft to identify affected components/modules from code changes
+6. **Generate Impact Analysis**: Apply the role's craft to generate impact analysis based on requirements and code changes
+7. **Exclude Out-of-Scope Content**: Apply the role's scope-exclusion craft to exclude deployment notes, breaking changes, migration requirements, performance impacts
 
 ## Workflow
 
@@ -25,11 +25,11 @@ what is supplied to it and where the release note content is written.
 
 ## Important Constraints
 
-- Generate comprehensive but concise content
-- Link to all related artifacts (requirements, commits, test cases)
+- The applied role generates comprehensive but concise content
+- The applied role links to all related artifacts (requirements, commits, test cases)
 - Group content by requirement for traceability
-- Exclude out-of-scope content (deployment, breaking changes, migration, performance)
-- Reference existing deliverables with links
+- The applied role excludes out-of-scope content (deployment, breaking changes, migration, performance)
+- The applied role references existing deliverables with links
 
 ## Error Handling
 

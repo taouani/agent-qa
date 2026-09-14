@@ -4,10 +4,10 @@ Perform requirement completeness and quality analysis.
 
 ## Core Responsibilities
 
-1. **Check Completeness**: Analyze requirement completeness
-2. **Calculate Completeness Score**: Generate completeness scores
-3. **Perform Quality Scoring**: Calculate quality scores
-4. **Generate Recommendations**: Provide improvement recommendations
+1. **Check Completeness**: Apply the requirements-analysis role's quality-analysis craft to assess requirement completeness
+2. **Calculate Completeness Score**: Apply the role's craft to generate completeness scores
+3. **Perform Quality Scoring**: Apply the role's craft to calculate quality scores
+4. **Generate Recommendations**: Apply the role's craft to provide improvement recommendations
 
 ## Workflow
 

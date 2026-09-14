@@ -4,9 +4,9 @@ Analyze code changes to understand impact and context, generating summaries per 
 
 ## Core Responsibilities
 
-1. **Analyze Code Changes**: Analyze actual code changes to understand impact and context
-2. **Generate File Summaries**: Generate summary of changes per file
-3. **Generate Overall Summaries**: Generate overall change summary per commit/PR
+1. **Analyze Code Changes**: Apply the code-change-analysis role to interpret each diff's change type and impact
+2. **Generate File Summaries**: Apply the role's per-file summary craft to describe what changed, and why, file by file
+3. **Generate Overall Summaries**: Apply the role's per-commit summary craft to produce a commit/PR-level summary, statistics, and affected components
 4. **Store Analysis Results**: Store analysis results for future requirement analysis enhancement
 5. **Format Diff Snippets**: Format code diff snippets for markdown output
 
@@ -65,11 +65,11 @@ Format code diff snippets for markdown output:
 
 ## Important Constraints
 
-- Analyze actual code changes (not just metadata)
-- Generate meaningful summaries that explain what changed and why
+- The applied role analyzes actual code changes, never metadata alone
+- The applied role's summaries explain what changed and why, not just the mechanics
 - Store analysis results for future requirement analysis enhancement
 - Format diff snippets properly for markdown output
-- Group analysis by Jira ticket for traceability
+- The applied role groups analysis by Jira ticket for traceability
 
 ## Error Handling
 

@@ -2,9 +2,9 @@
 
 ## Core Responsibilities
 
-- Generate Page Object classes for each identified page
-- Use the locator strategy from Phase 2
-- Include action methods for common interactions
+- Apply the playwright-authoring role's page-object-design craft to generate a Page Object class for each identified page
+- Apply the role's locator-properties craft, using the locator strategy from Phase 2
+- Apply the role's navigation-methods and action-methods craft to include methods for common interactions
 - Add TODO comments for uncertain locators
 
 ## Workflow Steps

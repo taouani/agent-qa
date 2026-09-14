@@ -5,8 +5,8 @@ Extract and structure requirements from ticket data with flexible, simple format
 ## Core Responsibilities
 
 1. **Extract All Fields**: Extract all ticket fields and metadata
-2. **Extract Acceptance Criteria**: Extract acceptance criteria from custom fields or description
-3. **Structure Requirements**: Create flexible, simple data structures
+2. **Extract Acceptance Criteria**: Apply the requirements-analysis role's extraction craft to pull acceptance criteria from custom fields or description
+3. **Structure Requirements**: Apply the role's structuring craft to shape the extracted fields into flexible, simple data structures
 4. **Store in Memory**: Store requirement structures in memory
 
 ## Workflow
