@@ -10,14 +10,20 @@ Python 3.8 floor, standard library only: plain dicts and strings, no dependencie
 
 Two things a consumer must know before using these:
 
-1. Server/DC lives on the customer's own Jira host, so its URLs carry a literal ``{base_url}``
-   token that the client substitutes::
+1. Two substitution tokens, resolved the same way::
 
        url.replace("{base_url}", self.base_url or "")
+       url.replace("{cloud_host}", self.cloud_host or DEFAULT_CLOUD_HOST)
 
-   The Cloud ``search`` URL carries the token too -- deliberately. JQL search is served by
-   *Jira* Cloud at ``https://<site>.atlassian.net``, not by the Xray Cloud API host. The other
-   three Cloud URLs are absolute and the substitution is a harmless no-op on them.
+   ``{base_url}`` is the customer's own Jira host. Every Server/DC URL carries it, and so does
+   the Cloud ``search`` URL -- deliberately: JQL search is served by *Jira* Cloud at
+   ``https://<site>.atlassian.net``, not by the Xray Cloud API host.
+
+   ``{cloud_host}`` is the Xray Cloud API host. The three Cloud URLs that are genuinely Xray's
+   carry it, because data-residency tenants are served from regional hosts
+   (``us.`` / ``eu.`` / ``au.xray.cloud.getxray.app``) which the vendor recommends using for a
+   more performant API. Config key ``xray_cloud_host`` overrides it; default below. Cloud
+   ``search`` does NOT carry it -- it is a Jira endpoint, not an Xray one.
 
 2. The four keys do not mean identical things across flavours:
 
@@ -37,17 +43,24 @@ Two things a consumer must know before using these:
                         with ``startAt`` pagination.
 """
 
+# Default Xray Cloud API host. Data-residency tenants are served from regional hosts --
+# us.xray.cloud.getxray.app, eu.xray.cloud.getxray.app, au.xray.cloud.getxray.app -- and the
+# vendor recommends using the one matching your region. Override via config key
+# "xray_cloud_host"; this value is the documented global default when it is unset.
+DEFAULT_CLOUD_HOST = "xray.cloud.getxray.app"
+
 # The four endpoints per flavour. Tasks 2-6 import this.
 ENDPOINTS = {
     "cloud": {
         # POST; body {"client_id": ..., "client_secret": ...}; returns a bare quoted JWT string.
-        "auth": "https://xray.cloud.getxray.app/api/v2/authenticate",
-        # POST; Jira Cloud site URL, NOT the Xray host. /rest/api/3/search is deprecated.
+        "auth": "https://{cloud_host}/api/v2/authenticate",
+        # POST; Jira Cloud site URL, NOT the Xray host -- so {base_url}, never {cloud_host}.
+        # /rest/api/3/search is deprecated and being removed; search/jql is current.
         "search": "{base_url}/rest/api/3/search/jql",
         # POST; JSON array of test objects; ASYNC -> {"jobId": ...}. Max 1000 tests, 1 job/user.
-        "import_tests": "https://xray.cloud.getxray.app/api/v2/import/test/bulk",
+        "import_tests": "https://{cloud_host}/api/v2/import/test/bulk",
         # POST multipart/form-data; sync. Query: projectKey or projectId, optional source.
-        "import_feature": "https://xray.cloud.getxray.app/api/v2/import/feature",
+        "import_feature": "https://{cloud_host}/api/v2/import/feature",
     },
     "server": {
         # NOT a token endpoint -- no exchange exists on this flavour. Credential probe only.
@@ -86,7 +99,22 @@ AUTH_STYLE = {
             "500": "internal authentication error",
         },
         # Xray Cloud endpoints take the token above; the Jira search endpoint does not.
+        # Whether the Xray token is ALSO accepted by Jira Cloud search is genuinely unverified
+        # (see the contract's ## Unverified). The shape below is what to send when it is not.
         "search_uses_separate_jira_credentials": True,
+        "search_credential": {
+            "style": "basic_auth",
+            "sends_body": False,
+            "credential_fields": ["jira_email", "jira_api_token"],
+            "body_encoding": None,
+            "header_name": "Authorization",
+            "header_template": "Basic {base64_email_colon_api_token}",
+            # base64(jira_email + ":" + jira_api_token), standard (not URL-safe) alphabet.
+            "encoding": "base64(email + ':' + api_token)",
+            "token_lifetime_seconds": None,
+            "alternative_style": "oauth2",
+            "alternative_scope": "read:jira-work",
+        },
     },
     "server": {
         "style": "per_request_header",
@@ -120,9 +148,12 @@ AUTH_STYLE = {
 
 # Cloud bulk import is asynchronous; poll this with the returned jobId. Server has no job.
 IMPORT_TESTS_STATUS = {
-    "cloud": "https://xray.cloud.getxray.app/api/v2/import/test/bulk/{jobId}/status",
+    "cloud": "https://{cloud_host}/api/v2/import/test/bulk/{jobId}/status",
     "server": None,
 }
+
+# Per-step keys inside a Cloud import_tests manual test's "steps" array. Documented, not inferred.
+CLOUD_TEST_STEP_FIELDS = ["action", "data", "result"]
 
 # Terminal and non-terminal states of a Cloud import job.
 IMPORT_JOB_STATUSES = {
@@ -142,8 +173,25 @@ FEATURE_IMPORT_PARTS = {
 }
 
 # Server/DC only: manual test steps are added one call at a time after bulk issue create.
-# PUT; body {"step": ..., "data": ..., "result": ..., "attachments": [...]}.
+# PINNED: v1.0. PUT; flat body {"step": ..., "data": ..., "result": ..., "attachments": [...]}.
 SERVER_TEST_STEP_URL = "{base_url}/rest/raven/1.0/api/test/{testKey}/step"
+
+# A v2.0 step surface also exists (note "steps", plural -- v1.0 is "step", singular).
+# Its body is NOT the same shape: v2.0 nests display-name keys under "fields", e.g.
+#   {"fields": {"Action": ..., "Data": ..., "Expected Result": ...}, "attachments": [...]}
+# whereas v1.0 is flat. Do not swap the URL without swapping the serialiser. v1.0 stays pinned
+# as the safer floor; this is recorded so Task 6 knows the richer surface exists.
+SERVER_TEST_STEP_URL_V2 = "{base_url}/rest/raven/2.0/api/test/{testKey}/steps"
+SERVER_TEST_STEP_V2_OPERATIONS = {
+    "list": "GET {base_url}/rest/raven/2.0/api/test/{testKey}/steps",
+    "create": "POST {base_url}/rest/raven/2.0/api/test/{testKey}/steps",
+    "get": "GET {base_url}/rest/raven/2.0/api/test/{testKey}/steps/{stepId}",
+    "update": "PUT {base_url}/rest/raven/2.0/api/test/{testKey}/steps/{stepId}",
+    "delete": "DELETE {base_url}/rest/raven/2.0/api/test/{testKey}/steps/{stepId}",
+}
+
+# Server/DC feature import also answers at 2.0; 1.0 stays pinned as the safer floor.
+SERVER_IMPORT_FEATURE_URL_V2 = "{base_url}/rest/raven/2.0/import/feature"
 
 # Documented structural limits. No request-rate limit is documented for either flavour.
 LIMITS = {
