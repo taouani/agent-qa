@@ -21,41 +21,12 @@ If `{selected_folder}/test-cases/` exists:
 - Identify data patterns used (valid inputs, invalid inputs, edge cases)
 - Note any specific test data values already defined
 
-### Step 3: Identify Data Entities
+### Step 3: Identify Data Entities and Categories
 
-Group extracted fields into data entities:
+Apply `@agent-qa/roles/test-data-design.md`, sections `## Identifying Entities` and
+`## Data Categories`, to the requirements and test cases read in Steps 1 and 2.
 
-```
-entities:
-  - name: "User"
-    fields:
-      - name: "email"
-        type: "string"
-        format: "email"
-        constraints: {required: true, max_length: 255}
-      - name: "password"
-        type: "string"
-        constraints: {required: true, min_length: 8, max_length: 128, pattern: "must contain uppercase, lowercase, number"}
-      - name: "role"
-        type: "enum"
-        values: ["admin", "user", "viewer"]
-        constraints: {required: true, default: "user"}
-```
-
-### Step 4: Identify Data Categories
-
-For each field, determine which data categories apply:
-
-| Category | Description | Example |
-|----------|-------------|---------|
-| Valid | Standard valid values | `"user@example.com"` |
-| Invalid | Values that should be rejected | `"not-an-email"` |
-| Boundary | Edge of valid range | `""` (empty), max length string |
-| Null/Empty | Missing or empty values | `null`, `""`, `undefined` |
-| Special Characters | Unicode, injection attempts | `"user@例え.jp"`, `"'; DROP TABLE--"` |
-| Format | Correct/incorrect format | `"user@.com"`, `"user@domain"` |
-
-### Step 5: Read Config for Test Types
+### Step 4: Read Config for Test Types
 
 Read `agent-qa/config.yml` for `test_types` list. If `security` is included, add security-specific test data (SQL injection, XSS payloads). If `accessibility` is included, add accessibility-focused test data.
 
