@@ -14,174 +14,16 @@ Generate comprehensive test charter content based on the loaded requirements, fo
 
 ## Workflow
 
-### Step 1: Generate Mission/Goal
+### Step 1: Generate the Test Charter Content
 
-Based on overall requirements scope:
-- Analyze all requirements to understand overall goal and business value
-- Generate mission statement that captures the testing objective clearly
-- Align mission with requirements being tested
-- Include business context and testing purpose
-- Format as clear, actionable statement
+Apply `@agent-qa/roles/test-charter.md`, using its `## Test Charter` section, to the requirements
+loaded in Phase 2. Supply: the requirement set, the detected language, the configured `test_types`,
+and any sibling deliverables already present in the selected output folder.
 
-**Example Structure**:
-```markdown
-## Mission/Goal
+The role owns how the test charter is shaped. This phase owns what is supplied to it, where the
+result lands, and the order of the remaining steps.
 
-The mission of this test charter is to [primary testing objective] for [feature/component] 
-by exploring [key areas] to ensure [business outcomes]. This charter focuses on 
-[testing approach] to validate [critical aspects] and identify [potential issues].
-```
-
-### Step 2: Define Scope
-
-Based on requirements analyzed:
-- **In-Scope**: 
-  - List all requirements being tested with their keys
-  - Include related components and features
-  - Specify testing boundaries clearly
-- **Out-of-Scope**: 
-  - Identify what is explicitly not being tested
-  - Explain why items are out of scope
-  - Reference dependencies or future work
-- Base scope definition on requirements analyzed only
-
-**Example Structure**:
-```markdown
-## Scope
-
-### In-Scope
-- **Requirements**: PROJ-123, PROJ-124, PROJ-125
-- **Components**: User Authentication, Profile Management
-- **Features**: Login flow, Password reset, Profile updates
-- **Testing Focus**: Core user workflows and critical business logic
-
-### Out-of-Scope
-- **Not Included**: Performance testing, Load testing
-- **Reason**: Covered by separate performance testing charter
-- **Future Work**: Mobile app testing (web only for this charter)
-```
-
-### Step 3: Identify Areas to Explore
-
-Analyze requirements comprehensively for:
-- **Complex Areas**: 
-  - Business logic complexity
-  - Multi-step workflows
-  - State transitions
-  - Data dependencies
-- **Edge Cases**: 
-  - Boundary conditions
-  - Extreme values
-  - Unusual user behaviors
-  - Error recovery scenarios
-- **Integration Points**: 
-  - API integrations
-  - External system dependencies
-  - Data synchronization
-  - Cross-component interactions
-- **Areas with Unclear Acceptance Criteria**: 
-  - Ambiguous requirements
-  - Missing specifications
-  - Implicit expectations
-
-**Example Structure**:
-```markdown
-## Areas to Explore
-
-### Complex Areas
-1. **Multi-factor Authentication Flow**
-   - Token generation and validation
-   - Session management across devices
-   - Error handling during authentication
-
-2. **Profile Data Synchronization**
-   - Real-time updates across components
-   - Conflict resolution
-   - Data consistency validation
-
-### Edge Cases
-1. **Boundary Conditions**
-   - Minimum/maximum field lengths
-   - Date range validations
-   - Numeric input limits
-
-2. **Unusual User Behaviors**
-   - Rapid clicking/button mashing
-   - Browser back/forward navigation
-   - Concurrent session handling
-
-### Integration Points
-1. **External API Integration**
-   - Third-party authentication services
-   - Payment gateway interactions
-   - Data synchronization endpoints
-
-### Unclear Requirements
-1. **Profile Picture Upload**
-   - File size limits not specified
-   - Supported formats unclear
-   - Error handling undefined
-```
-
-### Step 4: Describe Test Approach
-
-Describe comprehensive testing approach:
-- **Exploratory Testing Techniques**: 
-  - Time-boxed exploration sessions
-  - Charter-based exploration
-  - Persona-based testing
-  - Scenario-based exploration
-- **Session-Based Testing**: 
-  - Session structure and duration
-  - Debriefing process
-  - Note-taking approach
-  - Bug reporting workflow
-- **Testing Heuristics**: 
-  - SFDIPOT (Structure, Function, Data, Interface, Platform, Operations, Time)
-  - CRUSSPIC STMPL (Capability, Reliability, Usability, Security, Scalability, Performance, Installability, Compatibility, Supportability, Testability, Maintainability, Portability, Localizability)
-  - Touring heuristics (Guidebook Tour, Money Tour, etc.)
-- **How Testing Will Be Conducted**: 
-  - Testing environment setup
-  - Test data preparation
-  - Execution approach
-  - Reporting mechanism
-
-**Example Structure**:
-```markdown
-## Test Approach
-
-### Exploratory Testing Techniques
-- **Time-boxed Sessions**: 90-minute exploration sessions with focused objectives
-- **Charter-based Exploration**: Each session follows a specific charter objective
-- **Persona-based Testing**: Test from different user perspectives (Admin, Standard User, Guest)
-- **Scenario-based Exploration**: Follow realistic user journeys and workflows
-
-### Session-Based Testing
-- **Session Structure**: 
-  - Preparation (10 min): Review requirements, set up test environment
-  - Exploration (60 min): Active testing and exploration
-  - Debriefing (20 min): Document findings, report issues, plan next session
-- **Debriefing Process**: 
-  - Document test notes and observations
-  - Report bugs immediately
-  - Update charter based on findings
-  - Plan follow-up sessions if needed
-
-### Testing Heuristics
-- **SFDIPOT**: Structure (UI layout), Function (features), Data (inputs/outputs), 
-  Interface (APIs), Platform (browsers/devices), Operations (deployment), Time (performance)
-- **CRUSSPIC STMPL**: Focus on Security, Usability, Performance, Compatibility
-- **Touring Heuristics**: Guidebook Tour (follow documentation), Money Tour (payment flows), 
-  Landmark Tour (key features), Intellectual Tour (complex logic)
-
-### Execution Approach
-- **Environment**: Staging environment with test data
-- **Test Data**: Use realistic production-like data
-- **Tools**: Browser DevTools, API testing tools, Screen recording
-- **Reporting**: Real-time bug reporting, session notes, daily summaries
-```
-
-### Step 5: Generate Risks
+### Step 2: Generate Risks
 
 Generate risks independently based on:
 - **Requirements Complexity**: 
@@ -237,7 +79,8 @@ Generate risks independently based on:
    - **Mitigation**: Identify alternatives, plan tool setup early
 ```
 
-### Step 6: Specify Resources
+
+### Step 3: Specify Resources
 
 Specify comprehensive resource requirements:
 - **Tester Roles**: 
@@ -277,7 +120,8 @@ Specify comprehensive resource requirements:
 - **Collaboration**: Screen sharing tools, team communication channels
 ```
 
-### Step 7: Calculate Time Estimates
+
+### Step 4: Calculate Time Estimates
 
 Based on comprehensive analysis:
 - **Number of Requirements**: Count total requirements to test
@@ -317,6 +161,7 @@ Based on comprehensive analysis:
 - **Duration**: 1-1.5 weeks
 - **Frequency**: 2-3 sessions per day
 ```
+
 
 ## Important Constraints
 

@@ -17,141 +17,16 @@ Generate comprehensive test plan content based on requirements and related deliv
 
 ## Workflow
 
-### Step 1: Generate Executive Summary
+### Step 1: Generate the Test Plan Content
 
-Create comprehensive executive summary:
+Apply `@agent-qa/roles/test-planning.md`, using its `## Test Plan` section, to the requirements
+loaded in Phase 2. Supply: the requirement set, the detected language, the configured `test_types`,
+and any sibling deliverables already present in the selected output folder.
 
-**Example Structure**:
-```markdown
-## Executive Summary
+The role owns how the test plan is shaped. This phase owns what is supplied to it, where the
+result lands, and the order of the remaining steps.
 
-This test plan outlines the comprehensive testing approach for [release/filter name] 
-covering [number] requirements across [number] components. The testing strategy focuses 
-on [key testing objectives] to ensure [business outcomes]. 
-
-**Key Highlights**:
-- **Scope**: [X] requirements, [Y] test cases, [Z] components
-- **Duration**: [timeframe] with [number] testers
-- **Approach**: [testing approach summary]
-- **Risk Level**: [High/Medium/Low] based on complexity and business impact
-- **Success Criteria**: [key success indicators]
-
-**Testing Phases**:
-1. Test Planning and Preparation ([duration])
-2. Test Case Execution ([duration])
-3. Defect Resolution and Retesting ([duration])
-4. Test Closure and Reporting ([duration])
-```
-
-### Step 2: Derive Test Objectives
-
-From test cases and test strategies:
-- Extract test objectives aligned with business goals
-- Map objectives to requirements
-- Include quality objectives
-- Define success criteria
-
-**Example Structure**:
-```markdown
-## Test Objectives
-
-### Primary Objectives
-1. **Functional Validation**: Validate all functional requirements meet acceptance criteria
-2. **Quality Assurance**: Ensure system quality meets defined standards
-3. **Risk Mitigation**: Identify and mitigate risks before production deployment
-
-### Specific Objectives
-- Verify [key functionality] works as specified
-- Validate [critical workflows] meet business requirements
-- Ensure [integration points] function correctly
-- Confirm [data operations] maintain data integrity
-
-### Success Criteria
-- 100% of requirements covered by test cases
-- 95%+ test execution pass rate
-- All critical defects resolved
-- Test strategy objectives achieved
-```
-
-### Step 3: Define Scope
-
-Based on requirements analyzed and test cases generated:
-
-**Example Structure**:
-```markdown
-## Test Scope
-
-### In-Scope
-- **Requirements**: [List requirement keys or summary]
-- **Test Cases**: [Number] test cases covering [areas]
-- **Components**: [List components/features]
-- **User Workflows**: [List key workflows]
-- **Integration Points**: [List integrations]
-
-### Out-of-Scope
-- **Not Included**: [Items explicitly excluded]
-- **Reason**: [Justification for exclusion]
-- **Future Work**: [Items for future releases]
-
-### Scope Boundaries
-- **Start Date**: [Date]
-- **End Date**: [Date]
-- **Environments**: [List test environments]
-- **Platforms**: [List platforms/browsers]
-```
-
-### Step 4: Integrate Test Strategy
-
-Reference or incorporate test strategies:
-- Link to test strategy files (if available)
-- Include key strategy elements
-- Reference test levels and types
-- Link to automation approach
-
-**Example Structure**:
-```markdown
-## Test Strategy
-
-This test plan incorporates the comprehensive test strategy defined in [test-strategy.md].
-
-**Key Strategy Elements**:
-- **Test Levels**: Integration, System, UAT (see [test-strategy.md#test-levels])
-- **Test Types**: Functional, Security, Performance (see [test-strategy.md#test-types])
-- **Automation Approach**: Playwright framework (see [test-strategy.md#automation])
-- **Risk-Based Testing**: Prioritized by business risk (see [test-strategy.md#risk-based])
-
-For detailed strategy information, refer to: `test-strategy.md`
-```
-
-### Step 5: Generate Environment Requirements
-
-High-level guidance for test environments:
-
-**Example Structure**:
-```markdown
-## Test Environment and Tools
-
-### Environment Requirements
-- **Test Environment**: Staging environment matching production configuration
-- **Database**: Test database with production-like data
-- **External Services**: Mock services or test instances
-- **Network**: Stable network connectivity
-
-### Tools Required
-- **Test Management**: Jira Xray for test case management
-- **Bug Tracking**: Jira for defect management
-- **Automation**: Playwright framework for automated tests
-- **API Testing**: Postman/Insomnia for API validation
-- **Performance**: [Performance testing tools if applicable]
-
-### Environment Setup
-- **Access**: Test user accounts with appropriate permissions
-- **Data**: Test data sets for various scenarios
-- **Configuration**: Environment-specific configuration files
-- **Monitoring**: Logging and monitoring tools
-```
-
-### Step 6: Generate Schedules
+### Step 2: Generate Schedules
 
 Provide comprehensive schedules:
 
@@ -199,7 +74,8 @@ Provide comprehensive schedules:
 - **Total Effort**: [X] person-hours
 ```
 
-### Step 7: Generate Entry/Exit Criteria
+
+### Step 3: Generate Entry/Exit Criteria
 
 Define comprehensive criteria:
 
@@ -226,7 +102,8 @@ Define comprehensive criteria:
 - **Metrics**: All defined metrics collected and reported
 ```
 
-### Step 8: List Deliverables
+
+### Step 4: List Deliverables
 
 List all deliverables comprehensively:
 
@@ -258,7 +135,8 @@ List all deliverables comprehensively:
 - **Risk Register**: Risk assessment and mitigation status (`risk-register.md`)
 ```
 
-### Step 9: Risk Management
+
+### Step 5: Risk Management
 
 Include risk management approach:
 
@@ -281,7 +159,8 @@ Risks identified from requirements analysis, test strategy, and test charter:
 - **Schedule Delays**: Buffer time included, priority-based execution
 ```
 
-### Step 10: Approval Process
+
+### Step 6: Approval Process
 
 Define approval and sign-off process:
 
@@ -306,6 +185,7 @@ Define approval and sign-off process:
 - [ ] Business Analyst Approval
 - [ ] Final Sign-off
 ```
+
 
 ## Important Constraints
 
