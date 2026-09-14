@@ -684,10 +684,11 @@ install_ide_claude() {
         local dest_agents_dir="$PROJECT_DIR/.claude/agents/agent-qa"
         local source_agents_dir="$BASE_DIR/agent-qa/ide/claude/agents"
         if [[ -d "$source_agents_dir" ]]; then
-            # Drop pre-refactor fat agents before the wrappers land beside them.
-            if [[ "$DRY_RUN" != "true" ]]; then
-                remove_stale_agents "$PROJECT_DIR"
-            fi
+            # Pre-refactor fat agents are dropped by remove_stale_agents, which
+            # perform_installation calls for EVERY ide selection -- not from
+            # here. The legacy agent-qa/agents/ tree is IDE-neutral, so a
+            # copilot- or cursor-only project needs the same cleanup this
+            # branch used to monopolise.
             ensure_dir "$dest_agents_dir"
             find "$source_agents_dir" -type f -name "*.md" | while read -r source_file; do
                 local relative_path="${source_file#$source_agents_dir/}"
@@ -903,6 +904,15 @@ perform_installation() {
     echo ""
     install_roles
     echo ""
+    # Legacy cleanup is IDE-neutral and therefore unconditional. The old
+    # installer wrote fat agents into agent-qa/agents/ for every IDE, so
+    # confining this to the Claude branch left them in place beside
+    # agent-qa/roles/ in every copilot, cursor and vscode project. Each
+    # destination is guarded by its own [[ -d ]] inside the function, so a
+    # project with no .claude/ simply has nothing to do there.
+    if [[ "$DRY_RUN" != "true" ]]; then
+        remove_stale_agents "$PROJECT_DIR"
+    fi
     install_framework
     echo ""
     install_config_template

@@ -430,21 +430,57 @@ assert_code_contains() {
     fi
 }
 
+# Assert that $script calls something from INSIDE the body of a named routine,
+# not merely somewhere in the file. Comments are stripped, as everywhere else.
+#
+# A file-wide grep cannot tell "called for every install" from "called only
+# inside the Claude branch". That distinction was the bug: remove_stale_agents
+# was reachable only from Claude-specific code, so a --ide copilot project kept
+# all eleven superseded fat agents in the IDE-neutral agent-qa/agents/ tree
+# while the harness reported the cleanup as wired.
+assert_calls_in_function() {
+    local script="$1" func_re="$2" call_re="$3" message="$4" body
+    if [[ ! -f "$script" ]]; then
+        fail "$script is missing"
+        return
+    fi
+    body="$(awk -v re="$func_re" '
+        inside == 0 && $0 ~ re { inside = 1; next }
+        inside == 1 && /^}/ { exit }
+        inside == 1 { print }
+    ' "$script" | grep -v '^[[:space:]]*#')"
+    if [[ -z "${body//[[:space:]]/}" ]]; then
+        fail "$(basename "$script"): found no body for $func_re, so $message is unverifiable"
+        return
+    fi
+    if grep -qE "$call_re" <<< "$body"; then
+        pass "$message"
+    else
+        fail "$(basename "$script"): $message -- not called from that routine"
+    fi
+}
+
 check_roles_installed() {
     echo "== installers define and call a roles sync =="
     assert_defines_and_calls scripts/project-install.sh \
-        '^[[:space:]]*install_roles\(\)' '^[[:space:]]*install_roles([[:space:]]|$)' install_roles
+        '^[[:space:]]*install_roles\(\)' '^[[:space:]]*install_roles([[:space:]]+[^([:space:]].*)?[[:space:]]*$' install_roles
     assert_defines_and_calls scripts/project-update.sh \
-        '^[[:space:]]*update_roles\(\)' '^[[:space:]]*update_roles([[:space:]]|$)' update_roles
+        '^[[:space:]]*update_roles\(\)' '^[[:space:]]*update_roles([[:space:]]+[^([:space:]].*)?[[:space:]]*$' update_roles
     # The PowerShell names need an explicit right-hand boundary: without one,
     # `Install-Roles` matches a renamed `Install-RolesX` and the check reports
     # a definition that no longer exists under that name.
+    #
+    # Every call regex above also refuses a line whose first non-space
+    # character after the name is `(`. Written `install_roles ()`, a
+    # DEFINITION would otherwise satisfy the CALL assertion, and a routine
+    # that is defined but never called would pass as wired -- vacuity
+    # reintroduced by nothing more than a reformat.
     assert_defines_and_calls scripts/project-install.ps1 \
         '^[[:space:]]*function[[:space:]]+Install-Roles([[:space:]]|\{|$)' \
-        '^[[:space:]]*Install-Roles([[:space:]]|$)' Install-Roles
+        '^[[:space:]]*Install-Roles([[:space:]]+[^([:space:]].*)?[[:space:]]*$' Install-Roles
     assert_defines_and_calls scripts/project-install.ps1 \
         '^[[:space:]]*function[[:space:]]+Remove-StaleAgents([[:space:]]|\{|$)' \
-        '^[[:space:]]*Remove-StaleAgents([[:space:]]|$)' Remove-StaleAgents
+        '^[[:space:]]*Remove-StaleAgents([[:space:]]+[^([:space:]].*)?[[:space:]]*$' Remove-StaleAgents
 
     assert_code_contains scripts/common-functions.sh '^[[:space:]]*remove_stale_agents\(\)' \
         "common-functions.sh defines remove_stale_agents"
@@ -452,6 +488,18 @@ check_roles_installed() {
         "install removes superseded agent files"
     assert_code_contains scripts/project-update.sh '^[[:space:]]*remove_stale_agents[[:space:]]' \
         "update removes superseded agent files"
+
+    # ...and it must be reachable for EVERY ide, not only for Claude projects.
+    # agent-qa/agents/ is IDE-neutral, so the cleanup belongs in the main flow.
+    assert_calls_in_function scripts/project-install.sh '^perform_installation\(\)' \
+        '^[[:space:]]*remove_stale_agents[[:space:]]' \
+        "install runs the legacy cleanup for every ide"
+    assert_calls_in_function scripts/project-update.sh '^perform_update\(\)' \
+        '^[[:space:]]*remove_stale_agents[[:space:]]' \
+        "update runs the legacy cleanup for every ide"
+    assert_calls_in_function scripts/project-install.ps1 '^function[[:space:]]+Start-ProjectInstall' \
+        '^[[:space:]]*Remove-StaleAgents[[:space:]]*$' \
+        "ps1 install runs the legacy cleanup for every ide"
 
     assert_code_contains scripts/project-install.sh 'ide/claude/agents' \
         "install reads agents from ide/claude/agents"
@@ -463,10 +511,21 @@ check_roles_installed() {
     # agent-qa/agents/; cleaning only the first leaves the superseded fat agents
     # sitting beside agent-qa/roles/, which is the duplication this branch exists
     # to remove.
-    assert_code_contains scripts/common-functions.sh '\.claude/agents/agent-qa' \
-        "remove_stale_agents cleans .claude/agents/agent-qa/"
-    assert_code_contains scripts/common-functions.sh 'agent-qa/agents' \
-        "remove_stale_agents cleans agent-qa/agents/"
+    #
+    # Both halves must be asserted on CODE STRUCTURE. The previous form greped
+    # common-functions.sh for the bare path 'agent-qa/agents', which two
+    # print_verbose log strings satisfy on their own: a reviewer reduced the
+    # `for dest` loop to the single .claude directory -- deleting the whole
+    # functional change -- and this check stayed green. So assert that
+    # legacy_dir is DECLARED from agent-qa/agents and that $legacy_dir is
+    # actually swept by the loop. Dropping it from the loop, or renaming the
+    # variable, now fails.
+    assert_code_contains scripts/common-functions.sh 'for dest in .*\.claude/agents/agent-qa' \
+        "remove_stale_agents sweeps .claude/agents/agent-qa/"
+    assert_code_contains scripts/common-functions.sh '^[[:space:]]*local legacy_dir=.*agent-qa/agents' \
+        "remove_stale_agents declares legacy_dir as agent-qa/agents/"
+    assert_code_contains scripts/common-functions.sh 'for dest in .*\$legacy_dir' \
+        "remove_stale_agents sweeps \$legacy_dir in the same loop"
     assert_code_contains scripts/project-install.ps1 '\.claude\\agents\\agent-qa' \
         "Remove-StaleAgents cleans .claude/agents/agent-qa/"
     assert_code_contains scripts/project-install.ps1 'agent-qa\\agents' \
@@ -478,15 +537,22 @@ check_shell_syntax() {
     # bash -n was documented as a manual step, and check-repo.sh is the only
     # thing anyone actually runs -- so a script broken into a syntax error
     # passed the harness. Parsing is now part of the harness.
-    local f
+    #
+    # Like check_roles_wired, this counts what it examined. A glob that matches
+    # nothing runs the loop body zero times, and a check whose body never runs
+    # reports success -- the vacuous-pass failure mode this harness keeps
+    # rediscovering.
+    local f found=0
     for f in scripts/*.sh; do
         [[ -f "$f" ]] || continue
+        found=$((found + 1))
         if bash -n "$f" 2>/dev/null; then
             pass "$(basename "$f") parses"
         else
             fail "$(basename "$f") does not parse (bash -n)"
         fi
     done
+    (( found > 0 )) || fail "no shell scripts found in scripts/ - nothing was parsed"
 }
 
 check_roles_documented() {

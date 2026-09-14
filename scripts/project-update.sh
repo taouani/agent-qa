@@ -461,9 +461,11 @@ update_claude_agents() {
 
     print_status "Updating Claude Code agent wrappers"
 
-    if [[ "$DRY_RUN" != "true" ]]; then
-        remove_stale_agents "$PROJECT_DIR"
-    fi
+    # Pre-refactor fat agents are dropped by remove_stale_agents, called once
+    # from perform_update for every project -- not from here. This function
+    # early-returns when .claude/agents/agent-qa/ is absent, which is exactly
+    # the copilot/cursor/vscode project that still holds the superseded agents
+    # in the IDE-neutral agent-qa/agents/ tree.
 
     local agents_updated=0
     local agents_skipped=0
@@ -697,6 +699,15 @@ perform_update() {
     update_roles
     if [[ -d "$BASE_DIR/agent-qa/roles" ]]; then
         echo ""
+    fi
+    # Legacy cleanup is IDE-neutral and therefore unconditional. It used to run
+    # only from update_claude_agents, which returns early without a
+    # .claude/agents/agent-qa/ directory -- so a project installed with
+    # --ide copilot kept all eleven superseded fat agents in agent-qa/agents/,
+    # right beside agent-qa/roles/. Each destination is guarded by its own
+    # [[ -d ]] inside the function, so there is nothing to do where it is absent.
+    if [[ "$DRY_RUN" != "true" ]]; then
+        remove_stale_agents "$PROJECT_DIR"
     fi
     update_claude_agents
     if [[ -d "$BASE_DIR/agent-qa/ide/claude/agents" ]]; then

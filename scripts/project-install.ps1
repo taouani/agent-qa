@@ -525,8 +525,11 @@ function Install-IdeClaude {
         $sourceAgents = Join-Path $SourceDir "agent-qa\ide\claude\agents"
         $destAgents = Join-Path $ProjectDir ".claude\agents\agent-qa"
         if (Test-Path $sourceAgents) {
-            # Drop pre-refactor fat agents before the wrappers land beside them.
-            Remove-StaleAgents
+            # Pre-refactor fat agents are dropped by Remove-StaleAgents, which
+            # Start-ProjectInstall calls for EVERY -Ide selection -- not from
+            # here. The legacy agent-qa\agents\ tree is IDE-neutral, so a
+            # copilot- or cursor-only project needs the same cleanup this
+            # branch used to monopolise.
             Ensure-Dir -Dir $destAgents
             Copy-SourceMarkdownTree -SourceDir $sourceAgents -DestDir $destAgents -Label "Claude Code agents" | Out-Null
             if (-not $script:DRY_RUN) {
@@ -669,6 +672,13 @@ function Start-ProjectInstall {
     Write-Host ""
     Install-Roles
     Write-Host ""
+    # Legacy cleanup is IDE-neutral and therefore unconditional. The old
+    # installer wrote fat agents into agent-qa\agents\ for every IDE, so
+    # confining this to the Claude branch left them in place beside
+    # agent-qa\roles\ in every copilot, cursor and vscode project. Each
+    # destination is guarded by its own Test-Path inside the function, so a
+    # project with no .claude\ simply has nothing to do there.
+    Remove-StaleAgents
     Install-Framework
     Write-Host ""
     Install-ConfigTemplate
