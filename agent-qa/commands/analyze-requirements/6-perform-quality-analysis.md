@@ -11,31 +11,10 @@ Perform requirement completeness and quality analysis.
 
 ## Workflow
 
-### Step 1: Check Requirement Completeness
+### Step 1: Perform Quality Analysis
 
-For each requirement:
-- Check for required fields (summary, description, acceptance criteria)
-- Identify missing fields
-- Calculate completeness percentage
-
-### Step 2: Calculate Completeness Score
-
-For each requirement:
-- Score: (present fields / total required fields) * 100
-- Level: High (80-100%), Medium (50-79%), Low (<50%)
-
-### Step 3: Perform Quality Scoring
-
-For each requirement:
-- Analyze clarity, completeness, acceptance criteria quality
-- Calculate quality score (0-100)
-- Level: Excellent (90-100), Good (70-89), Fair (50-69), Poor (<50)
-
-### Step 4: Generate Recommendations
-
-For each requirement:
-- Identify areas for improvement
-- Generate actionable recommendations
+Apply `@agent-qa/roles/requirements-analysis.md`, section `## Quality Analysis`, to the structured
+requirements from Phase 5.
 
 ## Important Constraints
 

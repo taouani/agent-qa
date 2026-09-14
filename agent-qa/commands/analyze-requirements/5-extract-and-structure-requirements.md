@@ -20,32 +20,12 @@ For each issue, extract:
 - Organizational fields: labels, components, fixVersions, project
 - Custom fields: All custom fields with original names
 
-### Step 2: Extract Acceptance Criteria
+### Step 2: Extract and Structure the Requirements
 
-For each issue:
-1. Check custom fields for acceptance criteria field
-2. If not found, parse from description
-3. Return as array of criteria strings
+Apply `@agent-qa/roles/requirements-analysis.md`, sections `## Extraction` and `## Structuring`, to
+the ticket fields gathered in Step 1.
 
-### Step 3: Structure Requirements
-
-Create requirement structure for each issue:
-
-```javascript
-{
-  key: "...",
-  summary: "...",
-  description: "...",
-  status: "...",
-  issueType: "...",
-  acceptanceCriteria: [...],
-  linkedIssues: [...],
-  confluencePages: [...],
-  // ... all other fields
-}
-```
-
-### Step 4: Store in Memory
+### Step 3: Store in Memory
 
 Store all requirement structures in memory for subsequent phases.
 
