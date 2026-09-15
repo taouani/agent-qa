@@ -23,7 +23,8 @@ agent-qa/YYYY-MM-DD-{context}/
 ├── accessibility-tests/
 ├── ui-snapshots/
 ├── reviews/
-└── debug/
+├── debug/
+└── xray/
 ```
 
 Only create subdirectories for deliverables that are being generated.
@@ -114,4 +115,5 @@ Test case CSV files follow Jira Xray import format:
 | Refactor Report | `refactor-report.md` |
 | Code Review | `code-review.md` |
 | Debug Report | `debug/report.md` |
+| Xray Upload Report | `xray/upload-report.md` |
 | Framework Profile | `agent-qa/framework-profile.md` (repository root, not a dated folder) |

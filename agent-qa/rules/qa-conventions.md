@@ -57,6 +57,7 @@ All output folders follow: `YYYY-MM-DD-{context}/`
 | UI Exploration | `ui-snapshots/` |
 | Reviews and Audits | `reviews/` |
 | Debug Reports | `debug/` |
+| Xray Upload Report | `xray/` |
 
 ## Language Detection
 

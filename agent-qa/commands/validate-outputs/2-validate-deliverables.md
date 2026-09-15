@@ -27,11 +27,11 @@ For each `.md` file in the requirement-derived deliverable subdirectories — `r
 
 Record for each file: PASS or FAIL with specific issue.
 
-Files under `ui-snapshots/`, `reviews/`, and `debug/` are live automation deliverables. They
-carry a different front-matter contract — they are not derived from a single requirement and have
-no language or version field — and are validated by the "Live Automation Deliverables" section
-below instead. Skip Step 2 for them; do not report them as failures here. They are still subject
-to the file naming checks in Step 3.
+Files under `ui-snapshots/`, `reviews/`, `debug/`, and `xray/` are live automation deliverables.
+They carry a different front-matter contract — they are not derived from a single requirement and
+have no language or version field — and are validated by the "Live Automation Deliverables" /
+"Xray Upload Report" sections below instead. Skip Step 2 for them; do not report them as failures
+here. They are still subject to the file naming checks in Step 3.
 
 ### Step 3: Validate File Naming
 
@@ -52,6 +52,7 @@ Check each file against the naming conventions:
 | `ui-snapshots/` | `exploration.md`, `{TEST-CASE-ID}/{NN}-{state}.yml` |
 | `reviews/` | `code-review.md`, `architecture-review.md`, `refactor-plan.md`, `refactor-report.md` |
 | `debug/` | `report.md` |
+| `xray/` | `upload-report.md` |
 
 Record: PASS, FAIL (wrong name), or WARN (unexpected file).
 
@@ -109,6 +110,26 @@ Additional checks:
 - An exploration report claiming zero unverifiable steps must still contain the
   `## Unverifiable Steps` section — its absence is a validation failure, because a missing section
   reads as full coverage
+
+### Xray Upload Report
+
+`xray/upload-report.md` is written only by an executed `scripts/xray/upload.py --execute` run —
+never by a dry run and never by a command phase directly. Its absence is normal in any output
+folder that hasn't uploaded to Xray; do not report a missing `xray/` folder as a failure. Its full
+shape is defined in `agent-qa/framework/xray/formats/upload-report.md` — validate against that
+file, not this summary, if the two ever disagree.
+
+| type | File | Required front matter | Required sections |
+|------|------|----------------------|-------------------|
+| `xray-upload-report` | `xray/upload-report.md` | `platform`, `project`, `created`, `updated`, `failed` | `## Failed` — always present; holds a `Test case`/`Reason` table when `failed` is greater than zero, `_None._` otherwise |
+
+Additional checks:
+
+- Treat `created`, `updated`, and `failed` in the front matter as the authoritative counts — do
+  not recompute them by counting bullets or table rows.
+- `account`, when present, must be redacted (a short prefix plus `***`, or bare `***`). **FAIL**
+  if a full-length value or anything resembling a secret appears in this field or anywhere else in
+  the report.
 
 ## Data Storage
 

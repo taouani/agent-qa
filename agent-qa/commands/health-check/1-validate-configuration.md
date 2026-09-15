@@ -73,7 +73,54 @@ For each configured IDE:
 - **PASS** if all expected files exist
 - **WARN** if some files missing
 
-### Step 6: Display configuration summary
+### Step 6: Validate Xray configuration (read-only probe)
+
+This step never writes to Jira. It never invokes `scripts/xray/upload.py` at all, with or without
+`--execute`, and it makes no network or MCP call of any kind — it is local inspection of
+`agent-qa/config.yml` and the metadata (not the contents) of `agent-qa/.xray-credentials`. Because
+this step issues no call to Jira or Xray, there is no instruction path from health-check into
+`import_tests`, `import_feature`, or the Jira issue-update endpoint — those only exist behind
+`upload.py --execute`, which this step never runs.
+
+**SKIP the whole step** — report **SKIP — Xray not configured** — when `xray_platform` is empty in
+`agent-qa/config.yml`. Xray is opt-in; a project that hasn't configured it is healthy, not broken.
+Do not run any of the checks below, and do not report a FAIL or WARN for any of them.
+
+Otherwise, reuse `agent-qa/framework/xray/config/validate-xray.md` for what SKIP/STOP mean and for
+the credentials-file contract — do not restate its reasoning here, only its outcome as a health
+check line:
+
+1. **`xray_platform`** — must be `cloud` or `server`. **FAIL** otherwise.
+2. **`xray_project_key`** — must be non-empty. **FAIL** otherwise.
+3. **`xray_base_url`** — used by both flavours: on Server/DC it is the only Jira host there is; on
+   Cloud it is the customer's own Jira site, because JQL search runs against Jira Cloud, not the
+   Xray API host (see `agent-qa/framework/xray/api-contract.md`). **FAIL** if empty and
+   `xray_platform` is `server` (`validate-xray.md` STOPs here too). **WARN** if empty and
+   `xray_platform` is `cloud` — upload will fail at the search step without it, but this preflight
+   does not hard-block it.
+4. **`agent-qa/.xray-credentials` exists** — **FAIL** if not found. Do not create it, do not
+   prompt for values, and do not accept them if offered: if an engineer pastes a token, secret, or
+   password into chat, refuse and point them at `agent-qa/.xray-credentials` — see
+   `agent-qa/framework/xray/config/validate-xray.md`. Agent-QA never types, accepts, or stores
+   these credentials.
+5. **Permissions are not world-readable** — read the file's mode, e.g.
+   `stat -f %A agent-qa/.xray-credentials 2>/dev/null || stat -c %a agent-qa/.xray-credentials`.
+   **FAIL** if the "other" permission digit grants read access (any of `4`, `5`, `6`, `7`).
+6. **The path is gitignored** — run `git check-ignore agent-qa/.xray-credentials`. **FAIL** if it
+   is not ignored.
+7. **Git does not track it** — run `git ls-files --error-unmatch agent-qa/.xray-credentials`. If
+   this exits `0`, the file IS tracked: **FAIL**, never WARN. This is exactly the condition
+   `scripts/xray/upload.py`'s `read_credentials()` refuses to read — report it as "credentials
+   file is tracked by git — this is a security incident, not a config warning" and stop describing
+   this file further.
+
+**Never**, at any point in this step, print, echo, log, or report a value read from
+`agent-qa/.xray-credentials` — not the whole file, not one line, not a masked or truncated
+fragment. Report only presence/absence, tracked/not-tracked, and the permission digit itself
+(e.g. "640") — never a key or secret value. If checks 1–3 fail, still run checks 4–7 and report
+everything found; do not stop at the first failure.
+
+### Step 7: Display configuration summary
 
 Display a summary table:
 
@@ -86,6 +133,7 @@ Project ID:          {repository_project_id}
 Installed IDEs:      {installed_ides}
 Output Formats:      confluence={true/false}, gherkin={true/false}, playwright={true/false}
 Default Language:    {default_language or "auto-detect"}
+Xray:                {not configured | configured (cloud|server)}
 ```
 
 ## Data Storage

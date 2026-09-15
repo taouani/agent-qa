@@ -569,6 +569,19 @@ check_upload_to_xray() {
     fi
 }
 
+check_xray_documented_in_commands() {
+    echo "== health-check probes xray, validate-outputs knows the report =="
+    grep -q 'xray_platform' agent-qa/commands/health-check/1-validate-configuration.md \
+        && pass "health-check validates xray_platform" \
+        || fail "health-check does not validate xray_platform"
+    grep -q 'xray-credentials' agent-qa/commands/health-check/1-validate-configuration.md \
+        && pass "health-check probes the credentials file" \
+        || fail "health-check does not probe the credentials file"
+    grep -q 'xray-upload-report' agent-qa/commands/validate-outputs/2-validate-deliverables.md \
+        && pass "validate-outputs knows the upload report" \
+        || fail "validate-outputs does not validate the xray upload report"
+}
+
 check_xray_installed() {
     echo "== installers sync the xray upload client and its config =="
 
@@ -665,6 +678,7 @@ run_checks() {
     check_roles_documented
     check_upload_to_xray
     check_xray_installed
+    check_xray_documented_in_commands
 }
 
 run_checks
