@@ -720,8 +720,15 @@ function Start-ProjectInstall {
 
     # Security-critical: agent-qa/.xray-credentials must never be committed.
     # Checked/created on every install, including a re-run over an existing
-    # project.
-    Ensure-XrayCredentialsGitignored -ProjectDir $ProjectDir
+    # project. A failed write is a security-relevant warning the user must
+    # see (the function already prints one via Print-Warning), but under
+    # $ErrorActionPreference = "Stop" an unhandled cmdlet error here would
+    # abort an otherwise-working install -- so it must not propagate.
+    try {
+        Ensure-XrayCredentialsGitignored -ProjectDir $ProjectDir
+    } catch {
+        Print-Warning "Failed to update .gitignore for agent-qa/.xray-credentials: $_"
+    }
     Write-Host ""
 
     Print-Section "IDE Integrations"

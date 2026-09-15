@@ -1052,5 +1052,99 @@ class TestFeatureImport(unittest.TestCase):
         self.assertIn("HTTP 400", report)
 
 
+class TestMainReadsConfig(unittest.TestCase):
+    """main() is the ONLY caller of _read_config_value, and every other test
+    in this suite drives run() directly with hand-built kwargs -- so nothing
+    ever exercised main() actually reading config.yml. That gap was real:
+    hard-coding `test_issue_type = None` inside main(), discarding the
+    config value entirely, left every other test green. These tests write a
+    real config.yml and a real credentials file to a temp directory and
+    invoke upload.main() the way the installed CLI is invoked, with run()
+    replaced by a recorder so the assertion is "did the value that main()
+    read actually reach run()'s parameters", not merely "did main() return
+    0".
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+        self.folder = os.path.join(self.tmp, "output")
+        _make_folder(self.folder, [TWO_MANUAL_CASES[0]])
+
+        self.credentials_path = os.path.join(self.tmp, ".xray-credentials")
+        with open(self.credentials_path, "w") as fh:
+            fh.write("personal_access_token=a-pat\n")
+
+        self.captured = {}
+        real_run = upload.run
+
+        def recording_run(**kwargs):
+            self.captured.update(kwargs)
+            return 0
+
+        upload.run = recording_run
+        self.addCleanup(setattr, upload, "run", real_run)
+
+    def _write_config(self, body):
+        config_path = os.path.join(self.tmp, "config.yml")
+        with open(config_path, "w") as fh:
+            fh.write(body)
+        return config_path
+
+    def test_main_forwards_all_five_config_keys_to_run(self):
+        config_path = self._write_config(
+            "xray_platform: server\n"
+            "xray_project_key: PROJ\n"
+            'xray_base_url: "https://jira.example.com"\n'
+            'xray_cloud_host: "xray.example-cloud.com"\n'
+            'xray_test_issue_type: "QA Test"\n'
+        )
+        rc = upload.main([
+            "--folder", self.folder,
+            "--config", config_path,
+            "--credentials", self.credentials_path,
+        ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.captured["platform"], "server")
+        self.assertEqual(self.captured["project_key"], "PROJ")
+        self.assertEqual(self.captured["base_url"], "https://jira.example.com")
+        self.assertEqual(self.captured["cloud_host"], "xray.example-cloud.com")
+        self.assertEqual(self.captured["test_issue_type"], "QA Test")
+        # The credentials file is read for real too, not stubbed.
+        self.assertEqual(self.captured["credentials"],
+                         {"personal_access_token": "a-pat"})
+
+    def test_main_defaults_the_optional_keys_when_absent(self):
+        # Only the two keys main() treats as required are set. base_url and
+        # cloud_host are optional and become None rather than "" when
+        # missing; xray_test_issue_type defaults to "Test" -- the value the
+        # Server bulk-create payload falls back to.
+        config_path = self._write_config(
+            "xray_platform: server\n"
+            "xray_project_key: PROJ\n"
+        )
+        rc = upload.main([
+            "--folder", self.folder,
+            "--config", config_path,
+            "--credentials", self.credentials_path,
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIsNone(self.captured["base_url"])
+        self.assertIsNone(self.captured["cloud_host"])
+        self.assertEqual(self.captured["test_issue_type"], "Test")
+
+    def test_empty_xray_platform_disables_the_command_without_calling_run(self):
+        config_path = self._write_config('xray_platform: ""\n')
+        rc = upload.main([
+            "--folder", self.folder,
+            "--config", config_path,
+            "--credentials", self.credentials_path,
+        ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.captured, {},
+                         "run() must not be called when xray_platform is empty")
+
+
 if __name__ == "__main__":
     unittest.main()

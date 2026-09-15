@@ -581,7 +581,13 @@ update_xray_client() {
     local xray_skipped=0
     local xray_new=0
 
-    find "$source_xray_dir" -type f -name "*.py" ! -name "test_*.py" | while read -r source_file; do
+    # Process substitution, not `find | while read`: a pipeline's last
+    # command runs in a subshell, so both the `((xray_*++))` counters and the
+    # SKIPPED_FILES/UPDATED_FILES/NEW_FILES array appends inside a piped
+    # `while` would land in a copy that vanishes when the loop ends -- the
+    # counts would stay 0 forever and the dry-run summary would never list
+    # an Xray file. `done < <(...)` keeps the loop in the current shell.
+    while read -r source_file; do
         local relative_path="${source_file#$source_xray_dir/}"
         local dest_file="$dest_xray_dir/$relative_path"
 
@@ -603,7 +609,7 @@ update_xray_client() {
                 copy_file "$source_file" "$dest_file" > /dev/null
             fi
         fi
-    done
+    done < <(find "$source_xray_dir" -type f -name "*.py" ! -name "test_*.py")
 
     if [[ "$DRY_RUN" != "true" ]]; then
         if [[ $xray_new -gt 0 ]]; then
@@ -779,7 +785,10 @@ perform_update() {
     # Security-critical: agent-qa/.xray-credentials must never be committed.
     # Checked/created on every update too, so projects installed before this
     # existed still get it.
-    ensure_xray_credentials_gitignored "$PROJECT_DIR"
+    # A failed gitignore write is a security-relevant warning the user must
+    # see (the function already prints one), but it must not abort an
+    # otherwise-working update under `set -e`.
+    ensure_xray_credentials_gitignored "$PROJECT_DIR" || true
     echo ""
     update_claude_commands
     if [[ -d "$BASE_DIR/.claude/commands/agent-qa" ]] || [[ -d "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.claude/commands/agent-qa" ]]; then

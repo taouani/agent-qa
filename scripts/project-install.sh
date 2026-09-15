@@ -563,7 +563,12 @@ install_xray_client() {
 
     ensure_dir "$dest_xray_dir"
     local xray_count=0
-    find "$source_xray_dir" -type f -name "*.py" ! -name "test_*.py" | while read -r source_file; do
+    # Process substitution, not `find | while read`: a pipeline's last
+    # command runs in a subshell, so `((xray_count++))` inside a piped
+    # `while` would increment a copy that vanishes when the loop ends,
+    # leaving this count permanently 0. `done < <(...)` keeps the loop in
+    # the current shell.
+    while read -r source_file; do
         local relative_path="${source_file#$source_xray_dir/}"
         local dest_file="$dest_xray_dir/$relative_path"
 
@@ -575,10 +580,12 @@ install_xray_client() {
                 print_verbose "  Installed: $relative_path"
             fi
         fi
-    done
+    done < <(find "$source_xray_dir" -type f -name "*.py" ! -name "test_*.py")
 
     if [[ "$DRY_RUN" != "true" ]]; then
-        echo "✓ Installed Xray upload client in scripts/xray/"
+        if [[ $xray_count -gt 0 ]]; then
+            echo "✓ Installed $xray_count Xray upload client files in scripts/xray/"
+        fi
     fi
 }
 
@@ -961,7 +968,10 @@ perform_installation() {
     # Security-critical: agent-qa/.xray-credentials must never be committed.
     # Checked/created on every install, including a re-run over an existing
     # project.
-    ensure_xray_credentials_gitignored "$PROJECT_DIR"
+    # A failed gitignore write is a security-relevant warning the user must
+    # see (the function already prints one), but it must not abort an
+    # otherwise-working install under `set -e`.
+    ensure_xray_credentials_gitignored "$PROJECT_DIR" || true
     echo ""
 
     # Install IDE-specific integrations
