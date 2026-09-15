@@ -400,6 +400,17 @@ class TestExecutePath(unittest.TestCase):
 
 class TestReportRedaction(unittest.TestCase):
 
+    def test_a_cloud_client_id_is_never_recorded_as_the_account(self):
+        """client_id is half of the Cloud credential pair. Even a redacted
+        prefix of it must not reach a report the user commits."""
+        self.assertIsNone(upload._account_identifier(
+            {"client_id": "abcdef-client-id", "client_secret": "s"}))
+
+    def test_a_jira_email_is_recorded_as_the_account(self):
+        self.assertEqual(
+            "qa@example.com",
+            upload._account_identifier({"jira_email": "qa@example.com"}))
+
     def test_account_appears_only_as_a_prefix_and_never_the_secret(self):
         with tempfile.TemporaryDirectory() as d:
             path = upload.write_report(

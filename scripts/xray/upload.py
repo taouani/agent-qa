@@ -378,13 +378,19 @@ def write_report(results, folder, project_key=None, platform=None,
 
 def _account_identifier(credentials):
     """The account identifier worth recording in the report, if there is one.
+
+    Only `jira_email` qualifies. An email address identifies who ran the
+    upload without being credential material; `client_id` is deliberately
+    NOT used, because it is one half of the Cloud credential pair and the
+    report is a file the user commits to their own repository. Recording a
+    redacted prefix of it would still be disclosing part of a credential,
+    and the rule for this project is that no credential value reaches a
+    report at all -- not even partially, not even masked.
+
     A Server/DC personal access token names no account, so nothing is
     recorded there. A SECRET is never returned by this function."""
-    for key in ("client_id", "jira_email"):
-        value = (credentials or {}).get(key)
-        if value:
-            return value
-    return None
+    value = (credentials or {}).get("jira_email")
+    return value or None
 
 
 def run(folder, project_key, platform, base_url, credentials, transport,
