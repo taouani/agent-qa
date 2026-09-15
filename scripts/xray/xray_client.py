@@ -788,6 +788,32 @@ class XrayClient:
                           "remainder cannot be confirmed"
                           % (len(issues), len(survivors)),
             })
+            # STOP HERE. Do not fall through to the positional zip below.
+            #
+            # The only thing pairing an entry with an issue is position, and
+            # the count mismatch is precisely the evidence that position can
+            # no longer be trusted. Writing steps anyway would attach one
+            # test's steps to a different test's issue -- in a customer's
+            # Jira, silently, because each individual step call succeeds.
+            # Stale steps are recoverable; steps written onto the wrong test
+            # are corruption someone has to find first.
+            #
+            # The issues themselves were created -- the bulk call returned
+            # 2xx -- so name every key that came back, or the user cannot
+            # find what to clean up.
+            for issue in issues:
+                key = issue.get("key")
+                if key:
+                    results["failed"].append({
+                        "tc_id": key,
+                        "reason": "created in Jira, but its steps were NOT "
+                                  "written: the batch response could not be "
+                                  "matched to the tests sent, and guessing "
+                                  "would risk writing steps onto the wrong "
+                                  "test. Add its steps by hand, or delete it "
+                                  "and re-run with a smaller batch",
+                    })
+            return results
 
         for entry, issue in zip(survivors, issues):
             key = issue.get("key")

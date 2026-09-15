@@ -769,6 +769,39 @@ class TestServerExecutePath(unittest.TestCase):
                   b'"errors":[]}'),                            # issue/bulk
     ]
 
+    # Jira returned ONE issue for the TWO tests sent, and reported no error
+    # explaining the missing one. Nothing but position pairs an entry to an
+    # issue, so the pairing is now unsafe.
+    CREATE_COUNT_MISMATCH = [
+        (200, {}, b'{"name":"a-user"}'),                       # auth probe
+        (200, {}, b'{"issues":[],"total":0}'),                 # label search
+        (200, {}, b'{"issues":[{"key":"PROJ-501"}],"errors":[]}'),
+    ]
+
+    def test_no_step_is_written_when_the_batch_response_cannot_be_matched(self):
+        """The corruption case. If steps were written on a positional guess,
+        one test's steps would land on another test's issue in a real Jira --
+        silently, because each step call succeeds on its own."""
+        rc, t, report = self._run(self.CREATE_COUNT_MISMATCH)
+        steps = t.matching("PUT", "/rest/raven/1.0/api/test/")
+        self.assertEqual(
+            steps, [],
+            "steps were written against an unmatched batch response; "
+            "they may have landed on the wrong test")
+        self.assertNotEqual(rc, 0)
+
+    def test_an_unmatched_batch_names_the_issues_it_created(self):
+        """The issues exist in Jira -- the bulk call returned 2xx. If the
+        report does not name them the user cannot find what to clean up."""
+        rc, t, report = self._run(self.CREATE_COUNT_MISMATCH)
+        self.assertIn("PROJ-501", report)
+        self.assertIn("steps were NOT", report)
+
+    def test_an_unmatched_batch_reports_nothing_as_created(self):
+        """A test whose steps were never written is not a success."""
+        rc, t, report = self._run(self.CREATE_COUNT_MISMATCH)
+        self.assertNotIn("PROJ-502", report)
+
     def test_bulk_create_goes_to_jiras_own_endpoint_not_an_xray_one(self):
         rc, t, report = self._run(self.CREATE_OK)
         self.assertEqual(rc, 0)
