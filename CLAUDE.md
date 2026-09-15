@@ -32,7 +32,7 @@ agent-qa/
 ├── commands/              # Multi-phase command definitions (25 commands + common/)
 ├── rules/                 # QA conventions, output standards, MCP usage, language handling
 ├── roles/                 # 15 IDE-neutral craft definitions (test case design, playwright authoring, ...)
-├── framework/             # Git platform abstractions (GitLab, GitHub, Azure DevOps)
+├── framework/             # Git platform (GitLab, GitHub, Azure DevOps) and Xray upload abstractions
 ├── formats/               # Output format templates (Confluence, Gherkin, Playwright, Xray, TestRail, ...)
 ├── custom-templates/      # Per-project overrides of formats/ (checked first, survives updates)
 ├── examples/              # Reference outputs for every deliverable type
@@ -175,6 +175,31 @@ Not to be confused with `hooks.post_generate` in `config.yml`, which is executed
 - **`formats/`** — Output format specifications for commits, PRs, code changes
 - **`errors/`** — Shared error handling for MCP/platform failures
 - **`framework-index.md`** — Entry map for the framework
+
+### Xray Upload Framework
+
+`agent-qa/framework/xray/` documents the `upload-to-xray` command the way
+`agent-qa/framework/git-repository/` documents commit/PR retrieval — but there is no MCP server for
+Xray, so it describes one Python client rather than per-platform tool mappings:
+- **`api-contract.md`** — Pinned source of record for every Xray/Jira endpoint, request/response
+  shape, credential, and known vendor-documentation gap this framework relies on. Never write an
+  endpoint into a command phase or role file directly; reference this file instead
+- **`config/validate-xray.md`** — Preflight: config keys present, `agent-qa/.xray-credentials`
+  exists and is not tracked by git
+- **`operations/match-existing.md`** — The label-lookup semantics behind create-vs-update (a Jira
+  label equal to the test case's TC-ID)
+- **`operations/upload-tests.md`** — The neutral upload operation: dry run by default, `--execute`
+  is the only way to write to Jira
+- **`formats/upload-report.md`** — The structure of `{output_folder}/xray/upload-report.md`
+- **`xray-framework-index.md`** — Entry map for the framework
+
+`scripts/xray/` is this repository's one exception to "no compiled code, no runtime": a Python
+3.8+, standard-library-only client — `upload.py` (CLI/orchestration), `xray_client.py`
+(auth/HTTP), `xray_endpoints.py` (URLs and contract constants), `xray_payloads.py`
+(classification and payload construction) — that performs the actual HTTP calls to Jira/Xray. The
+`upload-to-xray` command invokes it rather than reimplementing any of it in prompt instructions.
+Its unit tests (`test_upload.py`, `test_xray_client.py`, `test_xray_payloads.py`) sit alongside it:
+`cd scripts/xray && python3 -m unittest discover -p 'test_*.py'`.
 
 ### Format Templates
 

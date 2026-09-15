@@ -32,6 +32,7 @@ Agent-QA automates the entire QA documentation workflow by:
 - **Gherkin/BDD Generation** - Converts test cases to Given/When/Then `.feature` files
 - **Playwright Test Generation** - Generates `.spec.ts` files with Page Object Model from test cases
 - **Confluence Publishing** - Converts deliverables to Confluence format, optionally publishes via MCP
+- **Xray Upload** - Uploads test cases and Gherkin features into Jira as Xray tests; dry-run by default, `--execute` required for a real write
 
 ### Live Automation
 
@@ -183,12 +184,19 @@ Or use the command files as workflow documentation and ask Copilot to execute th
    /generate-accessibility-tests
    ```
 
-4. **Publish to Confluence**:
+4. **Upload to Xray** (from test cases and Gherkin features):
+   ```
+   /upload-to-xray
+   ```
+   Always prints a dry-run plan first; the command asks you to confirm before re-running with
+   `--execute` to actually write to Jira.
+
+5. **Publish to Confluence**:
    ```
    /publish-to-confluence
    ```
 
-5. **Generate Release Notes**:
+6. **Generate Release Notes**:
    ```
    /generate-release-notes
    ```
@@ -210,6 +218,7 @@ agent-qa/
     commits/              # Commit analysis (if enabled)
     gherkin/              # Gherkin .feature files
     playwright/           # Playwright .spec.ts and page objects
+    xray/                 # upload-to-xray report (upload-report.md)
 ```
 
 Where `{folder-name}` is:
@@ -236,6 +245,7 @@ graph TD
     TC --> PW[generate-playwright-tests<br/>4 phases]
     TC --> API[generate-api-tests<br/>4 phases]
     TC --> A11Y[generate-accessibility-tests<br/>4 phases]
+    TC --> XR[upload-to-xray<br/>4 phases]
     AR --> TD[generate-test-data<br/>4 phases]
     AR --> PC[publish-to-confluence<br/>3 phases]
 
@@ -323,6 +333,7 @@ playwright_base_url: "http://localhost:3000"
 | `generate-test-data` | Generate structured test data sets | User selection |
 | `generate-api-tests` | Generate REST/GraphQL API test specifications | User selection |
 | `generate-accessibility-tests` | Generate WCAG 2.1 AA accessibility tests | User selection |
+| `upload-to-xray` | Upload test cases/Gherkin into Jira as Xray tests (dry-run by default) | User selection |
 | `regenerate` | Regenerate deliverables affected by requirement changes | User selection |
 | `run-pipeline` | Execute multiple commands in sequence | Pipeline spec |
 | `explore-ui` | Drive a live browser to capture real locators and snapshots | Test case selection |

@@ -46,6 +46,45 @@ browser session and emits accessibility-tree YAML snapshots; `npx playwright` ru
 Then set `playwright_project_root` in `agent-qa/config.yml` and run `/agent-qa:health-check` to
 confirm both tools are detected.
 
+### Xray Upload Prerequisites
+
+Required only for `upload-to-xray`:
+
+- **Python 3.8 or later.** The command's CLI, `scripts/xray/upload.py`, is standard-library-only —
+  nothing to `pip install`.
+- **Xray configured in `agent-qa/config.yml`**: `xray_platform`, `xray_project_key`, and
+  `xray_base_url` (see `CLAUDE.md` for what each key holds; `xray_base_url` is required for both
+  the Cloud and Server/DC flavours).
+- **`agent-qa/.xray-credentials`, created by hand.** Agent-QA never types, accepts, or stores
+  these credentials — you create this file yourself, it must never be committed, and it must not
+  be world-readable:
+
+  ```bash
+  # Xray Cloud
+  cat > agent-qa/.xray-credentials <<'EOF'
+  client_id=...
+  client_secret=...
+  EOF
+  chmod 600 agent-qa/.xray-credentials
+  ```
+
+  ```bash
+  # Xray Server / Data Center
+  cat > agent-qa/.xray-credentials <<'EOF'
+  personal_access_token=...
+  EOF
+  chmod 600 agent-qa/.xray-credentials
+  ```
+
+  On Cloud, add `jira_email` and `jira_api_token` to the same file only if Jira Cloud's search
+  rejects the Xray token — the command's error message tells you when this is needed.
+
+  `project-install.sh`/`.ps1` add `agent-qa/.xray-credentials` to `.gitignore` on every install and
+  update, but they never create or touch the file's contents. If the file is ever committed
+  anyway, the upload client refuses to read it until it is removed from git — this is treated as a
+  security incident, not a warning. `chmod 600` is not optional either: `/agent-qa:health-check`
+  reports a world-readable credentials file as a failure.
+
 ## Base Installation
 
 The base installation downloads Agent-QA to your home directory (`~/agent-qa`). This is a one-time setup.

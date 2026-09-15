@@ -682,6 +682,20 @@ check_python_tests_pass() {
     return 0
 }
 
+check_xray_documented() {
+    echo "== documentation describes the xray upload =="
+    local n
+    n=$(find agent-qa/commands -maxdepth 1 -mindepth 1 -type d ! -name common | wc -l | tr -d ' ')
+    grep -q "$n commands" CLAUDE.md \
+        && pass "CLAUDE.md states $n commands" \
+        || fail "CLAUDE.md does not state the current command count ($n)"
+    grep -q 'upload-to-xray' CLAUDE.md \
+        && pass "CLAUDE.md documents upload-to-xray" || fail "CLAUDE.md omits upload-to-xray"
+    grep -q 'xray-credentials' INSTALLATION.md \
+        && pass "INSTALLATION.md documents the credentials file" \
+        || fail "INSTALLATION.md does not document the credentials file"
+}
+
 check_roles_documented() {
     echo "== documentation describes the roles layer =="
     local n
@@ -720,6 +734,7 @@ run_checks() {
     check_upload_to_xray
     check_xray_installed
     check_xray_documented_in_commands
+    check_xray_documented
     check_python_compiles
     check_python_tests_pass
 }

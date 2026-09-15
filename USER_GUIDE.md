@@ -159,7 +159,8 @@ The main command file references phase files using:
 analyze-requirements ──┬── generate-test-cases ──┬── generate-gherkin
                        │                         ├── generate-playwright-tests
                        │                         ├── generate-api-tests
-                       │                         └── generate-accessibility-tests
+                       │                         ├── generate-accessibility-tests
+                       │                         └── upload-to-xray
                        ├── generate-test-charter
                        ├── generate-test-strategy
                        ├── generate-test-plan
@@ -533,9 +534,73 @@ Converts deliverables to Confluence format and optionally publishes.
 - `.confluence.html` files alongside original markdown
 - Publication report with status and URLs
 
+### 12. upload-to-xray
+
+Uploads generated test cases and Gherkin features into Jira as Xray tests — Cucumber tests where a
+matching `.feature` file exists for a test case, Manual tests otherwise.
+
+#### Syntax
+
+```
+/upload-to-xray
+```
+
+#### Prerequisites
+
+- `xray_platform`, `xray_project_key`, and `xray_base_url` set in `agent-qa/config.yml`
+- `agent-qa/.xray-credentials` created by hand (see [INSTALLATION.md](INSTALLATION.md)) — Agent-QA
+  never types, accepts, or stores these credentials itself
+
+#### What It Does
+
+1. **Finds** available output folders containing `test-cases/` (and optionally `gherkin/`)
+2. **Classifies** each test case as Cucumber (has a matching `.feature` file) or Manual
+3. **Runs a dry run** — prints what would be created vs. updated without contacting Jira to write
+   anything. **This is always the result of a plain run**
+4. **Asks you to confirm** before re-running the same command with `--execute`, which is the only
+   way to perform the actual upload
+
+#### Output
+
+- Xray tests created or updated in the configured Jira project
+- Upload report: `xray/upload-report.md` — created, updated, and failed tests, each failure with a
+  reason
+
+#### Dry run is always the default
+
+A plain `/upload-to-xray` only ever prints a plan (`CREATE n tests`, `UPDATE n tests`); it never
+writes to Jira. Underneath, the command runs `python3 scripts/xray/upload.py --folder <folder>`,
+and only adding `--execute` performs a real upload — the command always shows the dry-run plan
+first and asks for your confirmation before doing that.
+
+#### A second run updates rather than duplicates
+
+Re-running against the same folder reports `UPDATE`, not `CREATE`, for every test case already in
+Jira. Matching is by a Jira label equal to the test case's TC-ID, so nothing about the order or
+timing of runs matters — only whether that label already exists on an issue.
+
+#### `xray_base_url` is required for both platforms
+
+Set it whichever flavour you use, not only for Server/DC. On Server/DC it is your Jira host; on
+Cloud it is your own `https://<site>.atlassian.net`, because Xray Cloud's JQL search runs against
+Jira Cloud, not the Xray API host. Leaving it empty breaks matching on Cloud exactly as it would on
+Server — every test is re-created as a duplicate instead of updated.
+
+#### Known limitation: Xray Server/DC does not update a test's steps
+
+Re-running against Xray Server/DC updates an existing test's summary and labels but **not its
+steps** — the pinned step API only supports creating steps, not replacing them. The upload report
+prints a NOTE whenever this happens. If you edited a test case's steps and the report shows that
+test as `UPDATE`, apply the step change by hand in Jira; it did not reach the test automatically.
+
+Gherkin `.feature` files are re-imported in full on every run, and whether a run updates the
+existing Cucumber test or creates a second copy depends on Xray's own scenario matching, which
+Agent-QA does not control and the vendor does not document. The upload report notes this so you
+know to check the project for duplicates if a re-run looks wrong.
+
 ## Utility & Pipeline Commands
 
-### 12. health-check
+### 13. health-check
 
 Verifies Agent-QA configuration, directory structure, and MCP server connectivity.
 
@@ -549,7 +614,7 @@ Verifies Agent-QA configuration, directory structure, and MCP server connectivit
 1. Validate configuration (`config.yml`, directories, IDE integrations)
 2. Test MCP connectivity (Atlassian, Repository)
 
-### 13. validate-outputs
+### 14. validate-outputs
 
 Validates generated deliverables against QA conventions and output standards.
 
@@ -564,7 +629,7 @@ Validates generated deliverables against QA conventions and output standards.
 2. Validate deliverables (YAML front matter, file naming, test case IDs, CSV format, cross-deliverable consistency)
 3. Generate validation report
 
-### 14. generate-traceability-report
+### 15. generate-traceability-report
 
 Generates a cross-deliverable coverage matrix showing requirements through all deliverables.
 
@@ -579,7 +644,7 @@ Generates a cross-deliverable coverage matrix showing requirements through all d
 2. Build traceability matrix (requirements → test cases → gherkin → playwright)
 3. Generate report files with gap analysis
 
-### 15. generate-test-data
+### 16. generate-test-data
 
 Generates structured test data specifications (valid, invalid, boundary, null, security).
 
@@ -595,7 +660,7 @@ Generates structured test data specifications (valid, invalid, boundary, null, s
 3. Generate data sets (valid, invalid, boundary, null/empty, security)
 4. Generate test data files
 
-### 16. run-pipeline
+### 17. run-pipeline
 
 Executes multiple commands in dependency order as a single pipeline.
 
@@ -610,7 +675,7 @@ Executes multiple commands in dependency order as a single pipeline.
 2. Execute commands sequentially with auto-context passing
 3. Generate pipeline summary
 
-### 17. generate-api-tests
+### 18. generate-api-tests
 
 Generates REST/GraphQL API test specifications from analyzed test cases.
 
@@ -626,7 +691,7 @@ Generates REST/GraphQL API test specifications from analyzed test cases.
 3. Generate API test specifications (positive, negative, auth, edge cases)
 4. Generate API test files and index
 
-### 18. generate-accessibility-tests
+### 19. generate-accessibility-tests
 
 Generates WCAG 2.1 AA accessibility test cases from UI-facing test cases.
 
@@ -642,7 +707,7 @@ Generates WCAG 2.1 AA accessibility test cases from UI-facing test cases.
 3. Generate accessibility test cases per criterion per page
 4. Generate accessibility test files, WCAG compliance matrix, and index
 
-### 19. regenerate
+### 20. regenerate
 
 Detects requirement changes and regenerates only affected deliverables.
 
@@ -749,6 +814,37 @@ Detects requirement changes and regenerates only affected deliverables.
 
 **Result**: Requirements analysis with code change correlation.
 
+### Example 5: Uploading Test Cases to Xray
+
+**Scenario**: Generate test cases and Gherkin features, then push them into Jira as Xray tests.
+
+```bash
+# 1. Analyze the requirement
+/analyze-requirements PROJ-123
+
+# 2. Generate test cases
+/generate-test-cases
+# Select: 2025-01-16-PROJ-123
+
+# 3. Generate Gherkin features (Cucumber tests will be created for these)
+/generate-gherkin
+# Select: 2025-01-16-PROJ-123
+
+# 4. Upload to Xray
+/upload-to-xray
+# Select: 2025-01-16-PROJ-123
+```
+
+**The first run is always a dry run** — it prints a `CREATE`/`UPDATE` plan and writes nothing to
+Jira. Review it, then confirm to re-run the same command with `--execute` to perform the upload.
+
+**Result**: Xray tests are created in the configured project — Cucumber tests for cases with a
+matching `.feature` file, Manual tests for the rest.
+
+Re-run `/upload-to-xray` on the same folder any time afterward (for example after regenerating test
+cases): it reports `UPDATE`, not `CREATE`, for every test case already in Jira, so nothing is
+duplicated.
+
 ## Output Structure
 
 ### Folder Naming Convention
@@ -809,6 +905,9 @@ agent-qa/
       tests/                    # Test spec files
         PROJ-123.spec.ts
       README.md                 # Setup instructions
+
+    xray/                       # (if upload-to-xray was run with --execute)
+      upload-report.md          # Created/updated/failed tests, with reasons
 ```
 
 ## Quality Standards
