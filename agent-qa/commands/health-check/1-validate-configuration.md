@@ -94,10 +94,11 @@ check line:
 2. **`xray_project_key`** — must be non-empty. **FAIL** otherwise.
 3. **`xray_base_url`** — used by both flavours: on Server/DC it is the only Jira host there is; on
    Cloud it is the customer's own Jira site, because JQL search runs against Jira Cloud, not the
-   Xray API host (see `agent-qa/framework/xray/api-contract.md`). **FAIL** if empty and
-   `xray_platform` is `server` (`validate-xray.md` STOPs here too). **WARN** if empty and
-   `xray_platform` is `cloud` — upload will fail at the search step without it, but this preflight
-   does not hard-block it.
+   Xray API host (see `agent-qa/framework/xray/api-contract.md`). **FAIL if empty, regardless of
+   `xray_platform`.** A reader who sees "base_url" and assumes it's a Server-only concern is
+   wrong: on Cloud, without it, `find_tests_by_label`'s search silently degrades and matches
+   nothing, so every test is created as a duplicate on every run instead of being updated. This is
+   a broken configuration on either flavour, not a caveat worth only a WARN.
 4. **`agent-qa/.xray-credentials` exists** — **FAIL** if not found. Do not create it, do not
    prompt for values, and do not accept them if offered: if an engineer pastes a token, secret, or
    password into chat, refuse and point them at `agent-qa/.xray-credentials` — see
