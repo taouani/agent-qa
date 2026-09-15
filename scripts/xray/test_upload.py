@@ -248,6 +248,28 @@ class TestLoadFolder(unittest.TestCase):
                 upload.load_folder(d)
             self.assertIn("BAD-no-heading.md", str(ctx.exception))
 
+    def test_a_steps_table_with_no_rows_is_a_loud_failure(self):
+        """Header and separator, no data rows. Every structural check passes
+        and the test would upload to Jira as an empty shell that looks fine
+        in the issue list and tests nothing."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        tc = os.path.join(d, "test-cases")
+        os.makedirs(tc)
+        with open(os.path.join(tc, "PROJ-9-test-cases.md"), "w") as fh:
+            fh.write("## TC-PROJ-9-001 - Empty\n\n"
+                     "| Step | Action | Data | Expected Result |\n"
+                     "|------|--------|------|-----------------|\n")
+        with self.assertRaises(upload.XrayError) as caught:
+            upload.load_folder(d)
+        message = str(caught.exception)
+        self.assertIn("PROJ-9-test-cases.md", message)
+        # Assert the SPECIFIC reason. A bare assertRaises here passes off any
+        # XrayError at all -- including "no test case heading found" from a
+        # malformed fixture -- which would make this test green while the
+        # behaviour it guards was gone.
+        self.assertIn("no rows in it", message)
+
     def test_raises_xrayerror_naming_the_file_when_steps_table_missing(self):
         with tempfile.TemporaryDirectory() as d:
             tc_dir = os.path.join(d, "test-cases")

@@ -125,6 +125,17 @@ def _parse_steps_table(block, path, tc_id):
             "data": cells[data_idx] if data_idx is not None else "",
             "expected": cells[expected_idx],
         })
+    if not steps:
+        # A header row and a separator and nothing else. The table is
+        # well-formed, so every check above passed -- and the result is a
+        # test case with no steps, which uploads to Jira as an empty shell
+        # that looks fine in the issue list and tests nothing. That is the
+        # failure this function's docstring exists to prevent, so it has to
+        # be as loud as a missing table.
+        raise XrayError(
+            "%s: test case %s has a steps table with no rows in it, so the "
+            "test would upload with no steps at all" % (path, tc_id)
+        )
     return steps
 
 
