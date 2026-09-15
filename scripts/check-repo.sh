@@ -555,6 +555,20 @@ check_shell_syntax() {
     (( found > 0 )) || fail "no shell scripts found in scripts/ - nothing was parsed"
 }
 
+check_upload_to_xray() {
+    check_command_phases upload-to-xray \
+        1-find-and-select-tests.md 2-classify-and-build.md \
+        3-dry-run-and-confirm.md 4-upload-and-report.md
+    grep -q 'execute' agent-qa/commands/upload-to-xray/3-dry-run-and-confirm.md \
+        && pass "phase 3 names the --execute gate" \
+        || fail "phase 3 does not mention the --execute gate"
+    if grep -rq 'client_secret\|XRAY_TOKEN\|--secret' agent-qa/commands/upload-to-xray/; then
+        fail "a command phase names a credential value or flag - secrets belong in the client"
+    else
+        pass "no phase handles a credential directly"
+    fi
+}
+
 check_roles_documented() {
     echo "== documentation describes the roles layer =="
     local n
@@ -590,6 +604,7 @@ run_checks() {
     check_todo_policy_guarded
     check_roles_installed
     check_roles_documented
+    check_upload_to_xray
 }
 
 run_checks

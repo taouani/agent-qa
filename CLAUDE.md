@@ -29,7 +29,7 @@ Everything lives under **`agent-qa/`** — commands, rules, roles, framework, fo
 
 ```
 agent-qa/
-├── commands/              # Multi-phase command definitions (24 commands + common/)
+├── commands/              # Multi-phase command definitions (25 commands + common/)
 ├── rules/                 # QA conventions, output standards, MCP usage, language handling
 ├── roles/                 # 15 IDE-neutral craft definitions (test case design, playwright authoring, ...)
 ├── framework/             # Git platform abstractions (GitLab, GitHub, Azure DevOps)
@@ -78,7 +78,8 @@ analyze-requirements (8 phases)
   │     ├── generate-gherkin (4 phases)
   │     ├── generate-playwright-tests (4 phases)
   │     ├── generate-api-tests (4 phases)
-  │     └── generate-accessibility-tests (4 phases)
+  │     ├── generate-accessibility-tests (4 phases)
+  │     └── upload-to-xray (4 phases)
   ├── generate-test-charter (4 phases)
   ├── generate-test-strategy (4 phases)
   ├── generate-test-plan (4 phases)
