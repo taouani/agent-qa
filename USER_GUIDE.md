@@ -579,6 +579,15 @@ Re-running against the same folder reports `UPDATE`, not `CREATE`, for every tes
 Jira. Matching is by a Jira label equal to the test case's TC-ID, so nothing about the order or
 timing of runs matters — only whether that label already exists on an issue.
 
+**Confirm this on your own instance before trusting it at scale.** Finding the existing test is
+reliable — that is a JQL search on the label. Persuading Xray Cloud to *update* the issue it found
+relies on a top-level `key` field that Xray's published bulk-import field list does not document
+(recorded as `Unverified` item 8 in `agent-qa/framework/xray/api-contract.md`). If that field turns
+out to be ignored, a re-run creates a second copy instead of updating the first. The failure is
+visible rather than silent: the report counts the test under `Created` where you expected `Updated`.
+Do one dry-run, one `--execute`, and one repeat `--execute` against a throwaway project, and check
+which column the second run lands in.
+
 #### `xray_base_url` is required for both platforms
 
 Set it whichever flavour you use, not only for Server/DC. On Server/DC it is your Jira host; on
@@ -842,8 +851,10 @@ Jira. Review it, then confirm to re-run the same command with `--execute` to per
 matching `.feature` file, Manual tests for the rest.
 
 Re-run `/upload-to-xray` on the same folder any time afterward (for example after regenerating test
-cases): it reports `UPDATE`, not `CREATE`, for every test case already in Jira, so nothing is
-duplicated.
+cases): it reports `UPDATE`, not `CREATE`, for every test case already in Jira. Verify this on a
+throwaway project the first time — on Xray Cloud the update depends on an undocumented field, and if
+it is ignored the second run creates duplicates instead. See
+[A second run updates rather than duplicates](#a-second-run-updates-rather-than-duplicates).
 
 ## Output Structure
 
