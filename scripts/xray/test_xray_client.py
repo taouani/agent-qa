@@ -94,7 +94,12 @@ class TestAuthentication(unittest.TestCase):
 class TestLabelMatching(unittest.TestCase):
 
     def _client(self, transport):
-        c = XrayClient("cloud", None, {"client_id": "i", "client_secret": "s"}, transport)
+        # A real base_url is required here: find_tests_by_label() resolves
+        # Cloud's "search" endpoint, which carries {base_url} (it's a Jira
+        # Cloud endpoint, not an Xray one) -- see TestBaseUrlIsRequired below
+        # for what happens when it's missing.
+        c = XrayClient("cloud", "https://cloud.example.com",
+                        {"client_id": "i", "client_secret": "s"}, transport)
         c._token = "cached"          # skip the auth round-trip
         return c
 
@@ -154,7 +159,7 @@ class TestLabelMatching(unittest.TestCase):
         # "add" them -- they need to be told to check correctness/permissions
         # instead. The credential VALUES must still never appear.
         t = FakeTransport([(403, {}, b'{}')])
-        c = XrayClient("cloud", None, {
+        c = XrayClient("cloud", "https://cloud.example.com", {
             "client_id": "i", "client_secret": "s",
             "jira_email": "person@example.com",
             "jira_api_token": "SUPERSECRETJIRATOKEN",
@@ -202,6 +207,45 @@ class TestLabelMatching(unittest.TestCase):
         found = c.find_tests_by_label("PROJ", ["TC-PROJ-1", "TC-PROJ-2"])
         self.assertEqual(found, {"TC-PROJ-1": "PROJ-1", "TC-PROJ-2": "PROJ-2"})
         self.assertEqual(len(t.calls), 2)
+
+
+class TestBaseUrlIsRequired(unittest.TestCase):
+    """xray_base_url is required for BOTH flavours (Ruling 34): on Cloud it
+    is the Jira site JQL search runs against, not the Xray API host; on
+    Server/DC it is the only host there is. Before this fix, an empty
+    base_url resolved to an empty string, turning the search URL into a
+    relative path that a real transport would mishandle far from this
+    cause -- and Cloud's authenticate() would still succeed, since it
+    resolves {cloud_host} instead, making the failure look like "auth is
+    fine, search is mysteriously broken." These tests prove the client now
+    fails immediately and by name, and never gets as far as calling the
+    transport at all."""
+
+    def test_cloud_search_without_base_url_raises_before_any_request(self):
+        t = FakeTransport([(200, {}, b'{"issues":[]}')])
+        c = XrayClient("cloud", None, {"client_id": "i", "client_secret": "s"}, t)
+        c._token = "cached"          # skip the auth round-trip
+        with self.assertRaises(XrayError) as ctx:
+            c.find_tests_by_label("PROJ", ["TC-PROJ-123-001"])
+        message = str(ctx.exception)
+        self.assertIn("xray_base_url", message)
+        self.assertIn("cloud", message.lower())
+        self.assertEqual(t.calls, [],
+                         "a missing base_url must never reach the transport "
+                         "as a relative-URL request")
+
+    def test_server_auth_without_base_url_raises_before_any_request(self):
+        t = FakeTransport([(200, {}, b'{"name": "a-user"}')])
+        c = XrayClient("server", None, {"personal_access_token": "a-pat"}, t)
+        with self.assertRaises(XrayError) as ctx:
+            c.authenticate()
+        message = str(ctx.exception)
+        self.assertIn("xray_base_url", message)
+        self.assertIn("server", message.lower())
+        self.assertEqual(t.calls, [],
+                         "a missing base_url must never reach the transport "
+                         "as a relative-URL request")
+        self.assertNotIn("a-pat", message)
 
 
 if __name__ == "__main__":

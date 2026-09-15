@@ -10,6 +10,16 @@ from xray_client import Transport, XrayClient, XrayError
 from xray_endpoints import DEFAULT_CLOUD_HOST, ENDPOINTS
 import upload
 
+# Ruling 34: XrayClient now requires a real xray_base_url for both flavours
+# (Cloud's search endpoint is a Jira Cloud endpoint and needs it too, even
+# though Cloud's auth/import endpoints don't). Tests below that exercise a
+# full upload.run()/_quiet_run() pass -- which always resolves the search
+# endpoint when there is at least one manual test case -- use this constant
+# instead of the base_url=None placeholder they used before that
+# requirement existed. See test_xray_client.py's TestBaseUrlIsRequired for
+# the case where it's actually missing.
+CLOUD_BASE_URL = "https://cloud.example.com"
+
 
 def _resolved(platform, name, base_url=None, cloud_host=None):
     """Resolve an endpoint template exactly the way XrayClient._endpoint()
@@ -276,7 +286,7 @@ class TestDryRunPerformsNoWrite(unittest.TestCase):
         resolved reads a cloud label lookup performs (token exchange, then
         search) and never either resolved write endpoint."""
         auth_url = _resolved("cloud", "auth")
-        search_url = _resolved("cloud", "search", base_url=None)
+        search_url = _resolved("cloud", "search", base_url=CLOUD_BASE_URL)
         write_urls = {
             _resolved("cloud", "import_tests"),
             _resolved("cloud", "import_feature"),
@@ -290,7 +300,7 @@ class TestDryRunPerformsNoWrite(unittest.TestCase):
             search_url: (200, {}, b'{"issues":[]}'),
         })
         rc = upload.run(folder="tests/fixture", project_key="PROJ", platform="cloud",
-                         base_url=None, credentials={"client_id": "i", "client_secret": "s"},
+                         base_url=CLOUD_BASE_URL, credentials={"client_id": "i", "client_secret": "s"},
                          transport=t, execute=False)
         self.assertEqual(rc, 0)
 
@@ -319,7 +329,7 @@ class TestExecuteCannotBeReachedByAccident(unittest.TestCase):
         folder, credentials and transport, run both ways, must produce write
         calls in exactly one of the two runs."""
         auth_url = _resolved("cloud", "auth")
-        search_url = _resolved("cloud", "search", base_url=None)
+        search_url = _resolved("cloud", "search", base_url=CLOUD_BASE_URL)
         write_urls = {_resolved("cloud", "import_tests"),
                       _resolved("cloud", "import_feature")}
 
@@ -327,7 +337,7 @@ class TestExecuteCannotBeReachedByAccident(unittest.TestCase):
             t = RecordingTransport([(200, {}, b'"tok"'),
                                     (200, {}, b'{"issues":[]}')])
             _quiet_run(folder=folder, project_key="PROJ", platform="cloud",
-                       base_url=None,
+                       base_url=CLOUD_BASE_URL,
                        credentials={"client_id": "i", "client_secret": "s"},
                        transport=t, execute=execute)
             return {url.split("?")[0] for _, url in t.calls}
@@ -354,7 +364,7 @@ class TestExecutePath(unittest.TestCase):
         t = RecordingTransport([(200, {}, b'{"issues":[]}'),
                                 (200, {}, b'{"created":["PROJ-501"],"updated":[],"failed":[]}')])
         rc = upload.run(folder="tests/fixture", project_key="PROJ", platform="cloud",
-                        base_url=None, credentials={"client_id": "i", "client_secret": "s"},
+                        base_url=CLOUD_BASE_URL, credentials={"client_id": "i", "client_secret": "s"},
                         transport=t, execute=True)
         self.assertEqual(rc, 0)
         self.assertTrue(any("import" in url for _, url in t.calls),
@@ -412,7 +422,7 @@ class TestReportRedaction(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _make_folder(d, TWO_MANUAL_CASES)
             _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                       base_url=None, credentials=credentials, transport=t,
+                       base_url=CLOUD_BASE_URL, credentials=credentials, transport=t,
                        execute=True)
             body = _read_report(d)
         self.assertNotIn("SUPERSECRET", body)
@@ -431,7 +441,7 @@ class TestCloudExecutePath(FastPollMixin):
         self.addCleanup(shutil.rmtree, d, True)
         _make_folder(d, cases or TWO_MANUAL_CASES, feature_text)
         rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                        base_url=None, credentials=self.CREDENTIALS,
+                        base_url=CLOUD_BASE_URL, credentials=self.CREDENTIALS,
                         transport=t, execute=True)
         report = _read_report(d)
         return rc, t, report
@@ -556,7 +566,7 @@ class TestCloudImportBody(FastPollMixin):
         self.addCleanup(shutil.rmtree, d, True)
         _make_folder(d, TWO_MANUAL_CASES)
         rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                        base_url=None, credentials=self.CREDENTIALS,
+                        base_url=CLOUD_BASE_URL, credentials=self.CREDENTIALS,
                         transport=t, execute=True)
         sent = t.matching("POST", "/api/v2/import/test/bulk")
         self.assertEqual(len(sent), 1, "expected exactly one bulk import POST")
@@ -641,7 +651,7 @@ class TestGherkinReimportAssumption(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         _make_folder(d, [TWO_MANUAL_CASES[0]], self.FEATURE)
         rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                        base_url=None,
+                        base_url=CLOUD_BASE_URL,
                         credentials={"client_id": "i", "client_secret": "s"},
                         transport=t, execute=True)
         return rc, t, _read_report(d)
@@ -684,7 +694,7 @@ class TestGherkinReimportAssumption(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _make_folder(d, [TWO_MANUAL_CASES[0]])      # no gherkin/ at all
             rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                            base_url=None,
+                            base_url=CLOUD_BASE_URL,
                             credentials={"client_id": "i", "client_secret": "s"},
                             transport=t, execute=True)
             report = _read_report(d)
@@ -706,7 +716,7 @@ class TestCloudPartialFailure(FastPollMixin):
         with tempfile.TemporaryDirectory() as d:
             _make_folder(d, TWO_MANUAL_CASES)
             rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                            base_url=None,
+                            base_url=CLOUD_BASE_URL,
                             credentials={"client_id": "i", "client_secret": "s"},
                             transport=t, execute=True)
             report = _read_report(d)
@@ -989,7 +999,7 @@ class TestFeatureImport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _make_folder(d, [TWO_MANUAL_CASES[0]], self.FEATURE)
             rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                            base_url=None,
+                            base_url=CLOUD_BASE_URL,
                             credentials={"client_id": "i", "client_secret": "s"},
                             transport=t, execute=True)
             report = _read_report(d)
@@ -1041,7 +1051,7 @@ class TestFeatureImport(unittest.TestCase):
             _make_folder(d, TWO_MANUAL_CASES,
                          "Feature: X\n  Scenario: TC-PROJ-123-002 - Second case\n")
             rc = _quiet_run(folder=d, project_key="PROJ", platform="cloud",
-                            base_url=None,
+                            base_url=CLOUD_BASE_URL,
                             credentials={"client_id": "i", "client_secret": "s"},
                             transport=t, execute=True)
             report = _read_report(d)
