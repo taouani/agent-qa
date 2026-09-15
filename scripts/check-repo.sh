@@ -641,6 +641,47 @@ check_xray_installed() {
     done
 }
 
+check_python_compiles() {
+    echo "== the xray client parses =="
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "SKIP: python3 not on PATH - cannot verify scripts/xray/*.py parse"
+        return 0
+    fi
+    local found=0 f
+    for f in scripts/xray/*.py; do
+        [[ -e "$f" ]] || continue
+        found=1
+        python3 -m py_compile "$f" 2>/dev/null \
+            && pass "$(basename "$f") parses" \
+            || fail "$(basename "$f") does not parse (py_compile)"
+    done
+    (( found == 0 )) && fail "no python files found in scripts/xray/ - nothing was parsed"
+    return 0
+}
+
+check_python_tests_pass() {
+    echo "== the xray unit tests pass =="
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "SKIP: python3 not on PATH - the xray client cannot be verified"
+        return 0
+    fi
+    local out summary
+    if out=$(cd scripts/xray && python3 -m unittest discover -p 'test_*.py' 2>&1); then
+        pass "xray unit tests pass"
+    else
+        # unittest's own result lines (FAIL:/ERROR:/the final FAILED (..) summary)
+        # are grepped out rather than tailed: several test_upload.py cases invoke
+        # the CLI as a subprocess and print its stdout, which can land after
+        # unittest's own summary once stdout/stderr interleave under 2>&1 - a
+        # plain `tail -N` can end up quoting that unrelated CLI output instead
+        # of naming what actually failed.
+        summary="$(echo "$out" | grep -E '^(FAIL:|ERROR:|FAILED \()' | tr '\n' ' ')"
+        [[ -n "$summary" ]] || summary="$(echo "$out" | tail -5 | tr '\n' ' ')"
+        fail "xray unit tests FAILED: $summary"
+    fi
+    return 0
+}
+
 check_roles_documented() {
     echo "== documentation describes the roles layer =="
     local n
@@ -679,6 +720,8 @@ run_checks() {
     check_upload_to_xray
     check_xray_installed
     check_xray_documented_in_commands
+    check_python_compiles
+    check_python_tests_pass
 }
 
 run_checks
