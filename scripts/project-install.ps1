@@ -471,6 +471,37 @@ function Install-Framework {
     Copy-SourceMarkdownTree -SourceDir $source -DestDir $dest -Label "framework files in agent-qa/framework" | Out-Null
 }
 
+# Install the Xray upload CLI to scripts\xray\. Only the runtime modules are
+# shipped -- test_*.py is this repository's own test suite, not something an
+# installed project runs.
+function Install-XrayClient {
+    $source = Join-Path $SourceDir "scripts\xray"
+    $dest = Join-Path $ProjectDir "scripts\xray"
+
+    if (-not (Test-Path $source)) {
+        Print-Verbose "No scripts/xray directory found - skipping"
+        return
+    }
+
+    if (-not $script:DRY_RUN) { Print-Status "Installing Xray upload client" }
+
+    $count = 0
+    Get-ChildItem -Path $source -Recurse -Filter "*.py" -File |
+        Where-Object { $_.Name -notlike "test_*.py" } |
+        ForEach-Object {
+            $relativePath = $_.FullName.Substring($source.Length + 1)
+            $destFile = Join-Path $dest $relativePath
+            if (Copy-File -Source $_.FullName -Dest $destFile) {
+                $count++
+                Print-Verbose "  Installed: $relativePath"
+            }
+        }
+
+    if (-not $script:DRY_RUN -and $count -gt 0) {
+        Print-Success "Installed Xray upload client in scripts/xray/"
+    }
+}
+
 function Install-Formats {
     $source = Join-Path $SourceDir "agent-qa\formats"
     $dest = Join-Path $ProjectDir "agent-qa\formats"
@@ -681,8 +712,16 @@ function Start-ProjectInstall {
     Remove-StaleAgents
     Install-Framework
     Write-Host ""
+    Install-XrayClient
+    Write-Host ""
     Install-ConfigTemplate
     Install-Formats
+    Write-Host ""
+
+    # Security-critical: agent-qa/.xray-credentials must never be committed.
+    # Checked/created on every install, including a re-run over an existing
+    # project.
+    Ensure-XrayCredentialsGitignored -ProjectDir $ProjectDir
     Write-Host ""
 
     Print-Section "IDE Integrations"

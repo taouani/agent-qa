@@ -529,3 +529,57 @@ remove_stale_agents() {
     fi
     return 0
 }
+
+# -----------------------------------------------------------------------------
+# Xray Credentials Gitignore
+#
+# agent-qa/.xray-credentials holds the Jira/Xray secrets the upload-to-xray
+# command reads. They must never be committed and never live in config.yml,
+# so every install/update run makes sure the project's .gitignore excludes
+# that path.
+#
+# Idempotent: the exact line is checked for before anything is written, so
+# running this any number of times leaves exactly one copy of the entry.
+# Never overwrites an existing .gitignore -- only appends -- and if the file's
+# last line has no trailing newline, one is added first so that line is not
+# corrupted by the append. Creates .gitignore if the project has none.
+#
+# Usage: ensure_xray_credentials_gitignored <project_dir>
+# -----------------------------------------------------------------------------
+ensure_xray_credentials_gitignored() {
+    local project_dir="$1"
+    local gitignore_file="$project_dir/.gitignore"
+    local entry="agent-qa/.xray-credentials"
+
+    if [[ -f "$gitignore_file" ]] && grep -qxF "$entry" "$gitignore_file"; then
+        if [[ "$DRY_RUN" != "true" ]]; then
+            echo "✓ .gitignore already excludes $entry"
+        fi
+        return 0
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_verbose "Would add $entry to .gitignore"
+        return 0
+    fi
+
+    if [[ -f "$gitignore_file" ]]; then
+        # A file with content whose last byte is not a newline would otherwise
+        # have that last line corrupted by the appended entry landing on the
+        # same line.
+        if [[ -s "$gitignore_file" ]] && [[ -n "$(tail -c1 "$gitignore_file")" ]]; then
+            printf '\n' >> "$gitignore_file"
+        fi
+        printf '%s\n' "$entry" >> "$gitignore_file"
+    else
+        printf '%s\n' "$entry" > "$gitignore_file"
+    fi
+
+    # Verify the write took effect rather than assuming it did.
+    if grep -qxF "$entry" "$gitignore_file"; then
+        echo "✓ Added $entry to .gitignore"
+        return 0
+    fi
+    print_warning "Failed to add $entry to .gitignore -- add it manually"
+    return 1
+}

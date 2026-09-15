@@ -422,3 +422,61 @@ repository_project_id: "$RepositoryProjectId"
     }
 }
 
+# -----------------------------------------------------------------------------
+# Xray Credentials Gitignore
+#
+# agent-qa/.xray-credentials holds the Jira/Xray secrets the upload-to-xray
+# command reads. They must never be committed and never live in config.yml,
+# so every install run makes sure the project's .gitignore excludes that path.
+#
+# Idempotent: the exact line is checked for before anything is written, so
+# running this any number of times leaves exactly one copy of the entry.
+# Never overwrites an existing .gitignore -- only appends -- and if the
+# file's last line has no trailing newline, one is added first so that line
+# is not corrupted by the append. Creates .gitignore if the project has none.
+# -----------------------------------------------------------------------------
+function Ensure-XrayCredentialsGitignored {
+    param([string]$ProjectDir)
+
+    $gitignoreFile = Join-Path $ProjectDir ".gitignore"
+    $entry = "agent-qa/.xray-credentials"
+
+    if (Test-Path $gitignoreFile) {
+        $existingLines = @(Get-Content -LiteralPath $gitignoreFile)
+        if ($existingLines -contains $entry) {
+            if (-not $script:DRY_RUN) {
+                Print-Success ".gitignore already excludes $entry"
+            }
+            return
+        }
+    }
+
+    if ($script:DRY_RUN) {
+        Print-Verbose "Would add $entry to .gitignore"
+        return
+    }
+
+    if (Test-Path $gitignoreFile) {
+        # A file whose last byte is not a newline would otherwise have that
+        # last line corrupted by the appended entry landing on the same line.
+        # -Raw reads the exact bytes/characters, unlike Get-Content's default
+        # line-splitting mode, which would hide whether a trailing newline
+        # was there.
+        $raw = Get-Content -LiteralPath $gitignoreFile -Raw
+        if ($raw -and $raw.Length -gt 0 -and $raw[-1] -ne "`n") {
+            Add-Content -LiteralPath $gitignoreFile -Value ""
+        }
+        Add-Content -LiteralPath $gitignoreFile -Value $entry
+    } else {
+        Set-Content -LiteralPath $gitignoreFile -Value $entry
+    }
+
+    # Verify the write took effect rather than assuming it did.
+    $verifyLines = @(Get-Content -LiteralPath $gitignoreFile)
+    if ($verifyLines -contains $entry) {
+        Print-Success "Added $entry to .gitignore"
+    } else {
+        Print-Warning "Failed to add $entry to .gitignore -- add it manually"
+    }
+}
+

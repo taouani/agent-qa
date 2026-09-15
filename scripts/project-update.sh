@@ -563,6 +563,61 @@ update_framework() {
     fi
 }
 
+# Update the Xray upload CLI in scripts/xray/. Only the runtime modules are
+# shipped -- test_*.py is this repository's own test suite, not something an
+# installed project runs.
+update_xray_client() {
+    local source_xray_dir="$BASE_DIR/scripts/xray"
+    local dest_xray_dir="$PROJECT_DIR/scripts/xray"
+
+    if [[ ! -d "$source_xray_dir" ]]; then
+        print_verbose "No scripts/xray directory found - skipping"
+        return
+    fi
+
+    print_status "Updating Xray upload client"
+
+    local xray_updated=0
+    local xray_skipped=0
+    local xray_new=0
+
+    find "$source_xray_dir" -type f -name "*.py" ! -name "test_*.py" | while read -r source_file; do
+        local relative_path="${source_file#$source_xray_dir/}"
+        local dest_file="$dest_xray_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_FRAMEWORK" "framework"; then
+            SKIPPED_FILES+=("$dest_file")
+            ((xray_skipped++)) || true
+            print_verbose "Skipped: $relative_path"
+        else
+            if [[ -f "$dest_file" ]]; then
+                UPDATED_FILES+=("$dest_file")
+                ((xray_updated++)) || true
+                print_verbose "Updated: $relative_path"
+            else
+                NEW_FILES+=("$dest_file")
+                ((xray_new++)) || true
+                print_verbose "New file: $relative_path"
+            fi
+            if [[ "$DRY_RUN" != "true" ]]; then
+                copy_file "$source_file" "$dest_file" > /dev/null
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ $xray_new -gt 0 ]]; then
+            echo "✓ Added $xray_new Xray client files"
+        fi
+        if [[ $xray_updated -gt 0 ]]; then
+            echo "✓ Updated $xray_updated Xray client files"
+        fi
+        if [[ $xray_skipped -gt 0 ]]; then
+            echo -e "${YELLOW}$xray_skipped Xray client files were not updated. To update these, re-run with --overwrite-framework flag.${NC}"
+        fi
+    fi
+}
+
 # Update .claude/commands/agent-qa/ files for Claude Code/Cursor IDE recognition (optional)
 update_claude_commands() {
     # This is optional and only needed for Claude Code/Cursor IDE
@@ -717,6 +772,15 @@ perform_update() {
     if [[ -d "$BASE_DIR/agent-qa/framework" ]]; then
         echo ""
     fi
+    update_xray_client
+    if [[ -d "$BASE_DIR/scripts/xray" ]]; then
+        echo ""
+    fi
+    # Security-critical: agent-qa/.xray-credentials must never be committed.
+    # Checked/created on every update too, so projects installed before this
+    # existed still get it.
+    ensure_xray_credentials_gitignored "$PROJECT_DIR"
+    echo ""
     update_claude_commands
     if [[ -d "$BASE_DIR/.claude/commands/agent-qa" ]] || [[ -d "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.claude/commands/agent-qa" ]]; then
         echo ""

@@ -545,6 +545,43 @@ install_framework() {
     fi
 }
 
+# Install the Xray upload CLI to scripts/xray/. Only the runtime modules are
+# shipped -- test_*.py is this repository's own test suite, not something an
+# installed project runs.
+install_xray_client() {
+    local source_xray_dir="$BASE_DIR/scripts/xray"
+    local dest_xray_dir="$PROJECT_DIR/scripts/xray"
+
+    if [[ ! -d "$source_xray_dir" ]]; then
+        print_verbose "No scripts/xray directory found - skipping"
+        return
+    fi
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        print_status "Installing Xray upload client"
+    fi
+
+    ensure_dir "$dest_xray_dir"
+    local xray_count=0
+    find "$source_xray_dir" -type f -name "*.py" ! -name "test_*.py" | while read -r source_file; do
+        local relative_path="${source_file#$source_xray_dir/}"
+        local dest_file="$dest_xray_dir/$relative_path"
+
+        if should_skip_file "$dest_file" "$OVERWRITE_ALL" "$OVERWRITE_FRAMEWORK" "framework"; then
+            print_verbose "Skipped: $relative_path"
+        else
+            if copy_file "$source_file" "$dest_file" > /dev/null; then
+                ((xray_count++)) || true
+                print_verbose "  Installed: $relative_path"
+            fi
+        fi
+    done
+
+    if [[ "$DRY_RUN" != "true" ]]; then
+        echo "✓ Installed Xray upload client in scripts/xray/"
+    fi
+}
+
 # Install config template
 install_config_template() {
     local source_template="$BASE_DIR/agent-qa/config.yml.template"
@@ -915,8 +952,16 @@ perform_installation() {
     fi
     install_framework
     echo ""
+    install_xray_client
+    echo ""
     install_config_template
     install_formats
+    echo ""
+
+    # Security-critical: agent-qa/.xray-credentials must never be committed.
+    # Checked/created on every install, including a re-run over an existing
+    # project.
+    ensure_xray_credentials_gitignored "$PROJECT_DIR"
     echo ""
 
     # Install IDE-specific integrations

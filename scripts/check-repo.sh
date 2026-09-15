@@ -569,6 +569,65 @@ check_upload_to_xray() {
     fi
 }
 
+check_xray_installed() {
+    echo "== installers sync the xray upload client and its config =="
+
+    # Sub-project 2's two worst defects were both here: an installer that
+    # silently shipped zero agents because it read a path that no longer
+    # existed, and a check that passed because its grep matched a comment.
+    # So the sync routines are asserted as DEFINED AND CALLED, the same way
+    # check_roles_installed asserts install_roles/update_roles/Install-Roles
+    # -- not by grepping for a path substring that a stray comment or an
+    # unrelated docstring could satisfy on its own.
+    assert_defines_and_calls scripts/project-install.sh \
+        '^[[:space:]]*install_xray_client\(\)' \
+        '^[[:space:]]*install_xray_client([[:space:]]+[^([:space:]].*)?[[:space:]]*$' \
+        install_xray_client
+    assert_defines_and_calls scripts/project-update.sh \
+        '^[[:space:]]*update_xray_client\(\)' \
+        '^[[:space:]]*update_xray_client([[:space:]]+[^([:space:]].*)?[[:space:]]*$' \
+        update_xray_client
+    assert_defines_and_calls scripts/project-install.ps1 \
+        '^[[:space:]]*function[[:space:]]+Install-XrayClient([[:space:]]|\{|$)' \
+        '^[[:space:]]*Install-XrayClient([[:space:]]+[^([:space:]].*)?[[:space:]]*$' \
+        Install-XrayClient
+
+    assert_code_contains scripts/project-install.sh 'scripts/xray' \
+        "install reads the Xray client from scripts/xray"
+    assert_code_contains scripts/project-update.sh 'scripts/xray' \
+        "update reads the Xray client from scripts/xray"
+    assert_code_contains scripts/project-install.ps1 'scripts.xray' \
+        "ps1 install reads the Xray client from scripts\\xray"
+
+    # The credentials file must never be committed. ensure_xray_credentials_gitignored
+    # is the shared routine install and update both call to guarantee that --
+    # asserted as defined AND reachable from every ide, the same way
+    # remove_stale_agents is in check_roles_installed.
+    assert_code_contains scripts/common-functions.sh \
+        '^[[:space:]]*ensure_xray_credentials_gitignored\(\)' \
+        "common-functions.sh defines ensure_xray_credentials_gitignored"
+    assert_calls_in_function scripts/project-install.sh '^perform_installation\(\)' \
+        '^[[:space:]]*ensure_xray_credentials_gitignored[[:space:]]' \
+        "install gitignores agent-qa/.xray-credentials for every ide"
+    assert_calls_in_function scripts/project-update.sh '^perform_update\(\)' \
+        '^[[:space:]]*ensure_xray_credentials_gitignored[[:space:]]' \
+        "update gitignores agent-qa/.xray-credentials for every ide"
+    assert_code_contains scripts/common-functions.ps1 \
+        '^[[:space:]]*function[[:space:]]+Ensure-XrayCredentialsGitignored([[:space:]]|\{|$)' \
+        "common-functions.ps1 defines Ensure-XrayCredentialsGitignored"
+    assert_code_contains scripts/project-install.ps1 \
+        '^[[:space:]]*Ensure-XrayCredentialsGitignored[[:space:]]' \
+        "ps1 install gitignores agent-qa/.xray-credentials"
+
+    local k
+    for k in 'xray_platform:' 'xray_project_key:' 'xray_base_url:' \
+             'xray_cloud_host:' 'xray_test_issue_type:'; do
+        grep -q "^[[:space:]]*$k" agent-qa/config.yml.template \
+            && pass "config.yml.template declares $k" \
+            || fail "config.yml.template missing key: $k"
+    done
+}
+
 check_roles_documented() {
     echo "== documentation describes the roles layer =="
     local n
@@ -605,6 +664,7 @@ run_checks() {
     check_roles_installed
     check_roles_documented
     check_upload_to_xray
+    check_xray_installed
 }
 
 run_checks

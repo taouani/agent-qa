@@ -147,12 +147,18 @@ class XrayClient:
     POLL_MAX_ATTEMPTS = 60
     POLL_INTERVAL_SECONDS = 2.0
 
-    def __init__(self, platform, base_url, credentials, transport, cloud_host=None):
+    def __init__(self, platform, base_url, credentials, transport,
+                 cloud_host=None, test_issue_type=None):
         self.platform = platform
         self.base_url = base_url
         self.credentials = credentials
         self.transport = transport
         self.cloud_host = cloud_host
+        # Server/DC bulk-create needs a Jira issue type name for a Test.
+        # Most instances never renamed it, so the default matches Xray's own
+        # out-of-the-box type; xray_test_issue_type in config.yml overrides
+        # it for the instances that did.
+        self.test_issue_type = test_issue_type or "Test"
         self._token = None
         self._sleep = time.sleep
 
@@ -705,12 +711,14 @@ class XrayClient:
         The canonical payload is shaped for Cloud's Xray import, which carries
         the Xray test type in a top-level "testtype". Jira's own bulk create
         knows nothing about that field and requires a Jira "issuetype" instead;
-        Xray Server/DC's Test issues use the issue type named "Test". Sending
-        the canonical "testtype" through would be rejected as an unknown field,
-        so it is translated here rather than passed on.
+        Xray Server/DC's Test issues use the issue type named by
+        self.test_issue_type ("Test" unless xray_test_issue_type overrides
+        it in config.yml). Sending the canonical "testtype" through would be
+        rejected as an unknown field, so it is translated here rather than
+        passed on.
         """
         fields = dict(entry.get("fields") or {})
-        fields.setdefault("issuetype", {"name": "Test"})
+        fields.setdefault("issuetype", {"name": self.test_issue_type})
         return {"fields": fields}
 
     def _bulk_create_server(self, creates, headers):

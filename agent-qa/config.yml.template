@@ -165,3 +165,23 @@ hooks:
   #   - "npm run lint -- {output_folder}/**/*.ts"
   #   - "cp {output_folder}/test-cases/*.csv /shared/imports/"
 
+
+# ================================================
+# Xray Upload
+# Configuration for the upload-to-xray command, which pushes generated test
+# cases into Jira as Xray tests.
+#
+# Credentials are NEVER stored here and NEVER committed. They live in
+# agent-qa/.xray-credentials, which the installer adds to .gitignore.
+# ================================================
+xray_platform: ""              # cloud | server — empty disables upload-to-xray. Default: disabled
+xray_project_key: ""           # Jira project key tests are created in. No default — required
+xray_base_url: ""              # Required for BOTH platforms: on Server it's your Jira host
+                                # (e.g. "https://jira.example.com"); on Cloud it's your site
+                                # (e.g. "https://yoursite.atlassian.net"), since JQL search is
+                                # served by Jira Cloud, not the Xray API host. No default
+xray_cloud_host: ""            # Xray Cloud API host, for data-residency tenants only.
+                                # Default: xray.cloud.getxray.app. Leave empty otherwise
+xray_test_issue_type: ""       # Jira issue type name for a Test (Server bulk-create only).
+                                # Default: "Test". Set only if your instance renamed it
+

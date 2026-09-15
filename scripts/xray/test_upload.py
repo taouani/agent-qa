@@ -729,14 +729,15 @@ class TestServerExecutePath(unittest.TestCase):
     BASE = "https://jira.example.com"
     CREDENTIALS = {"personal_access_token": "a-pat"}
 
-    def _run(self, responses, cases=None):
+    def _run(self, responses, cases=None, test_issue_type=None):
         t = DetailedTransport(responses)
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         _make_folder(d, cases or TWO_MANUAL_CASES)
         rc = _quiet_run(folder=d, project_key="PROJ", platform="server",
                         base_url=self.BASE, credentials=self.CREDENTIALS,
-                        transport=t, execute=True)
+                        transport=t, execute=True,
+                        test_issue_type=test_issue_type)
         report = _read_report(d)
         return rc, t, report
 
@@ -762,6 +763,20 @@ class TestServerExecutePath(unittest.TestCase):
                          {"name": "Test"})
         self.assertNotIn("testtype", body["issueUpdates"][0])
         self.assertIn("created: 2", report)
+
+    def test_configured_issue_type_reaches_the_bulk_create_payload(self):
+        """xray_test_issue_type overrides the "Test" default for instances
+        that renamed the issue type -- otherwise their bulk create is a
+        guaranteed 400, config key or not."""
+        rc, t, _report = self._run(self.CREATE_OK,
+                                   test_issue_type="QA Test")
+        self.assertEqual(rc, 0)
+        bulk = t.matching("POST", "/rest/api/2/issue/bulk")
+        body = json.loads(bulk[0]["body"].decode())
+        self.assertEqual(body["issueUpdates"][0]["fields"]["issuetype"],
+                         {"name": "QA Test"})
+        self.assertEqual(body["issueUpdates"][1]["fields"]["issuetype"],
+                         {"name": "QA Test"})
 
     def test_every_step_of_every_test_gets_its_own_call(self):
         """RULING 10, as a test. The fixture has three steps across two

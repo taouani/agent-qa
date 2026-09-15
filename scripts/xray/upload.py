@@ -388,7 +388,7 @@ def _account_identifier(credentials):
 
 
 def run(folder, project_key, platform, base_url, credentials, transport,
-        execute=False, cloud_host=None):
+        execute=False, cloud_host=None, test_issue_type=None):
     """Load a folder, plan the upload, and either print the dry-run report
     (default) or apply it (--execute). `transport` is injected so callers --
     tests included -- control exactly what this reaches over the network.
@@ -403,7 +403,8 @@ def run(folder, project_key, platform, base_url, credentials, transport,
     try:
         test_cases, feature_texts = load_folder(folder)
         client = XrayClient(platform, base_url, credentials, transport,
-                             cloud_host=cloud_host)
+                             cloud_host=cloud_host,
+                             test_issue_type=test_issue_type)
         ids = [tc["id"] for tc in test_cases]
         existing_keys = client.find_tests_by_label(project_key, ids)
         plan = plan_upload(test_cases, feature_texts, existing_keys,
@@ -446,9 +447,10 @@ def run(folder, project_key, platform, base_url, credentials, transport,
 def _read_config_value(config_path, key, default=""):
     """Minimal top-level scalar reader for config.yml. Only reads plain,
     unindented 'key: value' lines -- exactly the shape xray_platform,
-    xray_project_key, xray_base_url and xray_cloud_host are declared in.
-    Deliberately not a general YAML parser: this command has no need for
-    one, and the project takes no third-party dependency."""
+    xray_project_key, xray_base_url, xray_cloud_host and
+    xray_test_issue_type are declared in. Deliberately not a general YAML
+    parser: this command has no need for one, and the project takes no
+    third-party dependency."""
     try:
         with open(config_path, encoding="utf-8") as fh:
             lines = fh.readlines()
@@ -509,6 +511,10 @@ def main(argv=None):
 
     base_url = _read_config_value(args.config, "xray_base_url") or None
     cloud_host = _read_config_value(args.config, "xray_cloud_host") or None
+    test_issue_type = (
+        _read_config_value(args.config, "xray_test_issue_type", "Test")
+        or "Test"
+    )
 
     try:
         credentials = read_credentials(args.credentials)
@@ -519,7 +525,8 @@ def main(argv=None):
     transport = UrllibTransport()
     return run(folder=args.folder, project_key=project_key, platform=platform,
                base_url=base_url, credentials=credentials, transport=transport,
-               execute=args.execute, cloud_host=cloud_host)
+               execute=args.execute, cloud_host=cloud_host,
+               test_issue_type=test_issue_type)
 
 
 if __name__ == "__main__":

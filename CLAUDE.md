@@ -313,7 +313,18 @@ automation:
 
 hooks:
   post_generate: []            # Shell commands; vars: {output_folder} {command_name} {context}
+
+xray_platform: ""              # cloud | server — empty disables upload-to-xray
+xray_project_key: ""           # Jira project key tests are created in
+xray_base_url: ""              # Required for BOTH platforms — Server's Jira host, or Cloud's own
+                                # https://<site>.atlassian.net (JQL search is a Jira Cloud call)
+xray_cloud_host: ""            # Xray Cloud API host; default xray.cloud.getxray.app (data-residency only)
+xray_test_issue_type: ""       # Jira issue type name for a Test on Server bulk-create; default "Test"
 ```
+
+Credentials for `upload-to-xray` are never stored in `config.yml`. They live in
+`agent-qa/.xray-credentials`, which `project-install.sh`/`.ps1` add to `.gitignore` on every
+install and update.
 
 ## Development Conventions
 
