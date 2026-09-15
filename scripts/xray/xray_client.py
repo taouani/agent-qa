@@ -149,6 +149,28 @@ class XrayClient:
 
     def __init__(self, platform, base_url, credentials, transport,
                  cloud_host=None, test_issue_type=None):
+        # Ruling 35: xray_base_url is required for BOTH flavours -- on
+        # Server/DC it is the only Jira host there is; on Cloud, Xray's own
+        # endpoints don't need it, but JQL search does, because that search
+        # is served by Jira Cloud at the customer's own site, not by the
+        # Xray API host (api-contract.md, "Flavour differences at a glance"
+        # and "{base_url} -- the customer's Jira host"). This used to be
+        # enforced only where a URL template happened to use {base_url},
+        # which a caller could route around simply by never reaching that
+        # one call (e.g. a Cloud run with no manual test cases never calls
+        # find_tests_by_label). The invariant this client actually needs is
+        # "this client cannot exist without a base_url" -- guarding that
+        # invariant at construction closes every such path at once, known
+        # or not, instead of enumerating them one at a time.
+        if not base_url:
+            raise XrayError(
+                "xray_base_url is not set in agent-qa/config.yml. It is "
+                "required for both cloud and server: on Server/DC it is the "
+                "only Jira host there is; on Cloud it is your own Jira "
+                "site, because Xray Cloud's JQL search is served by Jira "
+                "Cloud, not the Xray API host. Set xray_base_url before "
+                "retrying."
+            )
         self.platform = platform
         self.base_url = base_url
         self.credentials = credentials
@@ -170,31 +192,7 @@ class XrayClient:
     def _substitute(self, url):
         """Resolve the contract's two substitution tokens. Every URL from
         xray_endpoints.py -- endpoint, poll URL or step URL -- goes through
-        here, so none of them can be resolved two different ways.
-
-        xray_base_url is required for BOTH flavours, not just Server/DC: on
-        Server/DC it is the only Jira host there is; on Cloud, Xray's own
-        endpoints don't need it, but JQL search does, because that search is
-        served by Jira Cloud at the customer's own site, not by the Xray API
-        host (api-contract.md, "Flavour differences at a glance" and
-        "{base_url} -- the customer's Jira host"). Silently substituting an
-        empty string here used to turn a missing base_url into a relative
-        URL -- authenticate() would still succeed (it resolves
-        {cloud_host} instead), and the resulting search request would fail
-        far from this cause, or -- worse, against a permissive transport --
-        appear to "succeed" while matching nothing, so every test looks new
-        and gets duplicated on every run. Failing here, before any request
-        is built, replaces that silent corruption with an immediate, named
-        error."""
-        if "{base_url}" in url and not self.base_url:
-            raise XrayError(
-                "xray_base_url is not set in agent-qa/config.yml. It is "
-                "required for both cloud and server: on Server/DC it is the "
-                "only Jira host there is; on Cloud it is your own Jira "
-                "site, because Xray Cloud's JQL search is served by Jira "
-                "Cloud, not the Xray API host. Set xray_base_url before "
-                "retrying."
-            )
+        here, so none of them can be resolved two different ways."""
         url = url.replace("{base_url}", self.base_url or "")
         url = url.replace("{cloud_host}", self.cloud_host or DEFAULT_CLOUD_HOST)
         return url

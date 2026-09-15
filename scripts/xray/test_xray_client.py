@@ -1,6 +1,13 @@
 import unittest
 from xray_client import XrayClient, XrayError, Transport
 
+# Ruling 35: XrayClient now requires a real xray_base_url at construction,
+# for both flavours, whether or not the test at hand ever resolves a URL
+# template that contains {base_url}. Cloud fixtures below that only
+# exercise auth or bulk import (neither of which needs {base_url} on the
+# wire) use this constant purely to satisfy that constructor invariant.
+CLOUD_BASE_URL = "https://cloud.example.com"
+
 
 class FakeTransport(Transport):
     """Records every call and returns canned responses."""
@@ -22,7 +29,7 @@ class TestAuthentication(unittest.TestCase):
     def test_cloud_auth_posts_to_the_configured_endpoint(self):
         from xray_endpoints import ENDPOINTS, DEFAULT_CLOUD_HOST
         t = FakeTransport([(200, {}, b'"a-token"')])
-        c = XrayClient("cloud", None, {"client_id": "i", "client_secret": "s"}, t)
+        c = XrayClient("cloud", CLOUD_BASE_URL, {"client_id": "i", "client_secret": "s"}, t)
         c.authenticate()
         self.assertEqual(t.calls[0]["method"], "POST")
         # The contract's cloud "auth" endpoint carries {cloud_host}, which the client
@@ -35,7 +42,7 @@ class TestAuthentication(unittest.TestCase):
 
     def test_token_is_reused_not_refetched(self):
         t = FakeTransport([(200, {}, b'"a-token"')])
-        c = XrayClient("cloud", None, {"client_id": "i", "client_secret": "s"}, t)
+        c = XrayClient("cloud", CLOUD_BASE_URL, {"client_id": "i", "client_secret": "s"}, t)
         first = c.authenticate()
         second = c.authenticate()
         self.assertEqual(first, second)
@@ -43,7 +50,7 @@ class TestAuthentication(unittest.TestCase):
 
     def test_auth_failure_raises_xrayerror_without_the_secret(self):
         t = FakeTransport([(401, {}, b'{"error":"bad creds"}')])
-        c = XrayClient("cloud", None, {"client_id": "i", "client_secret": "SUPERSECRET"}, t)
+        c = XrayClient("cloud", CLOUD_BASE_URL, {"client_id": "i", "client_secret": "SUPERSECRET"}, t)
         with self.assertRaises(XrayError) as ctx:
             c.authenticate()
         self.assertNotIn("SUPERSECRET", str(ctx.exception))
@@ -94,11 +101,11 @@ class TestAuthentication(unittest.TestCase):
 class TestLabelMatching(unittest.TestCase):
 
     def _client(self, transport):
-        # A real base_url is required here: find_tests_by_label() resolves
-        # Cloud's "search" endpoint, which carries {base_url} (it's a Jira
-        # Cloud endpoint, not an Xray one) -- see TestBaseUrlIsRequired below
-        # for what happens when it's missing.
-        c = XrayClient("cloud", "https://cloud.example.com",
+        # A real base_url is required for every XrayClient now (Ruling 35),
+        # not just here where find_tests_by_label() resolves Cloud's
+        # "search" endpoint (a Jira Cloud endpoint, not an Xray one) -- see
+        # TestBaseUrlIsRequired below for what happens when it's missing.
+        c = XrayClient("cloud", CLOUD_BASE_URL,
                         {"client_id": "i", "client_secret": "s"}, transport)
         c._token = "cached"          # skip the auth round-trip
         return c
@@ -159,7 +166,7 @@ class TestLabelMatching(unittest.TestCase):
         # "add" them -- they need to be told to check correctness/permissions
         # instead. The credential VALUES must still never appear.
         t = FakeTransport([(403, {}, b'{}')])
-        c = XrayClient("cloud", "https://cloud.example.com", {
+        c = XrayClient("cloud", CLOUD_BASE_URL, {
             "client_id": "i", "client_secret": "s",
             "jira_email": "person@example.com",
             "jira_api_token": "SUPERSECRETJIRATOKEN",
@@ -210,42 +217,50 @@ class TestLabelMatching(unittest.TestCase):
 
 
 class TestBaseUrlIsRequired(unittest.TestCase):
-    """xray_base_url is required for BOTH flavours (Ruling 34): on Cloud it
-    is the Jira site JQL search runs against, not the Xray API host; on
-    Server/DC it is the only host there is. Before this fix, an empty
-    base_url resolved to an empty string, turning the search URL into a
-    relative path that a real transport would mishandle far from this
-    cause -- and Cloud's authenticate() would still succeed, since it
-    resolves {cloud_host} instead, making the failure look like "auth is
-    fine, search is mysteriously broken." These tests prove the client now
-    fails immediately and by name, and never gets as far as calling the
-    transport at all."""
+    """xray_base_url is required for BOTH flavours (Ruling 34), and the
+    check lives at construction, not at first use (Ruling 35): a first-use
+    check placed inside _substitute() only fired on a URL template that
+    actually contained {base_url}, so a caller that never happened to
+    reach one -- e.g. a Cloud run with zero manual test cases, which never
+    calls find_tests_by_label() -- sailed past it with an unusable client.
+    The invariant this client actually needs is "this client cannot exist
+    without a base_url"; enforcing it in __init__ closes every such path
+    at once, including ones no test here has thought to name. These tests
+    prove the client refuses to be constructed at all, and never gets as
+    far as calling the transport."""
 
-    def test_cloud_search_without_base_url_raises_before_any_request(self):
+    def test_cloud_construction_without_base_url_raises(self):
         t = FakeTransport([(200, {}, b'{"issues":[]}')])
-        c = XrayClient("cloud", None, {"client_id": "i", "client_secret": "s"}, t)
-        c._token = "cached"          # skip the auth round-trip
         with self.assertRaises(XrayError) as ctx:
-            c.find_tests_by_label("PROJ", ["TC-PROJ-123-001"])
+            XrayClient("cloud", None, {"client_id": "i", "client_secret": "s"}, t)
         message = str(ctx.exception)
         self.assertIn("xray_base_url", message)
         self.assertIn("cloud", message.lower())
         self.assertEqual(t.calls, [],
                          "a missing base_url must never reach the transport "
-                         "as a relative-URL request")
+                         "-- the client must not even come into existence")
 
-    def test_server_auth_without_base_url_raises_before_any_request(self):
+    def test_server_construction_without_base_url_raises(self):
         t = FakeTransport([(200, {}, b'{"name": "a-user"}')])
-        c = XrayClient("server", None, {"personal_access_token": "a-pat"}, t)
         with self.assertRaises(XrayError) as ctx:
-            c.authenticate()
+            XrayClient("server", None, {"personal_access_token": "a-pat"}, t)
         message = str(ctx.exception)
         self.assertIn("xray_base_url", message)
         self.assertIn("server", message.lower())
         self.assertEqual(t.calls, [],
                          "a missing base_url must never reach the transport "
-                         "as a relative-URL request")
+                         "-- the client must not even come into existence")
         self.assertNotIn("a-pat", message)
+
+    def test_cloud_construction_without_base_url_never_reaches_find_tests_by_label(self):
+        # The exact bypass Ruling 35 closed: a Cloud caller with no manual
+        # test cases never calls find_tests_by_label(), so a first-use
+        # check inside it would never fire. Construction must fail before
+        # that method is even reachable.
+        t = FakeTransport()
+        with self.assertRaises(XrayError):
+            XrayClient("cloud", "", {"client_id": "i", "client_secret": "s"}, t)
+        self.assertEqual(t.calls, [])
 
 
 if __name__ == "__main__":

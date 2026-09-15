@@ -466,7 +466,7 @@ class TestCloudExecutePath(FastPollMixin):
 
     def test_a_job_that_never_resolves_is_a_failure_not_a_success(self):
         working = (200, {}, b'{"status":"working"}')
-        client = XrayClient("cloud", None, self.CREDENTIALS,
+        client = XrayClient("cloud", CLOUD_BASE_URL, self.CREDENTIALS,
                             RecordingTransport([(200, {}, b'{"jobId":"J"}')]
                                                + [working] * 5))
         client._token = "tok"
@@ -499,7 +499,7 @@ class TestCloudExecutePath(FastPollMixin):
         self.assertIn("failed: 2", report)
 
     def test_an_unrecognised_job_status_stops_loudly(self):
-        client = XrayClient("cloud", None, self.CREDENTIALS, RecordingTransport([
+        client = XrayClient("cloud", CLOUD_BASE_URL, self.CREDENTIALS, RecordingTransport([
             (200, {}, b'{"jobId":"J"}'),
             (200, {}, b'{"status":"probably_fine"}'),
         ]))

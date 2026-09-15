@@ -14,7 +14,8 @@ a phase attempts it. Commands should use this framework file instead of checking
 
 1. **Read Platform Configuration**: Read `xray_platform` from `agent-qa/config.yml`
 2. **Skip if Not Configured**: Report SKIP, not an error, when Xray is simply unused
-3. **Validate Required Keys**: Confirm `xray_project_key`, and `xray_base_url` on Server/DC
+3. **Validate Required Keys**: Confirm `xray_project_key` and `xray_base_url`, both required on
+   cloud and server alike
 4. **Validate the Credentials File**: Confirm it exists and is not tracked by git
 5. **Never Print Credential Contents**: The file's contents never appear in output, a report, or a log
 
@@ -48,18 +49,24 @@ With a platform value in hand:
    ❌ Xray upload is not configured: xray_project_key is empty in agent-qa/config.yml
    ```
 
-2. **`xray_base_url`** — required only when `xray_platform` is `server`. Server/DC has no fixed
-   host; it is the customer's own Jira installation. If `xray_platform` is `server` and
-   `xray_base_url` is empty, STOP:
+2. **`xray_base_url`** — required on **both** flavours (Ruling 33/34). A reader who sees
+   "base_url" and assumes it is a Server-only concern is wrong: on Server/DC it is the customer's
+   own Jira installation, the only host there is; on Cloud it is *also* the customer's own Jira
+   site, because Xray Cloud's JQL search (used to match generated tests against ones already in
+   Jira, by label) is served by Jira Cloud at that site, not by the Xray API host (see
+   `agent-qa/framework/xray/api-contract.md`, "Flavour differences at a glance" and "`{base_url}`
+   — the customer's Jira host"). Without it on Cloud, that search silently degrades and matches
+   nothing, so every generated test would be created as a duplicate on every run instead of being
+   matched and updated — a broken configuration, not a caveat. If `xray_base_url` is empty on
+   either platform, STOP:
 
    ```
-   ❌ Xray upload is not configured: xray_base_url is required when xray_platform is "server"
+   ❌ Xray upload is not configured: xray_base_url is required for both cloud and server
    ```
 
-   Cloud does not require `xray_base_url` for Xray's own endpoints (see
-   `agent-qa/framework/xray/api-contract.md`, "Flavour differences at a glance") but does need a
-   Jira site URL for label search. Where that value comes from is outside this preflight's scope;
-   record only that the platform value is `cloud` or `server`.
+   `scripts/xray/upload.py`'s `XrayClient` enforces this same requirement at construction — this
+   preflight exists so a phase catches it before invoking the script at all, with the same
+   consequence either way: refuse to proceed.
 
 ### Step 3: Validate the Credentials File
 
