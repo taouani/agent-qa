@@ -37,3 +37,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Provenance only works in CI, so it's set here rather than in package.json.
+          NPM_CONFIG_PROVENANCE: true

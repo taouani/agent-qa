@@ -44,7 +44,8 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
     "changeset": "changeset",
-    "release": "npm run check && changeset publish"
+    "release": "npm run check && changeset publish",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
@@ -63,7 +64,6 @@
     "zod": "^4.6.7"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   }
 }
