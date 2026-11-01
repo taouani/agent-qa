@@ -32,6 +32,10 @@ describe("module boundaries", () => {
     expect(await lint("src/index.ts", 'export * from "./masking/index.js";\n')).toContain("boundaries/element-types");
   });
 
+  it("checks .js files too", async () => {
+    expect(await lint("src/cli/x.js", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
+  });
+
   it("checks .mts files too", async () => {
     expect(await lint("src/cli/x.mts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
   });
