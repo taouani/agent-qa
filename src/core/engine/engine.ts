@@ -11,7 +11,14 @@ import type {
   WorkflowDefinition,
 } from "./types.js";
 
-export type EngineErrorCode = "UNKNOWN_WORKFLOW" | "INVALID_INPUTS" | "RUN_NOT_FOUND" | "STEP_MISMATCH" | "RUN_CLOSED";
+export type EngineErrorCode =
+  | "UNKNOWN_WORKFLOW"
+  | "INVALID_WORKFLOW"
+  | "INVALID_INPUTS"
+  | "RUN_NOT_FOUND"
+  | "RUN_COLLISION"
+  | "STEP_MISMATCH"
+  | "RUN_CLOSED";
 
 export class EngineError extends Error {
   constructor(
@@ -41,12 +48,30 @@ export function toOutputErrors(error: z.ZodError): OutputError[] {
   }));
 }
 
+/** Step ids the engine uses for terminal steps. */
+const RESERVED_STEP_IDS = new Set(["done", "failed", "cancelled"]);
+
+/** JSON Schema for what the model must write: the schema's input side. */
+function jsonSchemaOf(schema: z.ZodType, where: string): unknown {
+  try {
+    return z.toJSONSchema(schema, { io: "input" });
+  } catch (error) {
+    throw new EngineError("INVALID_WORKFLOW", `${where}: schema can't be converted to JSON Schema (${(error as Error).message})`);
+  }
+}
+
+interface Registered {
+  workflow: WorkflowDefinition<unknown>;
+  inputSchema: unknown;
+  outputSchemas: Map<string, unknown>;
+}
+
 /**
  * The step state machine behind the MCP step protocol and the CLI runner.
  * One open step per run; every transition is saved before it is returned.
  */
 export class WorkflowEngine {
-  private readonly workflows = new Map<string, WorkflowDefinition<unknown>>();
+  private readonly workflows = new Map<string, Registered>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly store: StateStore;
   private readonly maxAttempts: number;
@@ -61,25 +86,34 @@ export class WorkflowEngine {
   }
 
   register<I>(workflow: WorkflowDefinition<I>): this {
-    if (this.workflows.has(workflow.id)) throw new Error(`Workflow already registered: ${workflow.id}`);
-    if (workflow.steps.length === 0) throw new Error(`Workflow has no steps: ${workflow.id}`);
+    const invalid = (message: string) => new EngineError("INVALID_WORKFLOW", `${workflow.id}: ${message}`);
+    if (this.workflows.has(workflow.id)) throw invalid("workflow already registered");
+    if (workflow.steps.length === 0) throw invalid("workflow has no steps");
     const ids = new Set(workflow.steps.map((s) => s.id));
-    if (ids.size !== workflow.steps.length) throw new Error(`Duplicate step ids in workflow: ${workflow.id}`);
-    this.workflows.set(workflow.id, workflow as WorkflowDefinition<unknown>);
+    if (ids.size !== workflow.steps.length) throw invalid("duplicate step ids");
+    for (const id of ids) if (RESERVED_STEP_IDS.has(id)) throw invalid(`step id "${id}" is reserved`);
+    // Convert every schema now, so a schema that can't be shown to a model fails at startup, not mid-run.
+    const outputSchemas = new Map(workflow.steps.map((s) => [s.id, jsonSchemaOf(s.outputSchema, `${workflow.id}.${s.id}`)]));
+    this.workflows.set(workflow.id, {
+      workflow: workflow as WorkflowDefinition<unknown>,
+      inputSchema: jsonSchemaOf(workflow.inputSchema, `${workflow.id} inputs`),
+      outputSchemas,
+    });
     return this;
   }
 
   list(): Array<{ id: string; description: string; inputSchema: unknown }> {
-    return [...this.workflows.values()].map((w) => ({
-      id: w.id,
-      description: w.description,
-      inputSchema: z.toJSONSchema(w.inputSchema),
+    return [...this.workflows.values()].map((r) => ({
+      id: r.workflow.id,
+      description: r.workflow.description,
+      inputSchema: r.inputSchema,
     }));
   }
 
   async start(workflowId: string, inputs: unknown): Promise<Step> {
-    const workflow = this.workflows.get(workflowId);
-    if (!workflow) throw new EngineError("UNKNOWN_WORKFLOW", `Unknown workflow: ${workflowId}`);
+    const registered = this.workflows.get(workflowId);
+    if (!registered) throw new EngineError("UNKNOWN_WORKFLOW", `Unknown workflow: ${workflowId}`);
+    const { workflow } = registered;
     const parsed = workflow.inputSchema.safeParse(inputs);
     if (!parsed.success) {
       throw new EngineError("INVALID_INPUTS", `Invalid inputs for ${workflowId}`, toOutputErrors(parsed.error));
@@ -97,23 +131,24 @@ export class WorkflowEngine {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    if (await this.store.load(state.runId)) throw new Error(`Run id collision: ${state.runId}`);
+    if (await this.store.load(state.runId)) throw new EngineError("RUN_COLLISION", `Run id already exists: ${state.runId}`);
     await this.store.save(state);
-    return this.render(workflow, state);
+    return this.render(registered, state);
   }
 
   /** The current step again, for a host that restarted. */
   async next(runId: string): Promise<Step> {
-    const { workflow, state } = await this.load(runId);
-    return this.render(workflow, state);
+    const { registered, state } = await this.load(runId);
+    return this.render(registered, state);
   }
 
   async submit(runId: string, stepId: string, output: unknown): Promise<SubmitResult> {
     return this.withLock(runId, async () => {
-      const { workflow, state } = await this.load(runId);
+      const { registered, state } = await this.load(runId);
+      const { workflow } = registered;
 
-      const previous = state.accepted[stepId];
-      if (previous) return previous;
+      // Already accepted: same answer, but the next step reflects the run as it is now.
+      if (state.accepted[stepId]) return { status: "accepted", next: await this.render(registered, state) };
 
       if (state.status !== "running") {
         throw new EngineError("RUN_CLOSED", `Run ${runId} is ${state.status}`);
@@ -135,7 +170,7 @@ export class WorkflowEngine {
           state.attempt = attempt + 1;
         }
         await this.save(state);
-        return { status: "rejected", errors, attempt, maxAttempts: max, next: await this.render(workflow, state) };
+        return { status: "rejected", errors, attempt, maxAttempts: max, next: await this.render(registered, state) };
       }
 
       await def.onAccept?.(this.ctx(state), parsed.data);
@@ -143,10 +178,9 @@ export class WorkflowEngine {
       state.stepIndex += 1;
       state.attempt = 1;
       if (state.stepIndex >= workflow.steps.length) state.status = "done";
-      const result: SubmitResult = { status: "accepted", next: await this.render(workflow, state) };
-      state.accepted[stepId] = result;
+      state.accepted[stepId] = true;
       await this.save(state);
-      return result;
+      return { status: "accepted", next: await this.render(registered, state) };
     });
   }
 
@@ -165,12 +199,12 @@ export class WorkflowEngine {
     });
   }
 
-  private async load(runId: string): Promise<{ workflow: WorkflowDefinition<unknown>; state: RunState }> {
+  private async load(runId: string): Promise<{ registered: Registered; state: RunState }> {
     const state = await this.store.load(runId);
     if (!state) throw new EngineError("RUN_NOT_FOUND", `Unknown run: ${runId}`);
-    const workflow = this.workflows.get(state.workflowId);
-    if (!workflow) throw new EngineError("UNKNOWN_WORKFLOW", `Run ${runId} uses unregistered workflow ${state.workflowId}`);
-    return { workflow, state };
+    const registered = this.workflows.get(state.workflowId);
+    if (!registered) throw new EngineError("UNKNOWN_WORKFLOW", `Run ${runId} uses unregistered workflow ${state.workflowId}`);
+    return { registered, state };
   }
 
   private async save(state: RunState): Promise<void> {
@@ -188,7 +222,7 @@ export class WorkflowEngine {
     return { runId: state.runId, inputs: state.inputs, outputs: { ...state.outputs } };
   }
 
-  private async render(workflow: WorkflowDefinition<unknown>, state: RunState): Promise<Step> {
+  private async render({ workflow, outputSchemas }: Registered, state: RunState): Promise<Step> {
     const base = { runId: state.runId, instructions: "", context: "", attempt: 0, maxAttempts: 0 };
     if (state.status === "done") return { ...base, stepId: "done", kind: "done" };
     if (state.status === "cancelled") return { ...base, stepId: "cancelled", kind: "failed", errors: [{ path: "$", message: "Run cancelled" }] };
@@ -201,7 +235,7 @@ export class WorkflowEngine {
       kind: def.kind,
       instructions: def.instructions(ctx),
       context: (await def.context?.(ctx)) ?? "",
-      outputSchema: z.toJSONSchema(def.outputSchema),
+      outputSchema: outputSchemas.get(def.id),
       attempt: state.attempt,
       maxAttempts: def.maxAttempts ?? this.maxAttempts,
     };

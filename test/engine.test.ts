@@ -163,7 +163,38 @@ describe("WorkflowEngine", () => {
     const e = engine();
     expect(() => e.register(demoWorkflow())).toThrow(/already registered/);
     const dup = { ...demoWorkflow(), id: "dup", steps: [demoWorkflow().steps[0]!, demoWorkflow().steps[0]!] };
-    expect(() => e.register(dup)).toThrow(/Duplicate step/);
+    expect(() => e.register(dup)).toThrow(/duplicate step/);
+    const reserved = { ...demoWorkflow(), id: "reserved", steps: [{ ...demoWorkflow().steps[0]!, id: "done" }] };
+    expect(() => e.register(reserved)).toThrow(/reserved/);
+  });
+
+  it("refuses at register time a schema that can't be shown to a model", () => {
+    const step = demoWorkflow().steps[0]!;
+    const withDate = { ...demoWorkflow(), id: "dated", steps: [step, { ...step, id: "b", outputSchema: z.object({ at: z.date() }) }] };
+    expect(() => engine().register(withDate)).toThrow(expect.objectContaining({ code: "INVALID_WORKFLOW" }));
+  });
+
+  it("shows the model the input side of a transforming schema", async () => {
+    const step = demoWorkflow().steps[0]!;
+    const wf = {
+      ...demoWorkflow(),
+      id: "trim",
+      steps: [{ ...step, outputSchema: z.object({ summary: z.string().transform((v) => v.trim()) }) }],
+    };
+    const e = new WorkflowEngine({ store: new MemoryStateStore(), newRunId: () => "r" }).register(wf);
+    const s1 = await e.start("trim", { issue: "PROJ-1" });
+    expect(s1.outputSchema).toMatchObject({ properties: { summary: { type: "string" } } });
+    await e.submit("r", "analyze", { summary: "  padded  " });
+    expect((await e.status("r")).outputs.analyze).toEqual({ summary: "padded" });
+  });
+
+  it("answers a resubmit with the run's current state, even after cancel", async () => {
+    const e = engine();
+    await e.start("demo", { issue: "PROJ-1" });
+    await e.submit("run-1", "analyze", { summary: "a" });
+    await e.cancel("run-1");
+    const again = await e.submit("run-1", "analyze", { summary: "a" });
+    expect(again).toMatchObject({ status: "accepted", next: { kind: "failed", stepId: "cancelled" } });
   });
 });
 
@@ -182,6 +213,26 @@ describe("FileStateStore", () => {
     const second = engine(new FileStateStore(dir));
     const step = await second.next("run-1");
     expect(step).toMatchObject({ stepId: "cases", instructions: "Write cases for: persisted" });
+  });
+
+  it("keeps a failed run failed after reload", async () => {
+    dir = await mkdtemp(join(tmpdir(), "agent-qa-engine-"));
+    const first = new WorkflowEngine({ store: new FileStateStore(dir), maxAttempts: 1, newRunId: () => "r" }).register(demoWorkflow());
+    await first.start("demo", { issue: "PROJ-1" });
+    await first.submit("r", "analyze", {});
+    const second = engine(new FileStateStore(dir));
+    expect(await second.next("r")).toMatchObject({ kind: "failed", errors: [{ path: "$.summary" }] });
+    await expect(second.submit("r", "analyze", { summary: "x" })).rejects.toMatchObject({ code: "RUN_CLOSED" });
+  });
+
+  it("survives parallel writes to the same run file", async () => {
+    dir = await mkdtemp(join(tmpdir(), "agent-qa-engine-"));
+    const store = new FileStateStore(dir);
+    const e = new WorkflowEngine({ store, newRunId: () => "r" }).register(demoWorkflow());
+    await e.start("demo", { issue: "PROJ-1" });
+    const base = (await store.load("r"))!;
+    await Promise.all(Array.from({ length: 20 }, (_, i) => store.save({ ...base, attempt: i + 1 })));
+    expect((await store.load("r"))!.runId).toBe("r");
   });
 
   it("rejects unsafe run ids", async () => {

@@ -51,7 +51,11 @@ export interface StepDefinition<I = unknown, O = unknown> {
   context?: (ctx: StepContext<I>) => string | Promise<string>;
   /** Defaults to the engine's maxAttempts (3). */
   maxAttempts?: number;
-  /** Runs after the output is accepted, for example to write an artifact. */
+  /**
+   * Runs after the output is accepted, for example to write an artifact.
+   * It must be safe to run twice: if saving the run state fails afterwards,
+   * the step stays open and a retry runs it again.
+   */
   onAccept?: (ctx: StepContext<I>, output: O) => void | Promise<void>;
 }
 
@@ -75,8 +79,8 @@ export interface RunState {
   /** Attempt number of the open step, starting at 1. */
   attempt: number;
   outputs: Record<string, unknown>;
-  /** Results of accepted steps, returned again if the same step is resubmitted. */
-  accepted: Record<string, SubmitResult>;
+  /** Step ids already accepted; resubmitting one returns `accepted` with the current step. */
+  accepted: Record<string, true>;
   failure?: OutputError[];
   createdAt: string;
   updatedAt: string;
