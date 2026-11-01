@@ -23,7 +23,7 @@
     "node": ">=20"
   },
   "bin": {
-    "agent-qa": "./dist/cli/index.js"
+    "agent-qa": "./dist/cli/bin.js"
   },
   "exports": {
     ".": {
@@ -46,6 +46,7 @@
   "devDependencies": {
     "@types/node": "^20.19.43",
     "eslint": "^9.39.5",
+    "eslint-import-resolver-typescript": "^4.4.5",
     "eslint-plugin-boundaries": "^5.4.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
