@@ -2,6 +2,8 @@
 
 **AI-Powered Quality Assurance Automation Agent**
 
+> **Version 1 is frozen.** This is the final v1 (tag `v1.0.0`, branch [`v1`](https://github.com/taouani/agent-qa/tree/v1)). The install commands below always install v1 from the `v1` branch. Agent-QA v2, a TypeScript rewrite published on npm as `sf-agent-qa`, is being built on `master`; until its first release, keep using v1.
+
 Agent-QA is an intelligent automation agent that helps QA analysts, managers, and release managers streamline their testing workflows by automatically analyzing Jira tickets, Confluence pages, and git repository changes to generate comprehensive test deliverables.
 
 ## What is Agent-QA?
@@ -76,12 +78,12 @@ Requires the `playwright-cli` prerequisite (see [INSTALLATION.md](INSTALLATION.m
 
    **macOS/Linux / Git Bash:**
    ```bash
-   curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.sh | bash
+   curl -sSL https://raw.githubusercontent.com/taouani/agent-qa/v1/scripts/base-install.sh | bash
    ```
 
    **Windows (PowerShell):**
    ```powershell
-   irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
+   irm https://raw.githubusercontent.com/taouani/agent-qa/v1/scripts/base-install.ps1 | iex
    ```
 
 2. **Project Installation** (in your project directory):

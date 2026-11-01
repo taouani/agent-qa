@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $script:RepoUrl = "https://github.com/taouani/agent-qa"
-$script:RepoBranch = "master"
+$script:RepoBranch = "v1"
 $script:BaseDir = Join-Path $env:USERPROFILE "agent-qa"
 $script:DryRun = $false
 
@@ -593,7 +593,7 @@ Examples:
     .\base-install.ps1 -Verbose
 
 One-line install from GitHub:
-    irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
+    irm https://raw.githubusercontent.com/taouani/agent-qa/v1/scripts/base-install.ps1 | iex
 
 "@
     exit 0

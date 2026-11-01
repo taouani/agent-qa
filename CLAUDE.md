@@ -240,7 +240,7 @@ Bash and PowerShell scripts are parallel implementations — a behavior change i
 
 ```powershell
 # Base install (one-time)
-irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex
+irm https://raw.githubusercontent.com/taouani/agent-qa/v1/scripts/base-install.ps1 | iex
 
 # Project install (from your project directory)
 & "$env:USERPROFILE\agent-qa\scripts\project-install.ps1"
