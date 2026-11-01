@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { KeyProvider } from "./keys.js";
 
@@ -23,7 +23,11 @@ function checkId(runId: string): string {
   return runId;
 }
 
-/** One encrypted file per run under `dir` (default `.agent-qa/vault/`, which must be gitignored). */
+/**
+ * One encrypted file per run under `dir` (default `.agent-qa/vault/`, which must be gitignored).
+ * On POSIX the folder is 0700 and files are 0600. On Windows modes have no effect: files
+ * inherit the folder's ACLs, which by default allow only the user and administrators.
+ */
 export class FileVaultStorage implements VaultStorage {
   constructor(private readonly dir: string) {}
 
@@ -42,6 +46,8 @@ export class FileVaultStorage implements VaultStorage {
 
   async write(runId: string, blob: string): Promise<void> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    // mkdir's mode doesn't apply to a folder that already exists.
+    if (process.platform !== "win32") await chmod(this.dir, 0o700);
     const target = this.file(runId);
     const tmp = `${target}.${randomBytes(6).toString("hex")}.tmp`;
     try {
@@ -112,12 +118,23 @@ interface Plain {
 export interface VaultOptions {
   storage: VaultStorage;
   keys: KeyProvider;
-  /** How long a run's vault is kept. Default 30 days. */
+  /** How long a run's vault is kept, counted from its first save. Default 30 days. */
   ttlMs?: number;
   now?: () => Date;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
+const TAG_BYTES = 16;
+const IV_BYTES = 12;
+
+function expiryOf(blob: string): number {
+  try {
+    const at = Date.parse((JSON.parse(blob) as Partial<Envelope>).expiresAt ?? "");
+    return Number.isNaN(at) ? 0 : at;
+  } catch {
+    return 0; // not JSON: treat as expired
+  }
+}
 
 export class Vault {
   private readonly ttlMs: number;
@@ -133,43 +150,55 @@ export class Vault {
     checkId(runId);
     const blob = await this.options.storage.read(runId);
     let plain: Plain = { entries: {}, counters: {} };
+    let expiresAt: string | undefined;
     if (blob) {
-      const envelope = JSON.parse(blob) as Envelope;
-      if (envelope.runId !== runId) throw new Error(`Vault file for ${runId} belongs to ${envelope.runId}`);
-      if (Date.parse(envelope.expiresAt) <= this.now().getTime()) {
+      let envelope: Envelope;
+      try {
+        envelope = JSON.parse(blob) as Envelope;
+      } catch {
+        throw new Error(`Vault for ${runId} can't be read: the file is not valid JSON`);
+      }
+      if (envelope.runId !== runId) throw new Error(`Vault file for ${runId} belongs to ${String(envelope.runId)}`);
+      if (expiryOf(blob) <= this.now().getTime()) {
         await this.options.storage.delete(runId);
       } else {
         plain = this.decrypt(envelope, await this.options.keys.getKey());
+        expiresAt = envelope.expiresAt;
       }
     }
-    return new RunVault(runId, plain, async (p) => this.persist(runId, p));
+    // The expiry is fixed at the first save, so a run that keeps saving still expires on time.
+    expiresAt ??= new Date(this.now().getTime() + this.ttlMs).toISOString();
+    const fixed = expiresAt;
+    return new RunVault(runId, plain, async (p) => this.persist(runId, p, fixed));
   }
 
-  /** Delete every expired run vault. Returns the run ids removed. */
-  async purgeExpired(): Promise<string[]> {
+  /**
+   * Delete every expired run vault. A file that isn't valid JSON or has no valid
+   * expiry counts as expired. A file that can't be read is skipped and reported
+   * in `failed`, so one bad file doesn't stop the purge.
+   */
+  async purgeExpired(): Promise<{ removed: string[]; failed: string[] }> {
     const removed: string[] = [];
+    const failed: string[] = [];
     for (const runId of await this.options.storage.list()) {
-      const blob = await this.options.storage.read(runId);
-      if (!blob) continue;
-      let expired = true;
       try {
-        expired = Date.parse((JSON.parse(blob) as Envelope).expiresAt) <= this.now().getTime();
+        const blob = await this.options.storage.read(runId);
+        if (blob === undefined) continue;
+        if (expiryOf(blob) <= this.now().getTime()) {
+          await this.options.storage.delete(runId);
+          removed.push(runId);
+        }
       } catch {
-        // unreadable file: treat as expired
-      }
-      if (expired) {
-        await this.options.storage.delete(runId);
-        removed.push(runId);
+        failed.push(runId);
       }
     }
-    return removed;
+    return { removed, failed };
   }
 
-  private async persist(runId: string, plain: Plain): Promise<void> {
+  private async persist(runId: string, plain: Plain, expiresAt: string): Promise<void> {
     const key = await this.options.keys.getKey();
-    const iv = randomBytes(12);
-    const expiresAt = new Date(this.now().getTime() + this.ttlMs).toISOString();
-    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const iv = randomBytes(IV_BYTES);
+    const cipher = createCipheriv("aes-256-gcm", key, iv, { authTagLength: TAG_BYTES });
     cipher.setAAD(Buffer.from(`${runId}|${expiresAt}`, "utf8"));
     const data = Buffer.concat([cipher.update(JSON.stringify(plain), "utf8"), cipher.final()]);
     const envelope: Envelope = {
@@ -186,14 +215,19 @@ export class Vault {
 
   private decrypt(envelope: Envelope, key: Buffer): Plain {
     if (envelope.v !== 1 || envelope.alg !== "A256GCM") throw new Error(`Unsupported vault format for ${envelope.runId}`);
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
+    const bad = () => new Error(`Vault for ${envelope.runId} can't be decrypted: wrong key or tampered file`);
+    const iv = Buffer.from(String(envelope.iv), "base64");
+    const tag = Buffer.from(String(envelope.tag), "base64");
+    // Without these checks, GCM accepts a truncated tag and forgery gets much easier.
+    if (iv.length !== IV_BYTES || tag.length !== TAG_BYTES) throw bad();
+    const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: TAG_BYTES });
     decipher.setAAD(Buffer.from(`${envelope.runId}|${envelope.expiresAt}`, "utf8"));
-    decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+    decipher.setAuthTag(tag);
     try {
       const text = Buffer.concat([decipher.update(Buffer.from(envelope.data, "base64")), decipher.final()]).toString("utf8");
       return JSON.parse(text) as Plain;
     } catch {
-      throw new Error(`Vault for ${envelope.runId} can't be decrypted: wrong key or tampered file`);
+      throw bad();
     }
   }
 }

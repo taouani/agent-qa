@@ -52,6 +52,13 @@ export const defaultKeyringFactory: KeyringFactory = async (service, account) =>
   return new mod.Entry(service, account);
 };
 
+function unavailable(detail: string): Error {
+  return new Error(
+    `The OS keychain can't be used for the vault key (${detail}). ` +
+      `Set ${VAULT_KEY_ENV} instead; generate one with: openssl rand -base64 32`,
+  );
+}
+
 /** Key kept in the OS keychain (macOS Keychain, Windows Credential Manager, Secret Service). */
 export class KeychainKeyProvider implements KeyProvider {
   readonly description = `OS keychain (${KEYCHAIN_SERVICE}/${KEYCHAIN_ACCOUNT})`;
@@ -62,15 +69,24 @@ export class KeychainKeyProvider implements KeyProvider {
   async getKey(): Promise<Buffer> {
     if (this.cached) return this.cached;
     const entry = await this.factory(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
-    const existing = entry.getPassword();
-    if (existing) {
-      this.cached = decodeKey(existing, this.description);
-    } else {
-      const key = randomBytes(32);
-      entry.setPassword(key.toString("base64"));
-      this.cached = key;
+    let stored = this.keychain(() => entry.getPassword());
+    if (!stored) {
+      this.keychain(() => entry.setPassword(randomBytes(32).toString("base64")));
+      // Read back what was stored: if two processes create a key at once, the last write
+      // wins, and both must use that one or one process writes vaults nobody can decrypt.
+      stored = this.keychain(() => entry.getPassword());
+      if (!stored) throw unavailable("the key was stored but can't be read back");
     }
+    this.cached = decodeKey(stored, this.description);
     return this.cached;
+  }
+
+  private keychain<T>(call: () => T): T {
+    try {
+      return call();
+    } catch (error) {
+      throw unavailable(error instanceof Error ? error.message : String(error));
+    }
   }
 }
 

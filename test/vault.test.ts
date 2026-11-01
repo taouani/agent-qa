@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -83,21 +83,56 @@ describe("Vault", () => {
     await expect(new Vault({ storage, keys }).open("r2")).rejects.toThrow(/belongs to r1/);
   });
 
-  it("expires a run's vault", async () => {
+  it("expires a run's vault, counted from its first save", async () => {
     let now = new Date("2026-11-01T00:00:00Z");
     const storage = new MemoryVaultStorage();
     const vault = new Vault({ storage, keys, ttlMs: 1000, now: () => now });
     const run = await vault.open("r1");
     run.tokenFor("PERSON", "x");
     await run.save();
+
+    now = new Date(now.getTime() + 600);
+    run.tokenFor("PERSON", "x2");
+    await run.save(); // saving again doesn't push the expiry out
     const keep = await vault.open("r2");
     keep.tokenFor("PERSON", "y");
+    await keep.save();
 
-    now = new Date(now.getTime() + 2000);
-    await keep.save(); // r2 written after the clock moved, so it's still fresh
-    expect(await vault.purgeExpired()).toEqual(["r1"]);
+    now = new Date(now.getTime() + 600);
+    expect(await vault.purgeExpired()).toEqual({ removed: ["r1"], failed: [] });
     expect((await vault.open("r1")).size).toBe(0);
     expect((await vault.open("r2")).valueOf("<PERSON_1>")).toBe("y");
+  });
+
+  it("purges files with no valid expiry and keeps going past an unreadable one", async () => {
+    const storage = new MemoryVaultStorage();
+    storage.blobs.set("garbage", "not json");
+    storage.blobs.set("noexpiry", JSON.stringify({ v: 1, runId: "noexpiry" }));
+    storage.blobs.set("badexpiry", JSON.stringify({ v: 1, runId: "badexpiry", expiresAt: "soon" }));
+    storage.blobs.set("locked", "{}");
+    const read = storage.read.bind(storage);
+    storage.read = async (id) => {
+      if (id === "locked") throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      return read(id);
+    };
+    const result = await new Vault({ storage, keys }).purgeExpired();
+    expect(result.removed.sort()).toEqual(["badexpiry", "garbage", "noexpiry"]);
+    expect(result.failed).toEqual(["locked"]);
+  });
+
+  it("rejects a truncated auth tag or a wrong-size IV", async () => {
+    const storage = new MemoryVaultStorage();
+    const run = await new Vault({ storage, keys }).open("r1");
+    run.tokenFor("PERSON", "x");
+    await run.save();
+    const envelope = JSON.parse(storage.blobs.get("r1")!);
+    const tag = Buffer.from(envelope.tag, "base64");
+    for (const n of [4, 8, 12]) {
+      storage.blobs.set("r1", JSON.stringify({ ...envelope, tag: tag.subarray(0, n).toString("base64") }));
+      await expect(new Vault({ storage, keys }).open("r1")).rejects.toThrow(/wrong key or tampered/);
+    }
+    storage.blobs.set("r1", JSON.stringify({ ...envelope, iv: randomBytes(16).toString("base64") }));
+    await expect(new Vault({ storage, keys }).open("r1")).rejects.toThrow(/wrong key or tampered/);
   });
 
   it("rejects unsafe run ids and bad token kinds", async () => {
@@ -132,6 +167,33 @@ describe("key providers", () => {
     expect([...store.keys()]).toEqual(["sf-agent-qa/vault-key"]);
   });
 
+  it("uses the key that ended up stored when two processes create one at once", async () => {
+    const { store, factory } = fakeKeyring();
+    // Another process writes its key right after ours.
+    const racing = (service: string, account: string): KeyringEntry => {
+      const inner = factory(service, account);
+      return {
+        getPassword: inner.getPassword,
+        setPassword: (p) => {
+          inner.setPassword(p);
+          inner.setPassword(randomBytes(32).toString("base64"));
+        },
+      };
+    };
+    const ours = await new KeychainKeyProvider(racing).getKey();
+    expect(ours.toString("base64")).toBe(store.get("sf-agent-qa/vault-key"));
+  });
+
+  it("explains how to fall back to AGENT_QA_VAULT_KEY when the keychain fails", async () => {
+    const broken = (): KeyringEntry => ({
+      getPassword: () => null,
+      setPassword: () => {
+        throw new Error("Couldn't access platform storage: AccessDenied");
+      },
+    });
+    await expect(new KeychainKeyProvider(broken).getKey()).rejects.toThrow(/AccessDenied.*AGENT_QA_VAULT_KEY.*openssl rand -base64 32/s);
+  });
+
   it("looks up ${keychain:NAME} config secrets", async () => {
     const { store, factory } = fakeKeyring();
     store.set("sf-agent-qa/jira-token", "s3cret");
@@ -147,7 +209,9 @@ describe("FileVaultStorage", () => {
     try {
       const storage = new FileVaultStorage(dir);
       expect(await new FileVaultStorage(join(dir, "missing")).list()).toEqual([]);
+      if (process.platform !== "win32") await chmod(dir, 0o755);
       await storage.write("r1", "{}");
+      if (process.platform !== "win32") expect((await stat(dir)).mode & 0o077).toBe(0);
       await writeFile(join(dir, "notes.txt"), "x");
       expect(await storage.list()).toEqual(["r1"]);
       await storage.delete("r1");
