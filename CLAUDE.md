@@ -32,6 +32,7 @@ npm run lint       # ESLint, including the module boundary rules
 | `harness` | core, data, masking, llm, workflows |
 | `mcp` | core, data, workflows |
 | `cli` | core, data, llm, workflows, harness, mcp |
+| `src/index.ts` (public API) | core, data, workflows |
 
 Never relax these rules to make an import work. Route the call through `data` instead.
 

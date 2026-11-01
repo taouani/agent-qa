@@ -22,6 +22,7 @@
   "engines": {
     "node": ">=20"
   },
+  "types": "./dist/index.d.ts",
   "bin": {
     "agent-qa": "./dist/cli/bin.js"
   },

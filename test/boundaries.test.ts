@@ -26,4 +26,17 @@ describe("module boundaries", () => {
   it("keeps core free of other modules", async () => {
     expect(await lint("src/core/x.ts", 'export * from "../data/index.js";\n')).toContain("boundaries/element-types");
   });
+
+  it("keeps the public entry point away from connectors and masking", async () => {
+    expect(await lint("src/index.ts", 'export * from "./connectors/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/index.ts", 'export * from "./masking/index.js";\n')).toContain("boundaries/element-types");
+  });
+
+  it("checks .mts files too", async () => {
+    expect(await lint("src/cli/x.mts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
+  });
+
+  it("forbids dynamic imports with computed paths", async () => {
+    expect(await lint("src/cli/x.ts", "const p = 'x';\nexport const m = import(p);\n")).toContain("no-restricted-syntax");
+  });
 });

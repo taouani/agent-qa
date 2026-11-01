@@ -18,18 +18,19 @@ const allowed = {
   harness: ["core", "data", "masking", "llm", "workflows", "harness"],
   mcp: ["core", "data", "workflows", "mcp"],
   cli: ["core", "data", "llm", "workflows", "harness", "mcp", "cli"],
-  root: Object.keys({ core: 1, masking: 1, connectors: 1, data: 1, llm: 1, workflows: 1, harness: 1, mcp: 1, cli: 1 }),
+  // Public library entry point: never exposes connectors or masking internals.
+  root: ["core", "data", "workflows"],
 };
 
 export default tseslint.config(
   { ignores: ["dist/**", "node_modules/**", "coverage/**"] },
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.ts"],
+    files: ["src/**/*.{ts,mts,cts,tsx}"],
     plugins: { boundaries },
     settings: {
       "import/resolver": { typescript: { alwaysTryTypes: true } },
-      "boundaries/include": ["src/**/*.ts"],
+      "boundaries/include": ["src/**/*.{ts,mts,cts,tsx}"],
       "boundaries/dependency-nodes": ["import", "export", "dynamic-import"],
       "boundaries/elements": [
         ...Object.keys(allowed)
@@ -39,6 +40,14 @@ export default tseslint.config(
       ],
     },
     rules: {
+      // A dynamic import with a computed path can't be checked by the boundary rule.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportExpression[source.type!='Literal']",
+          message: "Dynamic import() needs a literal path so module boundaries can be checked.",
+        },
+      ],
       "boundaries/no-unknown-files": "error",
       "boundaries/element-types": [
         "error",
