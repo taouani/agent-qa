@@ -1,0 +1,89 @@
+import type { z } from "zod";
+
+/** Kinds of step a host model can be asked to answer. */
+export type ActionStepKind = "generate" | "confirm";
+
+/** All step kinds, including the two terminal ones. */
+export type StepKind = ActionStepKind | "done" | "failed";
+
+export type RunStatus = "running" | "done" | "failed" | "cancelled";
+
+/** A validation error, addressed by JSON path into the submitted output. */
+export interface OutputError {
+  path: string;
+  message: string;
+}
+
+/** What the core hands to a host (MCP) or driver (CLI) to answer. */
+export interface Step {
+  runId: string;
+  stepId: string;
+  kind: StepKind;
+  /** Rendered prompt for the model. Empty for terminal steps. */
+  instructions: string;
+  /** Masked context only. Never real personal values. */
+  context: string;
+  /** JSON Schema the output must match. Absent for terminal steps. */
+  outputSchema?: unknown;
+  attempt: number;
+  maxAttempts: number;
+  /** For `failed` steps: why the run stopped. */
+  errors?: OutputError[];
+}
+
+export type SubmitResult =
+  | { status: "accepted"; next: Step }
+  | { status: "rejected"; errors: OutputError[]; attempt: number; maxAttempts: number; next: Step };
+
+/** Read-only view a step gets of the run so far. */
+export interface StepContext<I> {
+  runId: string;
+  inputs: I;
+  /** Accepted outputs of earlier steps, keyed by step id. */
+  outputs: Readonly<Record<string, unknown>>;
+}
+
+export interface StepDefinition<I = unknown, O = unknown> {
+  id: string;
+  kind: ActionStepKind;
+  outputSchema: z.ZodType<O>;
+  instructions: (ctx: StepContext<I>) => string;
+  context?: (ctx: StepContext<I>) => string | Promise<string>;
+  /** Defaults to the engine's maxAttempts (3). */
+  maxAttempts?: number;
+  /** Runs after the output is accepted, for example to write an artifact. */
+  onAccept?: (ctx: StepContext<I>, output: O) => void | Promise<void>;
+}
+
+export interface WorkflowDefinition<I = unknown> {
+  id: string;
+  description: string;
+  inputSchema: z.ZodType<I>;
+  // Steps differ in output type, so the list is typed loosely here.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  steps: ReadonlyArray<StepDefinition<I, any>>;
+}
+
+/** Everything needed to resume a run after a restart. */
+export interface RunState {
+  runId: string;
+  workflowId: string;
+  status: RunStatus;
+  inputs: unknown;
+  /** Index into the workflow's steps of the open step. */
+  stepIndex: number;
+  /** Attempt number of the open step, starting at 1. */
+  attempt: number;
+  outputs: Record<string, unknown>;
+  /** Results of accepted steps, returned again if the same step is resubmitted. */
+  accepted: Record<string, SubmitResult>;
+  failure?: OutputError[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Where run state lives. T8 adds the run-folder store; tests use memory. */
+export interface StateStore {
+  load(runId: string): Promise<RunState | undefined>;
+  save(state: RunState): Promise<void>;
+}
