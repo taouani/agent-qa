@@ -39,7 +39,8 @@ export interface AuditEntry {
   at: string;
   id: string;
   mode: Mode;
-  target: WriteTarget;
+  /** `unknown` when the caller named a target that doesn't exist; its text is never logged. */
+  target: WriteTarget | "unknown";
   summary: string;
   runId?: string;
   decision: Decision["kind"];
@@ -61,7 +62,7 @@ export class MemoryAuditSink implements AuditSink {
 
 export class PolicyDenied extends Error {
   constructor(
-    readonly target: WriteTarget,
+    readonly target: WriteTarget | "unknown",
     readonly reason: string,
     options?: { cause?: unknown },
   ) {
@@ -131,13 +132,14 @@ export class Policy {
    */
   async guard<T>(request: WriteRequest, perform: (grant: WriteGrant) => Promise<T>): Promise<GuardResult<T>> {
     const decision = this.decide(request.target);
+    const safeTarget = isTarget(request.target) ? request.target : "unknown";
     const id = randomBytes(6).toString("hex");
     const record = (outcome: AuditEntry["outcome"], error?: string) =>
       this.options.audit.append({
         at: this.now().toISOString(),
         id,
         mode: this.options.mode,
-        target: request.target,
+        target: safeTarget,
         summary: request.summary,
         ...(request.runId ? { runId: request.runId } : {}),
         decision: decision.kind,
@@ -148,15 +150,20 @@ export class Policy {
       try {
         await record("denied", note);
       } catch (cause) {
-        throw new PolicyDenied(request.target, reason, { cause });
+        throw new PolicyDenied(safeTarget, reason, { cause });
       }
-      throw new PolicyDenied(request.target, reason);
+      throw new PolicyDenied(safeTarget, reason);
     };
     const quietly = async (outcome: AuditEntry["outcome"], error?: string) => {
       try {
         await record(outcome, error);
       } catch (auditError) {
-        this.options.onAuditError?.(auditError);
+        try {
+          if (this.options.onAuditError) this.options.onAuditError(auditError);
+          else process.emitWarning("agent-qa: an audit entry could not be written", { code: "AGENT_QA_AUDIT" });
+        } catch {
+          // A failing handler must not turn a finished write into an error.
+        }
       }
     };
 
@@ -179,7 +186,7 @@ export class Policy {
     try {
       await record("approved");
     } catch (cause) {
-      throw new PolicyDenied(request.target, "the audit log can't be written, so the write was not made", { cause });
+      throw new PolicyDenied(safeTarget, "the audit log can't be written, so the write was not made", { cause });
     }
 
     const grant = Object.freeze({

@@ -75,7 +75,11 @@ describe("Policy.guard", () => {
     await expect(p.guard(request, async () => 1)).rejects.toBeInstanceOf(PolicyDenied);
     await expect(p.guard({ target: "jira", summary: "Edit PROJ-1" }, async () => 1)).rejects.toThrow(/"deny"/);
     await expect(p.guard({ target: "slack" as never, summary: "x" }, async () => 1)).rejects.toThrow(/unknown write target/);
-    expect(audit.entries.map((e) => e.outcome)).toEqual(["denied", "denied", "denied"]);
+    const secret = "ghp_" + "s".repeat(36);
+    await expect(p.guard({ target: secret as never, summary: "x" }, async () => 1)).rejects.not.toThrow(secret);
+    expect(JSON.stringify(audit.entries)).not.toContain(secret);
+    expect(audit.entries.map((e) => e.outcome)).toEqual(["denied", "denied", "denied", "denied"]);
+    expect(audit.entries[2]!.target).toBe("unknown");
   });
 
   it("denies unknown targets and rules in decide, in CI too", () => {
@@ -117,6 +121,17 @@ describe("Policy.guard", () => {
     });
     expect(await flaky.guard(request, async () => 7)).toEqual({ status: "done", value: 7 });
     expect(late).toHaveLength(1);
+
+    calls = 0;
+    const throwing = new Policy({
+      rules: allowAll,
+      mode: "ide",
+      audit: { append: async () => (calls++ === 0 ? undefined : Promise.reject(new Error("disk full"))) },
+      onAuditError: () => {
+        throw new Error("handler broke");
+      },
+    });
+    expect(await throwing.guard(request, async () => 8)).toEqual({ status: "done", value: 8 });
   });
 
   it("keeps the original error when auditing a failure fails, and PolicyDenied when auditing a denial fails", async () => {
@@ -192,6 +207,8 @@ describe("fs write lint rule", () => {
     "require()": 'export const x = require("fs");\n',
     "import = require": 'import fs = require("fs");\nexport const x = fs;\n',
     "child_process": 'import { execSync } from "node:child_process";\nexport const x = execSync;\n',
+    "process.getBuiltinModule": 'export const x = process.getBuiltinModule("fs");\n',
+    "process.binding": 'export const x = process.binding("fs");\n',
     "createRequire": 'import { createRequire } from "node:module";\nexport const x = createRequire;\n',
   };
 
@@ -205,6 +222,7 @@ describe("fs write lint rule", () => {
     expect(await lint('import { readFile, stat } from "node:fs/promises";\nexport const x = [readFile, stat];\n', "src/data/x.ts")).toEqual([]);
     const append = 'import { appendFile } from "node:fs/promises";\nexport const x = appendFile;\n';
     expect(await lint(append, "src/core/policy/audit.ts")).toEqual([]);
+    expect(await lint('import type { WriteStream } from "node:fs";\nexport type W = WriteStream;\n', "src/data/x.ts")).toEqual([]);
     expect((await lint(append, "src/core/policy/policy.ts")).length).toBeGreaterThan(0);
     expect((await lint('import { execSync } from "node:child_process";\nexport const x = execSync;\n', "src/core/policy/audit.ts")).length).toBeGreaterThan(0);
   });
