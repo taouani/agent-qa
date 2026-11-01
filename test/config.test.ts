@@ -140,6 +140,56 @@ describe("agent-qa.yaml", () => {
   });
 });
 
+describe("agent-qa.yaml hardening", () => {
+  it("gives every parse its own defaults", () => {
+    const first = parseConfig("version: 1\n");
+    first.policy.writes.jira = "allow";
+    first.masking.restoreOnWrite = true;
+    const second = parseConfig("version: 1\n");
+    expect(second.policy.writes.jira).toBe("deny");
+    expect(second.masking.restoreOnWrite).toBe(false);
+  });
+
+  it("fills missing policy defaults", () => {
+    expect(parseConfig("version: 1\npolicy:\n  writes:\n    xray: allow\n").policy.writes).toEqual({
+      xray: "allow",
+      confluence: "ask",
+      testCode: "ask",
+      jira: "deny",
+    });
+    expect(parseConfig("version: 1\npolicy: {}\n").policy.writes.jira).toBe("deny");
+  });
+
+  it("rejects credentials in URLs and URLs without //", () => {
+    const withUser = "version: 1\ngit:\n  platform: gitlab\n  repo: a/b\n  token: ${env:T}\n  baseUrl: https://oauth2:hunter2secretvalue@gitlab.example.com\n";
+    expect(problems(withUser)).toEqual([expect.objectContaining({ path: "git.baseUrl", message: expect.stringMatching(/username or password/) })]);
+    expect(problems(FULL.replace("https://acme--qa.sandbox.my.salesforce.com", "https:acme.my.salesforce.com")).map((p) => p.path)).toEqual(["salesforce.baseUrl"]);
+  });
+
+  it("scans keys and never echoes a secret in a message", () => {
+    const secret = "sk-ant-" + "x".repeat(40);
+    const text = `version: 1\nmodels:\n  default: openai:gpt-x\n  workflows:\n    ${secret}: openai:gpt-x\n`;
+    const found = problems(text);
+    expect(found).toEqual([expect.objectContaining({ path: "models.workflows.<key>", line: 5 })]);
+    expect(JSON.stringify(found)).not.toContain(secret);
+  });
+
+  it("catches JWTs and Slack tokens but not ordinary sk- names", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    expect(problems(`version: 1\nproject:\n  name: ${jwt}\n`)[0]?.message).toMatch(/JWT/);
+    expect(problems("version: 1\nproject:\n  name: xoxb-123456789012-abcdefghij\n")[0]?.message).toMatch(/Slack/);
+    expect(parseConfig("version: 1\nproject:\n  name: sk-regression-suite-salesforce\n").project?.name).toBe("sk-regression-suite-salesforce");
+    const jql = 'version: 1\nharness:\n  sources:\n    - jira:\n        jql: "labels in (sk-regression-nightly-run)"\n';
+    expect(parseConfig(jql).harness?.sources).toHaveLength(1);
+  });
+
+  it("turns an alias bomb into a ConfigError", () => {
+    const lines = ["version: 1", "a: &a [x, x, x, x, x, x, x, x, x, x]"];
+    for (let i = 0; i < 8; i++) lines.push(`${String.fromCharCode(98 + i)}: &${String.fromCharCode(98 + i)} [*${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}, *${String.fromCharCode(97 + i)}]`);
+    expect(() => parseConfig(lines.join("\n") + "\n")).toThrow(/can.t be read/);
+  });
+});
+
 describe("secret references", () => {
   it("resolves env and keychain references at use time", async () => {
     expect(await resolveSecret("${env:TOKEN}", { env: { TOKEN: "t0k" } })).toBe("t0k");
@@ -149,7 +199,8 @@ describe("secret references", () => {
   it("fails clearly when a secret is missing", async () => {
     await expect(resolveSecret("${env:NOPE}", { env: {} })).rejects.toThrow(/NOPE is not set/);
     await expect(resolveSecret("${keychain:x}", {})).rejects.toThrow(/No keychain/);
-    await expect(resolveSecret("plain", {})).rejects.toThrow(/Not a secret reference/);
+    await expect(resolveSecret("ghp_realsecretvalue", {})).rejects.toThrow(/Not a secret reference/);
+    await expect(resolveSecret("ghp_realsecretvalue", {})).rejects.not.toThrow(/ghp_/);
   });
 });
 

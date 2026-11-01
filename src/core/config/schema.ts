@@ -12,8 +12,22 @@ const secretRef = z
   .string()
   .regex(SECRET_REF, "must be a secret reference like ${env:NAME} or ${keychain:NAME}, never the secret itself");
 
-const httpsUrl = z.url({ protocol: /^https$/, error: "must be an https:// URL" });
-const anyUrl = z.url({ protocol: /^https?$/, error: "must be an http(s):// URL" });
+/** URLs must use `//` and never carry credentials (`user:pass@host`). */
+function url(protocol: RegExp, label: string) {
+  return z
+    .url({ protocol, error: `must be an ${label} URL` })
+    .refine((v) => /^[a-z]+:\/\//i.test(v), `must be an ${label} URL`)
+    .refine((v) => {
+      try {
+        const u = new URL(v);
+        return u.username === "" && u.password === "";
+      } catch {
+        return false;
+      }
+    }, "must not contain a username or password; put credentials in a secret reference");
+}
+const httpsUrl = url(/^https$/, "https://");
+const anyUrl = url(/^https?$/, "http(s)://");
 
 export const PROVIDERS = ["anthropic", "openai", "mistral", "xai", "google", "openrouter", "litellm"] as const;
 export type Provider = (typeof PROVIDERS)[number];
@@ -39,6 +53,7 @@ export const configSchema = z
     atlassian: z
       .object({
         site: httpsUrl,
+        /** Personal data if written literally; prefer ${env:ATLASSIAN_EMAIL} so it stays out of git. */
         email: z.string().min(1),
         token: secretRef,
         confluence: z.object({ spaceKey: z.string().min(1), parentPageId: z.string().min(1).optional() }).strict().optional(),
@@ -87,7 +102,7 @@ export const configSchema = z
         presidio: z.object({ url: anyUrl.nullable() }).strict().optional(),
       })
       .strict()
-      .default({ restoreOnWrite: false }),
+      .default(() => ({ restoreOnWrite: false })),
 
     policy: z
       .object({
@@ -99,10 +114,11 @@ export const configSchema = z
             jira: writePolicy.default("deny"),
           })
           .strict()
-          .default({ xray: "ask", confluence: "ask", testCode: "ask", jira: "deny" }),
+          // Factory defaults: each parse gets its own object, so a caller can't change another's defaults.
+          .default(() => ({ xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const })),
       })
       .strict()
-      .default({ writes: { xray: "ask", confluence: "ask", testCode: "ask", jira: "deny" } }),
+      .default(() => ({ writes: { xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const } })),
 
     harness: z
       .object({
