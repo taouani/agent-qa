@@ -3,3 +3,4 @@ dist/
 coverage/
 .agent-qa/vault/
 *.log
+.agent-qa/state/
