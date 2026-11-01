@@ -1,5 +1,15 @@
+import { join } from "node:path";
 import { Command } from "commander";
-import { VERSION } from "../core/index.js";
+import { FileStateStore, VERSION, WorkflowEngine } from "../core/index.js";
+import { serveStdio } from "../mcp/index.js";
+import { builtinWorkflows } from "../workflows/index.js";
+
+/** Engine with every built-in workflow, keeping run state under `{cwd}/.agent-qa/state`. */
+export function createEngine(cwd = process.cwd()): WorkflowEngine {
+  const engine = new WorkflowEngine({ store: new FileStateStore(join(cwd, ".agent-qa", "state")) });
+  for (const workflow of builtinWorkflows) engine.register(workflow);
+  return engine;
+}
 
 export function buildProgram(): Command {
   const program = new Command();
@@ -11,7 +21,6 @@ export function buildProgram(): Command {
   const planned: Array<[string, string]> = [
     ["init", "set up agent-qa.yaml and host settings"],
     ["run <workflow>", "run a workflow from the CLI"],
-    ["mcp", "start the MCP server for an IDE host"],
     ["doctor", "check config, credentials and environment"],
     ["harness", "run the quality harness"],
     ["profile", "build or refresh the framework profile"],
@@ -25,5 +34,12 @@ export function buildProgram(): Command {
         process.exitCode = 2;
       });
   }
+  program
+    .command("mcp")
+    .description("start the MCP server for an IDE host (stdio)")
+    .action(async () => {
+      await serveStdio(createEngine());
+    });
+
   return program;
 }

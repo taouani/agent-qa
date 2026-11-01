@@ -9,6 +9,6 @@ describe("cli", () => {
 
   it("lists the planned commands", () => {
     const names = buildProgram().commands.map((c) => c.name());
-    expect(names).toEqual(["init", "run", "mcp", "doctor", "harness", "profile"]);
+    expect(names).toEqual(["init", "run", "doctor", "harness", "profile", "mcp"]);
   });
 });
