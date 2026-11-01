@@ -22,6 +22,17 @@ const allowed = {
   root: ["core", "data", "workflows"],
 };
 
+/** fs functions that write. Outside the files listed below, writes must go through the policy layer. */
+const FS_WRITES = [
+  "default", "writeFile", "writeFileSync", "appendFile", "appendFileSync", "createWriteStream",
+  "rename", "renameSync", "rm", "rmSync", "unlink", "unlinkSync", "rmdir", "rmdirSync",
+  "mkdir", "mkdirSync", "open", "openSync", "copyFile", "copyFileSync", "cp", "cpSync",
+  "truncate", "truncateSync", "symlink", "symlinkSync", "chmod", "chmodSync",
+];
+const FS_MODULES = ["fs", "node:fs", "fs/promises", "node:fs/promises"];
+/** The only files allowed to write to disk directly: local state, run folders, vault, audit log. */
+const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/policy/**", "src/core/runs/**", "src/masking/vault/**"];
+
 export default tseslint.config(
   { ignores: ["dist/**", "node_modules/**", "coverage/**"] },
   ...tseslint.configs.recommended,
@@ -48,6 +59,16 @@ export default tseslint.config(
           message: "Dynamic import() needs a literal path so module boundaries can be checked.",
         },
       ],
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: FS_MODULES.map((name) => ({
+            name,
+            importNames: FS_WRITES,
+            message: "Disk writes outside the run store, vault and engine state go through Policy.guard (src/core/policy).",
+          })),
+        },
+      ],
       "boundaries/no-unknown-files": "error",
       "boundaries/element-types": [
         "error",
@@ -58,5 +79,9 @@ export default tseslint.config(
         },
       ],
     },
+  },
+  {
+    files: FS_WRITERS,
+    rules: { "no-restricted-imports": "off" },
   },
 );
