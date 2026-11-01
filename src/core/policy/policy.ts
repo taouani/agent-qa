@@ -1,6 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
 import type { Config } from "../config/index.js";
 
 /**
@@ -45,21 +43,13 @@ export interface AuditEntry {
   summary: string;
   runId?: string;
   decision: Decision["kind"];
-  outcome: "done" | "declined" | "denied" | "failed";
+  /** `approved` is written before the write runs; a write never runs if that entry can't be stored. */
+  outcome: "approved" | "done" | "declined" | "denied" | "failed";
   error?: string;
 }
 
 export interface AuditSink {
   append(entry: AuditEntry): Promise<void>;
-}
-
-/** Appends JSON lines to `.agent-qa/audit.jsonl`. Entries hold masked summaries only. */
-export class FileAuditSink implements AuditSink {
-  constructor(private readonly file: string) {}
-  async append(entry: AuditEntry): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true });
-    await appendFile(this.file, JSON.stringify(entry) + "\n", "utf8");
-  }
 }
 
 export class MemoryAuditSink implements AuditSink {
@@ -73,8 +63,9 @@ export class PolicyDenied extends Error {
   constructor(
     readonly target: WriteTarget,
     readonly reason: string,
+    options?: { cause?: unknown },
   ) {
-    super(`Write to ${target} denied: ${reason}`);
+    super(`Write to ${target} denied: ${reason}`, options);
     this.name = "PolicyDenied";
   }
 }
@@ -86,6 +77,20 @@ export interface PolicyOptions {
   /** Asks the user; resolves true to proceed. Required for `ask` in IDE mode. */
   confirm?: (request: WriteRequest) => Promise<boolean>;
   now?: () => Date;
+  /**
+   * Called when the audit entry for a finished write can't be stored. The write
+   * already happened, so guard still returns its result; the `approved` entry stays.
+   */
+  onAuditError?: (error: unknown) => void;
+}
+
+const isTarget = (t: unknown): t is WriteTarget => (WRITE_TARGETS as readonly unknown[]).includes(t);
+const RULES: readonly unknown[] = ["allow", "ask", "deny"];
+
+/** Error names go into the audit log; anything that isn't a plain identifier becomes "Error". */
+function errorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  return /^[A-Za-z]{1,40}$/.test(name) ? name : "Error";
 }
 
 /** Grants issued by `guard`. A look-alike object built elsewhere isn't in here. */
@@ -100,9 +105,12 @@ export class Policy {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** What would happen for a write to `target`, without doing it. */
+  /** What would happen for a write to `target`, without doing it. Unknown targets and rules are denied. */
   decide(target: WriteTarget): Decision {
-    const rule = this.options.rules[target];
+    if (!isTarget(target)) return { kind: "deny", reason: "unknown write target" };
+    const rules = this.options.rules as Record<string, unknown>;
+    const rule = Object.hasOwn(rules, target) ? rules[target] : undefined;
+    if (!RULES.includes(rule)) return { kind: "deny", reason: `policy.writes.${target} is not allow, ask or deny` };
     if (rule === "deny") return { kind: "deny", reason: `policy.writes.${target} is "deny"` };
     if (this.options.mode === "ci") {
       // CI rule: test code only ever leaves as a pull or merge request.
@@ -117,13 +125,11 @@ export class Policy {
 
   /**
    * The one way to write outside the run folder. Decides, asks if needed,
-   * runs `perform` with a grant, and records the outcome in the audit log.
-   * Throws PolicyDenied when the policy forbids the write.
+   * records `approved`, runs `perform` with a grant that is valid only while
+   * `perform` runs, and records the outcome. Throws PolicyDenied when the
+   * policy forbids the write or the audit log can't record the approval.
    */
   async guard<T>(request: WriteRequest, perform: (grant: WriteGrant) => Promise<T>): Promise<GuardResult<T>> {
-    if (!(WRITE_TARGETS as readonly string[]).includes(request.target)) {
-      throw new PolicyDenied(request.target, "unknown write target");
-    }
     const decision = this.decide(request.target);
     const id = randomBytes(6).toString("hex");
     const record = (outcome: AuditEntry["outcome"], error?: string) =>
@@ -138,33 +144,61 @@ export class Policy {
         outcome,
         ...(error ? { error } : {}),
       });
-
-    if (decision.kind === "deny") {
-      await record("denied");
-      throw new PolicyDenied(request.target, decision.reason);
-    }
-    if (decision.kind === "ask") {
-      if (!this.options.confirm) {
-        await record("denied", "no way to ask the user");
-        throw new PolicyDenied(request.target, "approval required but no way to ask the user");
+    const deny = async (reason: string, note?: string): Promise<never> => {
+      try {
+        await record("denied", note);
+      } catch (cause) {
+        throw new PolicyDenied(request.target, reason, { cause });
       }
-      if (!(await this.options.confirm(request))) {
-        await record("declined");
+      throw new PolicyDenied(request.target, reason);
+    };
+    const quietly = async (outcome: AuditEntry["outcome"], error?: string) => {
+      try {
+        await record(outcome, error);
+      } catch (auditError) {
+        this.options.onAuditError?.(auditError);
+      }
+    };
+
+    if (decision.kind === "deny") return deny(decision.reason);
+    if (decision.kind === "ask") {
+      if (!this.options.confirm) return deny("approval required but no way to ask the user", "no way to ask the user");
+      let approved: boolean;
+      try {
+        approved = await this.options.confirm(request);
+      } catch (error) {
+        await quietly("failed", errorName(error));
+        throw error;
+      }
+      if (!approved) {
+        await quietly("declined");
         return { status: "declined" };
       }
     }
 
-    const grant = { id, target: request.target, via: decision.kind === "pull-request" ? "pull-request" : "direct" } as WriteGrant;
     try {
-      Object.freeze(grant);
-      issued.add(grant);
-      const value = await perform(grant);
-      await record("done");
-      return { status: "done", value };
-    } catch (error) {
-      await record("failed", error instanceof Error ? error.name : "Error");
-      throw error;
+      await record("approved");
+    } catch (cause) {
+      throw new PolicyDenied(request.target, "the audit log can't be written, so the write was not made", { cause });
     }
+
+    const grant = Object.freeze({
+      id,
+      target: request.target,
+      via: decision.kind === "pull-request" ? "pull-request" : "direct",
+    }) as WriteGrant;
+    issued.add(grant);
+    let value: T;
+    try {
+      value = await perform(grant);
+    } catch (error) {
+      await quietly("failed", errorName(error));
+      throw error;
+    } finally {
+      issued.delete(grant); // a grant kept by a connector is worthless after guard returns
+    }
+    await quietly("done");
+    return { status: "done", value };
   }
 }
 

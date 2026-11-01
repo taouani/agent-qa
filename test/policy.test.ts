@@ -57,7 +57,8 @@ describe("Policy.guard", () => {
     expect(result).toEqual({ status: "done", value: 42 });
     expect(asked).toBe(1);
     expect(audit.entries).toEqual([
-      expect.objectContaining({ target: "xray", decision: "ask", outcome: "done", runId: "r1", mode: "ide", at: "2026-11-01T00:00:00.000Z" }),
+      expect.objectContaining({ target: "xray", decision: "ask", outcome: "approved", runId: "r1", mode: "ide", at: "2026-11-01T00:00:00.000Z" }),
+      expect.objectContaining({ outcome: "done" }),
     ]);
   });
 
@@ -74,7 +75,13 @@ describe("Policy.guard", () => {
     await expect(p.guard(request, async () => 1)).rejects.toBeInstanceOf(PolicyDenied);
     await expect(p.guard({ target: "jira", summary: "Edit PROJ-1" }, async () => 1)).rejects.toThrow(/"deny"/);
     await expect(p.guard({ target: "slack" as never, summary: "x" }, async () => 1)).rejects.toThrow(/unknown write target/);
-    expect(audit.entries.map((e) => e.outcome)).toEqual(["denied", "denied"]);
+    expect(audit.entries.map((e) => e.outcome)).toEqual(["denied", "denied", "denied"]);
+  });
+
+  it("denies unknown targets and rules in decide, in CI too", () => {
+    expect(policy("ci", allowAll).p.decide("slack" as never)).toMatchObject({ kind: "deny" });
+    expect(policy("ide", { ...allowAll, xray: undefined as never }).p.decide("xray")).toMatchObject({ kind: "deny" });
+    expect(policy("ide", { ...allowAll, xray: "yes" as never }).p.decide("xray")).toMatchObject({ kind: "deny" });
   });
 
   it("gives CI test code a pull-request grant without asking", async () => {
@@ -83,25 +90,71 @@ describe("Policy.guard", () => {
     });
     const result = await p.guard({ target: "testCode", summary: "Add 2 specs" }, async (g) => g.via);
     expect(result).toEqual({ status: "done", value: "pull-request" });
+    const ide = await policy("ide", allowAll).p.guard({ target: "testCode", summary: "Add 2 specs" }, async (g) => g.via);
+    expect(ide).toEqual({ status: "done", value: "direct" });
+  });
+
+  it("refuses a grant kept after guard returns", async () => {
+    const { p } = policy("ide", allowAll);
+    let kept: WriteGrant | undefined;
+    await p.guard(request, async (grant) => void (kept = grant));
+    expect(() => assertGrant(kept, "xray")).toThrow(/without a policy grant/);
+  });
+
+  it("doesn't write when the audit log fails, and reports a late audit failure without failing the write", async () => {
+    let writes = 0;
+    const broken = new Policy({ rules: allowAll, mode: "ide", audit: { append: async () => Promise.reject(new Error("disk full")) } });
+    await expect(broken.guard(request, async () => void writes++)).rejects.toThrow(/audit log can't be written/);
+    expect(writes).toBe(0);
+
+    let calls = 0;
+    const late: unknown[] = [];
+    const flaky = new Policy({
+      rules: allowAll,
+      mode: "ide",
+      audit: { append: async () => (calls++ === 0 ? undefined : Promise.reject(new Error("disk full"))) },
+      onAuditError: (e) => late.push(e),
+    });
+    expect(await flaky.guard(request, async () => 7)).toEqual({ status: "done", value: 7 });
+    expect(late).toHaveLength(1);
+  });
+
+  it("keeps the original error when auditing a failure fails, and PolicyDenied when auditing a denial fails", async () => {
+    let calls = 0;
+    const p = new Policy({ rules: allowAll, mode: "ide", audit: { append: async () => (calls++ === 0 ? undefined : Promise.reject(new Error("audit"))) } });
+    const boom = new Error("boom");
+    await expect(p.guard(request, async () => Promise.reject(boom))).rejects.toBe(boom);
+    const denied = new Policy({ rules: defaults(), mode: "ide", audit: { append: async () => Promise.reject(new Error("audit")) } });
+    await expect(denied.guard({ target: "jira", summary: "x" }, async () => 1)).rejects.toBeInstanceOf(PolicyDenied);
+  });
+
+  it("audits a confirm that throws, and rethrows it", async () => {
+    const { p, audit } = policy("ide", defaults(), async () => Promise.reject(Object.assign(new Error("x"), { name: "AbortError" })));
+    await expect(p.guard(request, async () => 1)).rejects.toThrow("x");
+    expect(audit.entries).toEqual([expect.objectContaining({ outcome: "failed", error: "AbortError" })]);
   });
 
   it("audits a failed write with the error name only, and rethrows", async () => {
     const { p, audit } = policy("ide", allowAll);
     const boom = Object.assign(new Error("token ghp_secret leaked in message"), { name: "HttpError" });
     await expect(p.guard(request, async () => Promise.reject(boom))).rejects.toBe(boom);
-    expect(audit.entries[0]).toMatchObject({ outcome: "failed", error: "HttpError" });
+    expect(audit.entries[1]).toMatchObject({ outcome: "failed", error: "HttpError" });
     expect(JSON.stringify(audit.entries)).not.toContain("ghp_secret");
+    const named = Object.assign(new Error("x"), { name: "ghp_secret_in_name" });
+    await expect(p.guard(request, async () => Promise.reject(named))).rejects.toBe(named);
+    expect(audit.entries.at(-1)).toMatchObject({ error: "Error" });
   });
 
   it("writes the audit log as JSON lines", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-qa-audit-"));
     try {
-      const file = join(dir, "nested", "audit.jsonl");
-      const p = new Policy({ rules: allowAll, mode: "ide", audit: new FileAuditSink(file) });
-      await p.guard(request, async () => 1);
-      await p.guard({ target: "confluence", summary: "Publish page" }, async () => 2);
-      const lines = (await readFile(file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
-      expect(lines.map((l) => l.target)).toEqual(["xray", "confluence"]);
+      const sink = FileAuditSink.forRoot(dir);
+      expect(sink.file).toBe(join(dir, ".agent-qa", "audit.jsonl"));
+      const p = new Policy({ rules: allowAll, mode: "ide", audit: sink });
+      await Promise.all(Array.from({ length: 20 }, (_, i) => p.guard({ target: "confluence", summary: `Publish page ${i}` }, async () => i)));
+      const lines = (await readFile(sink.file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+      expect(lines).toHaveLength(40);
+      expect(lines.filter((l) => l.outcome === "done")).toHaveLength(20);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -116,6 +169,11 @@ describe("assertGrant", () => {
     const { p } = policy("ide", allowAll);
     await p.guard({ target: "confluence", summary: "Publish" }, async (grant) => {
       expect(() => assertGrant(grant, "xray")).toThrow(PolicyDenied);
+      assertGrant(grant, "confluence");
+    });
+    const other = policy("ide", allowAll).p;
+    await other.guard({ target: "jira", summary: "Edit" }, async (grant) => {
+      expect(() => assertGrant(grant, "xray")).toThrow(PolicyDenied);
     });
   });
 });
@@ -124,10 +182,30 @@ describe("fs write lint rule", () => {
   const eslint = new ESLint({ cwd: process.cwd() });
   const lint = async (code: string, file: string) => (await eslint.lintText(code, { filePath: file }))[0]!.messages.map((m) => m.ruleId);
 
-  it("blocks fs writes outside the policy, run and vault modules", async () => {
-    expect(await lint('import { writeFile } from "node:fs/promises";\nexport const w = writeFile;\n', "src/workflows/x.ts")).toContain("no-restricted-imports");
-    expect(await lint('import * as fs from "node:fs";\nexport const f = fs;\n', "src/data/x.ts")).toContain("no-restricted-imports");
-    expect(await lint('import { readFile } from "node:fs/promises";\nexport const r = readFile;\n', "src/data/x.ts")).not.toContain("no-restricted-imports");
-    expect(await lint('import { appendFile } from "node:fs/promises";\nexport const a = appendFile;\n', "src/core/policy/x.ts")).not.toContain("no-restricted-imports");
+  const blocked = {
+    "a named write": 'import { writeFile } from "node:fs/promises";\nexport const x = writeFile;\n',
+    "a write not in any list": 'import { link } from "node:fs/promises";\nexport const x = link;\n',
+    "fs.promises": 'import { promises } from "node:fs";\nexport const x = promises;\n',
+    "a namespace import": 'import * as fs from "node:fs";\nexport const x = fs;\n',
+    "a default import": 'import fs from "fs";\nexport const x = fs;\n',
+    "a literal dynamic import": 'export const x = await import("node:fs/promises");\n',
+    "require()": 'export const x = require("fs");\n',
+    "import = require": 'import fs = require("fs");\nexport const x = fs;\n',
+    "child_process": 'import { execSync } from "node:child_process";\nexport const x = execSync;\n',
+    "createRequire": 'import { createRequire } from "node:module";\nexport const x = createRequire;\n',
+  };
+
+  for (const [name, code] of Object.entries(blocked)) {
+    it(`blocks ${name} outside the writer files`, async () => {
+      expect((await lint(code, "src/workflows/x.ts")).length).toBeGreaterThan(0);
+    });
+  }
+
+  it("allows fs reads anywhere, and writes only in the writer files", async () => {
+    expect(await lint('import { readFile, stat } from "node:fs/promises";\nexport const x = [readFile, stat];\n', "src/data/x.ts")).toEqual([]);
+    const append = 'import { appendFile } from "node:fs/promises";\nexport const x = appendFile;\n';
+    expect(await lint(append, "src/core/policy/audit.ts")).toEqual([]);
+    expect((await lint(append, "src/core/policy/policy.ts")).length).toBeGreaterThan(0);
+    expect((await lint('import { execSync } from "node:child_process";\nexport const x = execSync;\n', "src/core/policy/audit.ts")).length).toBeGreaterThan(0);
   });
 });

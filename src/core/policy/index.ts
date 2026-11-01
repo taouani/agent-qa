@@ -1,4 +1,5 @@
-export { assertGrant, FileAuditSink, MemoryAuditSink, Policy, PolicyDenied, WRITE_TARGETS } from "./policy.js";
+export { FileAuditSink } from "./audit.js";
+export { assertGrant, MemoryAuditSink, Policy, PolicyDenied, WRITE_TARGETS } from "./policy.js";
 export type {
   AuditEntry,
   AuditSink,
