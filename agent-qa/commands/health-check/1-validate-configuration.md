@@ -27,7 +27,25 @@ For each field, report:
 - **FAIL** if missing or invalid
 - **WARN** if empty but optional
 
-### Step 3: Check core directory structure
+### Step 3: Validate live automation configuration
+
+These fields are optional. Skip the whole step with **SKIP — live automation not configured**
+when `playwright_project_root` is empty AND `agent-qa/framework-profile.md` does not exist.
+
+1. **playwright_project_root** — if non-empty, the directory must exist and contain
+   `playwright.config.ts` or `playwright.config.js`. **FAIL** otherwise.
+2. **browser_cli_command** — must be non-empty. Default is `playwright-cli`.
+3. **automation.allow_source_edits** — must be `true` or `false`. Report which, because `true`
+   means commands may modify source outside `agent-qa/`.
+4. **automation.auth_state_ttl_minutes** and **automation.stability_runs** — must be positive
+   integers.
+5. **agent-qa/framework-profile.md** — if present, report its `generated` date and `reviewed`
+   flag. **WARN** when `reviewed: false`, because commands will refuse to proceed.
+6. **Auth state hygiene** — if the profile records an `auth_state_path`, check that its
+   directory is matched by `.gitignore`. **WARN** if not: browser auth state must never be
+   committed. Check the path only; never read the file.
+
+### Step 4: Check core directory structure
 
 Verify the following directories exist under `agent-qa/`:
 
@@ -42,7 +60,7 @@ For each directory:
 - **FAIL** if missing
 - **WARN** if exists but empty
 
-### Step 4: Check IDE integration
+### Step 5: Check IDE integration
 
 Based on `installed_ides` in config.yml, verify the corresponding IDE directories exist:
 
@@ -55,7 +73,7 @@ For each configured IDE:
 - **PASS** if all expected files exist
 - **WARN** if some files missing
 
-### Step 5: Display configuration summary
+### Step 6: Display configuration summary
 
 Display a summary table:
 

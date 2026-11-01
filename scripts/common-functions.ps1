@@ -278,6 +278,74 @@ function Test-AgentQAInstalled {
     return (Test-Path $configFile)
 }
 
+# Backfill automation config keys into an existing config.yml.
+# Projects installed before the live-automation feature was added never had
+# these keys written by their original install, and the update path below
+# only rewrites a handful of known keys. This appends any of the five keys
+# that are missing, using the same defaults as config.yml.template. It never
+# touches a key that is already present (whatever its value), and is safe to
+# run repeatedly - already-present keys are left exactly as they are.
+function Add-MissingAutomationConfig {
+    param([string]$ConfigFile)
+
+    if (-not (Test-Path $ConfigFile)) {
+        return
+    }
+
+    $content = Get-Content $ConfigFile -Raw
+
+    if ($content -notmatch '(?m)^playwright_project_root\s*:') {
+        Add-Content -Path $ConfigFile -Value ""
+        Add-Content -Path $ConfigFile -Value 'playwright_project_root: ""'
+        Print-Verbose "Added missing config key: playwright_project_root"
+        $content = Get-Content $ConfigFile -Raw
+    }
+
+    if ($content -notmatch '(?m)^browser_cli_command\s*:') {
+        Add-Content -Path $ConfigFile -Value 'browser_cli_command: "playwright-cli"'
+        Print-Verbose "Added missing config key: browser_cli_command"
+        $content = Get-Content $ConfigFile -Raw
+    }
+
+    if ($content -notmatch '(?m)^automation\s*:\s*$') {
+        Add-Content -Path $ConfigFile -Value ""
+        Add-Content -Path $ConfigFile -Value "automation:"
+        Add-Content -Path $ConfigFile -Value "  allow_source_edits: false      # Master switch. While false, all commands are report-only and never write outside agent-qa/."
+        Add-Content -Path $ConfigFile -Value "  auth_state_ttl_minutes: 60     # Reuse a saved browser auth state younger than this."
+        Add-Content -Path $ConfigFile -Value "  stability_runs: 3              # Consecutive passing runs required before a fix is considered stable."
+        Print-Verbose "Added missing config block: automation"
+        return
+    }
+
+    # automation: already exists - append only the sub-keys that are missing,
+    # right after the automation: line, without touching existing sub-keys.
+    $missingLines = @()
+    if ($content -notmatch '(?m)^[ \t]+allow_source_edits\s*:') {
+        $missingLines += "  allow_source_edits: false      # Master switch. While false, all commands are report-only and never write outside agent-qa/."
+    }
+    if ($content -notmatch '(?m)^[ \t]+auth_state_ttl_minutes\s*:') {
+        $missingLines += "  auth_state_ttl_minutes: 60     # Reuse a saved browser auth state younger than this."
+    }
+    if ($content -notmatch '(?m)^[ \t]+stability_runs\s*:') {
+        $missingLines += "  stability_runs: 3              # Consecutive passing runs required before a fix is considered stable."
+    }
+
+    if ($missingLines.Count -gt 0) {
+        $lines = Get-Content $ConfigFile
+        $newLines = @()
+        $inserted = $false
+        foreach ($line in $lines) {
+            $newLines += $line
+            if (-not $inserted -and $line -match '^automation\s*:\s*$') {
+                $newLines += $missingLines
+                $inserted = $true
+            }
+        }
+        $newLines | Out-File -FilePath $ConfigFile -Encoding UTF8
+        Print-Verbose "Added missing automation sub-key(s)"
+    }
+}
+
 function New-OrUpdateConfig {
     param(
         [string]$ProjectDir,
@@ -318,6 +386,10 @@ function New-OrUpdateConfig {
         }
 
         Print-Verbose "Updated existing config.yml"
+
+        # Backfill automation keys that did not exist when this project was
+        # first installed. Only adds missing keys; never rewrites existing ones.
+        Add-MissingAutomationConfig -ConfigFile $configFile
     } else {
         # Create new config from template
         if (Test-Path $templateFile) {

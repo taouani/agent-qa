@@ -20,7 +20,10 @@ agent-qa/YYYY-MM-DD-{context}/
 ├── playwright/
 ├── test-data/
 ├── api-tests/
-└── accessibility-tests/
+├── accessibility-tests/
+├── ui-snapshots/
+├── reviews/
+└── debug/
 ```
 
 Only create subdirectories for deliverables that are being generated.
@@ -104,3 +107,11 @@ Test case CSV files follow Jira Xray import format:
 | TestRail CSV Export | `testrail-import.csv` |
 | Change Log | `change-log.md` |
 | Index/Summary | `README.md` |
+| UI Exploration Report | `exploration.md` |
+| UI Snapshot | `ui-snapshots/{TEST-CASE-ID}/{NN}-{state}.yml` |
+| Architecture Review | `architecture-review.md` |
+| Refactor Plan | `refactor-plan.md` |
+| Refactor Report | `refactor-report.md` |
+| Code Review | `code-review.md` |
+| Debug Report | `debug/report.md` |
+| Framework Profile | `agent-qa/framework-profile.md` (repository root, not a dated folder) |

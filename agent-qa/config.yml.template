@@ -125,6 +125,30 @@ playwright_base_url: "http://localhost:3000"
 playwright_browser: "chromium"               # chromium | firefox | webkit
 playwright_viewport: "1280x720"
 
+# ================================================
+# Live Automation
+# Settings for commands that operate on a real Playwright repository:
+# explore-ui, debug-tests, review-automation-code, audit-framework,
+# refactor-framework, and the run-and-stabilize phase of
+# generate-playwright-tests.
+#
+# playwright_project_root is the path, relative to the project root,
+# containing playwright.config.ts and the test sources. Use "." when the
+# Playwright project IS the project root.
+#
+# browser_cli_command is the stateful session CLI used for UI exploration.
+# It is NOT "npx playwright". Install it with: npm install -g playwright-cli
+# ================================================
+playwright_project_root: ""
+browser_cli_command: "playwright-cli"
+
+automation:
+  allow_source_edits: false      # Master switch. While false, all commands are report-only
+                                 # and never write outside agent-qa/.
+  auth_state_ttl_minutes: 60     # Reuse a saved browser auth state younger than this.
+  stability_runs: 3              # Consecutive passing runs required before a fix is
+                                 # considered stable.
+
 
 # ================================================
 # Post-Generation Hooks

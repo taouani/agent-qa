@@ -31,6 +31,21 @@ Agent-QA requires MCP servers to be configured in your IDE. The installation scr
 
 **Important**: Ensure your MCP servers are working before proceeding with Agent-QA installation.
 
+### Live Automation Prerequisites
+
+Required only for `explore-ui`, `debug-tests`, `review-automation-code`, `audit-framework`, and
+`refactor-framework`:
+
+```bash
+npm install -g playwright-cli     # stateful browser session CLI used for UI exploration
+```
+
+`playwright-cli` is not `npx playwright`. Both are used: `playwright-cli` drives an interactive
+browser session and emits accessibility-tree YAML snapshots; `npx playwright` runs the suite.
+
+Then set `playwright_project_root` in `agent-qa/config.yml` and run `/agent-qa:health-check` to
+confirm both tools are detected.
+
 ## Base Installation
 
 The base installation downloads Agent-QA to your home directory (`~/agent-qa`). This is a one-time setup.
