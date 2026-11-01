@@ -45,7 +45,7 @@ if (-not (Test-Path $commonFunctions)) {
     Write-Host "Agent QA base installation not found at $BaseDir" -ForegroundColor Red
     Write-Host ""
     Write-Host "Run the base installation first:"
-    Write-Host "  irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex"
+    Write-Host "  irm https://raw.githubusercontent.com/taouani/agent-qa/v1/scripts/base-install.ps1 | iex"
     exit 1
 }
 . $commonFunctions
@@ -533,7 +533,7 @@ function Test-BaseInstallation {
         Print-Error "Agent QA base installation not found at $BaseDir"
         Write-Host ""
         Print-Status "Run the base installation first:"
-        Write-Host "  irm https://raw.githubusercontent.com/taouani/agent-qa/master/scripts/base-install.ps1 | iex"
+        Write-Host "  irm https://raw.githubusercontent.com/taouani/agent-qa/v1/scripts/base-install.ps1 | iex"
         exit 1
     }
 
