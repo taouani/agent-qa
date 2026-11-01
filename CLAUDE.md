@@ -41,5 +41,6 @@ Never relax these rules to make an import work. Route the call through `data` in
 - ESM, Node 20+, TypeScript strict. Relative imports use the `.js` extension.
 - Schemas are zod. Artifacts are typed JSON with a `sourceHash`, stored under `.agent-qa/runs/{UTC date}-{context}-{id}/`.
 - Test case IDs are `TC-{REQUIREMENT-KEY}-{NNN}`. Priorities are P1 to P4.
+- `agent-qa.yaml` is defined by the zod schema in `src/core/config/schema.ts`. After changing it, run `npm run schema` to regenerate `schema/agent-qa.schema.json` (a test checks they match).
 - Secrets never appear in files. Config holds only `${env:NAME}` or `${keychain:NAME}` references.
 - Every write outside the run folder goes through the policy layer.

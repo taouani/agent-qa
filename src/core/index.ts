@@ -2,3 +2,4 @@
 export const MODULE = "core";
 export { VERSION } from "./version.js";
 export * from "./engine/index.js";
+export * from "./config/index.js";
