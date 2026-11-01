@@ -4,9 +4,10 @@ import { FileStateStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 
-/** Engine with every built-in workflow, keeping run state under `{cwd}/.agent-qa/state`. */
-export function createEngine(cwd = process.cwd()): WorkflowEngine {
-  const engine = new WorkflowEngine({ store: new FileStateStore(join(cwd, ".agent-qa", "state")) });
+/** Engine with every built-in workflow. Run state goes to `AGENT_QA_STATE_DIR`, else `{cwd}/.agent-qa/state`. */
+export function createEngine(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): WorkflowEngine {
+  const dir = env.AGENT_QA_STATE_DIR || join(cwd, ".agent-qa", "state");
+  const engine = new WorkflowEngine({ store: new FileStateStore(dir) });
   for (const workflow of builtinWorkflows) engine.register(workflow);
   return engine;
 }

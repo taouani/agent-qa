@@ -7,8 +7,8 @@ The spike uses a toy workflow, `spike-test-cases`, on three synthetic tickets (`
 ## Setup (about 5 minutes)
 
 1. Clone this repo, then run `npm ci && npm run build`.
-2. Open any folder in VS Code (1.99 or later) with GitHub Copilot enabled.
-3. Add `.vscode/mcp.json` to that folder, using the absolute path to your clone:
+2. Open any folder in VS Code (1.102 or later) with GitHub Copilot enabled.
+3. Add `.vscode/mcp.json` to that folder, using the absolute path to your clone. On Windows, write the path with forward slashes (`C:/Users/you/agent-qa/...`) or doubled backslashes, because a single `\` is invalid JSON.
 
    ```json
    {
@@ -16,19 +16,20 @@ The spike uses a toy workflow, `spike-test-cases`, on three synthetic tickets (`
        "agent-qa": {
          "type": "stdio",
          "command": "node",
-         "args": ["/ABSOLUTE/PATH/TO/agent-qa/dist/cli/bin.js", "mcp"]
+         "args": ["/ABSOLUTE/PATH/TO/agent-qa/dist/cli/bin.js", "mcp"],
+         "cwd": "${workspaceFolder}"
        }
      }
    }
    ```
 
-4. Open the Copilot Chat view and switch it to **Agent** mode. Start the `agent-qa` server when VS Code offers to (or use **MCP: List Servers** and start it). Run state is written to `.agent-qa/state/` in that folder.
+4. Open the Copilot Chat view and switch it to **Agent** mode. Start the `agent-qa` server when VS Code offers to (or use **MCP: List Servers** and start it). Run state is written to `.agent-qa/state/` in that folder. To put it elsewhere, set `AGENT_QA_STATE_DIR` under `"env"` in `mcp.json`. To put it elsewhere, set `AGENT_QA_STATE_DIR` under `"env"` in `mcp.json`.
 
 ## Runs
 
 Do six runs: two models (one Anthropic, one OpenAI, picked in the Copilot model menu) × three tickets. Start each run in a new chat, with one of these:
 
-- **Slash command:** type `/` and look for `mcp.agent-qa.spike-test-cases`. Give inputs `{"ticket":"SPIKE-2"}`.
+- **Slash command:** type `/` and look for `mcp.agent-qa.spike-test-cases`. VS Code asks for the `inputs` argument; enter `{"ticket":"SPIKE-2"}`.
 - **Plain request (if the prompt isn't listed):** "Use the agent-qa tools to run the spike-test-cases workflow for ticket SPIKE-2."
 
 When the model reaches the confirm step and asks whether to push, answer yes.

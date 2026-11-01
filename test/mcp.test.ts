@@ -68,10 +68,25 @@ describe("MCP step protocol", () => {
     expect(status.body.status).toBe("done");
   });
 
+  it("accepts inputs sent as a JSON string", async () => {
+    const client = await connect();
+    const start = await call(client, "workflow_start", { workflow: "spike-test-cases", inputs: '{"ticket":"SPIKE-3"}' });
+    expect(start.body).toMatchObject({ stepId: "analyze" });
+    expect(start.body.context).toContain("SPIKE-3");
+  });
+
+  it("names the available workflows in the start tool", async () => {
+    const client = await connect();
+    const start = (await client.listTools()).tools.find((t) => t.name === "workflow_start")!;
+    expect(JSON.stringify(start.inputSchema)).toContain("spike-test-cases");
+  });
+
   it("returns engine errors as tool errors with a code", async () => {
     const client = await connect();
     const bad = await call(client, "workflow_start", { workflow: "spike-test-cases", inputs: { ticket: "NOPE" } });
     expect(bad).toMatchObject({ isError: true, body: { error: "INVALID_INPUTS", errors: [{ path: "$.ticket" }] } });
+    const notJson = await call(client, "workflow_start", { workflow: "spike-test-cases", inputs: "SPIKE-1" });
+    expect(notJson).toMatchObject({ isError: true, body: { error: "INVALID_INPUTS" } });
     const missing = await call(client, "workflow_next", { runId: "missing" });
     expect(missing).toMatchObject({ isError: true, body: { error: "RUN_NOT_FOUND" } });
   });

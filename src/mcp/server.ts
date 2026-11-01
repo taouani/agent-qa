@@ -34,7 +34,7 @@ async function guard(fn: () => Promise<unknown>): Promise<CallToolResult> {
   }
 }
 
-/** Models sometimes send JSON as a string; accept both. */
+/** Models sometimes send JSON objects as strings; accept both. */
 function parseOutput(output: unknown): unknown {
   if (typeof output !== "string") return output;
   try {
@@ -61,11 +61,16 @@ export function createMcpServer(engine: WorkflowEngine): McpServer {
     {
       description: "Start an Agent-QA workflow. Returns the run id and the first step to answer.\n\n" + LOOP_INSTRUCTIONS,
       inputSchema: {
-        workflow: z.string().min(1).describe("Workflow id from workflow_list"),
-        inputs: z.record(z.string(), z.unknown()).describe("Workflow inputs, e.g. { \"ticket\": \"SPIKE-1\" }"),
+        workflow: z
+          .string()
+          .min(1)
+          .describe(`Workflow id from workflow_list. Available: ${engine.list().map((w) => w.id).join(", ")}`),
+        inputs: z
+          .union([z.record(z.string(), z.unknown()), z.string()])
+          .describe("Workflow inputs as a JSON object, e.g. { \"ticket\": \"SPIKE-1\" }. See workflow_list for each workflow's input schema."),
       },
     },
-    async ({ workflow, inputs }) => guard(() => engine.start(workflow, inputs)),
+    async ({ workflow, inputs }) => guard(() => engine.start(workflow, parseOutput(inputs))),
   );
 
   server.registerTool(
