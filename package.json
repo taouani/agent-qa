@@ -1,0 +1,60 @@
+{
+  "name": "sf-agent-qa",
+  "version": "0.0.0",
+  "description": "Open-source QA agent: Jira, Confluence and Xray to masked, validated test cases and Playwright scripts, for Copilot, Claude Code, Cursor and CI.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/taouani/agent-qa.git"
+  },
+  "homepage": "https://github.com/taouani/agent-qa#readme",
+  "bugs": "https://github.com/taouani/agent-qa/issues",
+  "keywords": [
+    "qa",
+    "testing",
+    "jira",
+    "xray",
+    "playwright",
+    "salesforce",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "agent-qa": "./dist/cli/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "eslint": "^9.39.5",
+    "eslint-import-resolver-typescript": "^4.4.5",
+    "eslint-plugin-boundaries": "^5.4.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  }
+}
