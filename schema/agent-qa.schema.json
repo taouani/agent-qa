@@ -1,0 +1,411 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "project": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "atlassian": {
+      "type": "object",
+      "properties": {
+        "site": {
+          "type": "string",
+          "format": "uri"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+        },
+        "confluence": {
+          "type": "object",
+          "properties": {
+            "spaceKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "parentPageId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "spaceKey"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "site",
+        "email",
+        "token"
+      ],
+      "additionalProperties": false
+    },
+    "xray": {
+      "type": "object",
+      "properties": {
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientSecret": {
+          "type": "string",
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+        },
+        "projectKey": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        }
+      },
+      "required": [
+        "clientId",
+        "clientSecret",
+        "projectKey"
+      ],
+      "additionalProperties": false
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "platform": {
+          "type": "string",
+          "enum": [
+            "github",
+            "gitlab",
+            "azure-devops"
+          ]
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "platform",
+        "repo",
+        "token"
+      ],
+      "additionalProperties": false
+    },
+    "salesforce": {
+      "type": "object",
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "auth": {
+          "default": "storage-state",
+          "type": "string",
+          "enum": [
+            "storage-state"
+          ]
+        }
+      },
+      "required": [
+        "baseUrl"
+      ],
+      "additionalProperties": false
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "string",
+          "pattern": "^(anthropic|openai|mistral|xai|google|openrouter|litellm):[A-Za-z0-9._/@-]+$"
+        },
+        "allowed": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(anthropic|openai|mistral|xai|google|openrouter|litellm):([A-Za-z0-9._/@-]+|\\*)$"
+          }
+        },
+        "workflows": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^(anthropic|openai|mistral|xai|google|openrouter|litellm):[A-Za-z0-9._/@-]+$"
+          }
+        },
+        "keys": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "enum": [
+              "anthropic",
+              "openai",
+              "mistral",
+              "xai",
+              "google",
+              "openrouter",
+              "litellm"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+          }
+        },
+        "endpoints": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "enum": [
+              "anthropic",
+              "openai",
+              "mistral",
+              "xai",
+              "google",
+              "openrouter",
+              "litellm"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "required": [
+        "default"
+      ],
+      "additionalProperties": false
+    },
+    "masking": {
+      "default": {
+        "restoreOnWrite": false
+      },
+      "type": "object",
+      "properties": {
+        "restoreOnWrite": {
+          "default": false,
+          "type": "boolean"
+        },
+        "detectors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "email",
+              "phone",
+              "iban",
+              "card",
+              "national-id",
+              "name",
+              "address",
+              "ip"
+            ]
+          }
+        },
+        "fields": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "presidio": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uri"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "default": {
+        "writes": {
+          "xray": "ask",
+          "confluence": "ask",
+          "testCode": "ask",
+          "jira": "deny"
+        }
+      },
+      "type": "object",
+      "properties": {
+        "writes": {
+          "default": {
+            "xray": "ask",
+            "confluence": "ask",
+            "testCode": "ask",
+            "jira": "deny"
+          },
+          "type": "object",
+          "properties": {
+            "xray": {
+              "default": "ask",
+              "type": "string",
+              "enum": [
+                "allow",
+                "ask",
+                "deny"
+              ]
+            },
+            "confluence": {
+              "default": "ask",
+              "type": "string",
+              "enum": [
+                "allow",
+                "ask",
+                "deny"
+              ]
+            },
+            "testCode": {
+              "default": "ask",
+              "type": "string",
+              "enum": [
+                "allow",
+                "ask",
+                "deny"
+              ]
+            },
+            "jira": {
+              "default": "deny",
+              "type": "string",
+              "enum": [
+                "allow",
+                "ask",
+                "deny"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "harness": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "fixtures": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "fixtures"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "jira": {
+                    "type": "object",
+                    "properties": {
+                      "jql": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "jql"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "jira"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "seededPersonalData": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "additionalProperties": false
+    },
+    "playwright": {
+      "type": "object",
+      "properties": {
+        "baseUrl": {
+          "default": "http://localhost:3000",
+          "type": "string",
+          "format": "uri"
+        },
+        "testDir": {
+          "default": "tests",
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "default": ".agent-qa/framework-profile.json",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "additionalProperties": false
+}
