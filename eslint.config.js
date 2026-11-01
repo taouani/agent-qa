@@ -26,11 +26,11 @@ export default tseslint.config(
   { ignores: ["dist/**", "node_modules/**", "coverage/**"] },
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.{ts,mts,cts,tsx}"],
+    files: ["src/**/*.{ts,mts,cts,tsx,js,mjs,cjs}"],
     plugins: { boundaries },
     settings: {
       "import/resolver": { typescript: { alwaysTryTypes: true } },
-      "boundaries/include": ["src/**/*.{ts,mts,cts,tsx}"],
+      "boundaries/include": ["src/**/*.{ts,mts,cts,tsx,js,mjs,cjs}"],
       "boundaries/dependency-nodes": ["import", "export", "dynamic-import"],
       "boundaries/elements": [
         ...Object.keys(allowed)
