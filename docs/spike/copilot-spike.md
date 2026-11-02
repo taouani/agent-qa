@@ -7,6 +7,8 @@ The spike uses a toy workflow, `spike-test-cases`, on three synthetic tickets (`
 ## Setup (about 5 minutes)
 
 1. Clone this repo, then run `npm ci && npm run build`.
+
+   If the build fails on Windows with `Cannot read directory "../../..": Access is denied`, run `npm run build:tsc` instead. esbuild, which `npm run build` uses, looks for `package.json` and `tsconfig.json` in every parent folder up to the drive root, and it stops when a locked-down machine denies it access to one of them (for example `C:\` or `C:\Users`). `build:tsc` compiles with the TypeScript compiler, which doesn't do that, and writes the same `dist/cli/bin.js`.
 2. Open any folder in VS Code (1.102 or later) with GitHub Copilot enabled.
 3. Add `.vscode/mcp.json` to that folder, using the absolute path to your clone. On Windows, write the path with forward slashes (`C:/Users/you/agent-qa/...`) or doubled backslashes, because a single `\` is invalid JSON.
 
