@@ -1,13 +1,16 @@
 import { join } from "node:path";
 import { Command } from "commander";
-import { FileStateStore, VERSION, WorkflowEngine } from "../core/index.js";
+import { RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 
-/** Engine with every built-in workflow. Run state goes to `AGENT_QA_STATE_DIR`, else `{cwd}/.agent-qa/state`. */
+/**
+ * Engine with every built-in workflow, for the MCP server. Each run gets a
+ * folder under `AGENT_QA_RUNS_DIR`, else `{cwd}/.agent-qa/runs`.
+ */
 export function createEngine(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): WorkflowEngine {
-  const dir = env.AGENT_QA_STATE_DIR || join(cwd, ".agent-qa", "state");
-  const engine = new WorkflowEngine({ store: new FileStateStore(dir) });
+  const runs = new RunStore(env.AGENT_QA_RUNS_DIR || join(cwd, ".agent-qa", "runs"));
+  const engine = new WorkflowEngine({ store: runs.stateStore({ host: "other", driver: "host-model" }), newRunId: runs.newRunId });
   for (const workflow of builtinWorkflows) engine.register(workflow);
   return engine;
 }

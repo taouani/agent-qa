@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RunState, StateStore } from "./types.js";
 
 /** In-memory store, for tests and short-lived runs. Copies on read and write. */
@@ -44,22 +44,29 @@ export class FileStateStore implements StateStore {
   }
 
   async save(state: RunState): Promise<void> {
-    const target = this.file(state.runId);
-    await mkdir(this.dir, { recursive: true });
-    const tmp = `${target}.${randomBytes(6).toString("hex")}.tmp`;
+    await writeFileAtomic(this.file(state.runId), JSON.stringify(state, null, 2) + "\n");
+  }
+}
+
+/**
+ * Write a file atomically: temp file in the same folder, fsync, rename over the
+ * target. Creates the folder. Readers see the old file or the new one, never half.
+ */
+export async function writeFileAtomic(target: string, text: string, mode?: number): Promise<void> {
+  await mkdir(dirname(target), { recursive: true });
+  const tmp = `${target}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    const handle = await open(tmp, "w", mode);
     try {
-      const handle = await open(tmp, "w");
-      try {
-        await handle.writeFile(JSON.stringify(state, null, 2) + "\n", "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await renameWithRetry(tmp, target);
-    } catch (error) {
-      await rm(tmp, { force: true });
-      throw error;
+      await handle.writeFile(text, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
+    await renameWithRetry(tmp, target);
+  } catch (error) {
+    await rm(tmp, { force: true });
+    throw error;
   }
 }
 

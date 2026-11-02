@@ -23,7 +23,7 @@ The spike uses a toy workflow, `spike-test-cases`, on three synthetic tickets (`
    }
    ```
 
-4. Open the Copilot Chat view and switch it to **Agent** mode. Start the `agent-qa` server when VS Code offers to (or use **MCP: List Servers** and start it). Run state is written to `.agent-qa/state/` in that folder. To put it elsewhere, set `AGENT_QA_STATE_DIR` under `"env"` in `mcp.json`. To put it elsewhere, set `AGENT_QA_STATE_DIR` under `"env"` in `mcp.json`.
+4. Open the Copilot Chat view and switch it to **Agent** mode. Start the `agent-qa` server when VS Code offers to (or use **MCP: List Servers** and start it). Each run gets a folder under `.agent-qa/runs/` in that folder. To put runs elsewhere, set `AGENT_QA_RUNS_DIR` under `"env"` in `mcp.json`.
 
 ## Runs
 
@@ -59,7 +59,7 @@ The spike passes if four of these five hold for both models.
 | 5 | | SPIKE-2 | | | | | | |
 | 6 | | SPIKE-3 | | | | | | |
 
-The files in `.agent-qa/state/` show exactly what each run submitted and how many attempts it took. Attach them, or paste a summary, when you report back.
+The `steps/state.json` file in each run folder under `.agent-qa/runs/` shows exactly what each run submitted and how many attempts it took. Attach them, or paste a summary, when you report back.
 
 ## If it fails
 
