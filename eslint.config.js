@@ -62,9 +62,17 @@ const restrictedSyntax = (blockFs) => [
     selector: `ImportExpression[source.value=/^(node:)?(${blockFs ? "fs(\\/promises)?|" : ""}child_process|module|worker_threads)$/]`,
     message: FS_MESSAGE,
   },
+  // Loads fs without an import (Node 20.16+), or reaches native bindings: by name
+  // (dot access, destructuring), by string key, or by template key.
+  { selector: "Identifier[name=/^(getBuiltinModule|_linkedBinding|dlopen)$/]", message: FS_MESSAGE },
+  { selector: "MemberExpression[object.name='process'][property.name='binding']", message: FS_MESSAGE },
   {
-    // Loads fs without an import (Node 20.16+), or reaches native bindings.
-    selector: "MemberExpression[property.name=/^(getBuiltinModule|binding|_linkedBinding|dlopen)$/]",
+    selector: "MemberExpression[computed=true][property.value=/^(getBuiltinModule|binding|_linkedBinding|dlopen)$/]",
+    message: FS_MESSAGE,
+  },
+  {
+    selector:
+      "MemberExpression[computed=true] > TemplateLiteral.property[quasis.0.value.raw=/^(getBuiltinModule|binding|_linkedBinding|dlopen)$/]",
     message: FS_MESSAGE,
   },
   { selector: "CallExpression[callee.name='require']", message: "Use import; require() bypasses the import rules." },

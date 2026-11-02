@@ -208,6 +208,9 @@ describe("fs write lint rule", () => {
     "import = require": 'import fs = require("fs");\nexport const x = fs;\n',
     "child_process": 'import { execSync } from "node:child_process";\nexport const x = execSync;\n',
     "process.getBuiltinModule": 'export const x = process.getBuiltinModule("fs");\n',
+    "a destructured getBuiltinModule": 'const { getBuiltinModule } = process;\nexport const x = getBuiltinModule("fs");\n',
+    "a string-keyed getBuiltinModule": 'export const x = process["getBuiltinModule"]("fs");\n',
+    "a template-keyed getBuiltinModule": 'export const x = process[`getBuiltinModule`]("fs");\n',
     "process.binding": 'export const x = process.binding("fs");\n',
     "createRequire": 'import { createRequire } from "node:module";\nexport const x = createRequire;\n',
   };
@@ -222,6 +225,7 @@ describe("fs write lint rule", () => {
     expect(await lint('import { readFile, stat } from "node:fs/promises";\nexport const x = [readFile, stat];\n', "src/data/x.ts")).toEqual([]);
     const append = 'import { appendFile } from "node:fs/promises";\nexport const x = appendFile;\n';
     expect(await lint(append, "src/core/policy/audit.ts")).toEqual([]);
+    expect(await lint("export const f = (o: { binding: string }) => o.binding;\n", "src/data/x.ts")).toEqual([]);
     expect(await lint('import type { WriteStream } from "node:fs";\nexport type W = WriteStream;\n', "src/data/x.ts")).toEqual([]);
     expect((await lint(append, "src/core/policy/policy.ts")).length).toBeGreaterThan(0);
     expect((await lint('import { execSync } from "node:child_process";\nexport const x = execSync;\n', "src/core/policy/audit.ts")).length).toBeGreaterThan(0);
