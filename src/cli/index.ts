@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Command } from "commander";
 import { RunStore, VERSION, WorkflowEngine } from "../core/index.js";
+import { formatDoctor, runDoctor } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 
@@ -25,7 +26,6 @@ export function buildProgram(): Command {
   const planned: Array<[string, string]> = [
     ["init", "set up agent-qa.yaml and host settings"],
     ["run <workflow>", "run a workflow from the CLI"],
-    ["doctor", "check config, credentials and environment"],
     ["harness", "run the quality harness"],
     ["profile", "build or refresh the framework profile"],
   ];
@@ -38,6 +38,16 @@ export function buildProgram(): Command {
         process.exitCode = 2;
       });
   }
+  program
+    .command("doctor")
+    .description("check config, credentials and environment")
+    .option("--offline", "skip the network checks")
+    .option("--json", "print the results as JSON")
+    .action(async (opts: { offline?: boolean; json?: boolean }) => {
+      const results = await runDoctor({ cwd: process.cwd(), online: !opts.offline });
+      process.stdout.write(opts.json ? JSON.stringify(results, null, 2) + "\n" : formatDoctor(results));
+      if (results.some((r) => r.status === "fail")) process.exitCode = 1;
+    });
   program
     .command("mcp")
     .description("start the MCP server for an IDE host (stdio)")

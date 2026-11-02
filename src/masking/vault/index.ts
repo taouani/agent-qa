@@ -7,5 +7,6 @@ export {
   KeychainKeyProvider,
   keychainLookup,
   VAULT_KEY_ENV,
+  vaultKeyStatus,
 } from "./keys.js";
-export type { KeyProvider, KeyringEntry, KeyringFactory } from "./keys.js";
+export type { KeyProvider, KeyringEntry, KeyringFactory, VaultKeyStatus } from "./keys.js";
