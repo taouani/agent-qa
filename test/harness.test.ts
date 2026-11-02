@@ -76,6 +76,19 @@ describe("harness runner", () => {
     expect((await runHarness({ cases: DEFAULT_CASES.slice(0, 1), seeds: DEFAULT_SEEDS, pipeline: plain, driver: new StaticDriver() })).cases[0]!.error).toBe("TypeError: boom");
   });
 
+  it("withholds a seed in an error name, and treats a foreign leak error as an error", async () => {
+    const named: Pipeline = async () => {
+      throw Object.assign(new Error("x"), { name: "Quillfeather" });
+    };
+    const r1 = await runHarness({ cases: DEFAULT_CASES.slice(0, 1), seeds: DEFAULT_SEEDS, pipeline: named, driver: new StaticDriver() });
+    expect(r1.cases[0]!.error).toBe("Error: x");
+    const foreign: Pipeline = async () => {
+      throw new SeededLeakError([]);
+    };
+    const r2 = await runHarness({ cases: DEFAULT_CASES.slice(0, 1), seeds: DEFAULT_SEEDS, pipeline: foreign, driver: new StaticDriver() });
+    expect(r2.cases[0]!.status).toBe("error");
+  });
+
   it("gives each case its own copy of the tickets", async () => {
     const mutating: Pipeline = async ({ tickets }) => {
       tickets[0]!.description = "changed";
@@ -90,12 +103,49 @@ describe("seed scanner", () => {
   const ids = (text: string) => scanner.scan(text).map((h) => `${h.seedId}:${h.match}`);
 
   it("matches across case, spacing and separators, and single name parts", () => {
-    expect(ids("contact MARGUERITE   quillfeather")).toEqual(["seed-name-1:exact"]);
-    expect(ids("call +33612345678")).toEqual(["seed-phone-1:compact"]);
-    expect(ids("iban de89370400440532013000")).toEqual(["seed-iban-1:compact"]);
-    expect(ids("card 4111-1111-1111-1111")).toEqual(["seed-card-1:compact"]);
+    expect(ids("contact MARGUERITE   quillfeather")).toEqual(["seed-name-1:words"]);
+    expect(ids("contact Quillfeather, Marguerite")).toEqual(["seed-name-1:words"]);
+    expect(ids("call +33639981234")).toEqual(["seed-phone-1:digits"]);
+    expect(ids("call 06 39 98 12 34")).toEqual(["seed-phone-1:national"]);
+    expect(ids("iban de89370400440532013000")).toEqual(["seed-iban-1:digits"]);
+    expect(ids("card 4111-1111-1111-1111")).toEqual(["seed-card-1:digits"]);
+    expect(ids("card \uFF14\uFF11\uFF11\uFF11 1111 1111 1111")).toEqual(["seed-card-1:exact"]);
     expect(ids("ask Wrenhallow")).toEqual(["seed-name-2:name-part"]);
+    expect(ids("Wrenhallow's account and Quillfeather-Smith")).toEqual(["seed-name-1:name-part", "seed-name-2:name-part"]);
     expect(ids("Contact <PERSON_1> about <EMAIL_1>")).toEqual([]);
+  });
+
+  it("handles accents, escapes and base64", () => {
+    const accented = new SeedScanner([{ id: "s", kind: "name", value: "Zoë Ångström" }]);
+    for (const text of ["Zoe\u0308 A\u030Angstro\u0308m", "Zoe Angstrom", "contact Angstrom"]) expect(accented.scan(text)).toHaveLength(1);
+    const email = new SeedScanner([{ id: "e", kind: "email", value: "pat.vexwillow@example.com" }]);
+    for (const text of [
+      "pat.vexwillow%40example.com",
+      "pat.vexwillow&#64;example.com",
+      "pat.vexwillow\\u0040example.com",
+      "user patvexwillow",
+      Buffer.from("mail pat.vexwillow@example.com now").toString("base64"),
+    ]) expect(email.scan(text), text).toHaveLength(1);
+  });
+
+  it("avoids false positives on digits, IPs and common words", () => {
+    expect(ids("account 24111111111111111119")).toEqual([]);
+    const ip = new SeedScanner([{ id: "ip", kind: "ip", value: "192.0.2.10" }]);
+    expect(ip.scan("host 192.0.2.100")).toEqual([]);
+    expect(ip.scan("host 192.0.2.10.")).toHaveLength(1);
+    const grace = new SeedScanner([{ id: "g", kind: "name", value: "Grace Field" }]);
+    expect(grace.scan("Field: Case.Status, grace period")).toEqual([]);
+    expect(grace.scan("owner Field, Grace")).toHaveLength(1);
+    const short = new SeedScanner([{ id: "w", kind: "name", value: "Li Wu" }]);
+    expect(short.scan("Wu, Li")).toHaveLength(1);
+    const address = new SeedScanner([{ id: "a", kind: "address", value: "12 Rue de la Paix, Paris" }]);
+    expect(address.scan("12 Rue de la Paix\nParis")).toHaveLength(1);
+  });
+
+  it("scans every string in a request, not only message text", async () => {
+    const driver = new RecordingDriver(new StaticDriver(), DEFAULT_SEEDS, "c1");
+    const request = { messages: [{ role: "user" as const, content: "ok" }], tools: [{ description: "for m.quillfeather@example.com" }] };
+    await expect(driver.complete(request as never)).rejects.toBeInstanceOf(SeededLeakError);
   });
 
   it("refuses a leaking request in the recording driver", async () => {
@@ -116,6 +166,10 @@ describe("harness cases", () => {
     expect(() => validateCases([{ ...first!, seeds: ["seed-card-1"] }], DEFAULT_SEEDS)).toThrow(/don't contain it/);
     expect(() => validateCases([{ ...first!, seeds: ["nope"] }], DEFAULT_SEEDS)).toThrow(/unknown seed/);
     expect(() => validateCases([first!, first!], DEFAULT_SEEDS)).toThrow(HarnessCaseError);
+    expect(() => validateCases([first!], [...DEFAULT_SEEDS, DEFAULT_SEEDS[0]!])).toThrow(/Duplicate seed id/);
+    // Matching follows the scanner, so different case in the ticket still counts.
+    const lower = { ...first!, tickets: [{ ...first!.tickets[0]!, description: first!.tickets[0]!.description.toLowerCase() }] };
+    expect(() => validateCases([lower], DEFAULT_SEEDS)).not.toThrow();
   });
 
   describe("from agent-qa.yaml", () => {
@@ -156,9 +210,62 @@ describe("harness cases", () => {
       await expect(harnessSources(config, dir)).rejects.not.toThrow(/Secret Person/);
     });
 
+    it("rejects short digit seeds and duplicate seed ids", async () => {
+      const config = parseConfig("version: 1\nharness:\n  sources:\n    - fixtures: ./f\n  seededPersonalData: ./seeds.yaml\n");
+      await mkdir(join(dir, "f"));
+      await writeFile(join(dir, "seeds.yaml"), "seeds:\n  - id: p\n    kind: phone\n    value: '1 23'\n");
+      await expect(harnessSources(config, dir)).rejects.toThrow(/at least 8/);
+      await writeFile(join(dir, "seeds.yaml"), "seeds:\n  - id: p\n    kind: name\n    value: Ann Example\n  - id: p\n    kind: name\n    value: Bob Example\n");
+      await expect(harnessSources(config, dir)).rejects.toThrow(/duplicate seed id p/);
+      await expect(harnessSources(parseConfig("version: 1\nharness:\n  sources:\n    - fixtures: ./missing\n"), dir)).rejects.toThrow(/can't be read \(ENOENT\)/);
+    });
+
     it("uses the shipped set without a harness section", async () => {
       expect((await harnessSources(undefined, dir)).cases).toBe(DEFAULT_CASES);
     });
+  });
+});
+
+async function runCli(args: string[]) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => (out.push(String(chunk)), true));
+  const ewrite = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => (err.push(String(chunk)), true));
+  const before = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    await buildProgram().parseAsync(["node", "agent-qa", ...args]);
+    return { out: out.join(""), err: err.join(""), code: process.exitCode };
+  } finally {
+    write.mockRestore();
+    ewrite.mockRestore();
+    process.exitCode = before;
+  }
+}
+
+describe("agent-qa harness exit codes", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agent-qa-harness-cli-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("exits 2 when there is nothing to test", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), 'version: 1\nharness:\n  sources:\n    - jira:\n        jql: "project = QAH"\n');
+    const r = await runCli(["harness", "--cwd", dir]);
+    expect(r.code).toBe(2);
+    expect(r.err).toMatch(/no harness cases/);
+  });
+
+  it("exits 2 with one line for a bad config or a missing fixtures folder", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 2\n");
+    expect(await runCli(["harness", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/^agent-qa harness: Invalid config/) });
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nharness:\n  sources:\n    - fixtures: ./nope\n");
+    const r = await runCli(["harness", "--cwd", dir]);
+    expect(r).toMatchObject({ code: 2, err: expect.stringMatching(/ENOENT/) });
+    expect(r.err).not.toContain(dir);
   });
 });
 

@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
+import { SeedScanner } from "./scanner.js";
 
 /**
  * Harness case format (slice 0, T11). A case is a set of synthetic tickets
@@ -12,13 +13,21 @@ import { z } from "zod";
 export const SEED_KINDS = ["name", "email", "phone", "iban", "card", "national-id", "address", "ip"] as const;
 export type SeedKind = (typeof SEED_KINDS)[number];
 
+const DIGIT_SEED_KINDS: ReadonlySet<string> = new Set(["phone", "iban", "card", "national-id"]);
+
 export const seedSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase id, e.g. seed-email-1"),
     kind: z.enum(SEED_KINDS),
-    value: z.string().min(3),
+    value: z.string().min(3, "is too short to detect reliably"),
   })
-  .strict();
+  .strict()
+  .superRefine((seed, ctx) => {
+    // Short digit seeds would match inside unrelated numbers. The message never echoes the value.
+    if (DIGIT_SEED_KINDS.has(seed.kind) && seed.value.replace(/[^\p{L}\p{N}]/gu, "").length < 8) {
+      ctx.addIssue({ code: "custom", path: ["value"], message: "needs at least 8 letters and digits for this kind" });
+    }
+  });
 export type Seed = z.infer<typeof seedSchema>;
 
 export const syntheticTicketSchema = z
@@ -39,14 +48,23 @@ export const harnessCaseSchema = z
     workflow: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()),
     tickets: z.array(syntheticTicketSchema).min(1),
-    /** Ids of the seeds placed in these tickets. Every one must appear in the tickets. */
-    seeds: z.array(z.string()).default([]),
+    /** Ids of the seeds placed in these tickets. Every one must appear in the tickets; a case without seeds proves nothing. */
+    seeds: z.array(z.string()).min(1),
   })
   .strict();
 export type HarnessCase = z.infer<typeof harnessCaseSchema>;
 export type HarnessCaseInput = z.input<typeof harnessCaseSchema>;
 
-export const seedsFileSchema = z.object({ seeds: z.array(seedSchema).min(1) }).strict();
+export const seedsFileSchema = z
+  .object({ seeds: z.array(seedSchema).min(1) })
+  .strict()
+  .superRefine((file, ctx) => {
+    const seen = new Set<string>();
+    file.seeds.forEach((seed, i) => {
+      if (seen.has(seed.id)) ctx.addIssue({ code: "custom", path: ["seeds", i, "id"], message: `duplicate seed id ${seed.id}` });
+      seen.add(seed.id);
+    });
+  });
 
 export class HarnessCaseError extends Error {
   constructor(message: string) {
@@ -60,7 +78,7 @@ export const DEFAULT_SEEDS: Seed[] = [
   { id: "seed-name-1", kind: "name", value: "Marguerite Quillfeather" },
   { id: "seed-name-2", kind: "name", value: "Tobias Wrenhallow" },
   { id: "seed-email-1", kind: "email", value: "m.quillfeather@example.com" },
-  { id: "seed-phone-1", kind: "phone", value: "+33 6 12 34 56 78" },
+  { id: "seed-phone-1", kind: "phone", value: "+33 6 39 98 12 34" }, // range reserved for fiction
   { id: "seed-iban-1", kind: "iban", value: "DE89 3704 0044 0532 0130 00" },
   { id: "seed-card-1", kind: "card", value: "4111 1111 1111 1111" },
 ];
@@ -76,7 +94,7 @@ export const DEFAULT_CASES: HarnessCase[] = [
         key: "QAH-1",
         summary: "Create a case from a contact record",
         description:
-          "As an agent I open the contact Marguerite Quillfeather (m.quillfeather@example.com, +33 6 12 34 56 78) " +
+          "As an agent I open the contact Marguerite Quillfeather (m.quillfeather@example.com, +33 6 39 98 12 34) " +
           "and click New Case. The case form opens with the contact pre-filled.",
         fields: { reporter: "Tobias Wrenhallow" },
       },
@@ -104,7 +122,11 @@ export const DEFAULT_CASES: HarnessCase[] = [
 
 /** Check that every seed a case names exists and actually appears in its tickets. */
 export function validateCases(cases: HarnessCase[], seeds: Seed[]): void {
-  const byId = new Map(seeds.map((s) => [s.id, s]));
+  const byId = new Map<string, Seed>();
+  for (const seed of seeds) {
+    if (byId.has(seed.id)) throw new HarnessCaseError(`Duplicate seed id: ${seed.id}`);
+    byId.set(seed.id, seed);
+  }
   const ids = new Set<string>();
   for (const c of cases) {
     if (ids.has(c.id)) throw new HarnessCaseError(`Duplicate harness case id: ${c.id}`);
@@ -113,7 +135,7 @@ export function validateCases(cases: HarnessCase[], seeds: Seed[]): void {
     for (const id of c.seeds) {
       const seed = byId.get(id);
       if (!seed) throw new HarnessCaseError(`Case ${c.id} names unknown seed ${id}`);
-      if (!text.includes(seed.value)) throw new HarnessCaseError(`Case ${c.id} names seed ${id}, but its tickets don't contain it`);
+      if (new SeedScanner([seed]).scan(text).length === 0) throw new HarnessCaseError(`Case ${c.id} names seed ${id}, but its tickets don't contain it`);
     }
   }
 }
@@ -128,7 +150,13 @@ function parseFile(file: string, text: string): unknown {
 
 /** Load `*.yaml`, `*.yml` or `*.json` cases from a fixtures folder, sorted by file name. */
 export async function loadCases(dir: string): Promise<HarnessCase[]> {
-  const files = (await readdir(dir)).filter((f) => /\.(ya?ml|json)$/.test(f)).sort();
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (error) {
+    throw new HarnessCaseError(`Fixtures folder ${dir} can't be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
+  }
+  const files = names.filter((f) => /\.(ya?ml|json)$/.test(f)).sort();
   const cases: HarnessCase[] = [];
   for (const file of files) {
     const parsed = harnessCaseSchema.safeParse(parseFile(file, await readFile(join(dir, file), "utf8")));
@@ -143,11 +171,17 @@ export async function loadCases(dir: string): Promise<HarnessCase[]> {
 
 /** Load the seeds file named by `harness.seededPersonalData`. */
 export async function loadSeeds(file: string): Promise<Seed[]> {
-  const parsed = seedsFileSchema.safeParse(parseFile(file, await readFile(file, "utf8")));
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    throw new HarnessCaseError(`Seeds file ${file} can't be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
+  }
+  const parsed = seedsFileSchema.safeParse(parseFile(file, text));
   if (!parsed.success) {
     const issue = parsed.error.issues[0]!;
     // Never echo a seed value in the error.
-    throw new HarnessCaseError(`${file}: ${["$", ...issue.path.map(String)].join(".")}: ${issue.code === "too_small" ? issue.message : "invalid"}`);
+    throw new HarnessCaseError(`${file}: ${["$", ...issue.path.map(String)].join(".")}: ${issue.message}`);
   }
   return parsed.data.seeds;
 }

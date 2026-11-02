@@ -1,5 +1,9 @@
 import type { ModelDriver, ModelRequest, ModelResponse } from "../llm/index.js";
-import { validateCases, type HarnessCase, type Seed, type SeedKind, type SyntheticTicket } from "./cases.js";
+import { validateCases, type HarnessCase, type Seed, type SyntheticTicket } from "./cases.js";
+import { SeedScanner, stringLeaves, type SeedHit } from "./scanner.js";
+
+export { SeedScanner } from "./scanner.js";
+export type { SeedHit } from "./scanner.js";
 
 /**
  * The harness runner (slice 0, T11). Each case runs a pipeline against a
@@ -7,52 +11,6 @@ import { validateCases, type HarnessCase, type Seed, type SeedKind, type Synthet
  * before it reaches the real driver; one hit fails the case, and the prompt is
  * never forwarded. Reports name seeds by id and kind, never by value.
  */
-
-const DIGIT_KINDS: ReadonlySet<SeedKind> = new Set(["phone", "iban", "card", "national-id"]);
-const MIN_NAME_PART = 4;
-
-/** Lowercase, collapse whitespace. */
-function normal(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ");
-}
-/** Letters and digits only, lowercase: catches `+33 6 12 34 56 78` sent as `+33612345678`. */
-function compact(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-export interface SeedHit {
-  seedId: string;
-  kind: SeedKind;
-  /** How it matched: the whole value, its digits without separators, or one part of a name. */
-  match: "exact" | "compact" | "name-part";
-}
-
-/** Finds seeded values in text, also when spacing, case or separators differ, or one part of a name appears alone. */
-export class SeedScanner {
-  private readonly checks: Array<{ seed: Seed; exact: string; compact?: string; parts: string[] }>;
-
-  constructor(seeds: Seed[]) {
-    this.checks = seeds.map((seed) => ({
-      seed,
-      exact: normal(seed.value),
-      ...(DIGIT_KINDS.has(seed.kind) || seed.kind === "email" ? { compact: compact(seed.value) } : {}),
-      parts: seed.kind === "name" ? seed.value.split(/\s+/).filter((p) => p.length >= MIN_NAME_PART).map(normal) : [],
-    }));
-  }
-
-  scan(text: string): SeedHit[] {
-    const n = normal(text);
-    const c = compact(text);
-    const words = new Set(n.split(/[^\p{L}\p{N}'-]+/u));
-    const hits: SeedHit[] = [];
-    for (const { seed, exact, compact: packed, parts } of this.checks) {
-      if (n.includes(exact)) hits.push({ seedId: seed.id, kind: seed.kind, match: "exact" });
-      else if (packed && c.includes(packed)) hits.push({ seedId: seed.id, kind: seed.kind, match: "compact" });
-      else if (parts.some((p) => words.has(p))) hits.push({ seedId: seed.id, kind: seed.kind, match: "name-part" });
-    }
-    return hits;
-  }
-}
 
 export interface SeededLeak extends SeedHit {
   caseId: string;
@@ -91,7 +49,8 @@ export class RecordingDriver implements ModelDriver {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const call = this.calls.length;
-    const hits = this.scanner.scan(request.messages.map((m) => m.content).join("\n"));
+    // Every string in the request, not just message text: fields added later must not slip past.
+    const hits = this.scanner.scan(stringLeaves(request).join("\n"));
     const leaks = hits.map((h) => ({ ...h, caseId: this.caseId, call }));
     this.calls.push({ request, leaks });
     if (leaks.length > 0) throw new SeededLeakError(leaks);
@@ -143,10 +102,11 @@ export interface RunHarnessOptions {
 }
 
 function safeError(error: unknown, seeds: SeedScanner): string {
-  const e = error instanceof Error ? error : new Error(String(error));
-  const text = `${e.name}: ${e.message}`;
-  // An error message could quote a prompt; don't let it carry a seed into the report.
-  return seeds.scan(text).length > 0 ? `${e.name}: (message withheld: it contains seeded data)` : text;
+  const name = error instanceof Error ? error.name : typeof error;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : JSON.stringify(error) ?? String(error);
+  // An error could quote a prompt; don't let it carry a seed into the report.
+  const safeName = seeds.scan(name).length > 0 ? "Error" : name;
+  return seeds.scan(message).length > 0 ? `${safeName}: (message withheld: it contains seeded data)` : `${safeName}: ${message}`;
 }
 
 export async function runHarness(options: RunHarnessOptions): Promise<HarnessReport> {
@@ -164,7 +124,8 @@ export async function runHarness(options: RunHarnessOptions): Promise<HarnessRep
     try {
       await options.pipeline({ case: c, tickets: structuredClone(c.tickets), driver });
     } catch (e) {
-      if (!(e instanceof SeededLeakError)) {
+      // A SeededLeakError this case's driver didn't record came from somewhere else: that's an error, not a pass.
+      if (!(e instanceof SeededLeakError) || driver.leaks.length === 0) {
         status = "error";
         error = safeError(e, scanner);
       }

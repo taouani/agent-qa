@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
-import { emptyPipeline, harnessSources, runHarness } from "../harness/index.js";
+import { emptyPipeline, HarnessCaseError, harnessSources, runHarness } from "../harness/index.js";
 import { StaticDriver } from "../llm/index.js";
 import { formatDoctor, runDoctor } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
@@ -57,15 +57,32 @@ export function buildProgram(): Command {
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (opts: { json?: boolean; cwd?: string }) => {
       const root = resolve(opts.cwd ?? process.cwd());
+      // Exit 1 means a case failed; exit 2 means the harness couldn't run (bad setup, or nothing to test).
+      const setupError = (message: string) => {
+        process.stderr.write(`agent-qa harness: ${message.split(root).join(".")}\n`);
+        process.exitCode = 2;
+      };
       let config;
       try {
         config = (await loadConfig(root)).config;
       } catch (error) {
         // No config is fine (shipped cases); a broken one is not.
-        if (!(error instanceof ConfigError) || !/no config found/.test(error.message)) throw error;
+        if (!(error instanceof ConfigError)) throw error;
+        if (error.code !== "NOT_FOUND") return setupError(error.message);
       }
-      const sources = await harnessSources(config, root);
-      const report = await runHarness({ ...sources, pipeline: emptyPipeline, pipelineName: "empty", driver: new StaticDriver() });
+      let sources;
+      let report;
+      try {
+        sources = await harnessSources(config, root);
+        report = await runHarness({ ...sources, pipeline: emptyPipeline, pipelineName: "empty", driver: new StaticDriver() });
+      } catch (error) {
+        if (error instanceof HarnessCaseError) return setupError(error.message);
+        throw error;
+      }
+      if (report.summary.cases === 0) {
+        for (const note of sources.notes) process.stderr.write(`note: ${note}\n`);
+        return setupError("no harness cases to run; add a fixtures source");
+      }
       if (opts.json) process.stdout.write(JSON.stringify({ ...report, notes: sources.notes }, null, 2) + "\n");
       else {
         for (const note of sources.notes) process.stdout.write(`note: ${note}\n`);

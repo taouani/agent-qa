@@ -18,6 +18,8 @@ export class ConfigError extends Error {
   constructor(
     readonly file: string,
     readonly problems: ConfigProblem[],
+    /** NOT_FOUND when there is no config file at all. */
+    readonly code: "INVALID" | "NOT_FOUND" = "INVALID",
   ) {
     super(
       `Invalid config ${file}:\n` +
@@ -150,7 +152,7 @@ export async function loadConfig(dirOrFile: string, options: { isFile?: boolean 
   }
   throw new ConfigError(candidates[0] ?? dirOrFile, [
     { path: "$", message: `no config found; looked for ${candidates.join(", ")}. Run \`agent-qa init\`.` },
-  ]);
+  ], "NOT_FOUND");
 }
 
 /** Looks up a secret in the OS keychain. T7 provides the real one. */
