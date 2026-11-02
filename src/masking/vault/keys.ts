@@ -47,7 +47,7 @@ export const defaultKeyringFactory: KeyringFactory = async (service, account) =>
   try {
     mod = (await import("@napi-rs/keyring")) as unknown as typeof mod;
   } catch {
-    throw new Error(`OS keychain support is not installed. Set ${VAULT_KEY_ENV} instead, or reinstall without --omit=optional.`);
+    throw new Error("OS keychain support is not installed; reinstall without --omit=optional");
   }
   return new mod.Entry(service, account);
 };
@@ -68,7 +68,12 @@ export class KeychainKeyProvider implements KeyProvider {
 
   async getKey(): Promise<Buffer> {
     if (this.cached) return this.cached;
-    const entry = await this.factory(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    let entry: KeyringEntry;
+    try {
+      entry = await this.factory(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    } catch (error) {
+      throw unavailable(error instanceof Error ? error.message : String(error));
+    }
     let stored = this.keychain(() => entry.getPassword());
     if (!stored) {
       this.keychain(() => entry.setPassword(randomBytes(32).toString("base64")));
@@ -98,8 +103,8 @@ export function defaultKeyProvider(env: NodeJS.ProcessEnv = process.env): KeyPro
 /** Reads config secrets written as `${keychain:NAME}` from the same keychain service. */
 export function keychainLookup(factory: KeyringFactory = defaultKeyringFactory) {
   return async (name: string): Promise<string | undefined> => {
-    const entry = await factory(KEYCHAIN_SERVICE, name);
     try {
+      const entry = await factory(KEYCHAIN_SERVICE, name);
       return entry.getPassword() ?? undefined;
     } catch (error) {
       throw new Error(

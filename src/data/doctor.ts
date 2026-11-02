@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { relative } from "node:path";
 import { ConfigError, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
 /**
@@ -28,6 +28,8 @@ export interface DoctorOptions {
   keyring?: KeyringFactory;
   nodeVersion?: string;
   timeoutMs?: number;
+  /** Match .gitignore case-insensitively. Default: on Windows and macOS. */
+  caseInsensitive?: boolean;
 }
 
 const MIN_NODE_MAJOR = 20;
@@ -99,50 +101,23 @@ async function vaultCheck(env: NodeJS.ProcessEnv, keyring: KeyringFactory): Prom
     : { id: "vault-key", title: "Vault key", status: "fail", detail: `${status.source}: ${status.message}`, fix: "Set AGENT_QA_VAULT_KEY (openssl rand -base64 32)." };
 }
 
-/** True when a .gitignore line covers `target` (a path relative to the project root, like `.agent-qa/vault/`). */
-function ignores(lines: string[], target: string): boolean {
-  const parts = target.replace(/\/$/, "").split("/");
-  const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join("/"));
-  let ignored = false;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const negate = line.startsWith("!");
-    const pattern = (negate ? line.slice(1) : line).replace(/^\//, "").replace(/\/\*{0,2}$/, "");
-    if (prefixes.includes(pattern)) ignored = !negate;
-  }
-  return ignored;
-}
+const IGNORE_TARGETS = [
+  { path: ".agent-qa/vault/x.vault", label: ".agent-qa/vault/", status: "fail" as const, why: "so the token vault never reaches git" },
+  { path: ".agent-qa/runs/x/run.json", label: ".agent-qa/runs/", status: "warn" as const, why: "unless you mean to commit run folders" },
+  { path: ".agent-qa/audit.jsonl", label: ".agent-qa/audit.jsonl", status: "warn" as const, why: "unless you mean to commit the audit log" },
+];
 
-async function gitignoreCheck(cwd: string): Promise<CheckResult> {
-  let text = "";
-  try {
-    text = await readFile(join(cwd, ".gitignore"), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const lines = text.split(/\r?\n/);
-  const vault = ignores(lines, ".agent-qa/vault/");
-  const runs = ignores(lines, ".agent-qa/runs/");
-  if (!vault) {
-    return {
-      id: "gitignore",
-      title: ".gitignore",
-      status: "fail",
-      detail: ".agent-qa/vault/ is not ignored",
-      fix: "Add .agent-qa/vault/ to .gitignore so the token vault never reaches git.",
-    };
-  }
-  if (!runs) {
-    return {
-      id: "gitignore",
-      title: ".gitignore",
-      status: "warn",
-      detail: ".agent-qa/runs/ is not ignored, so run folders can be committed",
-      fix: "Add .agent-qa/runs/ to .gitignore unless you mean to commit runs.",
-    };
-  }
-  return { id: "gitignore", title: ".gitignore", status: "pass", detail: "vault and run folders are ignored" };
+async function gitignoreCheck(cwd: string, caseInsensitive?: boolean): Promise<CheckResult> {
+  const rules = await loadIgnoreRules(cwd, IGNORE_TARGETS.map((t) => t.path), caseInsensitive);
+  const missing = IGNORE_TARGETS.filter((t) => !isIgnored(rules, t.path));
+  if (missing.length === 0) return { id: "gitignore", title: ".gitignore", status: "pass", detail: "vault, run folders and audit log are ignored" };
+  return {
+    id: "gitignore",
+    title: ".gitignore",
+    status: missing.some((t) => t.status === "fail") ? "fail" : "warn",
+    detail: missing.map((t) => `${t.label} is not ignored`).join("\n"),
+    fix: missing.map((t) => `Add ${t.label} to .gitignore ${t.why}.`).join(" "),
+  };
 }
 
 function patternMatches(pattern: string, model: string): boolean {
@@ -160,6 +135,9 @@ function modelsCheck(config: Config): CheckResult {
     return { id: "models", title: "Models", status: "fail", detail: `not in models.allowed: ${[...new Set(blocked)].join(", ")}`, fix: "Add them to models.allowed or pick allowed models." };
   }
   const providers = [...new Set(used.map((m) => m.split(":")[0]!))];
+  if (providers.includes("litellm") && !models.endpoints?.litellm) {
+    return { id: "models", title: "Models", status: "warn", detail: "litellm models need models.endpoints.litellm (your proxy's URL)", fix: "Add models.endpoints.litellm." };
+  }
   const noKey = providers.filter((p) => !(models.keys as Record<string, string> | undefined)?.[p]);
   if (noKey.length > 0) {
     return {
@@ -180,8 +158,9 @@ async function reachable(url: string, fetcher: typeof fetch, timeoutMs: number):
     await fetcher(url, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
     return undefined;
   } catch (error) {
-    const cause = (error as { cause?: { code?: string } }).cause?.code;
-    return cause ?? (error as Error).name ?? "error";
+    const e = error as Error & { cause?: { code?: string; name?: string } };
+    if (e.name === "TimeoutError") return `timed out after ${timeoutMs} ms`;
+    return e.cause?.code ?? e.cause?.name ?? e.name ?? "error";
   }
 }
 
@@ -191,6 +170,8 @@ async function reachabilityCheck(config: Config, fetcher: typeof fetch, timeoutM
   if (config.xray) targets.push(["Xray", XRAY_CLOUD]);
   if (config.git) targets.push([`git (${config.git.platform})`, config.git.baseUrl ?? GIT_API[config.git.platform]!]);
   if (config.salesforce) targets.push(["Salesforce", config.salesforce.baseUrl]);
+  for (const [provider, url] of Object.entries(config.models?.endpoints ?? {})) if (url) targets.push([`${provider} endpoint`, url]);
+  if (config.masking.presidio?.url) targets.push(["Presidio", config.masking.presidio.url]);
   if (targets.length === 0) return { id: "network", title: "Services", status: "skip", detail: "no services configured" };
   const results = await Promise.all(targets.map(async ([name, url]) => [name, url, await reachable(url, fetcher, timeoutMs)] as const));
   const down = results.filter(([, , error]) => error);
@@ -201,7 +182,9 @@ async function reachabilityCheck(config: Config, fetcher: typeof fetch, timeoutM
         title: "Services",
         status: "fail",
         detail: down.map(([name, url, error]) => `${name} at ${new URL(url).host}: ${error}`).join("\n"),
-        fix: "Check the URL, your network and any proxy (HTTPS_PROXY).",
+        fix:
+          "Check the URL and your network. Behind a proxy, Node's fetch uses HTTPS_PROXY only when NODE_USE_ENV_PROXY=1 " +
+          "(Node 22.21+/24.5+); for a proxy that re-signs TLS, set NODE_EXTRA_CA_CERTS to its CA certificate.",
       };
 }
 
@@ -211,25 +194,36 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
   const results: CheckResult[] = [nodeCheck(options.nodeVersion ?? process.version)];
 
   let config: Config | undefined;
+  const shown = (text: string) => text.split(options.cwd).join(".");
   try {
     const loaded = await loadConfig(options.cwd);
     config = loaded.config;
-    results.push({ id: "config", title: "agent-qa.yaml", status: "pass", detail: loaded.file });
+    results.push({ id: "config", title: "agent-qa.yaml", status: "pass", detail: relative(options.cwd, loaded.file) || loaded.file });
+    if (!SECRET_REF.test(config.atlassian?.email ?? "${env:x}")) {
+      results.push({
+        id: "config-email",
+        title: "Atlassian email",
+        status: "warn",
+        detail: "atlassian.email is written in the file, so personal data is in git",
+        fix: "Use ${env:ATLASSIAN_EMAIL} instead.",
+      });
+    }
   } catch (error) {
-    if (!(error instanceof ConfigError)) throw error;
-    results.push({
-      id: "config",
-      title: "agent-qa.yaml",
-      status: "fail",
-      detail: error.problems.map((p) => `${p.line ? `line ${p.line}: ` : ""}${p.path}: ${p.message}`).join("\n"),
-      fix: "Fix the problems above, or run `agent-qa init`.",
-    });
+    const problems =
+      error instanceof ConfigError
+        ? error.problems.map((p) => `${p.line ? `line ${p.line}: ` : ""}${p.path === "$" ? "" : `${p.path}: `}${shown(p.message)}`)
+        : [shown((error as Error).message)];
+    results.push({ id: "config", title: "agent-qa.yaml", status: "fail", detail: problems.join("\n"), fix: "Fix the problems above." });
   }
 
   if (config) results.push(await secretsCheck(config, env, keyring));
   else results.push({ id: "secrets", title: "Secrets", status: "skip", detail: "needs a valid config" });
   results.push(await vaultCheck(env, keyring));
-  results.push(await gitignoreCheck(options.cwd));
+  try {
+    results.push(await gitignoreCheck(options.cwd, options.caseInsensitive));
+  } catch (error) {
+    results.push({ id: "gitignore", title: ".gitignore", status: "fail", detail: `can't be read: ${(error as Error).message.split(options.cwd).join(".")}` });
+  }
   results.push(config ? modelsCheck(config) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
   if (!config) results.push({ id: "network", title: "Services", status: "skip", detail: "needs a valid config" });
   else if (options.online === false) results.push({ id: "network", title: "Services", status: "skip", detail: "skipped (--offline)" });

@@ -1,9 +1,10 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { formatDoctor, runDoctor, type CheckResult } from "../src/data/index.js";
-import type { KeyringEntry } from "../src/masking/index.js";
+import { isIgnored, parseGitignore } from "../src/data/gitignore.js";
+import { keychainLookup, type KeyringEntry } from "../src/masking/index.js";
 
 const vaultKey = Buffer.alloc(32, 7).toString("base64");
 const keyring = (store: Record<string, string> = {}) => (service: string, account: string): KeyringEntry => ({
@@ -45,12 +46,12 @@ afterEach(async () => {
 
 const byId = (results: CheckResult[]) => Object.fromEntries(results.map((r) => [r.id, r]));
 const doctor = (env: NodeJS.ProcessEnv, extra: Partial<Parameters<typeof runDoctor>[0]> = {}) =>
-  runDoctor({ cwd: dir, env, keyring: keyring({ "sf-agent-qa/xray-secret": "s3" }), fetch: okFetch, nodeVersion: "v22.1.0", ...extra });
+  runDoctor({ cwd: dir, env, keyring: keyring({ "sf-agent-qa/xray-secret": "s3" }), fetch: okFetch, nodeVersion: "v22.1.0", caseInsensitive: false, ...extra });
 
 describe("agent-qa doctor", () => {
   it("passes a complete setup", async () => {
     await writeFile(join(dir, "agent-qa.yaml"), CONFIG);
-    await writeFile(join(dir, ".gitignore"), "node_modules/\n.agent-qa/\n");
+    await writeFile(join(dir, ".gitignore"), "node_modules/\r\n.agent-qa/\r\n");
     const results = await doctor(ENV);
     expect(results.map((r) => [r.id, r.status])).toEqual([
       ["node", "pass"],
@@ -104,14 +105,30 @@ describe("agent-qa doctor", () => {
     expect(results["vault-key"]).toMatchObject({ status: "fail", detail: expect.stringMatching(/AccessDenied.*AGENT_QA_VAULT_KEY/) });
   });
 
-  it("checks the gitignore covers the vault, and warns about run folders", async () => {
-    expect(byId(await doctor(ENV)).gitignore!.status).toBe("fail");
+  it("checks the gitignore covers the vault, and warns about runs and the audit log", async () => {
+    const gitignore = byId(await doctor(ENV)).gitignore!;
+    expect(gitignore.status).toBe("fail");
+    expect(gitignore.detail.split("\n")).toHaveLength(3); // every missing entry, not just the first
     await writeFile(join(dir, ".gitignore"), "/.agent-qa/vault/\n");
     expect(byId(await doctor(ENV)).gitignore!.status).toBe("warn");
-    await writeFile(join(dir, ".gitignore"), ".agent-qa/vault\n.agent-qa/runs/*\n");
+    await writeFile(join(dir, ".gitignore"), ".agent-qa/vault\n.agent-qa/runs/*\n.agent-qa/*.jsonl\n");
     expect(byId(await doctor(ENV)).gitignore!.status).toBe("pass");
-    await writeFile(join(dir, ".gitignore"), ".agent-qa/\n!.agent-qa/vault/\n");
-    expect(byId(await doctor(ENV)).gitignore!.status).toBe("fail");
+    // A nested .gitignore and .git/info/exclude count too.
+    await writeFile(join(dir, ".gitignore"), "");
+    await mkdir(join(dir, ".agent-qa"), { recursive: true });
+    await writeFile(join(dir, ".agent-qa", ".gitignore"), "vault/\nruns/\n");
+    await mkdir(join(dir, ".git", "info"), { recursive: true });
+    await writeFile(join(dir, ".git", "info", "exclude"), "audit.jsonl\n");
+    expect(byId(await doctor(ENV)).gitignore!.status).toBe("pass");
+  });
+
+  it("reports an unreadable config or .gitignore instead of crashing", async () => {
+    await mkdir(join(dir, "agent-qa.yaml"));
+    await mkdir(join(dir, ".gitignore"));
+    const results = byId(await doctor(ENV));
+    expect(results.config!.status).toBe("fail");
+    expect(results.gitignore).toMatchObject({ status: "fail", detail: expect.stringMatching(/can't be read/) });
+    expect(JSON.stringify(results)).not.toContain(dir);
   });
 
   it("checks models against allowed and warns when a provider has no key", async () => {
@@ -131,6 +148,75 @@ describe("agent-qa doctor", () => {
     }) as unknown as typeof fetch;
     const results = byId(await doctor(ENV, { fetch: failing }));
     expect(results.network).toMatchObject({ status: "fail", detail: "Atlassian at acme.atlassian.net: ENOTFOUND" });
-    expect(byId(await doctor(ENV, { online: false })).network).toMatchObject({ status: "skip" });
+    let called = 0;
+    const counting = (async () => (called++, new Response(null))) as unknown as typeof fetch;
+    expect(byId(await doctor(ENV, { online: false, fetch: counting })).network).toMatchObject({ status: "skip" });
+    expect(called).toBe(0);
+    const hanging = ((_url: string, init: RequestInit) =>
+      new Promise((_, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)))) as unknown as typeof fetch;
+    expect(byId(await doctor(ENV, { fetch: hanging, timeoutMs: 20 })).network!.detail).toContain("timed out after 20 ms");
+    const bare = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    expect(byId(await doctor(ENV, { fetch: bare })).network!.detail).toContain("TypeError");
+  });
+
+  it("checks model endpoints and Presidio, and warns about litellm without an endpoint", async () => {
+    await writeFile(
+      join(dir, "agent-qa.yaml"),
+      "version: 1\nmodels:\n  default: litellm:m\n  keys:\n    litellm: ${env:K}\n  endpoints:\n    litellm: https://llm.internal.example\nmasking:\n  presidio:\n    url: http://presidio.internal.example:5001\n",
+    );
+    const urls: string[] = [];
+    const recording = (async (url: string) => (urls.push(String(url)), new Response(null))) as unknown as typeof fetch;
+    const results = byId(await doctor(ENV, { fetch: recording }));
+    expect(urls.sort()).toEqual(["http://presidio.internal.example:5001", "https://llm.internal.example"]);
+    expect(results.models!.status).toBe("pass");
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: litellm:m\n  keys:\n    litellm: ${env:K}\n");
+    expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/endpoints.litellm/) });
+  });
+
+  it("warns about a literal Atlassian email and shows paths relative to the project", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), CONFIG.replace("${env:ATLASSIAN_EMAIL}", "ada@example.com"));
+    const results = byId(await doctor(ENV));
+    expect(results["config-email"]!.status).toBe("warn");
+    expect(results.config!.detail).toBe("agent-qa.yaml");
+  });
+});
+
+describe(".gitignore evaluation", () => {
+  const ignored = (text: string, path: string, ci = false) => isIgnored(parseGitignore(text, "", ci), path);
+  const vault = ".agent-qa/vault/x.vault";
+
+  it.each([
+    ".agent-qa/",
+    "**/.agent-qa/",
+    ".agent-qa/**/",
+    ".agent-qa/vault/**/*",
+    "vault/",
+    "*",
+    ".agent-qa/vault/\n!.agent-qa/",
+    "\uFEFF.agent-qa/vault  ",
+  ])("treats %j as ignoring the vault", (text) => {
+    expect(ignored(text, vault)).toBe(true);
+  });
+
+  it.each(["  .agent-qa/", ".agent-qa/\n!.agent-qa/", "agent-qa/", ".agent-qa/vault.txt", "# .agent-qa/"])("treats %j as not ignoring it", (text) => {
+    expect(ignored(text, vault)).toBe(false);
+  });
+
+  it("keeps a file ignored when its folder is ignored, and matches case-insensitively when asked", () => {
+    expect(ignored(".agent-qa/\n!.agent-qa/vault/", vault)).toBe(true);
+    expect(ignored(".AGENT-QA/", vault)).toBe(false);
+    expect(ignored(".AGENT-QA/", vault, true)).toBe(true);
+  });
+});
+
+describe("keychain lookups", () => {
+  it("explains a missing keychain module without pointing at the vault key", async () => {
+    const lookup = keychainLookup(async () => {
+      throw new Error("OS keychain support is not installed; reinstall without --omit=optional");
+    });
+    await expect(lookup("jira")).rejects.toThrow(/can't be read for jira.*not installed.*\$\{env:NAME\}/);
+    await expect(lookup("jira")).rejects.not.toThrow(/AGENT_QA_VAULT_KEY/);
   });
 });
