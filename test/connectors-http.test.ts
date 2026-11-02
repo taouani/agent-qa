@@ -96,15 +96,12 @@ describe("HttpClient URLs", () => {
   });
 
   it("never sends a protocol-relative or backslash path to another host", async () => {
-    const { fetch, calls } = fakeFetch([json({}), json({})]);
+    const { fetch, calls } = fakeFetch([]);
     const { c } = client(fetch);
-    for (const path of ["\\\\evil.com/x", "/\\evil.com/x", "\\/evil.com/x"]) {
+    for (const path of ["\\\\evil.com/x", "/\\evil.com/x", "\\/evil.com/x", "//evil.com/x", "///evil.com/x"]) {
       await expect(c.get(path)).rejects.toMatchObject({ code: "OFF_ORIGIN" });
     }
-    // `//evil.com/x` stays on the site as a path.
-    await c.get("//evil.com/x");
-    expect(new URL(calls[0]!.url).origin).toBe("https://example.atlassian.net");
-    expect(calls.every((call) => new URL(call.url).origin === "https://example.atlassian.net")).toBe(true);
+    expect(calls).toHaveLength(0);
   });
 
   it("keeps requests under the base path", async () => {
@@ -249,6 +246,16 @@ describe("HttpClient errors", () => {
     expect(await c.request("/auth", { method: "POST", body: { a: 1 }, expect: "text" })).toBe('"token-abc"');
   });
 
+  it("treats a 204 or an empty body on a write as done", async () => {
+    const { fetch } = fakeFetch([new Response(null, { status: 204 }), new Response("", { status: 200 }), new Response(null, { status: 204 })]);
+    const { c } = client(fetch);
+    await withGrant("jira", async (grant) => {
+      expect(await c.request("/issue/QA-1", { method: "PUT", body: { a: 1 }, grant })).toBeUndefined();
+      expect(await c.request("/issue/QA-1/transitions", { method: "POST", body: { a: 1 }, grant })).toBeUndefined();
+    });
+    expect(await c.get("/x")).toBeUndefined();
+  });
+
   it("refuses a body on GET or DELETE before sending", async () => {
     const { fetch, calls } = fakeFetch([]);
     const { c } = client(fetch);
@@ -353,6 +360,14 @@ describe("proxy selection", () => {
     expect(noProxyMatches("notatlassian.net", "443", "atlassian.net")).toBe(false);
     expect(noProxyMatches("::1", "443", "[::1]")).toBe(true);
     expect(noProxyMatches("example.com", "443", undefined)).toBe(false);
+    // IP addresses match exactly or by range, never by suffix.
+    expect(noProxyMatches("127.0.0.1", "443", "0.0.1")).toBe(false);
+    expect(noProxyMatches("127.0.0.1", "443", "127.0.0.1")).toBe(true);
+    expect(noProxyMatches("127.0.0.1", "443", "127.0.0.0/8")).toBe(true);
+    expect(noProxyMatches("169.254.10.2", "443", "10.0.0.0/8,169.254.0.0/16")).toBe(true);
+    expect(noProxyMatches("11.0.0.1", "443", "10.0.0.0/8")).toBe(false);
+    expect(noProxyMatches("example.com", "443", "10.0.0.0/8")).toBe(false);
+    expect(noProxyMatches("fd00::5", "443", "fd00::/8")).toBe(true);
   });
 
   it("uses a proxy agent only when a proxy applies to the origin and Node doesn't handle it", async () => {
@@ -360,6 +375,10 @@ describe("proxy selection", () => {
     expect((await selectFetch({}, origin, "20.19.0")).proxy).toBeUndefined();
     expect((await selectFetch({ HTTPS_PROXY: "http://user:pw@proxy.local:3128" }, origin, "20.19.0")).proxy).toBe("proxy.local:3128");
     expect((await selectFetch({ HTTP_PROXY: "http://proxy.local:3128" }, origin, "20.19.0")).proxy).toBe("proxy.local:3128");
+    // No scheme means an HTTP proxy, as in curl; SOCKS is refused with a clear error.
+    expect((await selectFetch({ HTTPS_PROXY: "proxy.local:3128" }, origin, "20.19.0")).proxy).toBe("proxy.local:3128");
+    expect((await selectFetch({ HTTPS_PROXY: "user:pw@proxy.local:3128" }, origin, "20.19.0")).proxy).toBe("proxy.local:3128");
+    await expect(selectFetch({ HTTPS_PROXY: "socks5://proxy.local:1080" }, origin, "20.19.0")).rejects.toMatchObject({ code: "NETWORK" });
     expect((await selectFetch({ HTTPS_PROXY: "http://proxy.local:3128", NO_PROXY: ".atlassian.net" }, origin, "20.19.0")).proxy).toBeUndefined();
     expect((await selectFetch({ HTTPS_PROXY: "http://proxy.local:3128", NODE_USE_ENV_PROXY: "1" }, origin, "24.1.0")).proxy).toBeUndefined();
     expect((await selectFetch({ HTTPS_PROXY: "http://proxy.local:3128" }, "http://localhost:8080", "20.19.0")).proxy).toBeUndefined();

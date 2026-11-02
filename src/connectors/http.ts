@@ -1,3 +1,4 @@
+import { BlockList, isIP } from "node:net";
 import { assertGrant, PolicyDenied, type WriteGrant, type WriteTarget } from "../core/index.js";
 
 /**
@@ -70,7 +71,11 @@ function describe(code: ConnectorErrorCode, service: string, method: string, pat
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
-/** Decides whether a POST without a grant is a read. Gets the resolved path and the request body. */
+/**
+ * Decides whether a POST without a grant is a read. Gets the resolved path and
+ * the request body. A matcher for an endpoint that can also write, such as
+ * GraphQL, must check the body (e.g. refuse a `mutation`), not only the path.
+ */
 export type ReadOnlyPost = (path: string, body: unknown) => boolean;
 
 export interface HttpClientOptions {
@@ -171,12 +176,12 @@ export class HttpClient {
   /**
    * Resolve a path, or an absolute URL such as a pagination link, and check
    * that the result is on the configured origin and under its base path.
-   * `//host`, backslashes and `..` can't escape: the check runs on the result.
+   * `//host` and backslashes are refused, and `..` can't escape: the check runs on the result.
    */
   url(pathOrUrl: string, query?: RequestOptions["query"], method = "GET"): URL {
     const service = this.options.service;
     const pathPart = pathOrUrl.split(/[?#]/)[0]!;
-    if (pathPart.includes("\\")) throw new ConnectorError("OFF_ORIGIN", service, method, "(outside the site)");
+    if (pathPart.includes("\\") || pathPart.startsWith("//")) throw new ConnectorError("OFF_ORIGIN", service, method, "(outside the site)");
     let url: URL;
     try {
       url = /^https?:\/\//i.test(pathOrUrl) ? new URL(pathOrUrl) : new URL(this.basePath + "/" + pathOrUrl.replace(/^\/+/, ""), this.origin);
@@ -281,6 +286,8 @@ export class HttpClient {
         const expect = options.expect ?? "json";
         if (expect === "none") return undefined;
         if (expect === "text") return text;
+        // 204, or an empty body on a write (Jira's PUT and transitions), means "done, nothing to return".
+        if (status === 204 || (text === "" && method !== "GET")) return undefined;
         try {
           if (text === "") throw new Error("empty");
           return JSON.parse(text) as unknown;
@@ -333,14 +340,32 @@ export function nodeHandlesProxy(env: NodeJS.ProcessEnv, version = process.versi
   return env.NODE_USE_ENV_PROXY === "1" && (major >= 24 || (major === 22 && minor >= 21));
 }
 
-/** True when NO_PROXY exempts `host` (`*`, an exact host, or a domain suffix such as `.corp` or `corp`). */
+/**
+ * True when NO_PROXY exempts `host`: `*`, an exact host, a domain suffix such
+ * as `.corp` or `corp`, an exact IP address, or an IP range such as `10.0.0.0/8`.
+ */
 export function noProxyMatches(host: string, port: string, noProxy: string | undefined): boolean {
   if (!noProxy) return false;
   const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  const hostIp = isIP(h);
   for (const raw of noProxy.split(/[\s,]+/)) {
     const entry = raw.trim().toLowerCase();
     if (!entry) continue;
     if (entry === "*") return true;
+    const cidr = /^\[?([0-9a-f.:]+)\]?\/(\d{1,3})$/.exec(entry);
+    if (cidr) {
+      const family = isIP(cidr[1]!);
+      if (hostIp && family === hostIp) {
+        const list = new BlockList();
+        try {
+          list.addSubnet(cidr[1]!, Number(cidr[2]), family === 6 ? "ipv6" : "ipv4");
+        } catch {
+          continue; // a malformed range exempts nothing
+        }
+        if (list.check(h, hostIp === 6 ? "ipv6" : "ipv4")) return true;
+      }
+      continue;
+    }
     let name = entry;
     let entryPort: string | undefined;
     const bracket = /^\[([^\]]+)\](?::(\d+))?$/.exec(entry);
@@ -351,6 +376,11 @@ export function noProxyMatches(host: string, port: string, noProxy: string | und
       [name, entryPort] = entry.split(":") as [string, string];
     }
     if (entryPort && entryPort !== port) continue;
+    // IP addresses match exactly: the entry `0.0.1` must not exempt `127.0.0.1`.
+    if (hostIp || isIP(name)) {
+      if (h === name) return true;
+      continue;
+    }
     const domain = name.replace(/^\*?\./, "");
     if (h === domain || h.endsWith("." + domain)) return true;
   }
@@ -375,10 +405,24 @@ export async function selectFetch(
   // Like curl and undici, HTTPS falls back to HTTP_PROXY when HTTPS_PROXY is unset.
   const proxy = u.protocol === "https:" ? pick("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") : pick("HTTP_PROXY", "http_proxy");
   if (!proxy || noProxyMatches(u.hostname, port, pick("NO_PROXY", "no_proxy"))) return plain;
+  // Like curl, a proxy without a scheme is an HTTP proxy.
+  const proxyUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(proxy) ? proxy : `http://${proxy}`;
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(proxyUrl);
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    throw new ConnectorError(
+      "NETWORK", "proxy", "CONNECT", "(proxy)", undefined,
+      "HTTPS_PROXY/HTTP_PROXY is not a usable proxy URL: use http://host:port or https://host:port (SOCKS is not supported).",
+    );
+  }
   const undici = await import("undici");
-  const dispatcher = new undici.ProxyAgent(proxy);
+  const dispatcher = new undici.ProxyAgent(parsed.href);
   const viaProxy = ((input: string, init: RequestInit) =>
     undici.fetch(input, { ...(init as object), dispatcher } as never) as unknown as Promise<Response>) as FetchLike & { proxy?: string };
-  viaProxy.proxy = new URL(proxy).host; // never the credentials in the proxy URL
+  viaProxy.proxy = parsed.host; // never the credentials in the proxy URL
   return viaProxy;
 }
