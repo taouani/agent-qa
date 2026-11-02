@@ -234,6 +234,32 @@ describe("JiraClient.collect", () => {
     expect(result.truncated).toBe(false);
   });
 
+  it("tolerates a missing remote-link list and rethrows other errors on the linked fallback", async () => {
+    const base = fakeJira({ ...TREE, "QA-1": { ...TREE["QA-1"], links: ["QA-9", "QA-404"] } });
+    let failRemote = true;
+    const fetch: FetchLike = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (failRemote && path.endsWith("/QA-1/remotelink")) return new Response("{}", { status: 403 });
+      if (!failRemote && path === "/rest/api/3/issue/QA-404") return new Response("{}", { status: 500 });
+      return base.fetch(url, init);
+    };
+    const result = await new JiraClient({ site: "https://example.atlassian.net", email: "b", token: "t", fetch, retries: 0 }).collect({ key: "QA-1" }, { maxDepth: 0 });
+    expect(result.issues.find((i) => i.key === "QA-1")!.remoteLinks).toEqual([]);
+    failRemote = false;
+    await expect(new JiraClient({ site: "https://example.atlassian.net", email: "b", token: "t", fetch, retries: 0 }).collect({ key: "QA-1" }, { maxDepth: 0 })).rejects.toMatchObject({ status: 500 });
+  });
+
+  it("stops paging on an empty page or a repeated token", async () => {
+    let calls = 0;
+    const fetch: FetchLike = async () => {
+      calls++;
+      return new Response(JSON.stringify({ issues: [], nextPageToken: "same", isLast: false }), { status: 200 });
+    };
+    const result = await jira(fetch).search("project = QA", ["summary"], 100);
+    expect(result).toEqual({ issues: [], more: false });
+    expect(calls).toBe(1);
+  });
+
   it("skips a linked issue Jira won't return instead of failing", async () => {
     const { fetch } = fakeJira({ ...TREE, "QA-1": { ...TREE["QA-1"], links: ["QA-9", "QA-404"] } });
     const result = await jira(fetch).collect({ key: "qa-1" }, { maxDepth: 0 });

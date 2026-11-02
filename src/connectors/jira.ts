@@ -291,15 +291,6 @@ export class JiraClient {
     // Below maxDepth is cut off; say so only if something is there.
     if (frontier.length > 0 && !truncated) truncated = await this.hasNewChildren(frontier.map((f) => f.key), found);
 
-    // Children lists, now that the hierarchy is known. Only collected issues are listed.
-    for (const issue of found.values()) issue.children = [];
-    for (const issue of found.values()) {
-      if (issue.parent) {
-        const parent = found.get(issue.parent);
-        if (parent && !parent.children.includes(issue.key)) parent.children.push(issue.key);
-      }
-    }
-
     // Linked issues, one level out, not followed further.
     const unreachable: string[] = [];
     if (followLinks) {
@@ -333,8 +324,17 @@ export class JiraClient {
         }
         truncated ||= more;
         for (const raw of issues) add(raw, "linked", 0);
-        const got = new Set(issues.map((raw) => str(raw.key)));
-        if (!more) for (const key of keys) if (!got.has(key) && !unreachable.includes(key)) unreachable.push(key);
+        // A search that succeeds found every key: Jira fails the whole query on a missing one, and
+        // resolves a moved key to the issue's new key. So only the fallback above adds to unreachable.
+      }
+    }
+
+    // Children lists, including linked issues whose parent was collected. Only collected issues are listed.
+    for (const issue of found.values()) issue.children = [];
+    for (const issue of found.values()) {
+      if (issue.parent) {
+        const parent = found.get(issue.parent);
+        if (parent && !parent.children.includes(issue.key)) parent.children.push(issue.key);
       }
     }
 
