@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "../src/connectors/confluence.js";
 import type { FetchLike } from "../src/connectors/http.js";
 import { decodeEntities, storageToText } from "../src/connectors/storage.js";
+import { PolicyDenied } from "../src/core/index.js";
 
 const SITE = "https://example.atlassian.net";
 
@@ -59,6 +60,44 @@ describe("storageToText", () => {
     expect(decodeEntities("&#0; &#99999999;")).toBe("&#0; &#99999999;");
   });
 
+  it("keeps inline macros inside paragraphs and table cells", () => {
+    const jira = '<ac:structured-macro ac:name="jira" ac:schema-version="1"><ac:parameter ac:name="key">QA-1</ac:parameter></ac:structured-macro>';
+    const status = '<ac:structured-macro ac:name="status"><ac:parameter ac:name="title">MUST</ac:parameter></ac:structured-macro>';
+    expect(storageToText(`<p>See ${jira} now</p>`).text).toBe("See QA-1 now");
+    expect(storageToText(`<table><tr><td><p>${status}</p></td><td><p>Login with <ac:image><ri:attachment ri:filename="a.png"/></ac:image> SSO</p></td></tr></table>`).text).toBe(
+      "| [MUST] | Login with [attachment] SSO |\n| --- | --- |",
+    );
+  });
+
+  it("reads new-editor ADF extensions once, without their attributes", () => {
+    const xml =
+      '<ac:adf-extension><ac:adf-node type="panel"><ac:adf-attribute key="panel-type">note</ac:adf-attribute><ac:adf-content><p>Hello panel</p></ac:adf-content></ac:adf-node>' +
+      '<ac:adf-fallback><div class="panel"><p>Hello panel</p></div></ac:adf-fallback></ac:adf-extension>';
+    expect(storageToText(xml).text).toBe("Hello panel");
+  });
+
+  it("decodes accented and case-sensitive entities, and keeps line breaks in pre", () => {
+    expect(storageToText("<p>&eacute;t&eacute; &Uuml;ber &szlig; &Ccedil;a</p><pre>a<br/>b</pre>").text).toBe("été Über ß Ça\n\n```\na\nb\n```");
+  });
+
+  it("stays fast and safe on hostile markup", () => {
+    const inputs = [
+      "<a " + 'x="a b" '.repeat(5000),
+      "<a b ".repeat(20000),
+      "<!--".repeat(80000),
+      "<![CDATA[".repeat(20000),
+      "<ul><li>".repeat(5000) + "deep",
+      "<div>".repeat(5000) + "</div>".repeat(5000),
+      '<a x="'.repeat(20000),
+    ];
+    for (const input of inputs) {
+      const started = Date.now();
+      expect(() => storageToText(input)).not.toThrow();
+      expect(Date.now() - started).toBeLessThan(2000);
+    }
+    expect(storageToText("<ul><li>".repeat(5000) + "deep").text).toContain("deep");
+  });
+
   it("ignores non-http links and does not run inside CDATA", () => {
     const out = storageToText('<p><a href="javascript:alert(1)">x</a></p><pre><![CDATA[<p>raw</p>]]></pre>');
     expect(out.links).toEqual([]);
@@ -73,6 +112,9 @@ describe("page URLs", () => {
     expect(pageIdFromUrl(`${SITE}/wiki/spaces/QA/pages/edit-v2/123456`, SITE)).toEqual({ id: "123456" });
     expect(pageIdFromUrl(`${SITE}/wiki/pages/viewpage.action?pageId=987`, SITE)).toEqual({ id: "987" });
     expect(pageIdFromUrl(`${SITE}/wiki/x/${pageIdToTiny("2148139010")}`, SITE)).toEqual({ id: "2148139010" });
+    // Fixed vector from Atlassian's algorithm, and a trailing slash.
+    expect(pageIdFromUrl(`${SITE}/wiki/x/AgAB/`, SITE)).toEqual({ id: "65538" });
+    expect(pageIdToTiny("65538")).toBe("AgAB");
   });
 
   it("skips other sites and non-page links", () => {
@@ -87,6 +129,9 @@ describe("page URLs", () => {
     for (const id of ["1", "255", "256", "65536", "98765", "2148139010", "9007199254740993"]) expect(tinyToPageId(pageIdToTiny(id))).toBe(id);
     expect(tinyToPageId("")).toBeUndefined();
     expect(tinyToPageId("a/b")).toBeUndefined();
+    // Too long to be an 8-byte id: not a page, rather than an error later.
+    expect(tinyToPageId("ABCDEFGHIJKLMNOP")).toBeUndefined();
+    expect(pageIdFromUrl(`${SITE}/wiki/x/ABCDEFGHIJKLMNOP`, SITE)).toEqual({ skip: "not-a-page" });
   });
 });
 
@@ -160,7 +205,7 @@ describe("ConfluenceClient", () => {
     const { fetch, calls } = fakeConfluence({});
     const c = client(fetch);
     await expect(c.page("1/../../x")).rejects.toThrow(/Not a Confluence page id/);
-    await expect(c.http.request("/api/v2/pages", { method: "POST", body: {} })).rejects.toThrow();
+    await expect(c.http.request("/api/v2/pages", { method: "POST", body: {} })).rejects.toBeInstanceOf(PolicyDenied);
     expect(calls).toHaveLength(0);
   });
 

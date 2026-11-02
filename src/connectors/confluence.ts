@@ -23,7 +23,7 @@ export interface ConfluencePage {
 
 export interface SkippedPage {
   url: string;
-  reason: "not-confluence" | "other-site" | "not-a-page" | "not-found" | "forbidden" | "limit";
+  reason: "not-confluence" | "other-site" | "not-a-page" | "not-found" | "forbidden" | "limit" | "unreadable";
 }
 
 export interface ConfluenceClientOptions extends Partial<Omit<HttpClientOptions, "service" | "baseUrl" | "headers" | "writeTarget" | "readOnlyPosts">> {
@@ -46,13 +46,14 @@ const PAGE_ID = /^\d{1,20}$/;
  * Assumption: this is Confluence's long-standing scheme; no public spec exists.
  */
 export function tinyToPageId(tiny: string): string | undefined {
-  if (!/^[A-Za-z0-9_-]{1,16}$/.test(tiny)) return undefined;
+  // 11 characters hold 8 bytes, the most a page id needs.
+  if (!/^[A-Za-z0-9_-]{1,11}$/.test(tiny)) return undefined;
   let b64 = tiny.replace(/-/g, "/").replace(/_/g, "+");
   while (b64.length % 4 !== 0) b64 += "A";
   const bytes = Buffer.from(b64, "base64");
   let id = 0n;
   for (let i = bytes.length - 1; i >= 0; i--) id = (id << 8n) | BigInt(bytes[i]!);
-  return id > 0n ? id.toString() : undefined;
+  return id > 0n && PAGE_ID.test(id.toString()) ? id.toString() : undefined;
 }
 
 /** The inverse of `tinyToPageId`, for tests and for building tiny links. */
@@ -89,7 +90,7 @@ export function pageIdFromUrl(url: string, site: string): { id: string } | { ski
     const id = u.searchParams.get("pageId") ?? "";
     return PAGE_ID.test(id) ? { id } : { skip: "not-a-page" };
   }
-  const tiny = /^\/x\/([A-Za-z0-9_-]+)$/.exec(path);
+  const tiny = /^\/x\/([A-Za-z0-9_-]+)\/?$/.exec(path);
   if (tiny) {
     const id = tinyToPageId(tiny[1]!);
     return id ? { id } : { skip: "not-a-page" };
@@ -118,6 +119,8 @@ export class ConfluenceClient {
     if (!PAGE_ID.test(id)) throw new Error(`Not a Confluence page id: ${JSON.stringify(id.slice(0, 40))}`);
     const raw = obj(await this.http.get(`/api/v2/pages/${id}`, { query: { "body-format": "storage" } }));
     const version = obj(raw.version);
+    // The version goes into sourceHash; without it an edited page would look unchanged.
+    if (typeof version.number !== "number") throw new ConnectorError("INVALID_RESPONSE", "Confluence", "GET", "/api/v2/pages/{id}", 200);
     const webui = str(obj(raw._links).webui);
     const spaceId = str(raw.spaceId) ?? (typeof raw.spaceId === "number" ? String(raw.spaceId) : undefined);
     const versionCreatedAt = str(version.createdAt);
@@ -125,7 +128,7 @@ export class ConfluenceClient {
       id: str(raw.id) ?? id,
       title: str(raw.title) ?? "",
       ...(spaceId ? { spaceId } : {}),
-      version: typeof version.number === "number" ? version.number : 0,
+      version: version.number,
       ...(versionCreatedAt ? { versionCreatedAt } : {}),
       url: webui ? `${this.site}/wiki${webui.startsWith("/") ? "" : "/"}${webui}` : `${this.site}/wiki/pages/viewpage.action?pageId=${id}`,
       body: storageToText(str(obj(obj(raw.body).storage).value)),
@@ -159,6 +162,11 @@ export class ConfluenceClient {
       } catch (error) {
         if (error instanceof ConnectorError && (error.code === "NOT_FOUND" || error.code === "FORBIDDEN")) {
           skipped.push({ url, reason: error.code === "NOT_FOUND" ? "not-found" : "forbidden" });
+          continue;
+        }
+        // A body too deep or odd to convert: skip that page, keep the rest of the run.
+        if (error instanceof RangeError) {
+          skipped.push({ url, reason: "unreadable" });
           continue;
         }
         throw error;
