@@ -25,7 +25,9 @@ The spike uses a toy workflow, `spike-test-cases`, on three synthetic tickets (`
    }
    ```
 
-4. Open the Copilot Chat view, switch it to **Agent** mode, and send any message first ("hi" is enough). VS Code doesn't start MCP servers until a chat session exists: starting `agent-qa` before that fails with `Cannot start an MCP server before the session runtime has been created`, and the editor shows only "Error". After the first message, the server usually starts by itself; otherwise use **MCP: List Servers** → `agent-qa` → **Start**. If it fails, **MCP: List Servers** → `agent-qa` → **Show Output** shows why. Each run gets a folder under `.agent-qa/runs/` in that folder. To put runs elsewhere, set `AGENT_QA_RUNS_DIR` under `"env"` in `mcp.json`.
+4. Open the Copilot Chat view, switch it to **Agent** mode, and send any message first ("hi" is enough; it doesn't count as a run). Some VS Code versions don't start MCP servers until a chat session exists: before that, the editor shows "Error" above the server in `mcp.json`, and the log says `Server 'agent-qa' failed: Cannot start an MCP server before the session runtime has been created. Send a message first.` After the first message the server may start by itself; otherwise use **MCP: List Servers** → `agent-qa` → **Start**.
+
+   If the server still fails, **MCP: List Servers** → `agent-qa` → **Show Output** shows why. Each run gets a folder under `.agent-qa/runs/` in that folder. To put runs elsewhere, set `AGENT_QA_RUNS_DIR` under `"env"` in `mcp.json`.
 
 ## Runs
 
