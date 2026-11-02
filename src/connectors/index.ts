@@ -16,3 +16,7 @@ export type {
   JiraPerson,
   JiraRemoteLink,
 } from "./jira.js";
+export { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "./confluence.js";
+export type { ConfluenceClientOptions, ConfluencePage, SkippedPage } from "./confluence.js";
+export { decodeEntities, parseStorage, storageToText } from "./storage.js";
+export type { StorageText } from "./storage.js";
