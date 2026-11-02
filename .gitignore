@@ -3,3 +3,5 @@ dist/
 coverage/
 .agent-qa/vault/
 *.log
+.agent-qa/runs/
+.agent-qa/audit.jsonl

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { EngineError } from "../engine/engine.js";
 import { writeFileAtomic } from "../engine/stores.js";
 import type { RunState, StateStore } from "../engine/types.js";
 import { VERSION } from "../version.js";
@@ -13,14 +14,28 @@ import { VERSION } from "../version.js";
  */
 
 export const RUN_SCHEMA_VERSION = 1;
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const ARTIFACT_NAME = /^[a-z][a-z0-9-]*$/;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const ARTIFACT_NAME = /^[a-z][a-z0-9-]{0,59}$/;
+/** Names Windows reserves for devices, with or without an extension. */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
+const RESERVED_ARTIFACTS = new Set(["run", "log", "steps"]);
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const HEX64 = /^[0-9a-f]{64}$/;
 
 function checkId(runId: string): string {
-  if (!SAFE_ID.test(runId) || runId.includes("..")) throw new RunStoreError(`Unsafe run id: ${runId}`);
+  if (!SAFE_ID.test(runId) || runId.includes("..") || runId.endsWith(".") || WINDOWS_RESERVED.test(runId)) {
+    throw new RunStoreError(`Unsafe run id: ${runId}`);
+  }
   return runId;
+}
+
+function checkArtifact(spec: { name: string; schema: string }): void {
+  if (!ARTIFACT_NAME.test(spec.name) || RESERVED_ARTIFACTS.has(spec.name) || WINDOWS_RESERVED.test(spec.name)) {
+    throw new RunStoreError(`Invalid artifact name: ${spec.name}`);
+  }
+  if (!new RegExp(`^${spec.name}@\\d+$`).test(spec.schema)) {
+    throw new RunStoreError(`Artifact ${spec.name} must have schema ${spec.name}@<major>, got ${spec.schema}`);
+  }
 }
 
 export class RunStoreError extends Error {
@@ -50,13 +65,22 @@ export function newRunId(context: string, now: Date = new Date(), random: (n: nu
   return `${now.toISOString().slice(0, 10)}-${contextSlug(context)}-${suffix}`;
 }
 
-/** The context part of a run id: the ticket or page a run is about, else the workflow id. */
+const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
+const PAGE_ID = /^\d{1,20}$/;
+
+/**
+ * The context part of a run id: the Jira key or Confluence page id a run is
+ * about, else the workflow id. Only key-shaped values are used, so free text
+ * (which may hold personal data) never lands in a folder name or run.json.
+ */
 export function contextOf(workflowId: string, inputs: unknown): string {
   if (inputs && typeof inputs === "object") {
-    for (const key of ["ticket", "issue", "key", "page", "context"]) {
-      const value = (inputs as Record<string, unknown>)[key];
-      if (typeof value === "string" && value.trim()) return value;
+    const record = inputs as Record<string, unknown>;
+    for (const key of ["ticket", "issue", "key"]) {
+      const value = record[key];
+      if (typeof value === "string" && ISSUE_KEY.test(value)) return value;
     }
+    if (typeof record.page === "string" && PAGE_ID.test(record.page)) return record.page;
   }
   return workflowId;
 }
@@ -141,9 +165,7 @@ export function hashInput(maskedText: string): string {
  * version. Input order doesn't matter. Same hash means the output is up to date.
  */
 export function sourceHash(parts: { inputs: InputRef[]; templateVersion: string; schema: string }): string {
-  const inputs = parts.inputs
-    .map((i) => [i.kind, i.ref, i.hash])
-    .sort((a, b) => (a.join("\u0000") < b.join("\u0000") ? -1 : a.join("\u0000") > b.join("\u0000") ? 1 : 0));
+  const inputs = [...new Set(parts.inputs.map((i) => JSON.stringify([i.kind, i.ref, i.hash])))].sort();
   return sha256(JSON.stringify({ schema: parts.schema, template: parts.templateVersion, inputs }));
 }
 
@@ -162,6 +184,17 @@ const envelopeSchema = z
 function issues(error: z.ZodError) {
   return error.issues.map((i) => ({ path: ["$", ...i.path.map(String)].join("."), message: i.message }));
 }
+
+/** Enough of the engine's RunState to trust a state.json before handing it back. */
+const runStateShape = z
+  .object({
+    runId: z.string(),
+    workflowId: z.string(),
+    status: z.enum(["running", "done", "failed", "cancelled"]),
+    stepIndex: z.number().int().min(0),
+    attempt: z.number().int().min(1),
+  })
+  .passthrough();
 
 const TERMINAL: ReadonlySet<RunManifestStatus> = new Set(["done", "failed", "cancelled"]);
 
@@ -291,13 +324,13 @@ export class RunStore {
     data: unknown,
     source: { inputs: InputRef[]; templateVersion: string },
   ): Promise<Artifact<T>> {
-    if (!ARTIFACT_NAME.test(spec.name) || spec.name === "run" || spec.name === "log") {
-      throw new RunStoreError(`Invalid artifact name: ${spec.name}`);
-    }
+    checkArtifact(spec);
     const parsed = spec.data.safeParse(data);
     if (!parsed.success) throw new RunStoreError(`Invalid ${spec.schema} artifact`, issues(parsed.error));
     const inputs = z.array(inputRefSchema).safeParse(source.inputs);
     if (!inputs.success) throw new RunStoreError(`Invalid inputs for ${spec.schema}`, issues(inputs.error));
+    // Render before writing anything, so a failing renderer leaves no files behind.
+    const markdown = spec.render ? spec.render(parsed.data) : undefined;
 
     return this.locked(runId, async () => {
       const manifest = await this.manifest(runId);
@@ -315,7 +348,9 @@ export class RunStore {
       if (!envelope.success) throw new RunStoreError(`Invalid ${spec.schema} envelope`, issues(envelope.error));
       const file = `${spec.name}.json`;
       await writeFileAtomic(join(this.dir(runId), file), JSON.stringify(artifact, null, 2) + "\n");
-      if (spec.render) await writeFileAtomic(join(this.dir(runId), `${spec.name}.md`), spec.render(parsed.data));
+      const md = join(this.dir(runId), `${spec.name}.md`);
+      if (markdown !== undefined) await writeFileAtomic(md, markdown);
+      else await rm(md, { force: true }); // no stale view from an earlier version
 
       const seen = new Set(manifest.inputs.map((i) => `${i.kind}\u0000${i.ref}\u0000${i.hash}`));
       const mergedInputs = [...manifest.inputs, ...inputs.data.filter((i) => !seen.has(`${i.kind}\u0000${i.ref}\u0000${i.hash}`))];
@@ -331,6 +366,7 @@ export class RunStore {
 
   /** Read and validate an artifact. Undefined when the run has none by that name. */
   async readArtifact<T>(runId: string, spec: ArtifactSpec<T>): Promise<Artifact<T> | undefined> {
+    checkArtifact(spec);
     const raw = await this.readJson(join(this.dir(runId), `${spec.name}.json`));
     if (raw === undefined) return undefined;
     const envelope = envelopeSchema.safeParse(raw);
@@ -346,8 +382,8 @@ export class RunStore {
 
   /** Append one event to the run's `log.jsonl`. Events hold masked text only. */
   async log(runId: string, event: Record<string, unknown>): Promise<void> {
-    await mkdir(this.dir(runId), { recursive: true });
-    await appendFile(join(this.dir(runId), "log.jsonl"), JSON.stringify({ at: this.now().toISOString(), ...event }) + "\n", "utf8");
+    if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`);
+    await appendFile(join(this.dir(runId), "log.jsonl"), JSON.stringify({ ...event, at: this.now().toISOString() }) + "\n", "utf8");
   }
 
   /** Run ids, oldest first (the date prefix sorts them). */
@@ -363,27 +399,54 @@ export class RunStore {
 
   /**
    * Engine state kept in each run's `steps/state.json`. The first save creates
-   * the run folder and `run.json`; later saves keep `run.json`'s status in step.
+   * the run folder and `run.json` (an existing folder is a RUN_COLLISION); later
+   * saves keep `run.json`'s status in step with the engine's.
    */
   stateStore(defaults: Pick<RunInit, "host" | "driver" | "model">): StateStore {
     const stateFile = (runId: string) => join(this.dir(runId), "steps", "state.json");
+    const readState = async (runId: string): Promise<RunState | undefined> => {
+      const raw = await this.readJson(stateFile(runId));
+      if (raw === undefined) return undefined;
+      const parsed = runStateShape.safeParse(raw);
+      if (!parsed.success) throw new RunStoreError(`Invalid steps/state.json in ${runId}`, issues(parsed.error));
+      if (parsed.data.runId !== runId) throw new RunStoreError(`steps/state.json in ${runId} belongs to another run`);
+      return parsed.data as unknown as RunState;
+    };
+    const syncStatus = async (state: RunState) => {
+      const manifest = await this.manifest(state.runId);
+      if (!manifest) throw new RunStoreError(`run.json is missing for ${state.runId}`);
+      if (manifest.workflow !== state.workflowId) {
+        throw new RunStoreError(`Run ${state.runId} belongs to workflow ${manifest.workflow}, not ${state.workflowId}`);
+      }
+      return manifest;
+    };
     return {
       load: async (runId) => {
-        checkId(runId);
-        return (await this.readJson(stateFile(runId))) as RunState | undefined;
+        const state = await readState(checkId(runId));
+        if (state) {
+          // Repair run.json if a crash came between writing state.json and run.json.
+          const manifest = await syncStatus(state);
+          if (TERMINAL.has(state.status) && manifest.status !== state.status) await this.update(runId, { status: state.status });
+        }
+        return state;
       },
       save: async (state) => {
-        const manifest = await this.manifest(state.runId);
-        if (!manifest) {
-          await this.create({
-            ...defaults,
-            id: state.runId,
-            workflow: state.workflowId,
-            context: contextOf(state.workflowId, state.inputs),
-          });
+        const previous = await readState(state.runId);
+        if (!previous) {
+          try {
+            await this.create({ ...defaults, id: state.runId, workflow: state.workflowId, context: contextOf(state.workflowId, state.inputs) });
+          } catch (error) {
+            if (error instanceof RunStoreError && /already exists/.test(error.message)) {
+              throw new EngineError("RUN_COLLISION", `Run folder already exists: ${state.runId}`);
+            }
+            throw error;
+          }
+        } else {
+          await syncStatus(state);
         }
         await writeFileAtomic(stateFile(state.runId), JSON.stringify(state, null, 2) + "\n");
-        if ((manifest?.status ?? "running") !== state.status) await this.update(state.runId, { status: state.status });
+        // Only a change in the engine's status touches run.json, so a needs-input set by a front door stays.
+        if (previous && previous.status !== state.status) await this.update(state.runId, { status: state.status });
       },
     };
   }
