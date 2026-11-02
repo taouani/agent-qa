@@ -37,4 +37,6 @@ jobs:
       # The fallback build for machines where esbuild can't read a parent folder.
       - run: npm run build:tsc
       - name: CLI smoke test (tsc build)
-        run: node dist/cli/bin.js --version
+        run: |
+          node dist/cli/bin.js --version
+          node -e "import('./dist/index.js').then((m) => console.log(m.VERSION))"
