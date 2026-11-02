@@ -15,12 +15,13 @@ describe("cli", () => {
     expect(names).toEqual(["init", "run", "doctor", "harness", "profile", "mcp"]);
   });
 
-  it("keeps run state in AGENT_QA_STATE_DIR when set", async () => {
+  it("gives each run a folder under AGENT_QA_RUNS_DIR when set", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-qa-cli-"));
     try {
-      const engine = createEngine("/nonexistent", { AGENT_QA_STATE_DIR: dir });
-      await engine.start("spike-test-cases", { ticket: "SPIKE-1" });
-      expect((await readdir(dir)).some((f) => f.endsWith(".state.json"))).toBe(true);
+      const engine = createEngine("/nonexistent", { AGENT_QA_RUNS_DIR: dir });
+      const step = await engine.start("spike-test-cases", { ticket: "SPIKE-1" });
+      expect(step.runId).toMatch(/^\d{4}-\d{2}-\d{2}-SPIKE-1-[a-z0-9]{4}$/);
+      expect((await readdir(join(dir, step.runId))).sort()).toEqual(["run.json", "steps"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

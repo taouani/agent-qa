@@ -38,8 +38,8 @@ const FS_MESSAGE = "Disk writes outside the run store, vault, engine state and a
 const ALWAYS_BLOCKED = ["child_process", "node:child_process", "module", "node:module", "worker_threads", "node:worker_threads"].map(
   (name) => ({ name, message: "Shelling out or loading CommonJS can write files past the policy layer; use Policy.guard." }),
 );
-/** The only files allowed to write to disk directly: engine state, vault and audit log. Add run store files when they exist. */
-const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts"];
+/** The only files allowed to write to disk directly: engine state, run folders, vault and audit log. */
+const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts"];
 
 const restrictedImports = (blockFs) => [
   "error",
