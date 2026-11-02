@@ -286,8 +286,9 @@ export class HttpClient {
         const expect = options.expect ?? "json";
         if (expect === "none") return undefined;
         if (expect === "text") return text;
-        // 204, or an empty body on a write (Jira's PUT and transitions), means "done, nothing to return".
-        if (status === 204 || (text === "" && method !== "GET")) return undefined;
+        // 204, or an empty body on a granted write (Jira's PUT and transitions), means "done, nothing
+        // to return". A read, including a read-only POST, with an empty body is still an error.
+        if (status === 204 || (text === "" && options.grant !== undefined)) return undefined;
         try {
           if (text === "") throw new Error("empty");
           return JSON.parse(text) as unknown;
@@ -378,7 +379,12 @@ export function noProxyMatches(host: string, port: string, noProxy: string | und
     if (entryPort && entryPort !== port) continue;
     // IP addresses match exactly: the entry `0.0.1` must not exempt `127.0.0.1`.
     if (hostIp || isIP(name)) {
-      if (h === name) return true;
+      // Compare as addresses, so `0:0:0:0:0:0:0:1` matches `::1`.
+      if (hostIp && isIP(name) === hostIp) {
+        const list = new BlockList();
+        list.addAddress(name, hostIp === 6 ? "ipv6" : "ipv4");
+        if (list.check(h, hostIp === 6 ? "ipv6" : "ipv4")) return true;
+      }
       continue;
     }
     const domain = name.replace(/^\*?\./, "");

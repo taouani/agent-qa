@@ -256,6 +256,12 @@ describe("HttpClient errors", () => {
     expect(await c.get("/x")).toBeUndefined();
   });
 
+  it("still rejects an empty body on a read-only POST", async () => {
+    const { fetch } = fakeFetch([new Response("", { status: 200 })]);
+    const { c } = client(fetch);
+    await expect(c.request("/rest/api/3/search/jql", { method: "POST", body: { jql: "x" } })).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
   it("refuses a body on GET or DELETE before sending", async () => {
     const { fetch, calls } = fakeFetch([]);
     const { c } = client(fetch);
@@ -368,6 +374,7 @@ describe("proxy selection", () => {
     expect(noProxyMatches("11.0.0.1", "443", "10.0.0.0/8")).toBe(false);
     expect(noProxyMatches("example.com", "443", "10.0.0.0/8")).toBe(false);
     expect(noProxyMatches("fd00::5", "443", "fd00::/8")).toBe(true);
+    expect(noProxyMatches("::1", "443", "0:0:0:0:0:0:0:1")).toBe(true);
   });
 
   it("uses a proxy agent only when a proxy applies to the origin and Node doesn't handle it", async () => {
