@@ -1,14 +1,15 @@
-import { assertGrant, type WriteGrant, type WriteTarget } from "../core/index.js";
+import { assertGrant, PolicyDenied, type WriteGrant, type WriteTarget } from "../core/index.js";
 
 /**
  * HTTP client for every connector (slice 1, S1-1). It adds timeouts, retries
  * with backoff, `Retry-After` on 429 and 503, and errors that never carry a
- * header, a credential or a response body: Jira and Xray bodies can quote
- * personal data, and errors end up in logs and reports.
+ * header, a credential, a query string or a response body: Jira and Xray
+ * bodies can quote personal data, and errors end up in logs and reports.
  *
- * A request that changes something remote must carry a `WriteGrant` from
- * `Policy.guard`. Reads sent as POST (Jira's JQL search, Xray's auth and
- * GraphQL queries) say so with `readOnly: true`.
+ * Writes: a client is built for one write target (Jira, Xray, Confluence) or
+ * none. A request other than GET needs a `WriteGrant` from `Policy.guard` for
+ * that target, unless it is a POST that the client was built to treat as a
+ * read (Jira's JQL search, Xray's authenticate, a GraphQL query).
  */
 
 export type ConnectorErrorCode =
@@ -21,6 +22,7 @@ export type ConnectorErrorCode =
   | "NETWORK"
   | "INVALID_RESPONSE"
   | "BAD_REQUEST"
+  | "REDIRECT"
   | "OFF_ORIGIN";
 
 export class ConnectorError extends Error {
@@ -42,23 +44,25 @@ function describe(code: ConnectorErrorCode, service: string, method: string, pat
   const where = `${service} ${method} ${path}`;
   switch (code) {
     case "AUTH":
-      return `${where}: authentication failed (401). Check the token and email in agent-qa.yaml; run agent-qa doctor.`;
+      return `${where}: authentication failed (401). Check the credentials in agent-qa.yaml; run agent-qa doctor.`;
     case "FORBIDDEN":
       return `${where}: permission denied (403). The account can't access this resource.`;
     case "NOT_FOUND":
       return `${where}: not found (404).`;
     case "RATE_LIMITED":
-      return `${where}: still rate limited after retries (429).`;
+      return `${where}: rate limited (429), and the server asked to wait longer than allowed or retries ran out.`;
     case "TIMEOUT":
       return `${where}: timed out.`;
     case "NETWORK":
       return `${where}: network error. If you are behind a proxy, set HTTPS_PROXY; for a corporate CA, set NODE_EXTRA_CA_CERTS.`;
     case "INVALID_RESPONSE":
-      return `${where}: the response was not the JSON expected.`;
+      return `${where}: the response was not what was expected.`;
     case "BAD_REQUEST":
       return `${where}: the server rejected the request (${status ?? 400}).`;
+    case "REDIRECT":
+      return `${where}: the server answered with a redirect (${status ?? "3xx"}), which is not followed. Check the site URL in agent-qa.yaml.`;
     case "OFF_ORIGIN":
-      return `${where}: refused to follow a URL on another host.`;
+      return `${where}: refused a URL outside the configured site.`;
     default:
       return `${where}: HTTP ${status ?? "error"}.`;
   }
@@ -66,40 +70,52 @@ function describe(code: ConnectorErrorCode, service: string, method: string, pat
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
+/** Decides whether a POST without a grant is a read. Gets the resolved path and the request body. */
+export type ReadOnlyPost = (path: string, body: unknown) => boolean;
+
 export interface HttpClientOptions {
   /** Shown in errors, e.g. "Jira". */
   service: string;
-  /** `https://site.atlassian.net`; paths are resolved against it. */
+  /** `https://site.atlassian.net`; paths are resolved against it and must stay under it. */
   baseUrl: string;
+  /** The policy target this client writes to. Without it, the client can't write at all. */
+  writeTarget?: WriteTarget;
+  /** POSTs that only read. Everything else that isn't GET needs a grant. */
+  readOnlyPosts?: ReadOnlyPost[];
   /** Headers added to every request, e.g. Authorization. Called per attempt, so a token can refresh. */
   headers?: () => Record<string, string> | Promise<Record<string, string>>;
   timeoutMs?: number;
   /** Extra attempts after the first. */
   retries?: number;
-  /** Upper bound for one wait, including `Retry-After`. */
+  /** Upper bound for one wait. A `Retry-After` longer than this fails the request instead. */
   maxWaitMs?: number;
   fetch?: FetchLike;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
 }
 
+export type Method = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+
 export interface RequestOptions {
-  method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  method?: Method;
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   headers?: Record<string, string>;
-  /** Required for a request that changes something remote. */
-  grant?: { grant: WriteGrant; target: WriteTarget };
-  /** A POST that only reads (search, auth, GraphQL query). */
-  readOnly?: boolean;
-  /** Retry a non-idempotent request on 429 or a network error. Default: only GET, PUT and DELETE retry. */
+  /** Required for a request that changes something remote, from `Policy.guard` for this client's write target. */
+  grant?: WriteGrant;
+  /**
+   * Also retry this request on 5xx and network errors. By default only GET,
+   * PUT, DELETE and read-only POSTs are; a 429 is always retried, since the
+   * server refused the request without acting on it.
+   */
   retry?: boolean;
-  /** Return the body as text instead of parsing JSON. */
-  text?: boolean;
+  /** `json` (default), `text`, or `none` for an empty answer. */
+  expect?: "json" | "text" | "none";
 }
 
 const RETRY_STATUS = new Set([429, 502, 503, 504]);
 const IDEMPOTENT = new Set(["GET", "PUT", "DELETE"]);
+const METHODS = new Set(["GET", "POST", "PUT", "DELETE", "PATCH"]);
 
 /** Seconds or an HTTP date, in milliseconds from now; undefined if absent or unreadable. */
 export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
@@ -112,19 +128,36 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Thrown by a single attempt; `retry` says whether another attempt may help. */
+class AttemptError extends Error {
+  constructor(
+    readonly error: ConnectorError,
+    readonly retry: boolean,
+    readonly waitMs?: number,
+  ) {
+    super(error.message);
+  }
+}
+
 export class HttpClient {
   private readonly origin: string;
   private readonly basePath: string;
   private readonly timeoutMs: number;
   private readonly retries: number;
   private readonly maxWaitMs: number;
-  private readonly fetchImpl: FetchLike | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
+  private fetchImpl: FetchLike | undefined;
 
   constructor(private readonly options: HttpClientOptions) {
-    const base = new URL(options.baseUrl);
+    let base: URL;
+    try {
+      base = new URL(options.baseUrl);
+    } catch {
+      throw new Error(`${options.service} base URL is not a valid URL`);
+    }
     if (base.username || base.password) throw new Error(`${options.service} base URL must not contain credentials`);
+    if (base.protocol !== "https:" && base.protocol !== "http:") throw new Error(`${options.service} base URL must be http(s)`);
     this.origin = base.origin;
     this.basePath = base.pathname.replace(/\/+$/, "");
     this.timeoutMs = options.timeoutMs ?? 30_000;
@@ -135,86 +168,135 @@ export class HttpClient {
     this.random = options.random ?? Math.random;
   }
 
-  /** Resolve a path or a same-origin absolute URL (pagination links). Anything on another host is refused. */
-  url(pathOrUrl: string, query?: RequestOptions["query"]): URL {
+  /**
+   * Resolve a path, or an absolute URL such as a pagination link, and check
+   * that the result is on the configured origin and under its base path.
+   * `//host`, backslashes and `..` can't escape: the check runs on the result.
+   */
+  url(pathOrUrl: string, query?: RequestOptions["query"], method = "GET"): URL {
+    const service = this.options.service;
+    const pathPart = pathOrUrl.split(/[?#]/)[0]!;
+    if (pathPart.includes("\\")) throw new ConnectorError("OFF_ORIGIN", service, method, "(outside the site)");
     let url: URL;
-    if (/^https?:\/\//i.test(pathOrUrl)) {
-      url = new URL(pathOrUrl);
-      if (url.origin !== this.origin) throw new ConnectorError("OFF_ORIGIN", this.options.service, "GET", url.pathname);
-    } else {
-      url = new URL(this.basePath + (pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`), this.origin);
+    try {
+      url = /^https?:\/\//i.test(pathOrUrl) ? new URL(pathOrUrl) : new URL(this.basePath + "/" + pathOrUrl.replace(/^\/+/, ""), this.origin);
+    } catch {
+      throw new ConnectorError("BAD_REQUEST", service, method, "(invalid path)", undefined, `${service} ${method}: the request path is not a valid URL`);
     }
+    const inside =
+      url.origin === this.origin && (this.basePath === "" || url.pathname === this.basePath || url.pathname.startsWith(this.basePath + "/"));
+    if (!inside) throw new ConnectorError("OFF_ORIGIN", service, method, "(outside the site)");
     for (const [k, v] of Object.entries(query ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
     return url;
   }
 
-  async get<T = unknown>(path: string, options: Omit<RequestOptions, "method" | "body" | "grant" | "readOnly"> = {}): Promise<T> {
+  async get<T = unknown>(path: string, options: Omit<RequestOptions, "method" | "body" | "grant" | "expect"> = {}): Promise<T> {
     return this.request<T>(path, { ...options, method: "GET" });
   }
 
-  async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
-    const method = options.method ?? "GET";
+  request(path: string, options: RequestOptions & { expect: "none" }): Promise<void>;
+  request(path: string, options: RequestOptions & { expect: "text" }): Promise<string>;
+  request<T = unknown>(path: string, options?: RequestOptions & { expect?: "json" }): Promise<T>;
+  async request<T>(path: string, options: RequestOptions = {}): Promise<T | string | void> {
     const service = this.options.service;
-    const url = this.url(path, options.query);
+    const method = options.method ?? "GET";
+    if (!METHODS.has(method)) throw new ConnectorError("BAD_REQUEST", service, "?", "(any)", undefined, `${service}: unsupported HTTP method`);
+    const url = this.url(path, options.query, method);
+    if ((method === "GET" || method === "DELETE") && options.body !== undefined) {
+      throw new ConnectorError("BAD_REQUEST", service, method, url.pathname, undefined, `${service} ${method} ${url.pathname}: a ${method} request can't have a body`);
+    }
+
+    let readOnly = method === "GET";
     if (method !== "GET") {
-      if (options.grant) assertGrant(options.grant.grant, options.grant.target);
-      else if (!(method === "POST" && options.readOnly)) {
-        throw new ConnectorError("BAD_REQUEST", service, method, url.pathname, undefined, `${service} ${method} ${url.pathname}: a write needs a policy grant`);
+      const target = this.options.writeTarget;
+      if (options.grant) {
+        if (!target) throw new PolicyDenied("unknown", `the ${service} client is read-only`);
+        assertGrant(options.grant, target);
+      } else if (method === "POST" && (this.options.readOnlyPosts ?? []).some((isRead) => isRead(url.pathname, options.body))) {
+        readOnly = true;
+      } else {
+        throw new PolicyDenied(target ?? "unknown", `${service} ${method} ${url.pathname} is a write and needs a policy grant`);
       }
     }
-    const canRetry = options.retry ?? IDEMPOTENT.has(method);
-    const fetchImpl = this.fetchImpl ?? (await defaultFetch());
+    const canRetry = options.retry ?? (readOnly || IDEMPOTENT.has(method));
+    this.fetchImpl ??= await defaultFetch(this.origin);
 
     for (let attempt = 0; ; attempt++) {
-      const headers: Record<string, string> = { Accept: "application/json", ...(await this.options.headers?.()), ...options.headers };
-      let body: string | undefined;
-      if (options.body !== undefined) {
-        body = typeof options.body === "string" ? options.body : JSON.stringify(options.body);
-        headers["Content-Type"] ??= "application/json";
+      try {
+        return (await this.attempt(url, method, options, canRetry)) as T | string | void;
+      } catch (error) {
+        if (!(error instanceof AttemptError)) throw error;
+        if (!error.retry || attempt >= this.retries) throw error.error;
+        await this.sleep(error.waitMs ?? this.backoff(attempt));
       }
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    }
+  }
+
+  private async attempt(url: URL, method: Method, options: RequestOptions, canRetry: boolean): Promise<unknown> {
+    const service = this.options.service;
+    const fail = (code: ConnectorErrorCode, retry: boolean, status?: number, waitMs?: number) =>
+      new AttemptError(new ConnectorError(code, service, method, url.pathname, status), retry, waitMs);
+
+    // Header names are case-insensitive: normalise so a caller's content-type replaces the default.
+    const headers: Record<string, string> = { accept: "application/json" };
+    const merge = (from: Record<string, string> | undefined) => {
+      for (const [k, v] of Object.entries(from ?? {})) headers[k.toLowerCase()] = v;
+    };
+    let body: string | undefined;
+    if (options.body !== undefined) {
+      body = typeof options.body === "string" ? options.body : JSON.stringify(options.body);
+      headers["content-type"] = "application/json";
+    }
+    merge(await this.options.headers?.());
+    merge(options.headers);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
       let response: Response;
       try {
-        response = await fetchImpl(url.toString(), { method, headers, ...(body !== undefined ? { body } : {}), signal: controller.signal, redirect: "manual" });
+        response = await this.fetchImpl!(url.toString(), {
+          method,
+          headers,
+          ...(body !== undefined ? { body } : {}),
+          signal: controller.signal,
+          redirect: "manual",
+        });
       } catch {
-        clearTimeout(timer);
-        const timedOut = controller.signal.aborted;
-        // A timed-out write may have landed; only retry it when the caller said it is safe.
-        if (attempt < this.retries && (canRetry || (!timedOut && options.readOnly))) {
-          await this.sleep(this.backoff(attempt));
-          continue;
-        }
-        throw new ConnectorError(timedOut ? "TIMEOUT" : "NETWORK", service, method, url.pathname, undefined, undefined);
+        // A timed-out or dropped write may have landed; only retry it when that is safe.
+        throw fail(controller.signal.aborted ? "TIMEOUT" : "NETWORK", canRetry);
       }
 
-      // The timeout also covers reading the body.
+      // The timeout also covers reading the body. The body of an error is read (so the
+      // connection can be reused) but never goes into the error.
       let text: string;
       try {
         text = response.status === 204 ? "" : await response.text();
       } catch {
-        clearTimeout(timer);
-        throw new ConnectorError(controller.signal.aborted ? "TIMEOUT" : "NETWORK", service, method, url.pathname, response.status);
+        throw fail(controller.signal.aborted ? "TIMEOUT" : "NETWORK", canRetry, response.status);
       }
-      clearTimeout(timer);
 
+      const status = response.status;
       if (response.ok) {
-        if (options.text) return text as T;
+        const expect = options.expect ?? "json";
+        if (expect === "none") return undefined;
+        if (expect === "text") return text;
         try {
-          return (text === "" ? undefined : JSON.parse(text)) as T;
+          if (text === "") throw new Error("empty");
+          return JSON.parse(text) as unknown;
         } catch {
-          throw new ConnectorError("INVALID_RESPONSE", service, method, url.pathname, response.status);
+          throw fail("INVALID_RESPONSE", false, status);
         }
       }
-
-      // The error body is read (so the connection can be reused) but never goes into the error.
-      const status = response.status;
-      if (RETRY_STATUS.has(status) && attempt < this.retries && (canRetry || status === 429 || options.readOnly)) {
+      if (RETRY_STATUS.has(status)) {
         const hinted = parseRetryAfter(response.headers.get("retry-after"));
-        await this.sleep(Math.min(this.maxWaitMs, hinted ?? this.backoff(attempt)));
-        continue;
+        // Waiting less than the server asked would only earn another refusal.
+        if (hinted !== undefined && hinted > this.maxWaitMs) throw fail(codeFor(status), false, status);
+        throw fail(codeFor(status), canRetry || status === 429, status, hinted);
       }
-      throw new ConnectorError(codeFor(status), service, method, url.pathname, status);
+      throw fail(codeFor(status), false, status);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -229,41 +311,74 @@ function codeFor(status: number): ConnectorErrorCode {
   if (status === 403) return "FORBIDDEN";
   if (status === 404) return "NOT_FOUND";
   if (status === 429) return "RATE_LIMITED";
-  if (status >= 300 && status < 400) return "OFF_ORIGIN";
+  if (status >= 300 && status < 400) return "REDIRECT";
   if (status >= 400 && status < 500) return "BAD_REQUEST";
   return "HTTP";
 }
 
-let cachedFetch: FetchLike | undefined;
+const fetchByOrigin = new Map<string, FetchLike>();
 
-/**
- * Node's fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set (Node 24
- * and late 22.x). When a proxy is configured without it, use undici's fetch
- * with an EnvHttpProxyAgent, which honours HTTPS_PROXY, HTTP_PROXY and NO_PROXY.
- */
-async function defaultFetch(): Promise<FetchLike> {
-  cachedFetch ??= await selectFetch(process.env);
-  return cachedFetch;
+async function defaultFetch(origin: string): Promise<FetchLike> {
+  let f = fetchByOrigin.get(origin);
+  if (!f) {
+    f = await selectFetch(process.env, origin);
+    fetchByOrigin.set(origin, f);
+  }
+  return f;
 }
 
-/** The fetch to use for this environment (exported for tests). */
-export async function selectFetch(env: NodeJS.ProcessEnv): Promise<FetchLike & { proxied?: boolean }> {
-  const proxied = env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy;
-  if (proxied && !env.NODE_USE_ENV_PROXY) {
-    const undici = await import("undici");
-    const pick = (...names: string[]) => names.map((n) => env[n]).find((v): v is string => !!v);
-    const agentOptions: ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] = {};
-    const https = pick("HTTPS_PROXY", "https_proxy");
-    const http = pick("HTTP_PROXY", "http_proxy");
-    const none = pick("NO_PROXY", "no_proxy");
-    if (https) agentOptions.httpsProxy = https;
-    if (http) agentOptions.httpProxy = http;
-    if (none) agentOptions.noProxy = none;
-    const dispatcher = new undici.EnvHttpProxyAgent(agentOptions);
-    const viaProxy = ((input: string, init: RequestInit) =>
-      undici.fetch(input, { ...(init as object), dispatcher } as never) as unknown as Promise<Response>) as FetchLike & { proxied?: boolean };
-    viaProxy.proxied = true;
-    return viaProxy;
+/** Node reads HTTPS_PROXY itself from 24.0 and 22.21, when NODE_USE_ENV_PROXY=1. */
+export function nodeHandlesProxy(env: NodeJS.ProcessEnv, version = process.versions.node): boolean {
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  return env.NODE_USE_ENV_PROXY === "1" && (major >= 24 || (major === 22 && minor >= 21));
+}
+
+/** True when NO_PROXY exempts `host` (`*`, an exact host, or a domain suffix such as `.corp` or `corp`). */
+export function noProxyMatches(host: string, port: string, noProxy: string | undefined): boolean {
+  if (!noProxy) return false;
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  for (const raw of noProxy.split(/[\s,]+/)) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === "*") return true;
+    let name = entry;
+    let entryPort: string | undefined;
+    const bracket = /^\[([^\]]+)\](?::(\d+))?$/.exec(entry);
+    if (bracket) {
+      name = bracket[1]!;
+      entryPort = bracket[2];
+    } else if (/^[^:]+:\d+$/.test(entry)) {
+      [name, entryPort] = entry.split(":") as [string, string];
+    }
+    if (entryPort && entryPort !== port) continue;
+    const domain = name.replace(/^\*?\./, "");
+    if (h === domain || h.endsWith("." + domain)) return true;
   }
-  return (input, init) => fetch(input, init);
+  return false;
+}
+
+/**
+ * The fetch for one origin (exported for tests). Behind a proxy that Node
+ * doesn't handle itself, it uses undici's stable ProxyAgent, after checking
+ * NO_PROXY for that origin.
+ */
+export async function selectFetch(
+  env: NodeJS.ProcessEnv,
+  origin: string,
+  version = process.versions.node,
+): Promise<FetchLike & { proxy?: string }> {
+  const plain: FetchLike = (input, init) => fetch(input, init);
+  if (nodeHandlesProxy(env, version)) return plain;
+  const u = new URL(origin);
+  const port = u.port || (u.protocol === "https:" ? "443" : "80");
+  const pick = (...names: string[]) => names.map((n) => env[n]).find((v): v is string => !!v);
+  // Like curl and undici, HTTPS falls back to HTTP_PROXY when HTTPS_PROXY is unset.
+  const proxy = u.protocol === "https:" ? pick("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy") : pick("HTTP_PROXY", "http_proxy");
+  if (!proxy || noProxyMatches(u.hostname, port, pick("NO_PROXY", "no_proxy"))) return plain;
+  const undici = await import("undici");
+  const dispatcher = new undici.ProxyAgent(proxy);
+  const viaProxy = ((input: string, init: RequestInit) =>
+    undici.fetch(input, { ...(init as object), dispatcher } as never) as unknown as Promise<Response>) as FetchLike & { proxy?: string };
+  viaProxy.proxy = new URL(proxy).host; // never the credentials in the proxy URL
+  return viaProxy;
 }
