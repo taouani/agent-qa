@@ -9,4 +9,6 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: false,
+  // Optional native dependency, loaded lazily at runtime; never bundle it.
+  external: ["@napi-rs/keyring"],
 });

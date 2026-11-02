@@ -47,7 +47,7 @@ export const defaultKeyringFactory: KeyringFactory = async (service, account) =>
   try {
     mod = (await import("@napi-rs/keyring")) as unknown as typeof mod;
   } catch {
-    throw new Error(`OS keychain support is not installed. Set ${VAULT_KEY_ENV} instead, or reinstall without --omit=optional.`);
+    throw new Error("OS keychain support is not installed; reinstall without --omit=optional");
   }
   return new mod.Entry(service, account);
 };
@@ -68,7 +68,12 @@ export class KeychainKeyProvider implements KeyProvider {
 
   async getKey(): Promise<Buffer> {
     if (this.cached) return this.cached;
-    const entry = await this.factory(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    let entry: KeyringEntry;
+    try {
+      entry = await this.factory(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    } catch (error) {
+      throw unavailable(error instanceof Error ? error.message : String(error));
+    }
     let stored = this.keychain(() => entry.getPassword());
     if (!stored) {
       this.keychain(() => entry.setPassword(randomBytes(32).toString("base64")));
@@ -98,7 +103,52 @@ export function defaultKeyProvider(env: NodeJS.ProcessEnv = process.env): KeyPro
 /** Reads config secrets written as `${keychain:NAME}` from the same keychain service. */
 export function keychainLookup(factory: KeyringFactory = defaultKeyringFactory) {
   return async (name: string): Promise<string | undefined> => {
-    const entry = await factory(KEYCHAIN_SERVICE, name);
-    return entry.getPassword() ?? undefined;
+    try {
+      const entry = await factory(KEYCHAIN_SERVICE, name);
+      return entry.getPassword() ?? undefined;
+    } catch (error) {
+      throw new Error(
+        `The OS keychain can't be read for ${name} (${error instanceof Error ? error.message : String(error)}). ` +
+          `Use \${env:NAME} in agent-qa.yaml instead.`,
+      );
+    }
   };
+}
+
+export interface VaultKeyStatus {
+  ok: boolean;
+  /** False when the keychain has no key yet; the first run creates one, if the keychain is writable. */
+  exists: boolean;
+  /** Where the key comes from, or would come from. */
+  source: string;
+  message: string;
+}
+
+/**
+ * Checks the vault key without creating one (for `agent-qa doctor`). A missing
+ * keychain key is fine: the first run creates it.
+ */
+export async function vaultKeyStatus(
+  env: NodeJS.ProcessEnv = process.env,
+  factory: KeyringFactory = defaultKeyringFactory,
+): Promise<VaultKeyStatus> {
+  if (env[VAULT_KEY_ENV]) {
+    const provider = new EnvKeyProvider(env);
+    try {
+      await provider.getKey();
+      return { ok: true, exists: true, source: provider.description, message: "valid 32-byte key" };
+    } catch (error) {
+      return { ok: false, exists: true, source: provider.description, message: (error as Error).message };
+    }
+  }
+  const source = `OS keychain (${KEYCHAIN_SERVICE}/${KEYCHAIN_ACCOUNT})`;
+  try {
+    const entry = await factory(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    const stored = entry.getPassword();
+    if (!stored) return { ok: true, exists: false, source, message: "no key yet; the first run creates one" };
+    decodeKey(stored, source);
+    return { ok: true, exists: true, source, message: "valid 32-byte key" };
+  } catch (error) {
+    return { ok: false, exists: false, source, message: unavailable((error as Error).message).message };
+  }
 }
