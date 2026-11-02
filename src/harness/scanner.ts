@@ -28,7 +28,8 @@ const COMMON_WORDS = new Set(
 
 /** NFKD, no combining marks, lowercase: `Zoë`, `Zoë` and `ZOE` all become `zoe`; `４` becomes `4`. */
 export function fold(text: string): string {
-  return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+  // \p{Cf}: zero-width joiners, spaces and other invisible format characters that would split a word.
+  return text.normalize("NFKD").replace(/[\p{M}\p{Cf}]/gu, "").toLowerCase();
 }
 
 function words(text: string): string[] {
@@ -101,7 +102,9 @@ function checksFor(seed: Seed): Check {
     return ({ folded }) => {
       if (folded.includes(exact)) return "exact";
       // Compare on digits/letters with separators removed, but never inside a longer run.
-      const tight = folded.replace(/(?<=\d)[\s.\-/()]+(?=\d)/g, "");
+      let tight = folded.replace(/(?<=\d)[\s._\-/()]+(?=\d)/g, "");
+      // An IBAN can be written with a space after its country code: "DE 89 3704 …".
+      if (seed.kind === "iban") tight = tight.replace(/(?<![\p{L}\p{N}])([a-z]{2})[\s._\-/()]+(?=\d)/gu, "$1");
       if (re.test(tight)) return "digits";
       if (national?.test(tight)) return "national";
       return undefined;

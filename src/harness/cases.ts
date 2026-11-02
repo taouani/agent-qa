@@ -24,8 +24,10 @@ export const seedSchema = z
   .strict()
   .superRefine((seed, ctx) => {
     // Short digit seeds would match inside unrelated numbers. The message never echoes the value.
-    if (DIGIT_SEED_KINDS.has(seed.kind) && seed.value.replace(/[^\p{L}\p{N}]/gu, "").length < 8) {
-      ctx.addIssue({ code: "custom", path: ["value"], message: "needs at least 8 letters and digits for this kind" });
+    // Phone and card numbers count digits only; IBANs and national ids may contain letters.
+    const counted = seed.kind === "phone" || seed.kind === "card" ? seed.value.replace(/\D/g, "") : seed.value.replace(/[^\p{L}\p{N}]/gu, "");
+    if (DIGIT_SEED_KINDS.has(seed.kind) && counted.length < 8) {
+      ctx.addIssue({ code: "custom", path: ["value"], message: "needs at least 8 digits (letters count for iban and national-id)" });
     }
   });
 export type Seed = z.infer<typeof seedSchema>;
@@ -135,7 +137,9 @@ export function validateCases(cases: HarnessCase[], seeds: Seed[]): void {
     for (const id of c.seeds) {
       const seed = byId.get(id);
       if (!seed) throw new HarnessCaseError(`Case ${c.id} names unknown seed ${id}`);
-      if (new SeedScanner([seed]).scan(text).length === 0) throw new HarnessCaseError(`Case ${c.id} names seed ${id}, but its tickets don't contain it`);
+      // Fixtures must carry the whole value, not just one part of a name.
+      const hit = new SeedScanner([seed]).scan(text)[0];
+      if (!hit || hit.match === "name-part" || hit.match === "email-local") throw new HarnessCaseError(`Case ${c.id} names seed ${id}, but its tickets don't contain it`);
     }
   }
 }
@@ -144,7 +148,15 @@ function parseFile(file: string, text: string): unknown {
   try {
     return file.endsWith(".json") ? JSON.parse(text) : parse(text, { maxAliasCount: 100 });
   } catch (error) {
-    throw new HarnessCaseError(`${file} can't be parsed: ${(error as Error).message.split("\n")[0]}`);
+    // Parser messages can quote the source text, which may hold seed values: report only where it broke.
+    if (file.endsWith(".json")) {
+      const at = /position (\d+)/.exec((error as Error).message)?.[1];
+      if (at === undefined) throw new HarnessCaseError(`${file} is not valid JSON`);
+      const before = text.slice(0, Number(at)).split("\n");
+      throw new HarnessCaseError(`${file} is not valid JSON (line ${before.length}, column ${before.at(-1)!.length + 1})`);
+    }
+    const line = (error as { linePos?: Array<{ line: number; col: number }> }).linePos?.[0];
+    throw new HarnessCaseError(`${file} is not valid YAML${line ? ` (line ${line.line}, column ${line.col})` : ""}`);
   }
 }
 

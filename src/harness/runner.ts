@@ -103,7 +103,16 @@ export interface RunHarnessOptions {
 
 function safeError(error: unknown, seeds: SeedScanner): string {
   const name = error instanceof Error ? error.name : typeof error;
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : JSON.stringify(error) ?? String(error);
+  let message: string;
+  if (error instanceof Error) message = error.message;
+  else if (typeof error === "string") message = error;
+  else {
+    try {
+      message = JSON.stringify(error) ?? String(error);
+    } catch {
+      message = Object.prototype.toString.call(error); // circular or BigInt
+    }
+  }
   // An error could quote a prompt; don't let it carry a seed into the report.
   const safeName = seeds.scan(name).length > 0 ? "Error" : name;
   return seeds.scan(message).length > 0 ? `${safeName}: (message withheld: it contains seeded data)` : `${safeName}: ${message}`;

@@ -89,6 +89,18 @@ describe("harness runner", () => {
     expect(r2.cases[0]!.status).toBe("error");
   });
 
+  it("reports a circular or BigInt throw instead of crashing", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    for (const thrown of [circular, 10n]) {
+      const p: Pipeline = async () => {
+        throw thrown;
+      };
+      const report = await runHarness({ cases: DEFAULT_CASES.slice(0, 1), seeds: DEFAULT_SEEDS, pipeline: p, driver: new StaticDriver() });
+      expect(report.cases[0]!.status).toBe("error");
+    }
+  });
+
   it("gives each case its own copy of the tickets", async () => {
     const mutating: Pipeline = async ({ tickets }) => {
       tickets[0]!.description = "changed";
@@ -126,6 +138,12 @@ describe("seed scanner", () => {
       "user patvexwillow",
       Buffer.from("mail pat.vexwillow@example.com now").toString("base64"),
     ]) expect(email.scan(text), text).toHaveLength(1);
+  });
+
+  it("sees through invisible characters and other separators", () => {
+    expect(ids("contact Quill\u200Dfeather")).toEqual(["seed-name-1:name-part"]);
+    expect(ids("iban DE 89 3704 0044 0532 0130 00")).toEqual(["seed-iban-1:digits"]);
+    expect(ids("card 4111_1111_1111_1111")).toEqual(["seed-card-1:digits"]);
   });
 
   it("avoids false positives on digits, IPs and common words", () => {
@@ -208,6 +226,32 @@ describe("harness cases", () => {
       const config = parseConfig("version: 1\nharness:\n  sources:\n    - fixtures: ./fixtures\n  seededPersonalData: ./seeds.yaml\n");
       await expect(harnessSources(config, dir)).rejects.toThrow(HarnessCaseError);
       await expect(harnessSources(config, dir)).rejects.not.toThrow(/Secret Person/);
+    });
+
+    it("never echoes file content in parse errors", async () => {
+      await mkdir(join(dir, "f"));
+      const config = parseConfig("version: 1\nharness:\n  sources:\n    - fixtures: ./f\n  seededPersonalData: ./seeds.json\n");
+      await writeFile(join(dir, "seeds.json"), '{"seeds":[{"id":"s","kind":"name","value": Secret Person}]}');
+      await expect(harnessSources(config, dir)).rejects.toThrow(/seeds.json is not valid JSON/);
+      await expect(harnessSources(config, dir)).rejects.not.toThrow(/Secret/);
+      await writeFile(join(dir, "seeds.json"), '{"seeds":[{"id":"s","kind":"name","value":"Ann Example"}]}');
+      await writeFile(join(dir, "f", "a.json"), '{"description": Zephyrine Applewood}');
+      await expect(harnessSources(config, dir)).rejects.not.toThrow(/Zephyrine/);
+      await writeFile(join(dir, "f", "a.json"), "");
+      await rm(join(dir, "f", "a.json"));
+      await writeFile(join(dir, "f", "a.yaml"), "description: [Zephyrine Applewood\n");
+      await expect(harnessSources(config, dir)).rejects.toThrow(/a.yaml is not valid YAML/);
+      await expect(harnessSources(config, dir)).rejects.not.toThrow(/Zephyrine/);
+    });
+
+    it("counts only digits for phone and card seeds, and needs the whole value in fixtures", async () => {
+      expect(() => validateCases([], [{ id: "c", kind: "card", value: "abcdefgh" } as never])).not.toThrow();
+      const { seedSchema } = await import("../src/harness/index.js");
+      expect(seedSchema.safeParse({ id: "c", kind: "card", value: "abcdefgh" }).success).toBe(false);
+      expect(seedSchema.safeParse({ id: "i", kind: "iban", value: "DE893704" }).success).toBe(true);
+      const [first] = DEFAULT_CASES;
+      const partial = { ...first!, tickets: [{ ...first!.tickets[0]!, description: "Quillfeather only", fields: {} }], seeds: ["seed-name-1"] };
+      expect(() => validateCases([partial], DEFAULT_SEEDS)).toThrow(/don't contain it/);
     });
 
     it("rejects short digit seeds and duplicate seed ids", async () => {
