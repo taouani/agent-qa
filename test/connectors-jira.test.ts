@@ -116,7 +116,11 @@ function fakeJira(issues: Record<string, { type?: string; parent?: string; links
         keys = Object.keys(issues).filter((k) => parents.includes(issues[k]!.parent ?? ""));
       } else if (keyIn) {
         const wanted = keyIn[1]!.split(",");
+        // Like Jira Cloud: one unknown key fails the whole query.
+        if (wanted.some((k) => !issues[k])) return new Response(JSON.stringify({ errorMessages: ["An issue with key 'X' does not exist"] }), { status: 400 });
         keys = Object.keys(issues).filter((k) => wanted.includes(k));
+      } else if (jql === "ALL") {
+        keys = Object.keys(issues);
       } else {
         keys = Object.keys(issues).filter((k) => !issues[k]!.parent).sort();
       }
@@ -187,8 +191,54 @@ describe("JiraClient.collect", () => {
   it("stops at maxIssues and says it truncated", async () => {
     const { fetch } = fakeJira(TREE);
     const result = await jira(fetch).collect({ key: "QA-1" }, { maxIssues: 3 });
-    expect(result.issues).toHaveLength(3);
+    expect(result.issues.map((i) => [i.key, i.role])).toEqual([
+      ["QA-1", "root"],
+      ["QA-2", "child"],
+      ["QA-3", "child"],
+    ]);
     expect(result.truncated).toBe(true);
+    // Children lists only name collected issues.
+    expect(result.issues.find((i) => i.key === "QA-2")!.children).toEqual([]);
+  });
+
+  it("says it truncated when the limit is hit on the last level", async () => {
+    const { fetch } = fakeJira(TREE);
+    const result = await jira(fetch).collect({ key: "QA-1" }, { maxIssues: 4, maxDepth: 2, followLinks: false });
+    expect(result.issues.map((i) => i.key)).toEqual(["QA-1", "QA-2", "QA-3", "QA-4"]);
+    expect(result.truncated).toBe(true);
+    expect(result.issues.find((i) => i.key === "QA-4")!.children).toEqual([]);
+  });
+
+  it("says it truncated at maxDepth 0 when the root has children, and not when it has none", async () => {
+    const { fetch } = fakeJira(TREE);
+    expect((await jira(fetch).collect({ key: "QA-1" }, { maxDepth: 0, followLinks: false })).truncated).toBe(true);
+    expect((await jira(fetch).collect({ key: "QA-3" }, { maxDepth: 0, followLinks: false })).truncated).toBe(false);
+  });
+
+  it("checks every chunk below the depth limit, not just the first", async () => {
+    const wide: Parameters<typeof fakeJira>[0] = { "QA-1": { type: "Epic" } };
+    for (let n = 2; n <= 61; n++) wide[`QA-${n}`] = { parent: "QA-1" };
+    wide["QA-99"] = { parent: "QA-61", type: "Task" };
+    const { fetch } = fakeJira(wide);
+    const result = await jira(fetch).collect({ key: "QA-1" }, { maxDepth: 1, followLinks: false });
+    expect(result.issues).toHaveLength(61);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("doesn't count issues it already has against the limit", async () => {
+    const { fetch } = fakeJira(TREE);
+    // Every issue matches the filter, so each child is also a root.
+    const result = await jira(fetch).collect({ jql: "ALL" }, { maxIssues: 7, followLinks: false });
+    expect(result.issues).toHaveLength(7);
+    expect(result.issues.every((i) => i.role === "root")).toBe(true);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("skips a linked issue Jira won't return instead of failing", async () => {
+    const { fetch } = fakeJira({ ...TREE, "QA-1": { ...TREE["QA-1"], links: ["QA-9", "QA-404"] } });
+    const result = await jira(fetch).collect({ key: "qa-1" }, { maxDepth: 0 });
+    expect(result.issues.map((i) => i.key)).toEqual(["QA-1", "QA-9"]);
+    expect(result.unreachable).toEqual(["QA-404"]);
   });
 
   it("uses a configured acceptance-criteria field and extra fields by name", async () => {

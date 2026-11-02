@@ -1,5 +1,5 @@
 import { adfToText, type AdfText } from "./adf.js";
-import { HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
+import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 
 /**
  * Jira Cloud client (slice 1, S1-2). Read-only in slice 1: it fetches one
@@ -93,6 +93,8 @@ export interface JiraCollection {
   issues: JiraIssue[];
   /** True when maxIssues or maxDepth cut something off. */
   truncated: boolean;
+  /** Linked issues that Jira would not return (deleted, archived, moved or restricted). */
+  unreachable: string[];
   acceptanceCriteriaField?: JiraField;
 }
 
@@ -123,6 +125,7 @@ const BASE_FIELDS = [
   "updated",
 ];
 const CHUNK = 50;
+const REMOTE_LINK_CONCURRENCY = 4;
 
 type Raw = Record<string, unknown>;
 const obj = (v: unknown): Raw => (v && typeof v === "object" ? (v as Raw) : {});
@@ -160,6 +163,11 @@ export class JiraClient {
     return all.find((f) => f.id === idOrName) ?? all.find((f) => f.name.toLowerCase() === idOrName.toLowerCase());
   }
 
+  /**
+   * The configured field (id or name), or the first custom field named like
+   * "Acceptance criteria" in one of the 9 languages. A site with two such
+   * fields should configure the one to use.
+   */
   async acceptanceCriteriaField(configured?: string): Promise<JiraField | undefined> {
     if (configured) return this.findField(configured);
     return (await this.fields()).find((f) => f.custom && AC_FIELD_NAMES.test(f.name.trim()));
@@ -181,17 +189,37 @@ export class JiraClient {
           body: { jql, fields, maxResults: Math.min(100, Math.max(1, limit - issues.length)), ...(nextPageToken ? { nextPageToken } : {}) },
         }),
       );
-      issues.push(...arr(page.issues).map(obj));
-      nextPageToken = str(page.nextPageToken);
-      const last = page.isLast === true || !nextPageToken;
+      const batch = arr(page.issues).map(obj);
+      issues.push(...batch);
+      const token = str(page.nextPageToken);
+      // An empty page or a repeated token would otherwise loop forever.
+      const last = page.isLast === true || !token || token === nextPageToken || batch.length === 0;
+      nextPageToken = token;
       if (issues.length >= limit) return { issues: issues.slice(0, limit), more: !last || issues.length > limit };
       if (last) return { issues, more: false };
     }
   }
 
+  /** Whether any of these issues has a child that isn't in `known`. */
+  private async hasNewChildren(keys: string[], known: Map<string, unknown>): Promise<boolean> {
+    const valid = keys.filter((k) => ISSUE_KEY.test(k));
+    for (let i = 0; i < valid.length; i += CHUNK) {
+      // Ask for one more than we know about, so a new child can't hide behind known ones.
+      const probe = await this.search(`parent in (${valid.slice(i, i + CHUNK).join(",")}) ORDER BY key`, ["summary"], known.size + 1);
+      if (probe.issues.some((raw) => !known.has(str(raw.key) ?? ""))) return true;
+    }
+    return false;
+  }
+
   async remoteLinks(key: string): Promise<JiraRemoteLink[]> {
     assertKey(key);
-    const raw = await this.http.get(`/rest/api/3/issue/${key}/remotelink`);
+    let raw: unknown;
+    try {
+      raw = await this.http.get(`/rest/api/3/issue/${key}/remotelink`);
+    } catch (error) {
+      if (isGone(error)) return [];
+      throw error;
+    }
     return arr(raw).flatMap((r) => {
       const o = obj(obj(r).object);
       const url = str(o.url);
@@ -230,7 +258,7 @@ export class JiraClient {
     // Roots.
     let frontier: JiraIssue[];
     if ("key" in input) {
-      frontier = [add(await this.issue(input.key, fields), "root", 0)];
+      frontier = [add(await this.issue(input.key.trim().toUpperCase(), fields), "root", 0)];
     } else {
       const { issues, more } = await this.search(input.jql, fields, maxIssues);
       truncated ||= more;
@@ -238,32 +266,33 @@ export class JiraClient {
     }
 
     // Descendants, one level at a time. `parent = X` covers epic children and sub-tasks in Jira Cloud.
+    // Searches ask for up to maxIssues, so issues already collected (a JQL root that is also a child)
+    // can't use up the limit and hide new ones.
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const next: JiraIssue[] = [];
       for (let i = 0; i < frontier.length; i += CHUNK) {
         if (room() <= 0) {
-          truncated = true;
+          truncated ||= await this.hasNewChildren(frontier.slice(i).map((f) => f.key), found);
           break;
         }
-        const keys = frontier.slice(i, i + CHUNK).map((f) => f.key);
-        const { issues, more } = await this.search(`parent in (${keys.join(",")}) ORDER BY key`, fields, room());
-        truncated ||= more;
-        for (const raw of issues) {
+        const keys = frontier.slice(i, i + CHUNK).map((f) => f.key).filter((k) => ISSUE_KEY.test(k));
+        if (keys.length === 0) continue;
+        const { issues, more } = await this.search(`parent in (${keys.join(",")}) ORDER BY key`, fields, maxIssues);
+        const fresh = issues.filter((raw) => {
           const key = str(raw.key);
-          if (!key || found.has(key)) continue;
-          next.push(add(raw, "child", depth));
-        }
+          return !!key && ISSUE_KEY.test(key) && !found.has(key);
+        });
+        const space = room();
+        truncated ||= more || fresh.length > space;
+        for (const raw of fresh.slice(0, space)) next.push(add(raw, "child", depth));
       }
       frontier = next;
-      if (depth === maxDepth && frontier.length > 0 && room() > 0) {
-        // Anything further down is cut off; say so if there is something there.
-        const keys = frontier.slice(0, CHUNK).map((f) => f.key);
-        const probe = await this.search(`parent in (${keys.join(",")})`, ["summary"], 1);
-        truncated ||= probe.issues.length > 0;
-      }
     }
+    // Below maxDepth is cut off; say so only if something is there.
+    if (frontier.length > 0 && !truncated) truncated = await this.hasNewChildren(frontier.map((f) => f.key), found);
 
-    // Children lists, now that the hierarchy is known.
+    // Children lists, now that the hierarchy is known. Only collected issues are listed.
+    for (const issue of found.values()) issue.children = [];
     for (const issue of found.values()) {
       if (issue.parent) {
         const parent = found.get(issue.parent);
@@ -272,6 +301,7 @@ export class JiraClient {
     }
 
     // Linked issues, one level out, not followed further.
+    const unreachable: string[] = [];
     if (followLinks) {
       const wanted = [...new Set([...found.values()].flatMap((i) => i.links.map((l) => l.key)))].filter((k) => !found.has(k) && ISSUE_KEY.test(k));
       for (let i = 0; i < wanted.length; i += CHUNK) {
@@ -280,16 +310,47 @@ export class JiraClient {
           break;
         }
         const keys = wanted.slice(i, i + CHUNK);
-        const { issues, more } = await this.search(`key in (${keys.join(",")}) ORDER BY key`, fields, room());
-        truncated ||= more || (room() <= 0 && i + CHUNK < wanted.length);
+        let issues: Raw[];
+        let more = false;
+        try {
+          ({ issues, more } = await this.search(`key in (${keys.join(",")}) ORDER BY key`, fields, room()));
+        } catch (error) {
+          // Jira refuses the whole query (400) when one key is gone or hidden. Fetch one by one instead.
+          if (!(error instanceof ConnectorError && error.code === "BAD_REQUEST")) throw error;
+          issues = [];
+          for (const key of keys) {
+            if (issues.length >= room()) {
+              more = true;
+              break;
+            }
+            try {
+              issues.push(await this.issue(key, fields));
+            } catch (inner) {
+              if (!isGone(inner)) throw inner;
+              unreachable.push(key);
+            }
+          }
+        }
+        truncated ||= more;
         for (const raw of issues) add(raw, "linked", 0);
+        const got = new Set(issues.map((raw) => str(raw.key)));
+        if (!more) for (const key of keys) if (!got.has(key) && !unreachable.includes(key)) unreachable.push(key);
       }
     }
 
-    for (const issue of found.values()) issue.remoteLinks = await this.remoteLinks(issue.key);
+    // Remote links (e.g. Confluence pages), a few issues at a time.
+    const all = [...found.values()];
+    for (let i = 0; i < all.length; i += REMOTE_LINK_CONCURRENCY) {
+      await Promise.all(all.slice(i, i + REMOTE_LINK_CONCURRENCY).map(async (issue) => (issue.remoteLinks = await this.remoteLinks(issue.key))));
+    }
 
-    return { input, issues: [...found.values()], truncated, ...(acField ? { acceptanceCriteriaField: acField } : {}) };
+    return { input, issues: [...found.values()], truncated, unreachable, ...(acField ? { acceptanceCriteriaField: acField } : {}) };
   }
+}
+
+/** 404 or 403: the issue is gone or hidden from this account. */
+function isGone(error: unknown): boolean {
+  return error instanceof ConnectorError && (error.code === "NOT_FOUND" || error.code === "FORBIDDEN");
 }
 
 function assertKey(key: string): void {
@@ -363,5 +424,7 @@ function textOf(v: unknown): AdfText {
   const o = obj(v);
   if (o.type === "doc") return adfToText(o);
   const label = str(o.value) ?? str(o.name) ?? str(o.displayName);
-  return { text: label ?? "", mentions: str(o.displayName) ? [str(o.displayName)!] : [], links: [] };
+  // A cascading select holds its second level in `child`.
+  const childLabel = str(obj(o.child).value);
+  return { text: [label, childLabel].filter(Boolean).join(" / "), mentions: str(o.displayName) ? [str(o.displayName)!] : [], links: [] };
 }

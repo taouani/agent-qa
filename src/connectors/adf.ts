@@ -1,7 +1,8 @@
 /**
  * Atlassian Document Format (Jira Cloud rich text) to plain text with light
  * Markdown: headings, lists, tables, code and quotes keep their shape so a
- * model can read them. Mentions are returned separately as well: they are
+ * model can read them. Bold, italic and colour are dropped: they rarely carry
+ * meaning a test case needs. Mentions are returned separately as well: they are
  * people's names, and the masking layer treats them as known names.
  */
 
