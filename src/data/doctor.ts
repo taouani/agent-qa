@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { ConfigError, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
@@ -194,11 +194,13 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
   const results: CheckResult[] = [nodeCheck(options.nodeVersion ?? process.version)];
 
   let config: Config | undefined;
-  const shown = (text: string) => text.split(options.cwd).join(".");
+  const root = resolve(options.cwd);
+  // Show paths under the project as ./…, so home folders and user names stay out of CI logs.
+  const shown = (text: string) => text.split(root + sep).join("." + sep).split(root).join(".");
   try {
-    const loaded = await loadConfig(options.cwd);
+    const loaded = await loadConfig(root);
     config = loaded.config;
-    results.push({ id: "config", title: "agent-qa.yaml", status: "pass", detail: relative(options.cwd, loaded.file) || loaded.file });
+    results.push({ id: "config", title: "agent-qa.yaml", status: "pass", detail: relative(root, loaded.file) || loaded.file });
     if (!SECRET_REF.test(config.atlassian?.email ?? "${env:x}")) {
       results.push({
         id: "config-email",
@@ -220,9 +222,9 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
   else results.push({ id: "secrets", title: "Secrets", status: "skip", detail: "needs a valid config" });
   results.push(await vaultCheck(env, keyring));
   try {
-    results.push(await gitignoreCheck(options.cwd, options.caseInsensitive));
+    results.push(await gitignoreCheck(root, options.caseInsensitive));
   } catch (error) {
-    results.push({ id: "gitignore", title: ".gitignore", status: "fail", detail: `can't be read: ${(error as Error).message.split(options.cwd).join(".")}` });
+    results.push({ id: "gitignore", title: ".gitignore", status: "fail", detail: `can't be read: ${shown((error as Error).message)}` });
   }
   results.push(config ? modelsCheck(config) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
   if (!config) results.push({ id: "network", title: "Services", status: "skip", detail: "needs a valid config" });

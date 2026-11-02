@@ -108,7 +108,8 @@ async function readOptional(file: string): Promise<string> {
 export async function loadIgnoreRules(
   root: string,
   targets: string[],
-  caseInsensitive = process.platform === "win32" || process.platform === "darwin",
+  // Only Windows: macOS repos can set core.ignorecase=false, and guessing wrong there would be looser than git.
+  caseInsensitive = process.platform === "win32",
 ): Promise<Rule[]> {
   const rules = parseGitignore(await readOptional(join(root, ".git", "info", "exclude")), "", caseInsensitive);
   rules.push(...parseGitignore(await readOptional(join(root, ".gitignore")), "", caseInsensitive));

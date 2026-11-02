@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { formatDoctor, runDoctor, type CheckResult } from "../src/data/index.js";
 import { isIgnored, parseGitignore } from "../src/data/gitignore.js";
@@ -218,5 +218,23 @@ describe("keychain lookups", () => {
     });
     await expect(lookup("jira")).rejects.toThrow(/can't be read for jira.*not installed.*\$\{env:NAME\}/);
     await expect(lookup("jira")).rejects.not.toThrow(/AGENT_QA_VAULT_KEY/);
+  });
+});
+
+describe("doctor with a relative cwd", () => {
+  it("keeps messages intact", async () => {
+    const base = await mkdtemp(join(tmpdir(), "agent-qa-rel-"));
+    const project = join(base, "qa");
+    await mkdir(join(project, "agent-qa.yaml"), { recursive: true });
+    const before = process.cwd();
+    try {
+      const results = await runDoctor({ cwd: relative(before, project), env: {}, online: false, keyring: keyring() });
+      const config = results.find((r) => r.id === "config")!;
+      expect(config.status).toBe("fail");
+      expect(config.detail).toMatch(/directory/);
+      expect(config.detail).not.toContain(base);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });

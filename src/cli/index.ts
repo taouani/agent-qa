@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { formatDoctor, runDoctor } from "../data/index.js";
@@ -45,7 +45,7 @@ export function buildProgram(): Command {
     .option("--json", "print the results as JSON")
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (opts: { offline?: boolean; json?: boolean; cwd?: string }) => {
-      const results = await runDoctor({ cwd: opts.cwd ?? process.cwd(), online: !opts.offline });
+      const results = await runDoctor({ cwd: resolve(opts.cwd ?? process.cwd()), online: !opts.offline });
       process.stdout.write(opts.json ? JSON.stringify(results, null, 2) + "\n" : formatDoctor(results));
       if (results.some((r) => r.status === "fail")) process.exitCode = 1;
     });
