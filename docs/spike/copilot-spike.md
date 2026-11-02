@@ -54,7 +54,7 @@ The spike passes if four of these five hold for both models.
 
 ## Results (2026-11-02)
 
-**Verdict: pass.** Both models met all five criteria. Copilot in VS Code agent mode stays the first host, and decision M4 stands. Tarek ran the spike on Windows with VS Code, Copilot Business, Claude Opus 5.5 and GPT-6.1 Sol.
+**Verdict: pass.** Both models met all five criteria. Copilot in VS Code agent mode stays the first host, and decision M4 stands. Tarek ran the spike on Windows with VS Code, a company Copilot plan (MCP policy enabled by the org), Claude Opus 5.5 and GPT-6.1 Sol.
 
 | Run | Model | Ticket | Steps done unaided? | Retries OK? | 30-case submit OK? | Started via | Notes |
 |---|---|---|---|---|---|---|---|
@@ -67,11 +67,11 @@ The spike passes if four of these five hold for both models.
 | 7 | Claude Opus 5.5 | SPIKE-1 | Yes | n/a | Yes (30 in one submit) | `#workflow_start` | Run `2026-11-02-SPIKE-1-gvck` |
 | 8 | GPT-6.1 Sol | SPIKE-1 | Yes | Yes (3 rejected; 12 accepted on attempt 2) | n/a | `#workflow_start` | Run `2026-11-02-SPIKE-1-wa4e` |
 
-**Approval clicks:** 3 per run with manual permissions. After "Allow all", 1 per run, which is the confirm step's push question. That click is there by design.
+**Approval clicks:** 3 in a run with manual permissions. After "Allow all", 1, which is the confirm step's push question. That click is there by design.
 
 | # | Check | Claude Opus 5.5 | GPT-6.1 Sol |
 |---|---|---|---|
-| 1 | Loop following | Pass (4/4 runs) | Pass (4/4 runs) |
+| 1 | Loop following | Pass (4/4 runs; 8/8 overall, the target was 5/6) | Pass (4/4 runs) |
 | 2 | Validation retries | Pass (attempt 2) | Pass (attempt 2) |
 | 3 | Large outputs | Pass | Pass |
 | 4 | Slash command or short instruction | Pass (short instruction) | Pass (short instruction) |
