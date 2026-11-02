@@ -52,18 +52,38 @@ The spike passes if four of these five hold for both models.
 | 4 | Slash command | The workflow starts from the MCP prompt, or from one short instruction if prompts aren't shown |
 | 5 | Approval friction | No more than one tool-approval click per run after "always allow" is set for the server |
 
-## Results (fill in)
+## Results (2026-11-02)
 
-| Run | Model | Ticket | Steps done unaided? | Retries OK? | 30-case submit OK? | Started via | Approval clicks | Notes |
-|---|---|---|---|---|---|---|---|---|
-| 1 | | SPIKE-1 | | | | | | |
-| 2 | | SPIKE-2 | | | | | | |
-| 3 | | SPIKE-3 | | | | | | |
-| 4 | | SPIKE-1 | | | | | | |
-| 5 | | SPIKE-2 | | | | | | |
-| 6 | | SPIKE-3 | | | | | | |
+**Verdict: pass.** Both models met all five criteria. Copilot in VS Code agent mode stays the first host, and decision M4 stands. Tarek ran the spike on Windows with VS Code, Copilot Business, Claude Opus 5.5 and GPT-6.1 Sol.
 
-The `steps/state.json` file in each run folder under `.agent-qa/runs/` shows exactly what each run submitted and how many attempts it took. Attach them, or paste a summary, when you report back.
+| Run | Model | Ticket | Steps done unaided? | Retries OK? | 30-case submit OK? | Started via | Notes |
+|---|---|---|---|---|---|---|---|
+| 1 | Claude Opus 5.5 | SPIKE-1 | Yes | Yes (3 cases rejected at `$.cases`; 15 accepted on attempt 2) | n/a | `#workflow_start` | Run `2026-11-02-SPIKE-1-27u8` |
+| 2 | Claude Opus 5.5 | SPIKE-2 | Yes | n/a (no rejections) | n/a | `#workflow_start` | 20 cases, masked tokens kept. Run `2026-11-02-SPIKE-2-inyx` |
+| 3 | Claude Opus 5.5 | SPIKE-3 | Yes | n/a | n/a | `#workflow_start` | 18 cases. Run `2026-11-02-SPIKE-3-gegx` |
+| 4 | GPT-6.1 Sol | SPIKE-1 | Yes | n/a | n/a | `#workflow_start` | 15 cases |
+| 5 | GPT-6.1 Sol | SPIKE-2 | Yes | n/a | n/a | `#workflow_start` | 15 cases, masked tokens kept |
+| 6 | GPT-6.1 Sol | SPIKE-3 | Yes | n/a | Yes (30 in one submit) | `#workflow_start` | |
+| 7 | Claude Opus 5.5 | SPIKE-1 | Yes | n/a | Yes (30 in one submit) | `#workflow_start` | Run `2026-11-02-SPIKE-1-gvck` |
+| 8 | GPT-6.1 Sol | SPIKE-1 | Yes | Yes (3 rejected; 12 accepted on attempt 2) | n/a | `#workflow_start` | Run `2026-11-02-SPIKE-1-wa4e` |
+
+**Approval clicks:** 3 per run with manual permissions. After "Allow all", 1 per run, which is the confirm step's push question. That click is there by design.
+
+| # | Check | Claude Opus 5.5 | GPT-6.1 Sol |
+|---|---|---|---|
+| 1 | Loop following | Pass (4/4 runs) | Pass (4/4 runs) |
+| 2 | Validation retries | Pass (attempt 2) | Pass (attempt 2) |
+| 3 | Large outputs | Pass | Pass |
+| 4 | Slash command or short instruction | Pass (short instruction) | Pass (short instruction) |
+| 5 | Approval friction | Pass (1 click) | Pass (1 click) |
+
+**Findings for later slices:**
+- **The MCP prompt never appeared as a slash command.** Every run started with `#workflow_start "SPIKE-n"`. Slice 1 should find out why, or make the short instruction the documented way to start.
+- **The server has to be selected for each chat session.** Until it is, Copilot shows no agent-qa tools.
+- **VS Code refuses to start an MCP server until a chat message exists.** Step 4 of the runbook now covers this.
+- **VS Code flags `cwd` in `.vscode/mcp.json` as "partially supported"**, because it can't migrate it to the root `.mcp.json`. Consider using `AGENT_QA_RUNS_DIR` in `env` instead.
+- **On locked-down Windows machines, `npm run build` (esbuild) fails** because it can't read a parent folder. Use `npm run build:tsc` there.
+- **Copilot's file search can't see `.agent-qa/runs/`**, because the folder is gitignored. The run folders are there.
 
 ## If it fails
 
