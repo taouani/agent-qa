@@ -12,10 +12,25 @@ export interface ModelRequest {
   /** `provider:model`, when the caller picks one. */
   model?: string;
   messages: ModelMessage[];
+  /** JSON Schema the answer must match. The driver asks for structured output when set. */
+  schema?: unknown;
+  /** A name for the schema, e.g. the step id. Some providers pass it to the model. */
+  schemaName?: string;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** Input tokens served from the provider's cache, when it reports them. */
+  cachedInputTokens?: number;
 }
 
 export interface ModelResponse {
+  /** The answer. With a schema, the JSON text of the object. */
   text: string;
+  /** The model that answered, `provider:model`. */
+  model?: string;
+  usage?: TokenUsage;
 }
 
 export interface ModelDriver {

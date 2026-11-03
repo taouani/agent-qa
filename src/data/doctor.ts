@@ -1,5 +1,5 @@
 import { relative, resolve, sep } from "node:path";
-import { ConfigError, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { CATALOG_CHECKED, catalogModel, ConfigError, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
@@ -148,7 +148,17 @@ function modelsCheck(config: Config): CheckResult {
       fix: "Add models.keys.<provider>: ${env:NAME} to run from the CLI or CI.",
     };
   }
-  // The shipped model catalog (and its warning for custom models) comes with the llm module.
+  // OpenRouter and LiteLLM route to any model, so only the direct providers are checked against the catalog.
+  const custom = [...new Set(used)].filter((m) => !["openrouter", "litellm"].includes(m.split(":")[0]!) && !catalogModel(m));
+  if (custom.length > 0) {
+    return {
+      id: "models",
+      title: "Models",
+      status: "warn",
+      detail: `not in the shipped catalog (checked ${CATALOG_CHECKED}): ${custom.join(", ")}; they run, but are untested`,
+      fix: "Check the model id with the provider, or pick a catalog model.",
+    };
+  }
   return { id: "models", title: "Models", status: "pass", detail: `${used.length} model setting(s), keys for ${providers.join(", ")}` };
 }
 
