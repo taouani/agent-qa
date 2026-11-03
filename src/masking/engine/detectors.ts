@@ -122,7 +122,8 @@ export function phoneDetector(regions: CountryCode[] = PHONE_REGIONS): PatternDe
       // IP addresses, dates, times and year ranges are digits and separators too: blank them out
       // (same length, so offsets hold) so no phone run starts or ends inside one.
       let text = original;
-      for (const re of NOT_PHONE_SHAPES) text = text.replace(re, (m) => " ".repeat(m.length));
+      // A dotted run is blanked only when it is a real IPv4 address: 02.123.45.67 is a Belgian phone number.
+      for (const [i, re] of NOT_PHONE_SHAPES.entries()) text = text.replace(re, (m) => (i === 0 && isIP(m) !== 4 ? m : " ".repeat(m.length)));
       const cache = new Map<string, string | undefined>();
       const parseOnce = (key: string, run: () => string | undefined) => {
         if (!cache.has(key)) cache.set(key, run());

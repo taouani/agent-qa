@@ -2,7 +2,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { parseConfig } from "../src/core/index.js";
+import { parseConfig, RunStore } from "../src/core/index.js";
 import { DEFAULT_CASES, DEFAULT_SEEDS, FixtureDriver, harnessCaseSchema, keptRate, maskedPipeline, RecordingDriver, runHarness, SeededLeakError } from "../src/harness/index.js";
 import { collect } from "../src/harness/pipeline.js";
 
@@ -30,12 +30,18 @@ describe("masked pipeline (S1-14)", () => {
         for (const seed of DEFAULT_SEEDS) expect(text, `${r}/${file}`).not.toContain(seed.value);
       }
     }
-    // The test-cases runs are unattended reviews, so they never count toward the kept rate.
+    // The review edited one case with a seeded value: it was masked before it was kept.
     const cases = runs.filter((r) => !r.includes("QAH-6"));
     for (const r of cases) {
       const art = JSON.parse(await readFile(join(dir, "runs", r, "test-cases.json"), "utf8"));
-      expect(art.data.review.unattended).toBe(true);
+      expect(art.data.review).toMatchObject({ edited: 1, unattended: true });
+      expect(art.data.cases[0].title).toMatch(/\(edited for <[A-Z_]+_\d+>\)$/);
+      // The push step was asked (its context scanned) and declined.
+      const state = JSON.parse(await readFile(join(dir, "runs", r, "steps", "state.json"), "utf8"));
+      expect(state.outputs.push).toEqual({ approve: false });
     }
+    // Unattended reviews never count toward the kept rate, read from the real run store.
+    expect(await keptRate(new RunStore(join(dir, "runs")))).toMatchObject({ runs: 0, unattendedRuns: 2, generated: 0 });
   });
 
   it("fails the gate when masking is switched off", async () => {
@@ -46,6 +52,18 @@ describe("masked pipeline (S1-14)", () => {
     const leaked = new Set(report.cases.flatMap((c) => c.seededLeaks.map((l) => l.seedId)));
     for (const id of ["seed-email-1", "seed-phone-1", "seed-card-1", "seed-iban-1", "seed-national-id-1"]) expect(leaked).toContain(id);
     expect(JSON.stringify(report)).not.toContain("4111");
+  });
+
+  it("scans the run folder even when a model call was refused", async () => {
+    const report = await runHarness({
+      cases: [DEFAULT_CASES[2]!],
+      seeds: DEFAULT_SEEDS,
+      pipeline: maskedPipeline({ runsDir: join(dir, "runs"), config: parseConfig("version: 1\nmasking:\n  detectors: [email]\n") }),
+      driver: new FixtureDriver(),
+    });
+    expect(report.cases[0]!.status).toBe("fail");
+    // sources.json in the run folder holds the unmasked phone: seen as shown to an IDE's model.
+    expect(report.cases[0]!.seededLeaks.some((l) => l.shown && l.seedId === "seed-phone-1")).toBe(true);
   });
 
   it("scans the text of confirm steps, which an IDE's model is shown", () => {

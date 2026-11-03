@@ -143,6 +143,18 @@ describe("ApiDriver", () => {
   });
 });
 
+describe("ApiDriver.ready", () => {
+  it("needs the provider's key, from models.keys or its own variable", async () => {
+    const models = { default: "anthropic:claude-opus-5-5" };
+    await expect(new ApiDriver({ models, secrets: { env: {} } }).ready("anthropic:claude-opus-5-5")).rejects.toThrow(/set ANTHROPIC_API_KEY/);
+    await expect(new ApiDriver({ models, secrets: { env: { ANTHROPIC_API_KEY: "k" } } }).ready("anthropic:claude-opus-5-5")).resolves.toBeUndefined();
+    const keyed = { ...models, keys: { anthropic: "${env:MY_KEY}" } };
+    await expect(new ApiDriver({ models: keyed, secrets: { env: {} } }).ready("anthropic:claude-opus-5-5")).rejects.toThrow(/models.keys.anthropic/);
+    await expect(new ApiDriver({ models: keyed, secrets: { env: { MY_KEY: "k" } } }).ready("anthropic:claude-opus-5-5")).resolves.toBeUndefined();
+    await expect(new ApiDriver({ models: { ...models, allowed: ["openai:*"] }, secrets: { env: {} } }).ready("anthropic:claude-opus-5-5")).rejects.toThrow(/not in models.allowed/);
+  });
+});
+
 describe("drive", () => {
   const workflow: WorkflowDefinition<{ key: string }> = {
     id: "demo",

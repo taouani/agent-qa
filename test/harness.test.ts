@@ -42,8 +42,8 @@ describe("harness runner", () => {
     const inner = new StaticDriver();
     const forwarded = vi.spyOn(inner, "complete");
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: leakyPipeline, driver: inner, now });
-    expect(report.summary).toMatchObject({ failed: 3, seededLeaks: 6 });
-    expect(report.cases[0]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-email-1", "seed-name-1", "seed-phone-1"]);
+    expect(report.summary).toMatchObject({ failed: 3, seededLeaks: 7 });
+    expect(report.cases[0]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-email-1", "seed-name-1", "seed-name-2", "seed-phone-1"]);
     expect(report.cases[1]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-name-3"]);
     expect(report.cases[2]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-name-2", "seed-phone-1"]);
     expect(forwarded).not.toHaveBeenCalled();
@@ -313,6 +313,15 @@ describe("agent-qa harness exit codes", () => {
     const r = await runCli(["harness", "--cwd", dir]);
     expect(r).toMatchObject({ code: 2, err: expect.stringMatching(/ENOENT/) });
     expect(r.err).not.toContain(dir);
+  });
+
+  it("exits 2 for a bad pipeline or a model it can't use, before running anything", async () => {
+    expect(await runCli(["harness", "--pipeline", "bogus", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/unknown pipeline bogus/) });
+    expect(await runCli(["harness", "--pipeline", "empty", "--model", "anthropic:claude-opus-5-5", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/no effect/) });
+    expect(await runCli(["harness", "--model", "anthropic:claude-opus-5-5", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/needs a models section/) });
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: anthropic:claude-opus-5-5\n  keys:\n    anthropic: ${env:AGENT_QA_TEST_UNSET_KEY}\n");
+    expect(await runCli(["harness", "--model", "anthropic:claude-opus-5-5", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/key for anthropic/) });
+    expect(await runCli(["harness", "--model", "nope", "--cwd", dir])).toMatchObject({ code: 2 });
   });
 });
 

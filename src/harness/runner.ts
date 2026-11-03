@@ -79,6 +79,8 @@ export interface PipelineContext {
   /** The synthetic tickets, as a connector would return them: real (seeded) values, not masked. */
   tickets: SyntheticTicket[];
   driver: ModelDriver;
+  /** The seeds this case names, with their values. */
+  seeds: Seed[];
   /** Scan text shown to a model outside `driver` (see `RecordingDriver.observe`). */
   observe: (text: string) => void;
 }
@@ -149,7 +151,8 @@ export async function runHarness(options: RunHarnessOptions): Promise<HarnessRep
     let status: CaseReport["status"] = "pass";
     let error: string | undefined;
     try {
-      await options.pipeline({ case: c, tickets: structuredClone(c.tickets), driver, observe: (text) => driver.observe(text) });
+      const seeds = options.seeds.filter((s) => c.seeds.includes(s.id));
+      await options.pipeline({ case: c, tickets: structuredClone(c.tickets), driver, seeds, observe: (text) => driver.observe(text) });
     } catch (e) {
       // A SeededLeakError this case's driver didn't record came from somewhere else: that's an error, not a pass.
       if (!(e instanceof SeededLeakError) || driver.leaks.length === 0) {

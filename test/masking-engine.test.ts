@@ -50,6 +50,10 @@ describe("pattern detectors", () => {
     // Found by the harness (S1-14): an IP at the end of a sentence was read as a phone number.
     expect(phoneDetector().find("Last login from 192.0.2.44.")).toEqual([]);
     expect(phoneDetector().find("Last login from 192.0.2.44")).toEqual([]);
+    // Dotted numbers that aren't IP addresses are still phones, at the end of a sentence too.
+    for (const text of ["Call me on 02.123.45.67.", "Tel 030.123.45.67.", "Bel 010.12.34.56.", "Bel 010.12.34.56 today"]) {
+      expect(phoneDetector().find(text), text).toHaveLength(1);
+    }
   });
 
   it("finds IBANs with spaces and stops at the next word", () => {

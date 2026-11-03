@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, type Step } from "../core/index.js";
 import { DataAccess, type JiraCollection, type JiraInput, type JiraIssue } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { requirementsWorkflow, testCasesWorkflow } from "../workflows/index.js";
-import type { SyntheticTicket } from "./cases.js";
+import { requirementsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import type { Seed, SyntheticTicket } from "./cases.js";
 import type { Pipeline } from "./runner.js";
 
 /**
@@ -12,8 +14,11 @@ import type { Pipeline } from "./runner.js";
  * test-cases workflow, through the masked data service, with the case's
  * tickets standing in for Jira. Every generate step goes to the model through
  * the harness's recording driver; every confirm step's text, which an IDE's
- * model would see, is scanned too. Confirm steps take their unattended answer
- * (`--yes`), so nothing is pushed and the review counts as unattended.
+ * model would see, is scanned too, and so is every file of the run folder
+ * (an IDE's model is told to read them). The review edits one case with a
+ * seeded value, as a person might, so the masking of edits is tested; it is
+ * marked unattended. Xray is set up with a stand-in that never pushes, so the
+ * push step's question and context are scanned; the push is always declined.
  *
  * Runs are kept under `runsDir` for inspection, apart from the project's own
  * runs so the kept rate never counts them. They hold masked text only: the
@@ -32,7 +37,7 @@ const SITE = "https://harness.invalid";
 export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   const runs = new RunStore(options.runsDir);
   const config = harnessConfig(options.config);
-  return async ({ case: c, tickets, driver, observe }) => {
+  return async ({ case: c, tickets, driver, seeds, observe }) => {
     const key = randomBytes(32);
     const data = new DataAccess({
       root: options.runsDir,
@@ -40,8 +45,15 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
       config,
       vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "harness (memory)", getKey: async () => key } }),
       jira: { collect: async (input: JiraInput) => collect(tickets, input) },
-      confluence: { pages: async () => ({ pages: [], skipped: [] }) },
-      mode: "ci",
+      confluence: { pages: async (urls: string[]) => pagesFor(tickets, urls) },
+      xray: {
+        importAndWait: async () => {
+          throw new Error("The harness never pushes to Xray");
+        },
+      },
+      labels: { findByLabels: async () => new Map<string, string>() },
+      // `ide`, so the push step runs to its question (`ci` denies an ask rule); it is always declined.
+      mode: "ide",
       audit: new MemoryAuditSink(),
     });
     const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId })
@@ -49,15 +61,19 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
       .register(testCasesWorkflow({ data, runs }));
 
     let step: Step = await engine.start(c.workflow, c.inputs);
-    for (let guard = 0; guard < 200; guard++) {
-      if (step.kind === "generate") step = (await drive(engine, step, driver)).step;
-      else if (step.kind === "confirm") {
-        // An IDE's model is shown this text: it must be as masked as any prompt.
-        observe(`${step.instructions}\n${step.context}`);
-        const answer = await engine.fixedAnswer(step.runId, "unattended");
-        if (answer === undefined) throw new Error(`Step ${step.stepId} has no unattended answer`);
-        step = (await engine.submit(step.runId, step.stepId, answer)).next;
-      } else break;
+    try {
+      for (let guard = 0; guard < 200; guard++) {
+        if (step.kind === "generate") step = (await drive(engine, step, driver)).step;
+        else if (step.kind === "confirm") {
+          // An IDE's model is shown this text: it must be as masked as any prompt.
+          observe(`${step.instructions}\n${step.context}`);
+          const answer = step.stepId === "review" ? await editedReview(runs, step.runId, seeds) : await engine.fixedAnswer(step.runId, "unattended");
+          if (answer === undefined) throw new Error(`Step ${step.stepId} has no unattended answer`);
+          step = (await engine.submit(step.runId, step.stepId, answer)).next;
+        } else break;
+      }
+    } finally {
+      await scanRunFolder(join(options.runsDir, step.runId), observe);
     }
     if (step.kind === "failed") throw new Error(`Run ${step.runId} failed: ${(step.errors ?? []).map((e) => `${e.path}: ${e.message}`).join("; ")}`);
     if (step.kind !== "done") throw new Error(`Run ${step.runId} didn't finish`);
@@ -65,10 +81,40 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   };
 }
 
+/**
+ * The review a person might give: the first draft case edited to name a
+ * seeded value, everything else kept. Marked unattended, like `--yes`.
+ */
+async function editedReview(runs: RunStore, runId: string, seeds: Seed[]): Promise<unknown> {
+  const draft = await runs.readArtifact(runId, TEST_CASES_DRAFT_ARTIFACT);
+  const first = draft?.data.cases[0];
+  const seed = seeds[0];
+  if (!first || !seed) return { approved: true, changes: [], unattended: true };
+  const title = `${first.title.slice(0, 120)} (edited for ${seed.value})`;
+  const steps = [{ ...first.steps[0]!, data: seed.value }, ...first.steps.slice(1)];
+  return { approved: true, changes: [{ id: first.id, decision: "edited", case: { ...first, title, steps } }], unattended: true };
+}
+
+/** Every file of the run folder, which an IDE's model may be told to read. */
+async function scanRunFolder(dir: string, observe: (text: string) => void): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return; // no run folder: the run never started
+  }
+  for (const e of entries) {
+    const path = join(dir, e.name);
+    if (e.isDirectory()) await scanRunFolder(path, observe);
+    else if (e.isFile()) observe(await readFile(path, "utf8"));
+  }
+}
+
 /** No real connections; masking and Jira field rules from the project when it has them. */
 function harnessConfig(project: Config | undefined): Config {
   return configSchema.parse({
     version: 1,
+    xray: { clientId: "harness", clientSecret: "${env:AGENT_QA_HARNESS_UNUSED}", projectKey: "QAH" },
     atlassian: {
       site: SITE,
       email: "${env:AGENT_QA_HARNESS_UNUSED}",
@@ -119,20 +165,34 @@ function issueOf(t: SyntheticTicket, all: SyntheticTicket[], role: JiraIssue["ro
     type: t.type,
     subtask: /sub-?task/i.test(t.type),
     summary: t.summary,
-    description: adf(t.description),
+    description: { text: t.description, mentions: t.mentions, links: [] },
+    ...(t.status ? { status: t.status } : {}),
+    ...(t.priority ? { priority: t.priority } : {}),
     ...(t.acceptanceCriteria !== undefined ? { acceptanceCriteria: adf(t.acceptanceCriteria) } : {}),
     extraFields: Object.fromEntries(Object.entries(t.fields).map(([k, v]) => [k, adf(v)])),
     labels: t.labels,
     components: t.components,
-    fixVersions: [],
+    fixVersions: t.fixVersions,
     ...(t.parent ? { parent: t.parent } : {}),
     children: all.filter((o) => o.parent === t.key).map((o) => o.key),
     links: [...outward, ...inward],
-    remoteLinks: [],
+    remoteLinks: t.pages.map((p, j) => ({ url: pageUrl(t, j), title: p.title, application: "com.atlassian.confluence" })),
     people: t.people.map((p) => ({ role: p.role, displayName: p.displayName, ...(p.email ? { email: p.email } : {}) })),
     updated: "2026-11-01T10:00:00.000+0000",
     role,
     depth,
     ...(viaLink ? { viaLink: true } : {}),
   };
+}
+
+const pageId = (t: SyntheticTicket, j: number) => `${t.key.replace(/\D/g, "")}${String(j + 1).padStart(3, "0")}`;
+const pageUrl = (t: SyntheticTicket, j: number) => `${SITE}/wiki/spaces/QAH/pages/${pageId(t, j)}`;
+
+/** The Confluence pages the case's tickets link to, as the Confluence connector would return them. */
+function pagesFor(tickets: SyntheticTicket[], urls: string[]) {
+  const all = tickets.flatMap((t) =>
+    t.pages.map((p, j) => ({ id: pageId(t, j), title: p.title, version: 1, url: pageUrl(t, j), body: { text: p.body, accountIds: [], links: [], pageTitles: [] } })),
+  );
+  const wanted = new Set(urls);
+  return { pages: all.filter((p) => wanted.has(p.url)), skipped: [] };
 }

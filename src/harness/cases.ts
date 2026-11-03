@@ -51,6 +51,13 @@ export const syntheticTicketSchema = z
     acceptanceCriteria: z.string().optional(),
     /** Other Jira text fields by name, e.g. a "Customer notes" custom field. */
     fields: z.record(z.string(), z.string()).default({}),
+    status: z.string().min(1).optional(),
+    priority: z.string().min(1).optional(),
+    fixVersions: z.array(z.string()).default([]),
+    /** Names of people @-mentioned in the description (Jira keeps them apart from the text too). */
+    mentions: z.array(z.string().min(1)).default([]),
+    /** Confluence pages linked from the issue (as remote links). */
+    pages: z.array(z.object({ title: z.string().min(1), body: z.string() }).strict()).default([]),
     /** Reporter, assignee and creator, with an optional email. */
     people: z
       .array(z.object({ role: z.enum(["assignee", "reporter", "creator"]), displayName: z.string().min(1), email: z.string().optional() }).strict())
@@ -75,6 +82,9 @@ export function ticketTexts(t: SyntheticTicket): string[] {
     ...t.people.flatMap((p) => [p.displayName, p.email ?? ""]),
     ...t.labels,
     ...t.components,
+    ...t.fixVersions,
+    ...t.mentions,
+    ...t.pages.flatMap((p) => [p.title, p.body]),
   ];
 }
 export type SyntheticTicket = z.infer<typeof syntheticTicketSchema>;
@@ -139,9 +149,10 @@ export const DEFAULT_SEEDS: Seed[] = [
 
 /**
  * The shipped cases run the real workflows. Between them they put seeds in
- * every place the Jira connector reads: summary, description, the
- * acceptance-criteria field, criteria inside the description, a custom text
- * field, people, labels, a child issue, a linked issue and a JQL filter.
+ * place where the Jira and Confluence connectors hand data on: summary,
+ * description, @-mentions, the acceptance-criteria field, criteria inside the
+ * description, a custom text field, people, labels, components, fix versions,
+ * a linked Confluence page, a child issue, a linked issue and a JQL filter.
  * Addresses have no detector yet, so no seed is an address.
  */
 const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
@@ -154,7 +165,10 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
       {
         key: "QAH-1",
         summary: "Create a case from a contact record",
-        description: "As an agent I open the contact Marguerite Quillfeather (m.quillfeather@example.com, +33 6 39 98 12 34) and click New Case.",
+        status: "To Do",
+        priority: "High",
+        description: "As an agent I open the contact Marguerite Quillfeather (m.quillfeather@example.com, +33 6 39 98 12 34) and click New Case. Ask @Tobias Wrenhallow for access.",
+        mentions: ["Tobias Wrenhallow"],
         acceptanceCriteria: "- The case form opens with Marguerite Quillfeather pre-filled as the contact\n- The contact's phone +33 6 39 98 12 34 is shown on the form",
         fields: { "Customer notes": "Last login from 192.0.2.44." },
         people: [{ role: "reporter", displayName: "Tobias Wrenhallow", email: "t.wrenhallow@example.org" }],
@@ -164,7 +178,7 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
         type: "Sub-task",
         parent: "QAH-1",
         summary: "Email Marguerite Quillfeather when the case is created",
-        description: "Acceptance criteria:\n- An email goes to m.quillfeather@example.com\n- Tobias Wrenhallow is copied",
+        description: "Acceptance criteria:\n- An email goes to m.quillfeather@example.com\n- Tobias Wrenhallow (t.wrenhallow@example.org) is copied",
         labels: ["owner-m.quillfeather@example.com"],
       },
     ],
@@ -186,6 +200,8 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
           "- Given the customer paid with card 4111 1111 1111 1111, the refund goes back to that card\n- When the card has expired, the refund goes to IBAN DE89 3704 0044 0532 0130 00",
         people: [{ role: "assignee", displayName: "Zephyrine Applewood" }],
         components: ["Billing"],
+        fixVersions: ["2026.12 for Zephyrine Applewood"],
+        pages: [{ title: "Refund notes from Zephyrine Applewood", body: "Agreed on the call: test with card 4111 1111 1111 1111, and IBAN DE89 3704 0044 0532 0130 00 as the fallback." }],
         links: [{ type: "Relates", key: "QAH-5" }],
       },
       { key: "QAH-5", type: "Bug", summary: "Refund failed for one customer", description: "The refund for the customer with DNI 12345678Z failed with a timeout." },

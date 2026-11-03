@@ -54,6 +54,15 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1";
 /** The same rule as `modelId` in the config schema: no spaces, colons or `..`. */
 const MODEL_NAME = /^[A-Za-z0-9._/@-]+$/;
 
+/** The environment variable each provider's SDK reads its key from when `models.keys` has none. */
+const KEY_ENV: Partial<Record<Provider, string>> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  xai: "XAI_API_KEY",
+};
+
 /** Providers whose schema is sent with strict mode off. */
 const NOT_STRICT = { openai: "openai", openrouter: "openrouter", litellm: "litellm" } as const;
 
@@ -81,6 +90,26 @@ export class ApiDriver implements ModelDriver {
       throw new ModelConfigError(`Model ${id} is not in models.allowed (${(this.options.models.allowed ?? []).join(", ")}).`);
     }
     return id;
+  }
+
+  /**
+   * Checks, without a call, that `id` can be used: allowed, and with a key
+   * (its `models.keys` reference resolves, or the provider's own variable is set).
+   */
+  async ready(id: string): Promise<void> {
+    const { provider } = parseModelId(this.modelFor({ model: id, messages: [] }));
+    const ref = this.options.models.keys?.[provider];
+    if (ref) {
+      try {
+        await resolveSecret(ref, this.options.secrets ?? {});
+      } catch (error) {
+        throw new ModelConfigError(`The key for ${provider} (models.keys.${provider}) can't be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    const name = KEY_ENV[provider];
+    const env = this.options.secrets?.env ?? process.env;
+    if (name && !env[name]) throw new ModelConfigError(`No key for ${provider}: set ${name}, or models.keys.${provider} in agent-qa.yaml.`);
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {

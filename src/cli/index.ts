@@ -130,13 +130,14 @@ export function buildProgram(): Command {
       }
       if (opts.pipeline !== "masked" && opts.pipeline !== "empty") return setupError(`unknown pipeline ${opts.pipeline}: use masked or empty`);
       let driver: ModelDriver;
+      if (opts.pipeline === "empty" && opts.model) return setupError("--model has no effect with --pipeline empty, which makes no model calls");
       if (opts.pipeline === "empty") driver = new StaticDriver();
       else if (!opts.model) driver = new FixtureDriver();
       else {
         if (!config?.models) return setupError("--model needs a models section in agent-qa.yaml");
         const api = new ApiDriver({ models: config.models, secrets: secretSources() });
         try {
-          api.modelFor({ model: opts.model, messages: [] });
+          await api.ready(opts.model);
         } catch (error) {
           if (error instanceof ModelConfigError) return setupError(error.message);
           throw error;
