@@ -161,7 +161,8 @@ export class DataAccess implements RequirementsData, XrayData {
           if (!(error instanceof ConnectorError) || (result.jobs.length === 0 && !error.jobId)) throw error;
           // Something may be in Xray: keep the record, since a rerun without it could create tests again.
           if (error.jobId) result.jobs.push(error.jobId);
-          const why = error.code === "TIMEOUT" ? `unknown: ${error.message}` : `not imported (${error.message}); check Xray before pushing again`;
+          // A started job may still create the tests: its outcome is unknown, not a failure to import.
+          const why = error.jobId ? `unknown: ${error.message}${error.code === "TIMEOUT" ? "" : `; job ${error.jobId} may still complete, so check Xray before pushing again`}` : `not imported (${error.message}); check Xray before pushing again`;
           for (const c of cases.slice(i)) result.results.push({ tcId: c.id, action: "failed", linkedTo: c.requirement, error: why });
           break;
         }
