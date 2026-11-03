@@ -19,9 +19,13 @@ describe("cli", () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-qa-cli-"));
     try {
       const engine = createEngine("/nonexistent", { AGENT_QA_RUNS_DIR: dir });
-      const step = await engine.start("spike-test-cases", { ticket: "SPIKE-1" });
-      expect(step.runId).toMatch(/^\d{4}-\d{2}-\d{2}-SPIKE-1-[a-z0-9]{4}$/);
-      expect((await readdir(join(dir, step.runId))).sort()).toEqual(["run.json", "steps"]);
+      expect(engine.list().map((w) => w.id)).toEqual(["requirements", "test-cases"]);
+      // No agent-qa.yaml there, so Jira can't be read: the run is saved, and its first step waits.
+      await expect(engine.start("requirements", { key: "ABC-1" })).rejects.toThrow();
+      const [runId, ...more] = await readdir(dir);
+      expect(more).toEqual([]);
+      expect(runId).toMatch(/^\d{4}-\d{2}-\d{2}-ABC-1-[a-z0-9]{4}$/);
+      expect((await readdir(join(dir, runId!))).sort()).toEqual(["run.json", "steps"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

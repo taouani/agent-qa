@@ -1,6 +1,6 @@
 {
   "name": "sf-agent-qa",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Open-source QA agent: Jira, Confluence and Xray to masked, validated test cases and Playwright scripts, for Copilot, Claude Code, Cursor and CI.",
   "license": "Apache-2.0",
   "type": "module",

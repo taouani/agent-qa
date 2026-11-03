@@ -5,7 +5,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createXai } from "@ai-sdk/xai";
 import { generateText, jsonSchema, NoObjectGeneratedError, NoOutputGeneratedError, Output, type LanguageModel } from "ai";
-import { modelAllowed, PROVIDERS, resolveSecret, type Config, type Provider, type SecretSources } from "../core/index.js";
+import { modelAllowed, PROVIDER_KEY_ENV, PROVIDERS, resolveSecret, type Config, type Provider, type SecretSources } from "../core/index.js";
 import type { ModelDriver, ModelRequest, ModelResponse, TokenUsage } from "./driver.js";
 
 /**
@@ -54,15 +54,6 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1";
 /** The same rule as `modelId` in the config schema: no spaces, colons or `..`. */
 const MODEL_NAME = /^[A-Za-z0-9._/@-]+$/;
 
-/** The environment variable each provider's SDK reads its key from when `models.keys` has none. */
-const KEY_ENV: Partial<Record<Provider, string>> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  xai: "XAI_API_KEY",
-};
-
 /** Providers whose schema is sent with strict mode off. */
 const NOT_STRICT = { openai: "openai", openrouter: "openrouter", litellm: "litellm" } as const;
 
@@ -109,7 +100,7 @@ export class ApiDriver implements ModelDriver {
     }
     // The OpenRouter client reads no variable of its own: its key must be in models.keys.
     if (provider === "openrouter") throw new ModelConfigError("No key for openrouter: set models.keys.openrouter in agent-qa.yaml.");
-    const name = KEY_ENV[provider];
+    const name = PROVIDER_KEY_ENV[provider];
     const env = this.options.secrets?.env ?? process.env;
     if (name && !env[name]) throw new ModelConfigError(`No key for ${provider}: set ${name}, or models.keys.${provider} in agent-qa.yaml.`);
   }

@@ -20,6 +20,18 @@ export interface CatalogModel {
 /** When the catalog was last checked against the providers' own model lists. */
 export const CATALOG_CHECKED = "2026-11-03";
 
+/**
+ * The environment variable each provider's SDK reads its key from when
+ * `models.keys` names none. OpenRouter and LiteLLM read none.
+ */
+export const PROVIDER_KEY_ENV: Partial<Record<Provider, string>> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  xai: "XAI_API_KEY",
+};
+
 export const MODEL_CATALOG: Record<Provider, CatalogModel[]> = {
   anthropic: [
     { id: "anthropic:claude-opus-5-5", label: "Claude Opus 5.5", inputPerMTok: 4, outputPerMTok: 20 },

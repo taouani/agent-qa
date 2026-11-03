@@ -1,5 +1,5 @@
 import { relative, resolve, sep } from "node:path";
-import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
@@ -120,7 +120,7 @@ async function gitignoreCheck(cwd: string, caseInsensitive?: boolean): Promise<C
   };
 }
 
-function modelsCheck(config: Config): CheckResult {
+function modelsCheck(config: Config, env: NodeJS.ProcessEnv): CheckResult {
   const models = config.models;
   if (!models) {
     return { id: "models", title: "Models", status: "warn", detail: "no models section; only the IDE's own model can run workflows", fix: "Add models.default to run from the CLI." };
@@ -138,14 +138,16 @@ function modelsCheck(config: Config): CheckResult {
   if (providers.includes("litellm") && !models.endpoints?.litellm) {
     return { id: "models", title: "Models", status: "warn", detail: `litellm models need models.endpoints.litellm (your proxy's URL)${also}`, fix: "Add models.endpoints.litellm." };
   }
-  const noKey = providers.filter((p) => !(models.keys as Record<string, string> | undefined)?.[p]);
+  // A key in models.keys, or the provider's own variable (ANTHROPIC_API_KEY...), which its SDK reads.
+  const ownVar = (p: string) => PROVIDER_KEY_ENV[p as keyof typeof PROVIDER_KEY_ENV];
+  const noKey = providers.filter((p) => !(models.keys as Record<string, string> | undefined)?.[p] && !(ownVar(p) && env[ownVar(p)!]));
   if (noKey.length > 0) {
     return {
       id: "models",
       title: "Models",
       status: "warn",
-      detail: `no API key configured for ${noKey.join(", ")}; those models run only through an IDE host${also}`,
-      fix: "Add models.keys.<provider>: ${env:NAME} to run from the CLI or CI.",
+      detail: `no API key for ${noKey.join(", ")}; those models run only through an IDE host${also}`,
+      fix: `Set ${noKey.map((p) => ownVar(p) ?? `models.keys.${p}`).join(", ")}, or add models.keys.<provider>: \${env:NAME}, to run from the CLI or CI.`,
     };
   }
   if (customDetail) {
@@ -234,7 +236,7 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
   } catch (error) {
     results.push({ id: "gitignore", title: ".gitignore", status: "fail", detail: `can't be read: ${shown((error as Error).message)}` });
   }
-  results.push(config ? modelsCheck(config) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
+  results.push(config ? modelsCheck(config, env) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
   if (!config) results.push({ id: "network", title: "Services", status: "skip", detail: "needs a valid config" });
   else if (options.online === false) results.push({ id: "network", title: "Services", status: "skip", detail: "skipped (--offline)" });
   else results.push(await reachabilityCheck(config, options.fetch ?? fetch, options.timeoutMs ?? 5000));

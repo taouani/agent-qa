@@ -1,7 +1,6 @@
 /** `workflows` module. See eslint.config.js for what it may import. */
 import type { WorkflowDefinition } from "../core/index.js";
 import { requirementsWorkflow } from "./requirements/workflow.js";
-import { spikeWorkflow } from "./spike/workflow.js";
 import { testCasesWorkflow, type TestCasesDeps } from "./test-cases/workflow.js";
 
 export const MODULE = "workflows";
@@ -19,5 +18,6 @@ export type { TestCase, TestCases, TestCasesDraft, XrayPush } from "./test-cases
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function builtinWorkflows(deps: TestCasesDeps): ReadonlyArray<WorkflowDefinition<any>> {
-  return [spikeWorkflow, requirementsWorkflow(deps), testCasesWorkflow(deps)];
+  // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
+  return [requirementsWorkflow(deps), testCasesWorkflow(deps)];
 }
