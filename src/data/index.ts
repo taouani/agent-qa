@@ -11,6 +11,7 @@ export {
   MASKING_REPORT_ARTIFACT,
   MaskedDataService,
   maskingReportSchema,
+  maskJql,
   requirementSchema,
   SOURCES_ARTIFACT,
   SOURCES_VERSION,

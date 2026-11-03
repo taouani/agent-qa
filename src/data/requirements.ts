@@ -113,7 +113,7 @@ export const MASKING_REPORT_ARTIFACT: ArtifactSpec<MaskingReport> = {
 };
 
 /** Bumped when masking or entity building changes, so cached sources are rebuilt. */
-export const SOURCES_VERSION = "sources-2";
+export const SOURCES_VERSION = "sources-3";
 
 const UNMASKED_FIELDS = [
   "jira.key",
@@ -312,6 +312,57 @@ export class MaskedDataService {
   }
 }
 
+/** JQL fields and clauses whose values are people: usernames, account ids, emails or names. */
+const JQL_USER =
+  /\b(assignee|reporter|creator|watcher|watchers|voter|voters|approvers?|by)(\s*(?:!=|=|~|!~|\bnot\s+in\b|\bin\b|\bwas\s+not\s+in\b|\bwas\s+in\b|\bwas\s+not\b|\bwas\b|(?<=by))\s*)(\((?:[^()]|\([^()]*\))*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s(),]+(?![^\s(),]|\s*\())/giu;
+/** Values that name no one: keywords and the user functions. */
+const JQL_KEEP = /^(?:empty|null|currentuser\(\)|and|or|not|order)$/i;
+/** Atlassian account ids: 24 hex digits, or `123456:uuid`. */
+const ACCOUNT_ID = /\b(?:[0-9a-f]{24}|\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/giu;
+
+/**
+ * A JQL filter with personal data replaced: every value of a people field
+ * (`assignee = jdoe`, `reporter in (a, "B C")`, `status changed by x`) becomes a
+ * PERSON token, account ids anywhere too, and the rest goes through the
+ * detectors like any free text.
+ */
+export function maskJql(jql: string, masker: Pick<Masker, "mask">): string {
+  const person = (value: string) => {
+    const quote = /^["']/.exec(value)?.[0] ?? "";
+    const bare = (quote ? value.slice(1, -1) : value).replace(/\\(.)/g, "$1").trim();
+    if (!bare || JQL_KEEP.test(bare)) return value;
+    // A known person (or an email) keeps their token; anything else is a new PERSON.
+    const known = masker.mask(bare, { field: "input.jql" });
+    const token = /^<[A-Z][A-Z0-9_]*_\d+>$/.test(known) ? known : masker.mask(bare, { field: "input.jql", whole: "PERSON" });
+    return quote + token + quote;
+  };
+  let out = "";
+  let at = 0;
+  for (const m of jql.matchAll(JQL_USER)) {
+    const [whole, field, op, value] = m as unknown as [string, string, string, string];
+    // `by` names a person only in a history clause (`status changed by jdoe`), and takes no operator.
+    const before = jql.slice(0, m.index);
+    if (/^by$/i.test(field) && (op.trim() || /\border\s*$/i.test(before) || !/\b(changed|was)\b/i.test(before))) continue;
+    if (!/^by$/i.test(field) && !op.trim()) continue;
+    // A list: each quoted or bare item on its own, so "Doe, John" stays one person.
+    const masked = value.startsWith("(") ? value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s(),]+(?:\(\))?/g, (item, offset: number) => (offset === 0 ? item : person(item))) : person(value);
+    out += maskText(jql.slice(at, m.index), masker) + field + op + masked;
+    at = m.index + whole.length;
+  }
+  return out + maskText(jql.slice(at), masker);
+}
+
+/** Free JQL text: account ids as PERSON tokens, the rest through the detectors. */
+function maskText(text: string, masker: Pick<Masker, "mask">): string {
+  let out = "";
+  let at = 0;
+  for (const m of text.matchAll(ACCOUNT_ID)) {
+    out += (at < m.index ? masker.mask(text.slice(at, m.index), { field: "input.jql" }) : "") + masker.mask(m[0], { field: "input.jql", whole: "PERSON" });
+    at = m.index + m[0].length;
+  }
+  return out + (at < text.length ? masker.mask(text.slice(at), { field: "input.jql" }) : "");
+}
+
 /** Links on an issue that point at a Confluence page on this site. */
 function confluenceUrls(issue: JiraIssue, site: string): string[] {
   const candidates = [
@@ -410,7 +461,7 @@ function buildSources(
     );
   }
   // The input is masked after the people are known, so a name in the JQL gets the person's token.
-  const input: MaskedSources["input"] = "key" in rawInput ? rawInput : { jql: masker.mask(rawInput.jql, { field: "input.jql" }) };
+  const input: MaskedSources["input"] = "key" in rawInput ? rawInput : { jql: maskJql(rawInput.jql, masker) };
 
   const fieldIds = new Map(collection.extraFields.map((f) => [f.name, f.id.toLowerCase()]));
   const acField = collection.acceptanceCriteriaField;

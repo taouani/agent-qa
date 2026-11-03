@@ -30,13 +30,22 @@ export interface RequirementsDeps {
 
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 const TOKEN = /<[A-Z][A-Z0-9_]*_\d+>/g;
+/** What `DataAccess.sealInput` stores in place of a JQL filter. */
+const SEALED = /^<INPUT_\d+>$/;
+const norm = (key: string) => key.trim().toUpperCase();
 const MAX_DESCRIPTION = 12_000;
 const MAX_PAGE = 6_000;
 
 export const requirementsInputSchema = z
   .object({
     key: z.string().trim().toUpperCase().regex(KEY, "must be a Jira issue key such as ABC-123").optional().describe("One Jira issue key, e.g. ABC-123"),
-    jql: z.string().trim().min(1).max(4000).optional().describe("A JQL filter, e.g. project = ABC AND sprint in openSprints()"),
+    jql: z
+      .string()
+      .trim()
+      .min(1)
+      .max(4000)
+      .refine((q) => !SEALED.test(q), "must be a JQL filter, not a vault token")
+      .optional().describe("A JQL filter, e.g. project = ABC AND sprint in openSprints()"),
   })
   .strict()
   .refine((i) => (i.key === undefined) !== (i.jql === undefined), { message: "give exactly one of key or jql" });
@@ -117,10 +126,11 @@ function check(requirements: Requirement[], context: string, analysis: Analysis)
   const known = new Set(context.match(TOKEN) ?? []);
   analysis.issues.forEach((issue, i) => {
     const at = `$.issues.${i}`;
-    const requirement = byKey.get(issue.key);
+    const key = norm(issue.key);
+    const requirement = byKey.get(key);
     if (!requirement) errors.push({ path: `${at}.key`, message: `${issue.key} is not an issue in the context` });
-    else if (seen.has(issue.key)) errors.push({ path: `${at}.key`, message: `${issue.key} is answered more than once` });
-    seen.add(issue.key);
+    else if (seen.has(key)) errors.push({ path: `${at}.key`, message: `${key} is answered more than once` });
+    seen.add(key);
     if (requirement && requirement.acceptanceCriteria.length > 0 && issue.inferredCriteria.length > 0) {
       errors.push({ path: `${at}.inferredCriteria`, message: `${issue.key} already has acceptance criteria: leave inferredCriteria empty` });
     }
@@ -139,7 +149,7 @@ function check(requirements: Requirement[], context: string, analysis: Analysis)
 }
 
 function build(loaded: LoadedSources, analysis: Analysis): RequirementsArtifact {
-  const byKey = new Map(analysis.issues.map((a) => [a.key, a]));
+  const byKey = new Map(analysis.issues.map((a) => [norm(a.key), a]));
   const requirements = loaded.sources.requirements.map((r): AnalyzedRequirement => {
     const a = byKey.get(r.key)!;
     const own = r.acceptanceCriteria.map((ac) => ({ ...ac, origin: "jira" as const }));
@@ -158,6 +168,7 @@ function build(loaded: LoadedSources, analysis: Analysis): RequirementsArtifact 
       description: r.description,
       acceptanceCriteria: own.length ? own : inferred,
       acceptanceCriteriaSource: own.length ? r.acceptanceCriteriaSource : inferred.length ? "inferred" : "none",
+      extraFields: r.extraFields,
       labels: r.labels,
       components: r.components,
       fixVersions: r.fixVersions,

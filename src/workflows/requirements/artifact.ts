@@ -46,6 +46,8 @@ export const analyzedRequirementSchema = z
     description: z.string(),
     acceptanceCriteria: z.array(criterion),
     acceptanceCriteriaSource: z.enum(["field", "description", "inferred", "none"]),
+    /** The fields listed in `atlassian.jira.extraFields`, masked, by name. */
+    extraFields: z.record(z.string(), z.string()),
     labels: z.array(z.string()),
     components: z.array(z.string()),
     fixVersions: z.array(z.string()),
@@ -79,8 +81,15 @@ export const REQUIREMENTS_ARTIFACT: ArtifactSpec<RequirementsArtifact> = {
 
 const one = (s: string) => s.replace(/\s+/g, " ").trim();
 
+/** Inline code that survives backticks in the text: a longer fence, padded. */
+function code(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((t) => t.length));
+  const fence = "`".repeat(longest + 1);
+  return longest ? `${fence} ${text} ${fence}` : `${fence}${text}${fence}`;
+}
+
 export function renderRequirements(data: RequirementsArtifact): string {
-  const input = "key" in data.input ? data.input.key : `JQL \`${one(data.input.jql)}\``;
+  const input = "key" in data.input ? data.input.key : `JQL ${code(one(data.input.jql))}`;
   const scores = data.requirements.map((r) => r.quality.score);
   const average = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
   const lines = [

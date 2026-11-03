@@ -159,11 +159,31 @@ describe("requirements workflow", () => {
       ]),
     );
     expect(await runs.readArtifact(first.runId, REQUIREMENTS_ARTIFACT)).toBeUndefined();
+    // Keys are matched whatever their case.
+    const lower = { issues: good.issues.map((i) => ({ ...i, key: i.key.toLowerCase() })) };
+    expect((await engine.submit(first.runId, "analyze", lower)).status).toBe("accepted");
+    expect((await runs.readArtifact(first.runId, REQUIREMENTS_ARTIFACT))!.data.requirements[1]!.quality.score).toBe(45);
+  });
+
+  it("fails the run when the checks reject every attempt", async () => {
+    const first = await engine.start("requirements", { key: "ABC-1" });
+    const missing = { issues: [good.issues[0]!] };
+    for (let i = 1; i <= 3; i++) await engine.submit(first.runId, "analyze", missing);
+    expect((await engine.status(first.runId)).status).toBe("failed");
+  });
+
+  it("uses no attempt when the check can't read its data", async () => {
+    const first = await engine.start("requirements", { key: "ABC-1" });
+    await rm(join(dir, "runs", first.runId, "sources.json"));
+    jira.fail = true;
+    await expect(engine.submit(first.runId, "analyze", good)).rejects.toMatchObject({ code: "CONTEXT_FAILED", runId: first.runId });
+    expect((await engine.status(first.runId)).attempt).toBe(1);
+    jira.fail = false;
     expect((await engine.submit(first.runId, "analyze", good)).status).toBe("accepted");
   });
 
   it("keeps a JQL filter out of the run folder as a vault token", async () => {
-    const jql = 'project = ABC AND assignee = jdoe AND text ~ "Marguerite Quillfeather"';
+    const jql = 'project = ABC AND assignee = jdoe AND reporter = 5b10ac8d82e05b22cc7d4ef5 AND text ~ "Marguerite Quillfeather"';
     const first = await engine.start("requirements", { jql });
     expect(jira.inputs).toEqual([{ jql }]);
     const state = await engine.status(first.runId);
@@ -172,7 +192,8 @@ describe("requirements workflow", () => {
     const artifact = await runs.readArtifact(first.runId, REQUIREMENTS_ARTIFACT);
     expect("jql" in artifact!.data.input && artifact!.data.input.jql).toContain("<PERSON_1>");
     const all = await files(join(dir, "runs"));
-    for (const s of [...SECRETS, jql, JSON.stringify(jql).slice(1, -1)]) expect(all, s).not.toContain(s);
+    for (const s of [...SECRETS, "jdoe", "5b10ac8d82e05b22cc7d4ef5", jql, JSON.stringify(jql).slice(1, -1)]) expect(all, s).not.toContain(s);
+    await expect(engine.start("requirements", { jql: "<INPUT_1>" })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
   });
 
   it("needs exactly one of key or jql", async () => {
@@ -187,7 +208,8 @@ describe("requirements workflow", () => {
     expect(error).toBeInstanceOf(EngineError);
     expect(error.code).toBe("CONTEXT_FAILED");
     expect(error.message).toContain("Jira is down");
-    const runId = /Run (\S+),/.exec(error.message)![1]!;
+    const runId = error.runId!;
+    expect(error.message).toContain(runId);
     jira.fail = false;
     const step: Step = await engine.next(runId);
     expect(step).toMatchObject({ stepId: "analyze", kind: "generate" });

@@ -74,12 +74,19 @@ export class DataAccess implements RequirementsData {
 
   private run(runId: string): Promise<{ vault: RunVault; service: MaskedDataService }> {
     let entry = this.open.get(runId);
-    if (!entry) {
-      entry = this.create(runId);
-      entry.catch(() => this.open.delete(runId));
+    if (entry) {
+      // Most recently used last, so the eviction below drops the least recently used run.
+      this.open.delete(runId);
       this.open.set(runId, entry);
-      if (this.open.size > MAX_OPEN) this.open.delete(this.open.keys().next().value!);
+      return entry;
     }
+    const created = this.create(runId);
+    entry = created;
+    created.catch(() => {
+      if (this.open.get(runId) === created) this.open.delete(runId);
+    });
+    this.open.set(runId, entry);
+    if (this.open.size > MAX_OPEN) this.open.delete(this.open.keys().next().value!);
     return entry;
   }
 
