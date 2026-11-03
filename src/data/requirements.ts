@@ -312,44 +312,141 @@ export class MaskedDataService {
   }
 }
 
-/** JQL fields and clauses whose values are people: usernames, account ids, emails or names. */
-const JQL_USER =
-  /\b(assignee|reporter|creator|watcher|watchers|voter|voters|approvers?|by)(\s*(?:!=|=|~|!~|\bnot\s+in\b|\bin\b|\bwas\s+not\s+in\b|\bwas\s+in\b|\bwas\s+not\b|\bwas\b|(?<=by))\s*)(\((?:[^()]|\([^()]*\))*\)|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s(),]+(?![^\s(),]|\s*\())/giu;
-/** Values that name no one: keywords and the user functions. */
-const JQL_KEEP = /^(?:empty|null|currentuser\(\)|and|or|not|order)$/i;
+/** JQL fields whose values are people: usernames, account ids, emails or names. */
+const JQL_PEOPLE = new Set([
+  "assignee",
+  "reporter",
+  "creator",
+  "watcher",
+  "watchers",
+  "voter",
+  "voters",
+  "approver",
+  "approvers",
+  "worklogauthor",
+  "request participants",
+  "request participant",
+]);
+/** Values that name no one. */
+const JQL_KEEP = /^(?:empty|null)$/i;
 /** Atlassian account ids: 24 hex digits, or `123456:uuid`. */
 const ACCOUNT_ID = /\b(?:[0-9a-f]{24}|\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/giu;
+/** JQL tokens: space, strings (an unclosed one runs to the end), operators, brackets, commas, words. */
+const JQL_TOKEN = /\s+|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|!=|!~|<=|>=|[=~<>(),]|[^\s"'(),=!~<>]+/gu;
+const JQL_OPERATORS = new Set(["=", "!=", "~", "!~", "<", ">", "<=", ">=", "in", "not", "was", "is"]);
+/** History predicates and whether their value is a person (`by`), the field's own kind (`from`, `to`) or a date. */
+const JQL_PREDICATES: Record<string, "person" | "field" | "other"> = { by: "person", from: "field", to: "field", after: "other", before: "other", on: "other", during: "other" };
+
+const unquote = (token: string) => {
+  const quote = /^["']/.exec(token)?.[0];
+  if (!quote) return token;
+  const closed = token.length > 1 && token.endsWith(quote);
+  return token.slice(1, closed ? -1 : undefined).replace(/\\(.)/g, "$1");
+};
 
 /**
- * A JQL filter with personal data replaced: every value of a people field
- * (`assignee = jdoe`, `reporter in (a, "B C")`, `status changed by x`) becomes a
- * PERSON token, account ids anywhere too, and the rest goes through the
- * detectors like any free text.
+ * A JQL filter with personal data replaced. It is read token by token, so
+ * quoted text stays whole:
+ * - values of people fields (`assignee = jdoe`, `reporter in (a, "B C")`,
+ *   `assignee changed from a to b`) and of `by` in history clauses become
+ *   PERSON tokens; a known person keeps their token;
+ * - a list that doesn't close is masked to the end (fail closed);
+ * - account ids anywhere become PERSON tokens; the rest of the text goes
+ *   through the detectors like any free text.
+ * Only this masked copy is ever stored: the filter itself is sealed in the vault.
  */
 export function maskJql(jql: string, masker: Pick<Masker, "mask">): string {
-  const person = (value: string) => {
-    const quote = /^["']/.exec(value)?.[0] ?? "";
-    const bare = (quote ? value.slice(1, -1) : value).replace(/\\(.)/g, "$1").trim();
-    if (!bare || JQL_KEEP.test(bare)) return value;
-    // A known person (or an email) keeps their token; anything else is a new PERSON.
-    const known = masker.mask(bare, { field: "input.jql" });
-    const token = /^<[A-Z][A-Z0-9_]*_\d+>$/.test(known) ? known : masker.mask(bare, { field: "input.jql", whole: "PERSON" });
-    return quote + token + quote;
+  const tokens = jql.match(JQL_TOKEN) ?? [];
+  const isSpace = (t: string | undefined) => t !== undefined && /^\s+$/.test(t);
+  const nextIndex = (i: number) => {
+    let j = i + 1;
+    while (isSpace(tokens[j])) j++;
+    return j;
   };
-  let out = "";
-  let at = 0;
-  for (const m of jql.matchAll(JQL_USER)) {
-    const [whole, field, op, value] = m as unknown as [string, string, string, string];
-    // `by` names a person only in a history clause (`status changed by jdoe`), and takes no operator.
-    const before = jql.slice(0, m.index);
-    if (/^by$/i.test(field) && (op.trim() || /\border\s*$/i.test(before) || !/\b(changed|was)\b/i.test(before))) continue;
-    if (!/^by$/i.test(field) && !op.trim()) continue;
-    // A list: each quoted or bare item on its own, so "Doe, John" stays one person.
-    const masked = value.startsWith("(") ? value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s(),]+(?:\(\))?/g, (item, offset: number) => (offset === 0 ? item : person(item))) : person(value);
-    out += maskText(jql.slice(at, m.index), masker) + field + op + masked;
-    at = m.index + whole.length;
+  const person = (token: string) => {
+    const quote = /^["']/.exec(token)?.[0] ?? "";
+    const closing = quote && token.length > 1 && token.endsWith(quote) ? quote : "";
+    const bare = unquote(token).trim();
+    if (!bare || JQL_KEEP.test(bare)) return token;
+    const known = masker.mask(bare, { field: "input.jql" });
+    const masked = /^<[A-Z][A-Z0-9_]*_\d+>$/.test(known) ? known : masker.mask(bare, { field: "input.jql", whole: "PERSON" });
+    return quote + masked + closing;
+  };
+  const text = (token: string) => (isSpace(token) ? token : maskText(token, masker));
+
+  const out: string[] = [];
+  let field: string | undefined;
+  let history = false;
+  let expect: "person" | "other" | undefined;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!;
+    if (isSpace(t)) {
+      out.push(t);
+      continue;
+    }
+    const lower = t.toLowerCase();
+    if (expect) {
+      const asPerson = expect === "person";
+      if (lower === "not" || lower === "in" || lower === "is") {
+        out.push(t); // `was not in`, `not in`, `is not`: still before the value
+        continue;
+      }
+      if (t === "(") {
+        // A list: each item at the top level is a value; function arguments are text.
+        let depth = 0;
+        let j = i;
+        for (; j < tokens.length; j++) {
+          const u = tokens[j]!;
+          if (u === "(") depth++;
+          else if (u === ")") depth--;
+          const isFunction = /^[A-Za-z_][\w.]*$/.test(u) && tokens[nextIndex(j)] === "(";
+          if (u === "(" || u === ")" || u === "," || isSpace(u)) out.push(u);
+          else if (asPerson && depth === 1 && !isFunction) out.push(person(u));
+          else out.push(isFunction ? u : text(u));
+          if (depth === 0) break;
+        }
+        // An unclosed list: everything after it was treated as list items, masked as people when it held people.
+        i = j;
+      } else if (/^[A-Za-z_][\w.]*$/.test(t) && tokens[nextIndex(i)] === "(") {
+        out.push(t); // a function such as currentUser() or membersOf("team"): its arguments are text
+      } else {
+        out.push(asPerson ? person(t) : text(t));
+      }
+      expect = undefined;
+      continue;
+    }
+    if (lower === "and" || lower === "or" || lower === "order" || t === ")" || t === "(") {
+      field = undefined;
+      history = false;
+      out.push(t);
+      continue;
+    }
+    if (field === undefined) {
+      if (lower !== "not") field = unquote(t).trim().toLowerCase();
+      out.push(text(t));
+      continue;
+    }
+    if (lower === "changed" || lower === "was") {
+      history = true;
+      if (lower === "was") expect = JQL_PEOPLE.has(field) ? "person" : "other";
+      out.push(t);
+      continue;
+    }
+    if (history && lower in JQL_PREDICATES) {
+      const kind = JQL_PREDICATES[lower]!;
+      expect = kind === "person" || (kind === "field" && JQL_PEOPLE.has(field)) ? "person" : "other";
+      out.push(t);
+      continue;
+    }
+    if (JQL_OPERATORS.has(lower)) {
+      expect = JQL_PEOPLE.has(field) ? "person" : "other";
+      out.push(t);
+      continue;
+    }
+    out.push(text(t));
   }
-  return out + maskText(jql.slice(at), masker);
+  return out.join("");
 }
 
 /** Free JQL text: account ids as PERSON tokens, the rest through the detectors. */
