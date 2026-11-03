@@ -158,7 +158,7 @@ describe("JiraClient.collect", () => {
     expect(byKey["QA-2"]).toMatchObject({ role: "child", depth: 1, parent: "QA-1", children: ["QA-4"] });
     expect(byKey["QA-4"]).toMatchObject({ role: "child", depth: 2, type: "Task", children: ["QA-5"] });
     expect(byKey["QA-5"]).toMatchObject({ role: "child", depth: 3, subtask: true });
-    // Linked issues are fetched but not followed: QA-10 (linked from QA-9) is not included.
+    // Linked issues' own links are not followed: QA-10 (linked from QA-9) is not included.
     expect(byKey["QA-9"]).toMatchObject({ role: "linked", depth: 0 });
     expect(result.truncated).toBe(false);
     expect(byKey["QA-2"]!.acceptanceCriteria?.text).toBe("Given a contact, a case opens");
@@ -169,6 +169,34 @@ describe("JiraClient.collect", () => {
     // Searches are POSTs to the read-only search endpoint; nothing else is written.
     expect(calls.filter((c) => c.method !== "GET").every((c) => c.path === "/rest/api/3/search/jql")).toBe(true);
     expect(calls.find((c) => c.path === "/rest/api/3/search/jql")!.body!.fields).toContain("customfield_10050");
+  });
+
+  it("walks down from linked issues too, unless turned off", async () => {
+    const issues = { ...TREE, "QA-20": { type: "Epic" }, "QA-21": { parent: "QA-20" }, "QA-22": { parent: "QA-21", type: "Sub-task", subtask: true }, "QA-3": { parent: "QA-1", links: ["QA-20"] } };
+    const { fetch } = fakeJira(issues);
+    const result = await jira(fetch).collect({ key: "QA-1" });
+    const byKey = Object.fromEntries(result.issues.map((i) => [i.key, i]));
+    expect(byKey["QA-20"]).toMatchObject({ role: "linked", depth: 0, children: ["QA-21"] });
+    expect(byKey["QA-21"]).toMatchObject({ role: "child", depth: 1, viaLink: true, children: ["QA-22"] });
+    expect(byKey["QA-22"]).toMatchObject({ role: "child", depth: 2, viaLink: true });
+    expect(byKey["QA-2"]!.viaLink).toBeUndefined();
+    // Links of linked issues are still not followed.
+    expect(byKey["QA-10"]).toBeUndefined();
+    expect(result.truncated).toBe(false);
+
+    // Caps apply below linked issues too.
+    const shallow = await jira(fakeJira(issues).fetch).collect({ key: "QA-1" }, { maxDepth: 1 });
+    expect(shallow.issues.map((i) => i.key)).toContain("QA-21");
+    expect(shallow.issues.map((i) => i.key)).not.toContain("QA-22");
+    expect(shallow.truncated).toBe(true);
+    const few = await jira(fakeJira(issues).fetch).collect({ key: "QA-1" }, { maxIssues: 7 });
+    expect(few.issues.map((i) => i.key)).toContain("QA-20");
+    expect(few.issues.map((i) => i.key)).not.toContain("QA-22");
+    expect(few.truncated).toBe(true);
+
+    const off = await jira(fakeJira(issues).fetch).collect({ key: "QA-1" }, { followLinkedChildren: false });
+    expect(off.issues.map((i) => i.key)).not.toContain("QA-21");
+    expect(off.issues.map((i) => i.key)).toContain("QA-20");
   });
 
   it("takes a JQL filter as input, across pages", async () => {

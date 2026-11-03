@@ -65,6 +65,8 @@ export interface JiraIssue {
   role: "root" | "child" | "linked";
   /** 0 for roots and linked issues, 1 for their children, and so on. */
   depth: number;
+  /** True for a child reached through a linked issue rather than through the input. */
+  viaLink?: boolean;
 }
 
 export interface JiraField {
@@ -82,6 +84,12 @@ export interface CollectOptions {
   maxIssues?: number;
   /** Follow issue links one level out. Default true. */
   followLinks?: boolean;
+  /**
+   * Also walk down from linked issues (an epic's stories, a story's sub-tasks), within the same caps.
+   * Default true. A story linked to its own epic brings in its sibling stories too. When off, children of
+   * linked issues are not counted as cut off: `truncated` stays false for them.
+   */
+  followLinkedChildren?: boolean;
   /** Field id or name for acceptance criteria. Default: found by name. */
   acceptanceCriteriaField?: string;
   /** More text fields to fetch, by id or name. */
@@ -268,30 +276,40 @@ export class JiraClient {
     // Descendants, one level at a time. `parent = X` covers epic children and sub-tasks in Jira Cloud.
     // Searches ask for up to maxIssues, so issues already collected (a JQL root that is also a child)
     // can't use up the limit and hide new ones.
-    for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
-      const next: JiraIssue[] = [];
-      for (let i = 0; i < frontier.length; i += CHUNK) {
-        if (room() <= 0) {
-          truncated ||= await this.hasNewChildren(frontier.slice(i).map((f) => f.key), found);
-          break;
+    const walkDown = async (start: JiraIssue[], viaLink: boolean) => {
+      let level = start;
+      for (let depth = 1; depth <= maxDepth && level.length > 0; depth++) {
+        const next: JiraIssue[] = [];
+        for (let i = 0; i < level.length; i += CHUNK) {
+          if (room() <= 0) {
+            truncated ||= await this.hasNewChildren(level.slice(i).map((f) => f.key), found);
+            break;
+          }
+          const keys = level.slice(i, i + CHUNK).map((f) => f.key).filter((k) => ISSUE_KEY.test(k));
+          if (keys.length === 0) continue;
+          const { issues, more } = await this.search(`parent in (${keys.join(",")}) ORDER BY key`, fields, maxIssues);
+          const fresh = issues.filter((raw) => {
+            const key = str(raw.key);
+            return !!key && ISSUE_KEY.test(key) && !found.has(key);
+          });
+          const space = room();
+          truncated ||= more || fresh.length > space;
+          for (const raw of fresh.slice(0, space)) {
+            const issue = add(raw, "child", depth);
+            if (viaLink) issue.viaLink = true;
+            next.push(issue);
+          }
         }
-        const keys = frontier.slice(i, i + CHUNK).map((f) => f.key).filter((k) => ISSUE_KEY.test(k));
-        if (keys.length === 0) continue;
-        const { issues, more } = await this.search(`parent in (${keys.join(",")}) ORDER BY key`, fields, maxIssues);
-        const fresh = issues.filter((raw) => {
-          const key = str(raw.key);
-          return !!key && ISSUE_KEY.test(key) && !found.has(key);
-        });
-        const space = room();
-        truncated ||= more || fresh.length > space;
-        for (const raw of fresh.slice(0, space)) next.push(add(raw, "child", depth));
+        level = next;
       }
-      frontier = next;
-    }
-    // Below maxDepth is cut off; say so only if something is there.
-    if (frontier.length > 0 && !truncated) truncated = await this.hasNewChildren(frontier.map((f) => f.key), found);
+      // Below maxDepth is cut off; say so only if something is there.
+      if (level.length > 0 && !truncated) truncated = await this.hasNewChildren(level.map((f) => f.key), found);
+    };
+    await walkDown(frontier, false);
 
-    // Linked issues, one level out, not followed further.
+    // Linked issues, one level out: their own links are not followed, but their children are
+    // (followLinkedChildren, on by default), e.g. a story linked to an epic brings the epic's stories.
+    const linked: JiraIssue[] = [];
     const unreachable: string[] = [];
     if (followLinks) {
       const wanted = [...new Set([...found.values()].flatMap((i) => i.links.map((l) => l.key)))].filter((k) => !found.has(k) && ISSUE_KEY.test(k));
@@ -323,10 +341,15 @@ export class JiraClient {
           }
         }
         truncated ||= more;
-        for (const raw of issues) add(raw, "linked", 0);
+        for (const raw of issues) {
+          const before = found.size;
+          const issue = add(raw, "linked", 0);
+          if (found.size > before) linked.push(issue);
+        }
         // A search that succeeds found every key: Jira fails the whole query on a missing one, and
         // resolves a moved key to the issue's new key. So only the fallback above adds to unreachable.
       }
+      if (options.followLinkedChildren ?? true) await walkDown(linked, true);
     }
 
     // Children lists, including linked issues whose parent was collected. Only collected issues are listed.
