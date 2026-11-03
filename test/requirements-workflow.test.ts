@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { projectRoot } from "../src/cli/index.js";
 import type { JiraCollection, JiraInput, JiraIssue } from "../src/connectors/index.js";
@@ -197,9 +197,10 @@ describe("requirements workflow", () => {
 
 describe("projectRoot", () => {
   it("finds the project from AGENT_QA_RUNS_DIR when the host gives no working folder", () => {
-    expect(projectRoot("/", { AGENT_QA_RUNS_DIR: "/work/app/.agent-qa/runs" })).toBe("/work/app");
-    expect(projectRoot("/cwd", { AGENT_QA_RUNS_DIR: "/elsewhere/runs" })).toBe("/cwd");
-    expect(projectRoot("/cwd", { AGENT_QA_ROOT: "/root", AGENT_QA_RUNS_DIR: "/work/app/.agent-qa/runs" })).toBe("/root");
+    const app = resolve("/work/app");
+    expect(projectRoot("/", { AGENT_QA_RUNS_DIR: join(app, ".agent-qa", "runs") })).toBe(app);
+    expect(projectRoot("/cwd", { AGENT_QA_RUNS_DIR: resolve("/elsewhere/runs") })).toBe("/cwd");
+    expect(projectRoot("/cwd", { AGENT_QA_ROOT: "/root", AGENT_QA_RUNS_DIR: join(app, ".agent-qa", "runs") })).toBe(resolve("/root"));
     expect(projectRoot("/cwd", {})).toBe("/cwd");
   });
 });
