@@ -152,6 +152,7 @@ describe("ApiDriver.ready", () => {
     await expect(new ApiDriver({ models: keyed, secrets: { env: {} } }).ready("anthropic:claude-opus-5-5")).rejects.toThrow(/models.keys.anthropic/);
     await expect(new ApiDriver({ models: keyed, secrets: { env: { MY_KEY: "k" } } }).ready("anthropic:claude-opus-5-5")).resolves.toBeUndefined();
     await expect(new ApiDriver({ models: { ...models, allowed: ["openai:*"] }, secrets: { env: {} } }).ready("anthropic:claude-opus-5-5")).rejects.toThrow(/not in models.allowed/);
+    await expect(new ApiDriver({ models: { default: "openrouter:x/y" }, secrets: { env: { OPENROUTER_API_KEY: "k" } } }).ready("openrouter:x/y")).rejects.toThrow(/models.keys.openrouter/);
   });
 });
 

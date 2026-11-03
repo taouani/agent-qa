@@ -107,6 +107,8 @@ export class ApiDriver implements ModelDriver {
       }
       return;
     }
+    // The OpenRouter client reads no variable of its own: its key must be in models.keys.
+    if (provider === "openrouter") throw new ModelConfigError("No key for openrouter: set models.keys.openrouter in agent-qa.yaml.");
     const name = KEY_ENV[provider];
     const env = this.options.secrets?.env ?? process.env;
     if (name && !env[name]) throw new ModelConfigError(`No key for ${provider}: set ${name}, or models.keys.${provider} in agent-qa.yaml.`);

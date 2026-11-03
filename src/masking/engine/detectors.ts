@@ -101,10 +101,10 @@ const BARE_REGIONS: CountryCode[] = ["CN", "ES", "PT", "US", "IT", "BR", "MX"];
 /** Digits with spaces, dots, dashes, slashes or brackets on one line, optionally after + or 00. */
 const PHONE_RUN = /(?<![\p{L}\p{N}])\+?\(?\d[\d \t ().\/-]*\d/gu;
 const PHONE_SEPARATORS = /\s().\/-/;
-/** Shapes blanked before the phone scan: IPv4, dates, times, year ranges. */
+/** A dotted run shaped like IPv4; blanked only when it is a real address. A full stop after it ends the sentence. */
+const IPV4_SHAPE = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)/g;
+/** Shapes blanked before the phone scan: dates, times, year ranges. */
 const NOT_PHONE_SHAPES = [
-  // A full stop after it ends the sentence: "from 192.0.2.44." is still an address.
-  /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)/g,
   // A date stands alone: 06.12.34.56.78 is a phone, not a date followed by more digits.
   /(?<!\d[-/.]?)(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}(?![-/.]?\d)/g,
   /(?<!\d[-/.]?)\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}(?![-/.]?\d)/g,
@@ -121,9 +121,9 @@ export function phoneDetector(regions: CountryCode[] = PHONE_REGIONS): PatternDe
       const out: Span[] = [];
       // IP addresses, dates, times and year ranges are digits and separators too: blank them out
       // (same length, so offsets hold) so no phone run starts or ends inside one.
-      let text = original;
       // A dotted run is blanked only when it is a real IPv4 address: 02.123.45.67 is a Belgian phone number.
-      for (const [i, re] of NOT_PHONE_SHAPES.entries()) text = text.replace(re, (m) => (i === 0 && isIP(m) !== 4 ? m : " ".repeat(m.length)));
+      let text = original.replace(IPV4_SHAPE, (m) => (isIP(m) === 4 ? " ".repeat(m.length) : m));
+      for (const re of NOT_PHONE_SHAPES) text = text.replace(re, (m) => " ".repeat(m.length));
       const cache = new Map<string, string | undefined>();
       const parseOnce = (key: string, run: () => string | undefined) => {
         if (!cache.has(key)) cache.set(key, run());

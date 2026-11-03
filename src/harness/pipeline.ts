@@ -91,7 +91,8 @@ async function editedReview(runs: RunStore, runId: string, seeds: Seed[]): Promi
   const seed = seeds[0];
   if (!first || !seed) return { approved: true, changes: [], unattended: true };
   const title = `${first.title.slice(0, 120)} (edited for ${seed.value})`;
-  const steps = [{ ...first.steps[0]!, data: seed.value }, ...first.steps.slice(1)];
+  // Every seed of the case, so values the masker doesn't know from the ticket's people (emails, phones...) are tested too.
+  const steps = [{ ...first.steps[0]!, data: seeds.map((s) => s.value).join("; ") }, ...first.steps.slice(1)];
   return { approved: true, changes: [{ id: first.id, decision: "edited", case: { ...first, title, steps } }], unattended: true };
 }
 
