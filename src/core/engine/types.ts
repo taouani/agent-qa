@@ -82,6 +82,12 @@ export interface StepDefinition<I = unknown, O = unknown> {
    */
   personalAnswer?: boolean;
   /**
+   * Fixed answers to a confirm step, for a front door with no host model (the
+   * CLI): `yes` when the person accepts what the step shows, `no` when they
+   * decline, and `unattended` (default `yes`) when nobody looked (`--yes`).
+   */
+  answers?: { yes: O; no: O; unattended?: O };
+  /**
    * Runs after the output is accepted, for example to write an artifact.
    * It must be safe to run twice: if saving the run state fails afterwards,
    * the step stays open and a retry runs it again.

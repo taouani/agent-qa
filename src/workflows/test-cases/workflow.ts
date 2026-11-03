@@ -74,6 +74,7 @@ const reviewSchema = z
           .strict(),
       )
       .describe("Only the cases the user edited or dropped; every other case is kept as written"),
+    unattended: z.literal(true).optional().describe("Leave this out. Set only by the CLI's --yes, when nobody reviewed the cases"),
   })
   .strict();
 type Review = z.infer<typeof reviewSchema>;
@@ -225,6 +226,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         kind: "confirm",
         outputSchema: reviewSchema,
         personalAnswer: true,
+        answers: { yes: { approved: true, changes: [] }, no: { approved: false, changes: [] }, unattended: { approved: true, changes: [], unattended: true } },
         when: async (ctx) => testable((await requirements(ctx)).data).length > 0,
         instructions: ({ runId }) =>
           [
@@ -269,6 +271,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         // requirements run's vault before the run keeps it, like the sources were.
         sanitize: async (ctx, review: Review): Promise<Review> => {
           if (!review.approved) return { approved: false, changes: [] };
+          const unattended = review.unattended ? { unattended: true as const } : {};
           const run = requirementsRunOf(ctx);
           // An expired vault starts again from <PERSON_1>, which would give a new value an old token.
           const art = await requirements(ctx);
@@ -294,7 +297,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
               return { ...change, case: masked.data };
             }),
           );
-          return { approved: true, changes };
+          return { approved: true, changes, ...unattended };
         },
         onAccept: async (ctx, review: Review) => {
           if (!review.approved) return;
@@ -326,6 +329,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
               edited: cases.length - kept,
               dropped: dropped.length,
               keptRate: draft.cases.length ? kept / draft.cases.length : 1,
+              ...(review.unattended ? { unattended: true as const } : {}),
             },
           };
           await deps.runs.writeArtifact(ctx.runId, TEST_CASES_ARTIFACT, data, { inputs: inputsOf(ctx, art), templateVersion: TEST_CASES_TEMPLATE_VERSION });
@@ -335,6 +339,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         id: "push",
         kind: "confirm",
         outputSchema: pushSchema,
+        // Pushing is never unattended: it takes the person's own yes (a terminal answer or --accept push).
+        answers: { yes: { approve: true }, no: { approve: false }, unattended: { approve: false } },
         // No test-cases@1 when the user stopped the review; nothing to push when they dropped every case.
         when: async (ctx) => ((await reviewed(ctx))?.data.cases.length ?? 0) > 0 && (await deps.data.xrayEnabled()),
         instructions: () =>
