@@ -40,11 +40,10 @@ const ALWAYS_BLOCKED = ["child_process", "node:child_process", "module", "node:m
 );
 /**
  * The only files allowed to write to disk directly: engine state, run folders,
- * vault and audit log, and `agent-qa init`, which writes the project's setup
- * files (agent-qa.yaml, .vscode/mcp.json, .gitignore) when the user runs it,
- * never run data or model output.
+ * vault and audit log, and the setup-file writer of `agent-qa init`, limited
+ * to agent-qa.yaml, .vscode/mcp.json and .gitignore (never run data or model output).
  */
-const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts", "src/cli/init.ts"];
+const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts", "src/cli/setup-files.ts"];
 
 const restrictedImports = (blockFs) => [
   "error",

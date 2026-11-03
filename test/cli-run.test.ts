@@ -114,15 +114,16 @@ function options(over: Partial<RunOptions> = {}): RunOptions {
 const runIdIn = () => /Run (\S+) /.exec(lines[0]!)![1]!;
 
 describe("agent-qa run", () => {
-  it("runs test-cases end to end with --yes: model steps, an unattended review and the push", async () => {
-    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true }))).toBe(EXIT.done);
+  it("runs test-cases end to end with --yes --accept push: model steps, an unattended review and the push", async () => {
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, accept: ["push"] }))).toBe(EXIT.done);
     const runId = runIdIn();
     const runs = new RunStore(join(dir, ".agent-qa", "runs"));
     const cases = (await runs.readArtifact(runId, TEST_CASES_ARTIFACT))!;
     expect(cases.data.review).toMatchObject({ generated: 1, kept: 1, unattended: true });
     expect((await runs.readArtifact(runId, XRAY_PUSH_ARTIFACT))!.data.counts).toEqual({ created: 1, updated: 0, failed: 0 });
     expect(sent[0]![0]!.fields.summary).toBe("[TC-ABC-1-001] Old case escalated for <PERSON_1>");
-    expect(lines).toContain("- review: accepted (--yes)");
+    expect(lines).toContain("- review: answered unattended (--yes)");
+    expect(lines).toContain("- push: accepted");
     expect(lines.at(-1)).toMatch(/^Done\. Run folder: \.agent-qa[/\\]runs[/\\]\S+\n {2}masking-report\.json\n[^]* {2}xray-push\.json/);
     expect(prompts.map((p) => p.schemaName)).toEqual(["analyze", "cases"]);
     for (const p of prompts) expect(JSON.stringify(p)).not.toContain("Quillfeather");
@@ -130,12 +131,28 @@ describe("agent-qa run", () => {
     expect(await readFile(join(dir, ".agent-qa", "runs", runId, "test-cases.md"), "utf8")).toContain("accepted without a review (--yes)");
   });
 
-  it("stops at a confirm step with nobody to ask, then resumes with --no", async () => {
+  it("never pushes on --yes alone, even when the policy only asks", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), YAML.replace("xray: allow", "xray: ask"));
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true }))).toBe(EXIT.done);
+    expect(lines).toContain("- push: answered unattended (--yes)");
+    expect(sent).toHaveLength(0);
+    expect(audit.entries).toHaveLength(0);
+  });
+
+  it("rejects --accept or --decline naming no confirm step, and both at once", async () => {
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, decline: ["pushh"] }))).toBe(EXIT.setup);
+    expect(lines.at(-1)).toBe("agent-qa run: test-cases has no confirm step pushh; its confirm steps are review, push");
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", accept: ["push"], decline: ["push"] }))).toBe(EXIT.setup);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("stops at a confirm step with nobody to ask, then resumes with --decline", async () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1" }))).toBe(EXIT.waiting);
     const runId = runIdIn();
-    expect(lines.at(-1)).toBe(`Answer it in your IDE, or run: agent-qa run --resume ${runId} with --yes or --no review`);
+    expect(lines.at(-1)).toBe(`Answer it in your IDE, or run: agent-qa run --resume ${runId} --accept review (or --decline review)`);
     lines = [];
-    expect(await runCommand(options({ resume: runId, yes: true, no: ["push"] }))).toBe(EXIT.done);
+    expect(await runCommand(options({ resume: runId, key: "ABC-1" }))).toBe(EXIT.setup);
+    expect(await runCommand(options({ resume: runId, accept: ["review"], decline: ["push"] }))).toBe(EXIT.done);
     expect(lines).toContain("- push: declined");
     expect(sent).toHaveLength(0);
   });
@@ -143,7 +160,7 @@ describe("agent-qa run", () => {
   it("asks the person in a terminal, and their yes is a real review", async () => {
     const asked: string[] = [];
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", ask: async (q) => (asked.push(q), !q.startsWith("push")) }))).toBe(EXIT.done);
-    expect(asked).toEqual(["review: accepted?".replace("accepted", "accept"), "push: accept?"]);
+    expect(asked).toEqual(["review: accept?", "push: accept?"]);
     const cases = (await new RunStore(join(dir, ".agent-qa", "runs")).readArtifact(runIdIn(), TEST_CASES_ARTIFACT))!;
     expect(cases.data.review.unattended).toBeUndefined();
     expect(sent).toHaveLength(0);
@@ -151,7 +168,7 @@ describe("agent-qa run", () => {
 
   it("in CI, skips a push the policy would have to ask for", async () => {
     await writeFile(join(dir, "agent-qa.yaml"), YAML.replace("xray: allow", "xray: ask"));
-    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, env: { CI: "true" } }))).toBe(EXIT.done);
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, accept: ["push"], env: { CI: "true" } }))).toBe(EXIT.done);
     expect(sent).toHaveLength(0);
     expect(lines.some((l) => l.startsWith("- push"))).toBe(false);
   });
@@ -162,24 +179,49 @@ describe("agent-qa run", () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "not a key" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ workflow: "test-cases", input: "{" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ resume: "2026-11-03-x-abcd" }))).toBe(EXIT.setup);
+    expect(await runCommand(options({ resume: "../../etc" }))).toBe(EXIT.setup);
+    expect(await runCommand(options({ workflow: "test-cases", fromRun: "2026-11-03-none-abcd" }))).toBe(EXIT.setup);
+    const noDriver = options({ workflow: "test-cases", key: "ABC-1", model: "nope" });
+    delete noDriver.driver;
+    expect(await runCommand(noDriver)).toBe(EXIT.setup);
+    expect(lines.at(-1)).toContain("Not a provider:model id");
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", root: join(dir, "missing") }))).toBe(EXIT.setup);
     lines = [];
     const failing = new StaticDriver(() => {
       throw new Error("rate limited");
     });
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", driver: failing }))).toBe(EXIT.failed);
-    expect(lines.at(-1)).toContain("rate limited");
+    expect(lines.join("\n")).toContain("rate limited");
     lines = [];
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", driver: new StaticDriver("{}") }))).toBe(EXIT.failed);
     expect(lines.some((l) => l.includes("failed at analyze"))).toBe(true);
   });
 
-  it("parses --no as a list of steps", async () => {
-    const program = buildProgram();
+  it("keeps the run and says how to resume when a source or Xray fails", async () => {
+    const failingData = (what: "jira" | "xray") => (base: ConstructorParameters<typeof DataAccess>[0]) => {
+      const data = options().data!(base);
+      const target = data as unknown as { options: Record<string, unknown> };
+      if (what === "jira") target.options.jira = { collect: async () => { throw new Error("Jira is down"); } };
+      else target.options.xray = { importAndWait: async () => { throw new Error("boom 401"); } };
+      return data;
+    };
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", data: failingData("jira") }))).toBe(EXIT.failed);
+    expect(lines.at(-1)).toMatch(/^The run is kept: fix the cause, then run agent-qa run --resume \S+$/);
+    expect(lines.join("\n")).not.toContain("workflow_next");
+    lines = [];
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, accept: ["push"], data: failingData("xray") }))).toBe(EXIT.failed);
+    expect(lines.at(-2)).toBe("agent-qa run: Error: boom 401");
+    expect(lines.at(-1)).toMatch(/--resume /);
+  });
+
+  it("parses repeatable --accept and --decline after the workflow", async () => {
+    const program = buildProgram().exitOverride();
     const run = program.commands.find((c) => c.name() === "run")!;
     run.action(() => {});
-    await program.parseAsync(["node", "agent-qa", "run", "test-cases", "--key", "ABC-1", "--yes", "--no", "push", "review"]);
-    expect(run.opts()).toMatchObject({ key: "ABC-1", yes: true, no: ["push", "review"] });
+    await program.parseAsync(["node", "agent-qa", "run", "test-cases", "--key", "ABC-1", "--yes", "--accept", "push", "--decline", "review"]);
+    expect(run.opts()).toMatchObject({ key: "ABC-1", yes: true, accept: ["push"], decline: ["review"] });
+    run.configureOutput({ writeErr: () => {} });
+    await expect(buildProgram().exitOverride().configureOutput({ writeErr: () => {} }).parseAsync(["node", "agent-qa", "run", "test-cases", "--accept", "--key", "ABC-1"])).rejects.toThrow();
   });
 });
 
@@ -219,7 +261,10 @@ describe("agent-qa init", () => {
   });
 
   it("refuses settings that don't make a valid config", async () => {
-    expect(await initCommand({ root: dir, site: "http://insecure", log: (l) => lines.push(l) })).toBe(2);
+    const root = join(dir, "r");
+    await mkdir(root);
+    expect(await initCommand({ root, site: "http://insecure", log: (l) => lines.push(l) })).toBe(2);
+    expect(await initCommand({ root: join(dir, "missing"), log: (l) => lines.push(l) })).toBe(2);
     expect(configTemplate({})).toContain("# xray:");
   });
 });

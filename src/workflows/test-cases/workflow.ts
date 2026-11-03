@@ -339,7 +339,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         id: "push",
         kind: "confirm",
         outputSchema: pushSchema,
-        answers: { yes: { approve: true }, no: { approve: false } },
+        // Pushing is never unattended: it takes the person's own yes (a terminal answer or --accept push).
+        answers: { yes: { approve: true }, no: { approve: false }, unattended: { approve: false } },
         // No test-cases@1 when the user stopped the review; nothing to push when they dropped every case.
         when: async (ctx) => ((await reviewed(ctx))?.data.cases.length ?? 0) > 0 && (await deps.data.xrayEnabled()),
         instructions: () =>

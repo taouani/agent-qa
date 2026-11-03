@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { configSchema, MODEL_CATALOG } from "../core/index.js";
+import { configSchema, MODEL_CATALOG, VERSION } from "../core/index.js";
 import { isIgnored, loadIgnoreRules } from "../data/index.js";
 import { parse as parseYaml } from "yaml";
+import { writeSetupFile } from "./setup-files.js";
 
 /**
  * `agent-qa init` (S1-11): writes `agent-qa.yaml`, the VS Code MCP settings
@@ -23,11 +24,14 @@ export interface InitOptions {
   log?: (line: string) => void;
 }
 
-/** What VS Code runs; `next` until 2.0 ships, since `latest` is the npm placeholder. */
+/**
+ * What VS Code runs: this exact version, so an IDE start never fetches a
+ * newer package (the server holds the Jira, Xray and model credentials).
+ */
 export const MCP_SERVER = {
   type: "stdio",
   command: "npx",
-  args: ["-y", "sf-agent-qa@next", "mcp"],
+  args: ["-y", `sf-agent-qa@${VERSION}`, "mcp"],
   // No `cwd`: VS Code only partly supports it. The server finds the project from the runs folder.
   env: { AGENT_QA_RUNS_DIR: "${workspaceFolder}/.agent-qa/runs" },
 };
@@ -37,7 +41,7 @@ const IGNORE_LINES = ["# agent-qa: token vault, run folders and audit log", ".ag
 export function configTemplate(opts: Pick<InitOptions, "site" | "model" | "xrayProject">): string {
   const model = opts.model ?? MODEL_CATALOG.anthropic[0]!.id;
   const lines = [
-    "# yaml-language-server: $schema=https://unpkg.com/sf-agent-qa@next/schema/agent-qa.schema.json",
+    `# yaml-language-server: $schema=https://unpkg.com/sf-agent-qa@${VERSION}/schema/agent-qa.schema.json`,
     "# Agent-QA settings. Secrets are never written here: only ${env:NAME} or ${keychain:NAME} references.",
     "version: 1",
     "",
@@ -62,7 +66,7 @@ export function configTemplate(opts: Pick<InitOptions, "site" | "model" | "xrayP
   lines.push(
     "policy:",
     "  writes:",
-    "    xray: ask # allow, ask or deny; in CI, ask is denied",
+    "    xray: ask # allow, ask or deny; in CI, ask is denied (test code always goes as a pull request)",
     "    confluence: ask",
     "    testCode: ask",
     "    jira: deny",
@@ -84,18 +88,23 @@ async function readOptional(file: string): Promise<string | undefined> {
 export async function initCommand(opts: InitOptions): Promise<number> {
   const log = opts.log ?? ((line: string) => void process.stderr.write(`${line}\n`));
   let code = 0;
+  if (!(await stat(opts.root).then((s) => s.isDirectory(), () => false))) {
+    log(`agent-qa init: ${opts.root} is not a folder`);
+    return 2;
+  }
 
   // agent-qa.yaml
   const configFile = join(opts.root, "agent-qa.yaml");
-  const text = configTemplate(opts);
-  const parsed = configSchema.safeParse(parseYaml(text));
-  if (!parsed.success) {
-    log(`agent-qa init: the settings given don't make a valid agent-qa.yaml (${parsed.error.issues.map((i) => i.path.join(".")).join(", ")})`);
-    return 2;
-  }
-  if ((await readOptional(configFile)) !== undefined && !opts.force) log("agent-qa.yaml: kept (exists; --force replaces it)");
+  const exists = (await readOptional(configFile)) !== undefined;
+  if (exists && !opts.force) log("agent-qa.yaml: kept (exists; --force replaces it)");
   else {
-    await writeFile(configFile, text);
+    const text = configTemplate(opts);
+    const parsed = configSchema.safeParse(parseYaml(text));
+    if (!parsed.success) {
+      log(`agent-qa init: the settings given don't make a valid agent-qa.yaml (${parsed.error.issues.map((i) => i.path.join(".")).join(", ")})`);
+      return 2;
+    }
+    await writeSetupFile(opts.root, "agent-qa.yaml", text, exists ? "replace" : "create");
     log("agent-qa.yaml: written");
   }
 
@@ -109,10 +118,11 @@ export async function initCommand(opts: InitOptions): Promise<number> {
       const value = JSON.parse(existing) as unknown;
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
       mcp = value as typeof mcp;
+      if (mcp.servers !== undefined && (!mcp.servers || typeof mcp.servers !== "object" || Array.isArray(mcp.servers))) throw new Error("servers is not an object");
     } catch {
       // VS Code allows comments in mcp.json; rewriting it would lose them.
       usable = false;
-      log(`.vscode/mcp.json: not changed (it isn't plain JSON). Add this server under "servers":\n${JSON.stringify({ "agent-qa": MCP_SERVER }, null, 2)}`);
+      log(`.vscode/mcp.json: not changed (it isn't plain JSON with a servers object). Add this server under "servers":\n${JSON.stringify({ "agent-qa": MCP_SERVER }, null, 2)}`);
       code = 2;
     }
   }
@@ -120,8 +130,7 @@ export async function initCommand(opts: InitOptions): Promise<number> {
     if (mcp.servers && typeof mcp.servers === "object" && "agent-qa" in mcp.servers) log(".vscode/mcp.json: kept (it already has an agent-qa server)");
     else {
       mcp.servers = { ...(mcp.servers ?? {}), "agent-qa": MCP_SERVER };
-      await mkdir(join(opts.root, ".vscode"), { recursive: true });
-      await writeFile(mcpFile, JSON.stringify(mcp, null, 2) + "\n");
+      await writeSetupFile(opts.root, ".vscode/mcp.json", JSON.stringify(mcp, null, 2) + "\n", existing === undefined ? "create" : "replace");
       log(`.vscode/mcp.json: ${existing === undefined ? "written" : "agent-qa server added"}`);
     }
   }
@@ -131,9 +140,9 @@ export async function initCommand(opts: InitOptions): Promise<number> {
   const rules = await loadIgnoreRules(opts.root, targets);
   if (targets.every((t) => isIgnored(rules, t))) log(".gitignore: kept (.agent-qa/ is ignored)");
   else {
-    const gitignore = join(opts.root, ".gitignore");
-    const before = (await readOptional(gitignore)) ?? "";
-    await writeFile(gitignore, `${before}${before && !before.endsWith("\n") ? "\n" : ""}${IGNORE_LINES.join("\n")}\n`);
+    const before = await readOptional(join(opts.root, ".gitignore"));
+    const text = `${before ?? ""}${before && !before.endsWith("\n") ? "\n" : ""}${IGNORE_LINES.join("\n")}\n`;
+    await writeSetupFile(opts.root, ".gitignore", text, before === undefined ? "create" : "replace");
     // A negation further down (e.g. !.agent-qa/runs/) could still un-ignore part of it.
     const after = await loadIgnoreRules(opts.root, targets);
     if (targets.every((t) => isIgnored(after, t))) log(".gitignore: .agent-qa/ added");

@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { emptyPipeline, HarnessCaseError, harnessSources, runHarness } from "../harness/index.js";
 import { StaticDriver } from "../llm/index.js";
@@ -35,6 +35,12 @@ export function createEngine(cwd = process.cwd(), env: NodeJS.ProcessEnv = proce
   return engine;
 }
 
+/** Commander collector for a repeatable option. */
+function collect(value: string, previous: string[]): string[] {
+  if (value.startsWith("-")) throw new InvalidArgumentError("expected a step id");
+  return [...previous, value];
+}
+
 export function buildProgram(): Command {
   const program = new Command();
   program
@@ -62,8 +68,9 @@ export function buildProgram(): Command {
     .option("--input <json>", "the workflow's inputs as JSON")
     .option("--resume <runId>", "continue a run that stopped")
     .option("--model <provider:model>", "the model for every step")
-    .option("--yes", "accept every confirm step without asking (the review then counts as unattended)")
-    .option("--no <step...>", "decline these confirm steps, e.g. --no push")
+    .option("--yes", "answer confirm steps without asking: the review is accepted as unattended, the Xray push is declined")
+    .option("--accept <step>", "accept this confirm step, e.g. --accept push (repeatable)", collect, [])
+    .option("--decline <step>", "decline this confirm step (repeatable)", collect, [])
     .option("--ci", "CI mode: nobody is asked, and ask write rules are denied (default when CI is set)")
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (workflow: string | undefined, opts: Omit<Parameters<typeof runCommand>[0], "root" | "env" | "workflow"> & { cwd?: string }) => {
