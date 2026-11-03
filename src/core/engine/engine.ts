@@ -185,19 +185,22 @@ export class WorkflowEngine {
         return { status: "rejected", errors, attempt, maxAttempts: max, next };
       }
 
-      await def.onAccept?.(def.batches ? this.ctx(state, batch, batches) : this.ctx(state), parsed.data);
+      const stepCtx = def.batches ? this.ctx(state, batch, batches) : this.ctx(state);
+      const kept = def.sanitize ? await this.guarded(state, def, "the answer couldn't be prepared", () => def.sanitize!(stepCtx, parsed.data)) : parsed.data;
+      await def.onAccept?.(stepCtx, kept);
       if (def.batches) {
         const parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
-        parts[batch] = parsed.data;
+        parts[batch] = kept;
         state.outputs[def.id] = parts;
       } else {
-        state.outputs[def.id] = parsed.data;
+        state.outputs[def.id] = kept;
       }
       state.attempt = 1;
       if (batch + 1 < batches) {
         state.batch = batch + 1;
       } else {
         delete state.batch;
+        delete state.batches;
         state.stepIndex += 1;
         await this.advance(workflow, state);
       }
@@ -241,19 +244,35 @@ export class WorkflowEngine {
     return def;
   }
 
+  /** Runs workflow code whose failure means its data is unreachable: CONTEXT_FAILED, nothing used up. */
+  private async guarded<T>(state: RunState, def: StepDefinition<unknown, unknown>, what: string, fn: () => T | Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error instanceof EngineError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new EngineError("CONTEXT_FAILED", `Run ${state.runId}, step ${def.id}: ${what} (${message}). Nothing was used up: fix the cause and try again.`, [], state.runId);
+    }
+  }
+
   /** Move past steps that don't apply (`when` false, or no batches); end the run after the last step. */
   private async advance(workflow: WorkflowDefinition<unknown>, state: RunState): Promise<void> {
     while (state.stepIndex < workflow.steps.length) {
       const def = workflow.steps[state.stepIndex]!;
       const ctx = this.ctx(state);
-      if (def.when && !(await def.when(ctx))) {
+      if (def.when && !(await this.guarded(state, def, "can't tell whether the step applies", () => def.when!(ctx)))) {
         state.stepIndex += 1;
         continue;
       }
-      if (def.batches && (await def.batches(ctx)) <= 0) {
-        state.outputs[def.id] = [];
-        state.stepIndex += 1;
-        continue;
+      if (def.batches) {
+        // The count is fixed when the step is entered, so a changing source can't re-open a batch.
+        const batches = Math.floor(await this.guarded(state, def, "can't count the batches", () => def.batches!(ctx)));
+        if (batches <= 0) {
+          state.outputs[def.id] = [];
+          state.stepIndex += 1;
+          continue;
+        }
+        state.batches = batches;
       }
       return;
     }
@@ -262,7 +281,7 @@ export class WorkflowEngine {
 
   private async batchOf(def: StepDefinition<unknown, unknown>, state: RunState): Promise<{ batch: number; batches: number }> {
     if (!def.batches) return { batch: 0, batches: 1 };
-    const batches = Math.max(1, Math.floor(await def.batches(this.ctx(state))));
+    const batches = state.batches ?? Math.max(1, Math.floor(await this.guarded(state, def, "can't count the batches", () => def.batches!(this.ctx(state)))));
     return { batch: Math.min(state.batch ?? 0, batches - 1), batches };
   }
 

@@ -219,6 +219,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           return [`${draft.cases.length} draft case(s):`, ...lines].join("\n");
         },
         check: async (ctx, review: Review) => {
+          // A user who stops the run isn't asked to fix their changes: nothing is saved anyway.
+          if (!review.approved) return [];
           const art = (await requirements(ctx)).data;
           const draft = (await draftOf(ctx)).data;
           const ids = new Set(draft.cases.map((c) => c.id));
@@ -241,6 +243,26 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             }
           });
           return errors;
+        },
+        // An edit is the user's own text and may name people or hold data: it is masked with the
+        // requirements run's vault before the run keeps it, like the sources were.
+        sanitize: async (ctx, review: Review): Promise<Review> => {
+          if (!review.approved) return { approved: false, changes: [] };
+          const run = requirementsRunOf(ctx);
+          const changes = await Promise.all(
+            review.changes.map(async (change) => {
+              if (!change.case) return change;
+              const c = change.case;
+              const [title, ...rest] = await deps.data.maskTexts(run, [c.title, ...c.preconditions, ...c.steps.flatMap((s) => [s.action, s.data, s.expected])], "review.edit");
+              const preconditions = rest.slice(0, c.preconditions.length);
+              const steps = c.steps.map((_, i) => {
+                const [action, data, expected] = rest.slice(c.preconditions.length + i * 3, c.preconditions.length + i * 3 + 3) as [string, string, string];
+                return { action, data, expected };
+              });
+              return { ...change, case: { ...c, title: title!, preconditions, steps } };
+            }),
+          );
+          return { approved: true, changes };
         },
         onAccept: async (ctx, review: Review) => {
           if (!review.approved) return;

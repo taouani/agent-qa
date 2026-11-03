@@ -214,6 +214,35 @@ describe("test-cases workflow", () => {
     await expect(engine.start("test-cases", { requirementsRun: req.runId, key: "ABC-1" })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
   });
 
+  it("masks what the user dictates in an edit before the run keeps it", async () => {
+    const first = await engine.start("test-cases", { key: "ABC-1" });
+    await engine.submit(first.runId, "analyze", good);
+    await engine.submit(first.runId, "cases", cases);
+    const edited = tc("ABC-1", 1, ["AC1"], {
+      title: "Log in as Marguerite Quillfeather",
+      steps: [{ action: "Email mq@example.com", data: "Call +33 6 12 34 56 78", expected: "ok" }],
+    });
+    const done = await engine.submit(first.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-001", decision: "edited", case: edited }] });
+    expect(done.status).toBe("accepted");
+    const final = (await runs.readArtifact(first.runId, TEST_CASES_ARTIFACT))!;
+    expect(final.data.cases[0]).toMatchObject({ title: "Log in as <PERSON_1>", review: "edited" });
+    const all = [
+      await readFile(join(dir, "runs", first.runId, "test-cases.json"), "utf8"),
+      await readFile(join(dir, "runs", first.runId, "test-cases.md"), "utf8"),
+      await readFile(join(dir, "runs", first.runId, "steps", "state.json"), "utf8"),
+    ].join("\n");
+    for (const s of [...SECRETS, "12 34 56 78"]) expect(all, s).not.toContain(s);
+  });
+
+  it("lets the user stop without fixing their changes", async () => {
+    const first = await engine.start("test-cases", { key: "ABC-1" });
+    await engine.submit(first.runId, "analyze", good);
+    await engine.submit(first.runId, "cases", cases);
+    const stopped = await engine.submit(first.runId, "review", { approved: false, changes: [{ id: "TC-NOPE-1-001", decision: "dropped" }] });
+    expect(stopped.status).toBe("accepted");
+    expect((await engine.status(first.runId)).outputs.review).toEqual({ approved: false, changes: [] });
+  });
+
   it("rejects review changes to unknown cases or edits that change the id", async () => {
     const first = await engine.start("test-cases", { key: "ABC-1" });
     await engine.submit(first.runId, "analyze", good);

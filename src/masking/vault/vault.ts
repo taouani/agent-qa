@@ -269,6 +269,13 @@ export class RunVault {
     return Object.hasOwn(this.plain.entries, token) ? this.plain.entries[token] : undefined;
   }
 
+  /** Real values of every token of one kind, e.g. the run's known people. Only masking should call this. */
+  valuesOf(kind: TokenKind): string[] {
+    return Object.entries(this.plain.entries)
+      .filter(([token]) => TOKEN.exec(token)?.[1] === kind)
+      .map(([, value]) => value);
+  }
+
   get size(): number {
     return Object.keys(this.plain.entries).length;
   }

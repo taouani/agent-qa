@@ -14,7 +14,7 @@ export const CASE_ID = /^TC-[A-Z][A-Z0-9_]+-\d+-\d{3}$/;
 export const testStepSchema = z
   .object({
     action: z.string().min(1).max(2000).describe("What the tester does"),
-    data: z.string().max(2000).describe("Test data for this step; empty if none"),
+    data: z.string().max(2000).default("").describe("Test data for this step; empty if none"),
     expected: z.string().min(1).max(2000).describe("The expected result"),
   })
   .strict();

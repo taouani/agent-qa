@@ -288,6 +288,25 @@ describe("batched and optional steps", () => {
     expect((await none.status(step.runId)).outputs).toEqual({ parts: [] });
   });
 
+  it("fixes the batch count when the step is entered", async () => {
+    let count = 3;
+    const wf = batched(3);
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() }).register({ ...wf, steps: [{ ...wf.steps[0]!, batches: () => count }, wf.steps[1]!] });
+    const first = await engine.start("batched", { n: 1 });
+    await engine.submit(first.runId, "parts_1", { items: ["b0"] });
+    count = 1;
+    expect((await engine.next(first.runId)).stepId).toBe("parts_2");
+  });
+
+  it("reports a failing when or batches as CONTEXT_FAILED", async () => {
+    const wf = batched(1);
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() }).register({
+      ...wf,
+      steps: [{ ...wf.steps[0]!, batches: () => { throw new Error("no source"); } }],
+    });
+    await expect(engine.start("batched", { n: 1 })).rejects.toMatchObject({ code: "CONTEXT_FAILED", message: expect.stringContaining("no source") });
+  });
+
   it("refuses step ids that look like a batch id", () => {
     const wf = batched(1);
     expect(() => new WorkflowEngine({ store: new MemoryStateStore() }).register({ ...wf, steps: [{ ...wf.steps[0]!, id: "parts_2" }] })).toThrow(/can't end in _<number>/);

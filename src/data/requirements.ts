@@ -244,6 +244,20 @@ export class MaskedDataService {
     return this.options.config.masking.languages ?? ALL_LANGUAGES;
   }
 
+  /**
+   * Free text written in the run (a reviewer's edit), masked like the sources:
+   * the run's known people keep their tokens, detectors find the rest.
+   */
+  maskText(text: string, field: string): string {
+    const masker = this.masker();
+    masker.addNames(this.options.vault.valuesOf("PERSON"));
+    return masker.mask(text, { field });
+  }
+
+  async saveVault(): Promise<void> {
+    await this.options.vault.save();
+  }
+
   private masker(): Masker {
     const detectors = this.options.config.masking.detectors;
     return new Masker({ vault: this.options.vault, ...(detectors ? { detectors } : {}), nameLanguages: this.languages() });
@@ -334,9 +348,18 @@ const ACCOUNT_ID = /\b(?:[0-9a-f]{24}|\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 /** JQL tokens: space, strings (an unclosed one runs to the end), operators, brackets, commas, words. */
 const JQL_TOKEN = /\s+|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|!=|!~|<=|>=|[=~<>(),!]|[^\s"'(),=!~<>]+/gu;
 /** JQL functions whose arguments are people. */
-const JQL_USER_FUNCTIONS = new Set(["updatedby", "approver", "pendingby", "approvedby"]);
-/** Other JQL functions, kept as they are even where a person is expected. */
-const JQL_FUNCTIONS = new Set(["currentuser", "membersof", "now", "startofday", "endofday", "startofweek", "endofweek", "startofmonth", "endofmonth", "startofyear", "endofyear"]);
+const JQL_USER_FUNCTIONS = new Set(["updatedby", "approver", "pendingby", "approvedby", "projectsleadbyuser", "componentsleadbyuser", "projectswhereuserhaspermission", "projectswhereuserhasrole", "commentedby", "worklogged"]);
+/**
+ * JQL functions known to take no people (groups, dates, versions, sprints, issues).
+ * Any other function's arguments are masked as people: an unknown function fails closed.
+ */
+const JQL_FUNCTIONS = new Set([
+  "currentuser", "currentlogin", "lastlogin", "membersof", "now",
+  "startofday", "endofday", "startofweek", "endofweek", "startofmonth", "endofmonth", "startofyear", "endofyear",
+  "issuehistory", "watchedissues", "votedissues", "linkedissues", "parentepic", "portfolioparent",
+  "releasedversions", "unreleasedversions", "latestreleasedversion", "earliestunreleasedversion",
+  "opensprints", "closedsprints", "futuresprints", "cascadeoption", "componentsleadbycurrentuser",
+]);
 const JQL_OPERATORS = new Set(["=", "!=", "~", "!~", "<", ">", "<=", ">=", "in", "not", "was", "is"]);
 /** History predicates and whether their value is a person (`by`), the field's own kind (`from`, `to`) or a date. */
 const JQL_PREDICATES: Record<string, "person" | "field" | "other"> = { by: "person", from: "field", to: "field", after: "other", before: "other", on: "other", during: "other" };
@@ -410,7 +433,7 @@ export function maskJql(jql: string, masker: Pick<Masker, "mask">): string {
           else if (u === "(") {
             const before = tokens.slice(0, j).reverse().find((x) => !isSpace(x));
             const fn = before && /^[A-Za-z_][\w.]*$/.test(before) && j > i ? before.toLowerCase() : undefined;
-            stack.push(fn === undefined ? "list" : JQL_USER_FUNCTIONS.has(fn) || (asPerson && !JQL_FUNCTIONS.has(fn)) ? "people" : "text");
+            stack.push(fn === undefined ? "list" : JQL_FUNCTIONS.has(fn) ? "text" : "people");
             out.push(u);
           } else if (u === ")") {
             stack.pop();

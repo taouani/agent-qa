@@ -71,6 +71,12 @@ export interface StepDefinition<I = unknown, O = unknown> {
    */
   check?: (ctx: StepContext<I>, output: O) => OutputError[] | Promise<OutputError[]>;
   /**
+   * Runs once the output passes the checks, before anything is saved, and
+   * returns what is kept instead: for example the answer with personal data a
+   * user dictated masked. The run state never holds the original.
+   */
+  sanitize?: (ctx: StepContext<I>, output: O) => O | Promise<O>;
+  /**
    * Runs after the output is accepted, for example to write an artifact.
    * It must be safe to run twice: if saving the run state fails afterwards,
    * the step stays open and a retry runs it again.
@@ -105,6 +111,8 @@ export interface RunState {
   attempt: number;
   /** Batch of the open step, from 0, for batched steps. */
   batch?: number;
+  /** Batch count of the open step, fixed when the step was entered. */
+  batches?: number;
   outputs: Record<string, unknown>;
   /** Step ids already accepted; resubmitting one returns `accepted` with the current step. */
   accepted: Record<string, true>;
