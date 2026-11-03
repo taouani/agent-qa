@@ -11,6 +11,7 @@ export {
   seedSchema,
   seedsFileSchema,
   syntheticTicketSchema,
+  ticketTexts,
   validateCases,
 } from "./cases.js";
 export type { HarnessCase, HarnessCaseInput, Seed, SeedKind, SyntheticTicket } from "./cases.js";
@@ -18,3 +19,8 @@ export { emptyPipeline, RecordingDriver, runHarness, SeededLeakError, SeedScanne
 export type { CaseReport, HarnessReport, Pipeline, PipelineContext, RunHarnessOptions, SeededLeak, SeedHit } from "./runner.js";
 export { harnessSources } from "./sources.js";
 export type { HarnessSources } from "./sources.js";
+export { FixtureDriver } from "./fixture-driver.js";
+export { keptRate } from "./kept-rate.js";
+export type { KeptRate } from "./kept-rate.js";
+export { maskedPipeline } from "./pipeline.js";
+export type { MaskedPipelineOptions } from "./pipeline.js";

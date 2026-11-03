@@ -47,6 +47,9 @@ describe("pattern detectors", () => {
 
   it("does not take bare ids, amounts or dates for phone numbers", () => {
     expect(phoneDetector().find("Order 123456789 for 2026-11-02, total 1234567.89, case 00012345")).toEqual([]);
+    // Found by the harness (S1-14): an IP at the end of a sentence was read as a phone number.
+    expect(phoneDetector().find("Last login from 192.0.2.44.")).toEqual([]);
+    expect(phoneDetector().find("Last login from 192.0.2.44")).toEqual([]);
   });
 
   it("finds IBANs with spaces and stops at the next word", () => {
@@ -61,6 +64,8 @@ describe("pattern detectors", () => {
 
   it("finds IPv4 and IPv6, not versions or times", () => {
     expect(values(ip.find("Host 10.0.12.7 and fe80::1ff:fe23:4567:890a, build 1.2.3, at 10:30:00, bad 999.1.1.1"))).toEqual(["10.0.12.7", "fe80::1ff:fe23:4567:890a"]);
+    // Found by the harness (S1-14): an address that ends a sentence was missed.
+    expect(values(ip.find("Last login from 192.0.2.44. Build 1.2.3.4.5 is not one."))).toEqual(["192.0.2.44"]);
   });
 
   it("finds national ids from the supported countries", () => {

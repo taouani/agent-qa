@@ -34,6 +34,10 @@ jobs:
       - run: npm run build
       - name: CLI smoke test
         run: node dist/cli/bin.js --version
+      # The leak gate: the real workflows on the shipped seeded fixtures, with the offline
+      # fixture model. Exit 1 if any seeded value reaches a model prompt or an IDE-shown step.
+      - name: Leak gate (harness)
+        run: node dist/cli/bin.js harness
       # The fallback build for machines where esbuild can't read a parent folder.
       - run: npm run build:tsc
       - name: CLI smoke test (tsc build)

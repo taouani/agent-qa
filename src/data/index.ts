@@ -21,4 +21,4 @@ export {
   splitCriteria,
 } from "./requirements.js";
 export type { LoadedSources, LoadOptions, MaskedDataOptions, MaskedSources, MaskingReport, Requirement } from "./requirements.js";
-export type { JiraInput } from "../connectors/index.js";
+export type { JiraCollection, JiraInput, JiraIssue } from "../connectors/index.js";

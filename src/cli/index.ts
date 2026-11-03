@@ -1,9 +1,9 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
-import { emptyPipeline, HarnessCaseError, harnessSources, runHarness } from "../harness/index.js";
-import { StaticDriver } from "../llm/index.js";
-import { DataAccess, formatDoctor, runDoctor } from "../data/index.js";
+import { emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, type KeptRate } from "../harness/index.js";
+import { ApiDriver, ModelConfigError, StaticDriver, type ModelDriver } from "../llm/index.js";
+import { DataAccess, formatDoctor, runDoctor, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 import { initCommand } from "./init.js";
@@ -108,10 +108,12 @@ export function buildProgram(): Command {
     });
   program
     .command("harness")
-    .description("run the quality harness (slice 0: the empty pipeline, to prove the leak check)")
+    .description("run the quality harness: the real workflows on seeded fixtures, failing if a seeded value reaches a model")
+    .option("--model <provider:model>", "answer with this model (from models in agent-qa.yaml); default: the offline fixture model, no API key needed")
+    .option("--pipeline <name>", "masked (the real workflows) or empty (no model calls, checks the setup)", "masked")
     .option("--json", "print the full JSON report")
     .option("--cwd <dir>", "project folder (default: the current folder)")
-    .action(async (opts: { json?: boolean; cwd?: string }) => {
+    .action(async (opts: { json?: boolean; cwd?: string; model?: string; pipeline: string }) => {
       const root = resolve(opts.cwd ?? process.cwd());
       // Exit 1 means a case failed; exit 2 means the harness couldn't run (bad setup, or nothing to test).
       const setupError = (message: string) => {
@@ -126,20 +128,45 @@ export function buildProgram(): Command {
         if (!(error instanceof ConfigError)) throw error;
         if (error.code !== "NOT_FOUND") return setupError(error.message);
       }
+      if (opts.pipeline !== "masked" && opts.pipeline !== "empty") return setupError(`unknown pipeline ${opts.pipeline}: use masked or empty`);
+      let driver: ModelDriver;
+      if (opts.pipeline === "empty") driver = new StaticDriver();
+      else if (!opts.model) driver = new FixtureDriver();
+      else {
+        if (!config?.models) return setupError("--model needs a models section in agent-qa.yaml");
+        const api = new ApiDriver({ models: config.models, secrets: secretSources() });
+        try {
+          api.modelFor({ model: opts.model, messages: [] });
+        } catch (error) {
+          if (error instanceof ModelConfigError) return setupError(error.message);
+          throw error;
+        }
+        const model = opts.model;
+        driver = { name: `api(${model})`, complete: (request) => api.complete({ ...request, model }) };
+      }
       let sources;
       let report;
       try {
         sources = await harnessSources(config, root);
-        report = await runHarness({ ...sources, pipeline: emptyPipeline, pipelineName: "empty", driver: new StaticDriver() });
+        const pipeline =
+          opts.pipeline === "empty" ? emptyPipeline : maskedPipeline({ runsDir: join(root, ".agent-qa", "harness", "runs"), ...(config ? { config } : {}) });
+        report = await runHarness({ ...sources, pipeline, pipelineName: opts.pipeline, driver });
       } catch (error) {
         if (error instanceof HarnessCaseError) return setupError(error.message);
         throw error;
+      }
+      // From the project's own runs, where people reviewed the cases; the harness's runs never count.
+      let kept: KeptRate | undefined;
+      try {
+        kept = await keptRate(new RunStore(process.env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs")));
+      } catch {
+        kept = undefined;
       }
       if (report.summary.cases === 0) {
         for (const note of sources.notes) process.stderr.write(`note: ${note}\n`);
         return setupError("no harness cases to run; add a fixtures source");
       }
-      if (opts.json) process.stdout.write(JSON.stringify({ ...report, notes: sources.notes }, null, 2) + "\n");
+      if (opts.json) process.stdout.write(JSON.stringify({ ...report, notes: sources.notes, ...(kept ? { keptRate: kept } : {}) }, null, 2) + "\n");
       else {
         for (const note of sources.notes) process.stdout.write(`note: ${note}\n`);
         for (const c of report.cases) {
@@ -148,6 +175,7 @@ export function buildProgram(): Command {
         }
         const s = report.summary;
         process.stdout.write(`${s.passed}/${s.cases} passed, ${s.seededLeaks} seeded leak(s)\n`);
+        if (kept) process.stdout.write(keptLine(kept) + "\n");
       }
       if (report.summary.failed + report.summary.errors > 0) process.exitCode = 1;
     });
@@ -160,4 +188,12 @@ export function buildProgram(): Command {
     });
 
   return program;
+}
+
+/** One line on the kept rate of the project's reviewed runs. */
+export function keptLine(k: KeptRate): string {
+  const left = [k.unattendedRuns ? `${k.unattendedRuns} --yes run(s) left out` : "", k.unreadableRuns ? `${k.unreadableRuns} unreadable` : ""].filter(Boolean).join(", ");
+  const tail = left ? ` (${left})` : "";
+  if (k.rate === undefined) return `kept rate: no reviewed test cases yet${tail}`;
+  return `kept rate: ${Math.round(k.rate * 100)}% of ${k.generated} case(s) kept as written in ${k.runs} reviewed run(s); ${k.edited} edited, ${k.dropped} dropped${tail}`;
 }

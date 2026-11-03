@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,7 +34,7 @@ const summaryPipeline: Pipeline = async ({ tickets, driver }) => {
 describe("harness runner", () => {
   it("runs an empty pipeline over the shipped cases", async () => {
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: emptyPipeline, pipelineName: "empty", driver: new StaticDriver(), now });
-    expect(report.summary).toEqual({ cases: 2, passed: 2, failed: 0, errors: 0, seededLeaks: 0 });
+    expect(report.summary).toEqual({ cases: 3, passed: 3, failed: 0, errors: 0, seededLeaks: 0 });
     expect(report).toMatchObject({ version: 1, pipeline: "empty", driver: "static", startedAt: "2026-11-20T10:00:00.000Z" });
   });
 
@@ -42,9 +42,10 @@ describe("harness runner", () => {
     const inner = new StaticDriver();
     const forwarded = vi.spyOn(inner, "complete");
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: leakyPipeline, driver: inner, now });
-    expect(report.summary).toMatchObject({ failed: 2, seededLeaks: 5 });
+    expect(report.summary).toMatchObject({ failed: 3, seededLeaks: 6 });
     expect(report.cases[0]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-email-1", "seed-name-1", "seed-phone-1"]);
-    expect(report.cases[1]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-card-1", "seed-iban-1"]);
+    expect(report.cases[1]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-name-3"]);
+    expect(report.cases[2]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-name-2", "seed-phone-1"]);
     expect(forwarded).not.toHaveBeenCalled();
     const json = JSON.stringify(report);
     for (const seed of DEFAULT_SEEDS) expect(json).not.toContain(seed.value);
@@ -52,8 +53,8 @@ describe("harness runner", () => {
 
   it("passes calls that carry no seeded data", async () => {
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: summaryPipeline, driver: new StaticDriver(), now });
-    expect(report.summary).toMatchObject({ passed: 2, seededLeaks: 0 });
-    expect(report.cases.map((c) => c.modelCalls)).toEqual([1, 1]);
+    expect(report.summary).toMatchObject({ passed: 3, seededLeaks: 0 });
+    expect(report.cases.map((c) => c.modelCalls)).toEqual([1, 1, 1]);
   });
 
   it("fails a case even when the pipeline swallows the leak error", async () => {
@@ -250,7 +251,9 @@ describe("harness cases", () => {
       expect(seedSchema.safeParse({ id: "c", kind: "card", value: "abcdefgh" }).success).toBe(false);
       expect(seedSchema.safeParse({ id: "i", kind: "iban", value: "DE893704" }).success).toBe(true);
       const [first] = DEFAULT_CASES;
-      const partial = { ...first!, tickets: [{ ...first!.tickets[0]!, description: "Quillfeather only", fields: {} }], seeds: ["seed-name-1"] };
+      const ticket = { ...first!.tickets[0]!, description: "Quillfeather only", fields: {} };
+      delete ticket.acceptanceCriteria;
+      const partial = { ...first!, tickets: [ticket], seeds: ["seed-name-1"] };
       expect(() => validateCases([partial], DEFAULT_SEEDS)).toThrow(/don't contain it/);
     });
 
@@ -314,7 +317,7 @@ describe("agent-qa harness exit codes", () => {
 });
 
 describe("agent-qa harness", () => {
-  it("runs the empty pipeline on the shipped cases and exits 0", async () => {
+  it("runs the real workflows on the shipped cases with the offline model and exits 0", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-qa-harness-cli-"));
     const out: string[] = [];
     const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => (out.push(String(chunk)), true));
@@ -322,7 +325,11 @@ describe("agent-qa harness", () => {
     try {
       await buildProgram().parseAsync(["node", "agent-qa", "harness", "--json", "--cwd", dir]);
       const report = JSON.parse(out.join(""));
-      expect(report.summary).toMatchObject({ cases: 2, passed: 2 });
+      expect(report).toMatchObject({ pipeline: "masked", driver: "fixture", summary: { cases: 3, passed: 3, seededLeaks: 0 } });
+      expect(report.cases.map((c: { modelCalls: number }) => c.modelCalls)).toEqual([2, 2, 1]);
+      expect(report.keptRate).toMatchObject({ runs: 0, generated: 0 });
+      // Harness runs are kept apart from the project's runs.
+      expect((await readdir(join(dir, ".agent-qa", "harness", "runs"))).length).toBe(3);
       expect(process.exitCode).toBe(before);
     } finally {
       write.mockRestore();

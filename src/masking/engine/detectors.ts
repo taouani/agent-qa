@@ -103,7 +103,8 @@ const PHONE_RUN = /(?<![\p{L}\p{N}])\+?\(?\d[\d \t ().\/-]*\d/gu;
 const PHONE_SEPARATORS = /\s().\/-/;
 /** Shapes blanked before the phone scan: IPv4, dates, times, year ranges. */
 const NOT_PHONE_SHAPES = [
-  /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]|\.\d)/g,
+  // A full stop after it ends the sentence: "from 192.0.2.44." is still an address.
+  /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)/g,
   // A date stands alone: 06.12.34.56.78 is a phone, not a date followed by more digits.
   /(?<!\d[-/.]?)(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}(?![-/.]?\d)/g,
   /(?<!\d[-/.]?)\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}(?![-/.]?\d)/g,
@@ -217,7 +218,8 @@ export const card: PatternDetector = {
   },
 };
 
-const IPV4 = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]|\.\d)/g;
+// Not inside a longer dotted run (1.2.3.4.5), but a full stop may end the sentence.
+const IPV4 = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)/g;
 const IPV6 = /(?<![\p{L}\p{N}:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\p{L}\p{N}:])/giu;
 
 export const ip: PatternDetector = {
