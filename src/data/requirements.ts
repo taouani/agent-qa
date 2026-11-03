@@ -332,7 +332,11 @@ const JQL_KEEP = /^(?:empty|null)$/i;
 /** Atlassian account ids: 24 hex digits, or `123456:uuid`. */
 const ACCOUNT_ID = /\b(?:[0-9a-f]{24}|\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/giu;
 /** JQL tokens: space, strings (an unclosed one runs to the end), operators, brackets, commas, words. */
-const JQL_TOKEN = /\s+|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|!=|!~|<=|>=|[=~<>(),]|[^\s"'(),=!~<>]+/gu;
+const JQL_TOKEN = /\s+|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|!=|!~|<=|>=|[=~<>(),!]|[^\s"'(),=!~<>]+/gu;
+/** JQL functions whose arguments are people. */
+const JQL_USER_FUNCTIONS = new Set(["updatedby", "approver", "pendingby", "approvedby"]);
+/** Other JQL functions, kept as they are even where a person is expected. */
+const JQL_FUNCTIONS = new Set(["currentuser", "membersof", "now", "startofday", "endofday", "startofweek", "endofweek", "startofmonth", "endofmonth", "startofyear", "endofyear"]);
 const JQL_OPERATORS = new Set(["=", "!=", "~", "!~", "<", ">", "<=", ">=", "in", "not", "was", "is"]);
 /** History predicates and whether their value is a person (`by`), the field's own kind (`from`, `to`) or a date. */
 const JQL_PREDICATES: Record<string, "person" | "field" | "other"> = { by: "person", from: "field", to: "field", after: "other", before: "other", on: "other", during: "other" };
@@ -392,24 +396,36 @@ export function maskJql(jql: string, masker: Pick<Masker, "mask">): string {
         out.push(t); // `was not in`, `not in`, `is not`: still before the value
         continue;
       }
-      if (t === "(") {
-        // A list: each item at the top level is a value; function arguments are text.
-        let depth = 0;
+      const isName = (j: number) => /^[A-Za-z_][\w.]*$/.test(tokens[j]!) && tokens[nextIndex(j)] === "(";
+      if (t === "(" || isName(i)) {
+        // A list or a function call, walked to its closing bracket (or the end: fail closed).
+        // Function arguments are people for the user functions (updatedBy(jdoe)), text otherwise;
+        // list items are people in a people clause. Where a person is expected, an unknown
+        // function name is masked too.
+        const stack: Array<"list" | "people" | "text"> = [];
         let j = i;
         for (; j < tokens.length; j++) {
           const u = tokens[j]!;
-          if (u === "(") depth++;
-          else if (u === ")") depth--;
-          const isFunction = /^[A-Za-z_][\w.]*$/.test(u) && tokens[nextIndex(j)] === "(";
-          if (u === "(" || u === ")" || u === "," || isSpace(u)) out.push(u);
-          else if (asPerson && depth === 1 && !isFunction) out.push(person(u));
-          else out.push(isFunction ? u : text(u));
-          if (depth === 0) break;
+          if (isSpace(u) || u === ",") out.push(u);
+          else if (u === "(") {
+            const before = tokens.slice(0, j).reverse().find((x) => !isSpace(x));
+            const fn = before && /^[A-Za-z_][\w.]*$/.test(before) && j > i ? before.toLowerCase() : undefined;
+            stack.push(fn === undefined ? "list" : JQL_USER_FUNCTIONS.has(fn) || (asPerson && !JQL_FUNCTIONS.has(fn)) ? "people" : "text");
+            out.push(u);
+          } else if (u === ")") {
+            stack.pop();
+            out.push(u);
+          } else if (isName(j)) {
+            const name = u.toLowerCase();
+            const inPeople = stack.length ? stack[stack.length - 1] !== "text" && (stack[stack.length - 1] === "people" || asPerson) : asPerson;
+            out.push(inPeople && !JQL_FUNCTIONS.has(name) && !JQL_USER_FUNCTIONS.has(name) ? person(u) : u);
+          } else {
+            const top = stack[stack.length - 1];
+            out.push(top === "people" || (top === "list" && asPerson) ? person(u) : text(u));
+          }
+          if (stack.length === 0 && u === ")") break;
         }
-        // An unclosed list: everything after it was treated as list items, masked as people when it held people.
         i = j;
-      } else if (/^[A-Za-z_][\w.]*$/.test(t) && tokens[nextIndex(i)] === "(") {
-        out.push(t); // a function such as currentUser() or membersOf("team"): its arguments are text
       } else {
         out.push(asPerson ? person(t) : text(t));
       }
@@ -433,7 +449,7 @@ export function maskJql(jql: string, masker: Pick<Masker, "mask">): string {
       out.push(t);
       continue;
     }
-    if (history && lower in JQL_PREDICATES) {
+    if (history && Object.hasOwn(JQL_PREDICATES, lower)) {
       const kind = JQL_PREDICATES[lower]!;
       expect = kind === "person" || (kind === "field" && JQL_PEOPLE.has(field)) ? "person" : "other";
       out.push(t);

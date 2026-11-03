@@ -240,3 +240,56 @@ describe("FileStateStore", () => {
     await expect(new FileStateStore(dir).load("../etc/passwd")).rejects.toThrow(/Unsafe run id/);
   });
 });
+
+describe("batched and optional steps", () => {
+  const items = z.object({ items: z.array(z.string()) });
+  function batched(count: number, skipLast = false): WorkflowDefinition<{ n: number }> {
+    return {
+      id: "batched",
+      description: "batches",
+      inputSchema: z.object({ n: z.number() }),
+      steps: [
+        {
+          id: "parts",
+          kind: "generate",
+          outputSchema: items,
+          batches: () => count,
+          instructions: (ctx) => `batch ${(ctx.batch ?? 0) + 1} of ${ctx.batches}`,
+          check: (ctx, out) => (out.items.includes(`b${ctx.batch}`) ? [] : [{ path: "$.items", message: `needs b${ctx.batch}` }]),
+        },
+        { id: "last", kind: "confirm", outputSchema: z.object({ ok: z.boolean() }), instructions: () => "ok?", when: () => !skipLast },
+      ],
+    };
+  }
+
+  it("shows each batch as its own step and keeps the outputs in order", async () => {
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() }).register(batched(3));
+    const first = await engine.start("batched", { n: 1 });
+    expect(first).toMatchObject({ stepId: "parts_1", instructions: "batch 1 of 3" });
+    await expect(engine.submit(first.runId, "parts_2", { items: ["b1"] })).rejects.toMatchObject({ code: "STEP_MISMATCH" });
+    const rejected = await engine.submit(first.runId, "parts_1", { items: ["b1"] });
+    expect(rejected).toMatchObject({ status: "rejected", errors: [{ message: "needs b0" }] });
+    const second = await engine.submit(first.runId, "parts_1", { items: ["b0"] });
+    expect(second.next).toMatchObject({ stepId: "parts_2", attempt: 1 });
+    // A repeated submit of an accepted batch is idempotent.
+    expect((await engine.submit(first.runId, "parts_1", { items: ["b0"] })).next.stepId).toBe("parts_2");
+    await engine.submit(first.runId, "parts_2", { items: ["b1"] });
+    const last = await engine.submit(first.runId, "parts_3", { items: ["b2"] });
+    expect(last.next.stepId).toBe("last");
+    expect((await engine.status(first.runId)).outputs.parts).toEqual([{ items: ["b0"] }, { items: ["b1"] }, { items: ["b2"] }]);
+  });
+
+  it("uses the plain id for one batch, skips a step with none, and skips steps whose when is false", async () => {
+    const one = new WorkflowEngine({ store: new MemoryStateStore() }).register(batched(1));
+    expect((await one.start("batched", { n: 1 })).stepId).toBe("parts");
+    const none = new WorkflowEngine({ store: new MemoryStateStore() }).register(batched(0, true));
+    const step = await none.start("batched", { n: 1 });
+    expect(step.kind).toBe("done");
+    expect((await none.status(step.runId)).outputs).toEqual({ parts: [] });
+  });
+
+  it("refuses step ids that look like a batch id", () => {
+    const wf = batched(1);
+    expect(() => new WorkflowEngine({ store: new MemoryStateStore() }).register({ ...wf, steps: [{ ...wf.steps[0]!, id: "parts_2" }] })).toThrow(/can't end in _<number>/);
+  });
+});

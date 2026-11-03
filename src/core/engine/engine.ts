@@ -95,6 +95,8 @@ export class WorkflowEngine {
     const ids = new Set(workflow.steps.map((s) => s.id));
     if (ids.size !== workflow.steps.length) throw invalid("duplicate step ids");
     for (const id of ids) if (RESERVED_STEP_IDS.has(id)) throw invalid(`step id "${id}" is reserved`);
+    // Batched steps are shown as `{id}_{n}`, so no step id may look like one.
+    for (const id of ids) if (/_\d+$/.test(id)) throw invalid(`step id "${id}" can't end in _<number>`);
     // Convert every schema now, so a schema that can't be shown to a model fails at startup, not mid-run.
     const outputSchemas = new Map(workflow.steps.map((s) => [s.id, jsonSchemaOf(s.outputSchema, `${workflow.id}.${s.id}`)]));
     this.workflows.set(workflow.id, {
@@ -138,6 +140,7 @@ export class WorkflowEngine {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    await this.advance(workflow, state);
     await this.store.save(state);
     return this.render(registered, state);
   }
@@ -160,8 +163,10 @@ export class WorkflowEngine {
         throw new EngineError("RUN_CLOSED", `Run ${runId} is ${state.status}`);
       }
       const def = this.currentStep(workflow, state);
-      if (def.id !== stepId) {
-        throw new EngineError("STEP_MISMATCH", `Open step is ${def.id}, not ${stepId}`);
+      const { batch, batches } = await this.batchOf(def, state);
+      const openId = this.openId(def, batch, batches);
+      if (openId !== stepId) {
+        throw new EngineError("STEP_MISMATCH", `Open step is ${openId}, not ${stepId}`);
       }
 
       const parsed = def.outputSchema.safeParse(output);
@@ -180,11 +185,22 @@ export class WorkflowEngine {
         return { status: "rejected", errors, attempt, maxAttempts: max, next };
       }
 
-      await def.onAccept?.(this.ctx(state), parsed.data);
-      state.outputs[def.id] = parsed.data;
-      state.stepIndex += 1;
+      await def.onAccept?.(def.batches ? this.ctx(state, batch, batches) : this.ctx(state), parsed.data);
+      if (def.batches) {
+        const parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
+        parts[batch] = parsed.data;
+        state.outputs[def.id] = parts;
+      } else {
+        state.outputs[def.id] = parsed.data;
+      }
       state.attempt = 1;
-      if (state.stepIndex >= workflow.steps.length) state.status = "done";
+      if (batch + 1 < batches) {
+        state.batch = batch + 1;
+      } else {
+        delete state.batch;
+        state.stepIndex += 1;
+        await this.advance(workflow, state);
+      }
       state.accepted[stepId] = true;
       await this.save(state);
       return { status: "accepted", next: await this.renderAfter(registered, state, "accepted", []) };
@@ -225,8 +241,44 @@ export class WorkflowEngine {
     return def;
   }
 
-  private ctx(state: RunState): StepContext<unknown> {
-    return { runId: state.runId, inputs: state.inputs, outputs: { ...state.outputs } };
+  /** Move past steps that don't apply (`when` false, or no batches); end the run after the last step. */
+  private async advance(workflow: WorkflowDefinition<unknown>, state: RunState): Promise<void> {
+    while (state.stepIndex < workflow.steps.length) {
+      const def = workflow.steps[state.stepIndex]!;
+      const ctx = this.ctx(state);
+      if (def.when && !(await def.when(ctx))) {
+        state.stepIndex += 1;
+        continue;
+      }
+      if (def.batches && (await def.batches(ctx)) <= 0) {
+        state.outputs[def.id] = [];
+        state.stepIndex += 1;
+        continue;
+      }
+      return;
+    }
+    state.status = "done";
+  }
+
+  private async batchOf(def: StepDefinition<unknown, unknown>, state: RunState): Promise<{ batch: number; batches: number }> {
+    if (!def.batches) return { batch: 0, batches: 1 };
+    const batches = Math.max(1, Math.floor(await def.batches(this.ctx(state))));
+    return { batch: Math.min(state.batch ?? 0, batches - 1), batches };
+  }
+
+  /** The id the host sees: the step id, or `{id}_{n}` for a batched step. */
+  private openId(def: StepDefinition<unknown, unknown>, batch: number, batches: number): string {
+    return def.batches && batches > 1 ? `${def.id}_${batch + 1}` : def.id;
+  }
+
+  private ctx(state: RunState, batch?: number, batches?: number): StepContext<unknown> {
+    return {
+      runId: state.runId,
+      inputs: state.inputs,
+      outputs: { ...state.outputs },
+      ...(batch !== undefined ? { batch } : {}),
+      ...(batches !== undefined ? { batches } : {}),
+    };
   }
 
   private async render({ workflow, outputSchemas }: Registered, state: RunState): Promise<Step> {
@@ -235,10 +287,11 @@ export class WorkflowEngine {
     if (state.status === "cancelled") return { ...base, stepId: "cancelled", kind: "failed", errors: [{ path: "$", message: "Run cancelled" }] };
     if (state.status === "failed") return { ...base, stepId: "failed", kind: "failed", errors: state.failure ?? [] };
     const def = this.currentStep(workflow, state);
-    const ctx = this.ctx(state);
+    const { batch, batches } = await this.batchOf(def, state);
+    const ctx = def.batches ? this.ctx(state, batch, batches) : this.ctx(state);
     return {
       runId: state.runId,
-      stepId: def.id,
+      stepId: this.openId(def, batch, batches),
       kind: def.kind,
       instructions: def.instructions(ctx),
       context: await this.context(def, ctx),
@@ -252,7 +305,8 @@ export class WorkflowEngine {
   private async check(def: StepDefinition<unknown, unknown>, state: RunState, output: unknown): Promise<OutputError[]> {
     if (!def.check) return [];
     try {
-      return await def.check(this.ctx(state), output);
+      const { batch, batches } = await this.batchOf(def, state);
+      return await def.check(def.batches ? this.ctx(state, batch, batches) : this.ctx(state), output);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new EngineError("CONTEXT_FAILED", `Run ${state.runId}, step ${def.id}: the answer couldn't be checked (${message}). Nothing was used up: fix the cause and submit again.`, [], state.runId);

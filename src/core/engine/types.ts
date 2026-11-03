@@ -39,8 +39,12 @@ export type SubmitResult =
 export interface StepContext<I> {
   runId: string;
   inputs: I;
-  /** Accepted outputs of earlier steps, keyed by step id. */
+  /** Accepted outputs of earlier steps, keyed by step id. A batched step's output is an array, one entry per batch. */
   outputs: Readonly<Record<string, unknown>>;
+  /** For a batched step: which batch this is, from 0. */
+  batch?: number;
+  /** For a batched step: how many batches it has. */
+  batches?: number;
 }
 
 export interface StepDefinition<I = unknown, O = unknown> {
@@ -51,6 +55,15 @@ export interface StepDefinition<I = unknown, O = unknown> {
   context?: (ctx: StepContext<I>) => string | Promise<string>;
   /** Defaults to the engine's maxAttempts (3). */
   maxAttempts?: number;
+  /** Skip the step when this returns false (its output is then absent). */
+  when?: (ctx: StepContext<I>) => boolean | Promise<boolean>;
+  /**
+   * Answer the step in this many parts, for work too big for one answer (one
+   * batch of issues each). Each batch is its own step for the host, with the
+   * id `{id}_{n}` from 1, and its own attempts. Must give the same number for
+   * the same run. 0 skips the step; its output is then an empty array.
+   */
+  batches?: (ctx: StepContext<I>) => number | Promise<number>;
   /**
    * Checks the schema can't express, run after the output parses: for example
    * that every issue is answered once. Errors reject the answer like schema
@@ -90,6 +103,8 @@ export interface RunState {
   stepIndex: number;
   /** Attempt number of the open step, starting at 1. */
   attempt: number;
+  /** Batch of the open step, from 0, for batched steps. */
+  batch?: number;
   outputs: Record<string, unknown>;
   /** Step ids already accepted; resubmitting one returns `accepted` with the current step. */
   accepted: Record<string, true>;
