@@ -1,5 +1,7 @@
 /** `data` module. See eslint.config.js for what it may import. */
 export const MODULE = "data";
+export { DataAccess } from "./access.js";
+export type { DataAccessOptions, RequirementsData } from "./access.js";
 export { formatDoctor, runDoctor } from "./doctor.js";
 export type { CheckResult, CheckStatus, DoctorOptions } from "./doctor.js";
 export {
@@ -15,3 +17,4 @@ export {
   splitCriteria,
 } from "./requirements.js";
 export type { LoadedSources, LoadOptions, MaskedDataOptions, MaskedSources, MaskingReport, Requirement } from "./requirements.js";
+export type { JiraInput } from "../connectors/index.js";

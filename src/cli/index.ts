@@ -1,20 +1,35 @@
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Command } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { emptyPipeline, HarnessCaseError, harnessSources, runHarness } from "../harness/index.js";
 import { StaticDriver } from "../llm/index.js";
-import { formatDoctor, runDoctor } from "../data/index.js";
+import { DataAccess, formatDoctor, runDoctor } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 
 /**
+ * The project folder: `AGENT_QA_ROOT`, else the folder holding
+ * `.agent-qa/runs` when `AGENT_QA_RUNS_DIR` points at one (IDE hosts start the
+ * server without a working folder), else `cwd`.
+ */
+export function projectRoot(cwd: string, env: NodeJS.ProcessEnv): string {
+  if (env.AGENT_QA_ROOT) return resolve(env.AGENT_QA_ROOT);
+  const runsDir = env.AGENT_QA_RUNS_DIR ? resolve(env.AGENT_QA_RUNS_DIR) : undefined;
+  if (runsDir && basename(runsDir) === "runs" && basename(dirname(runsDir)) === ".agent-qa") return dirname(dirname(runsDir));
+  return cwd;
+}
+
+/**
  * Engine with every built-in workflow, for the MCP server. Each run gets a
- * folder under `AGENT_QA_RUNS_DIR`, else `{cwd}/.agent-qa/runs`.
+ * folder under `AGENT_QA_RUNS_DIR`, else `{root}/.agent-qa/runs`; config and
+ * the vault are read from the project root (see `projectRoot`).
  */
 export function createEngine(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): WorkflowEngine {
-  const runs = new RunStore(env.AGENT_QA_RUNS_DIR || join(cwd, ".agent-qa", "runs"));
+  const root = projectRoot(cwd, env);
+  const runs = new RunStore(env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs"));
   const engine = new WorkflowEngine({ store: runs.stateStore({ host: "other", driver: "host-model" }), newRunId: runs.newRunId });
-  for (const workflow of builtinWorkflows) engine.register(workflow);
+  const data = new DataAccess({ root, store: runs, env });
+  for (const workflow of builtinWorkflows({ data, runs })) engine.register(workflow);
   return engine;
 }
 

@@ -18,7 +18,8 @@ export type EngineErrorCode =
   | "RUN_NOT_FOUND"
   | "RUN_COLLISION"
   | "STEP_MISMATCH"
-  | "RUN_CLOSED";
+  | "RUN_CLOSED"
+  | "CONTEXT_FAILED";
 
 export class EngineError extends Error {
   constructor(
@@ -119,11 +120,13 @@ export class WorkflowEngine {
       throw new EngineError("INVALID_INPUTS", `Invalid inputs for ${workflowId}`, toOutputErrors(parsed.error));
     }
     const timestamp = this.now().toISOString();
+    const runId = this.newRunId(workflowId, parsed.data);
+    const prepared = workflow.prepareInputs ? await workflow.prepareInputs(runId, parsed.data) : parsed.data;
     const state: RunState = {
-      runId: this.newRunId(workflowId, parsed.data),
+      runId,
       workflowId,
       status: "running",
-      inputs: parsed.data,
+      inputs: prepared,
       stepIndex: 0,
       attempt: 1,
       outputs: {},
@@ -159,8 +162,8 @@ export class WorkflowEngine {
       }
 
       const parsed = def.outputSchema.safeParse(output);
-      if (!parsed.success) {
-        const errors = toOutputErrors(parsed.error);
+      const errors = parsed.success ? ((await def.check?.(this.ctx(state), parsed.data)) ?? []) : toOutputErrors(parsed.error);
+      if (!parsed.success || errors.length > 0) {
         const max = def.maxAttempts ?? this.maxAttempts;
         const attempt = state.attempt;
         if (attempt >= max) {
@@ -234,11 +237,21 @@ export class WorkflowEngine {
       stepId: def.id,
       kind: def.kind,
       instructions: def.instructions(ctx),
-      context: (await def.context?.(ctx)) ?? "",
+      context: await this.context(def, ctx),
       outputSchema: outputSchemas.get(def.id),
       attempt: state.attempt,
       maxAttempts: def.maxAttempts ?? this.maxAttempts,
     };
+  }
+
+  /** The step's context. A failure (Jira unreachable, say) leaves the run open: `next` tries again. */
+  private async context(def: StepDefinition<unknown, unknown>, ctx: StepContext<unknown>): Promise<string> {
+    try {
+      return (await def.context?.(ctx)) ?? "";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new EngineError("CONTEXT_FAILED", `Run ${ctx.runId}, step ${def.id}: ${message}. Fix the cause, then call workflow_next to try again.`);
+    }
   }
 
   /** Serialize operations on one run so concurrent submits can't race. */
