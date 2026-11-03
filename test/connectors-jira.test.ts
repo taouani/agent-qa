@@ -184,6 +184,16 @@ describe("JiraClient.collect", () => {
     expect(byKey["QA-10"]).toBeUndefined();
     expect(result.truncated).toBe(false);
 
+    // Caps apply below linked issues too.
+    const shallow = await jira(fakeJira(issues).fetch).collect({ key: "QA-1" }, { maxDepth: 1 });
+    expect(shallow.issues.map((i) => i.key)).toContain("QA-21");
+    expect(shallow.issues.map((i) => i.key)).not.toContain("QA-22");
+    expect(shallow.truncated).toBe(true);
+    const few = await jira(fakeJira(issues).fetch).collect({ key: "QA-1" }, { maxIssues: 7 });
+    expect(few.issues.map((i) => i.key)).toContain("QA-20");
+    expect(few.issues.map((i) => i.key)).not.toContain("QA-22");
+    expect(few.truncated).toBe(true);
+
     const off = await jira(fakeJira(issues).fetch).collect({ key: "QA-1" }, { followLinkedChildren: false });
     expect(off.issues.map((i) => i.key)).not.toContain("QA-21");
     expect(off.issues.map((i) => i.key)).toContain("QA-20");

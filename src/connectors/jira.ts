@@ -84,7 +84,11 @@ export interface CollectOptions {
   maxIssues?: number;
   /** Follow issue links one level out. Default true. */
   followLinks?: boolean;
-  /** Also walk down from linked issues (an epic's stories, a story's sub-tasks), within the same caps. Default true. */
+  /**
+   * Also walk down from linked issues (an epic's stories, a story's sub-tasks), within the same caps.
+   * Default true. A story linked to its own epic brings in its sibling stories too. When off, children of
+   * linked issues are not counted as cut off: `truncated` stays false for them.
+   */
   followLinkedChildren?: boolean;
   /** Field id or name for acceptance criteria. Default: found by name. */
   acceptanceCriteriaField?: string;
@@ -273,15 +277,15 @@ export class JiraClient {
     // Searches ask for up to maxIssues, so issues already collected (a JQL root that is also a child)
     // can't use up the limit and hide new ones.
     const walkDown = async (start: JiraIssue[], viaLink: boolean) => {
-      let frontier = start;
-      for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
+      let level = start;
+      for (let depth = 1; depth <= maxDepth && level.length > 0; depth++) {
         const next: JiraIssue[] = [];
-        for (let i = 0; i < frontier.length; i += CHUNK) {
+        for (let i = 0; i < level.length; i += CHUNK) {
           if (room() <= 0) {
-            truncated ||= await this.hasNewChildren(frontier.slice(i).map((f) => f.key), found);
+            truncated ||= await this.hasNewChildren(level.slice(i).map((f) => f.key), found);
             break;
           }
-          const keys = frontier.slice(i, i + CHUNK).map((f) => f.key).filter((k) => ISSUE_KEY.test(k));
+          const keys = level.slice(i, i + CHUNK).map((f) => f.key).filter((k) => ISSUE_KEY.test(k));
           if (keys.length === 0) continue;
           const { issues, more } = await this.search(`parent in (${keys.join(",")}) ORDER BY key`, fields, maxIssues);
           const fresh = issues.filter((raw) => {
@@ -296,10 +300,10 @@ export class JiraClient {
             next.push(issue);
           }
         }
-        frontier = next;
+        level = next;
       }
       // Below maxDepth is cut off; say so only if something is there.
-      if (frontier.length > 0 && !truncated) truncated = await this.hasNewChildren(frontier.map((f) => f.key), found);
+      if (level.length > 0 && !truncated) truncated = await this.hasNewChildren(level.map((f) => f.key), found);
     };
     await walkDown(frontier, false);
 
