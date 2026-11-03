@@ -69,10 +69,6 @@ interface Registered {
   outputSchemas: Map<string, unknown>;
 }
 
-/**
- * The step state machine behind the MCP step protocol and the CLI runner.
- * One open step per run; every transition is saved before it is returned.
- */
 /** What a step that needs the person's own yes asks, and its fixed answers. */
 export interface Approval {
   question: string;
@@ -81,10 +77,18 @@ export interface Approval {
 }
 
 export interface SubmitOptions {
-  /** Replaces the output of an approval step with the person's own answer (see `WorkflowEngine.submit`). */
+  /**
+   * Replaces the output of an approval step with the person's own answer (see
+   * `WorkflowEngine.submit`). The run's lock is held while it runs, so other
+   * calls that take it (submit, cancel) wait until the person answers or it times out.
+   */
   approve?: (approval: Approval & { output: unknown }) => Promise<unknown>;
 }
 
+/**
+ * The step state machine behind the MCP step protocol and the CLI runner.
+ * One open step per run; every transition is saved before it is returned.
+ */
 export class WorkflowEngine {
   private readonly workflows = new Map<string, Registered>();
   private readonly locks = new Map<string, Promise<unknown>>();
