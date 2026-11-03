@@ -155,3 +155,98 @@ describe("Masker", () => {
     expect(out).not.toContain("m.q@example.com");
   });
 });
+
+describe("review cases: formats that must not leak", () => {
+  const mask = async (text: string, names: string[] = []) => new Masker({ vault: await runVault(), names }).mask(text);
+
+  it("splits phone runs across lines, double spaces and trailing numbers", async () => {
+    expect(await mask("Phones 06 12 34 56 78  07 98 76 54 32")).toBe("Phones <PHONE_1>  <PHONE_2>");
+    expect(await mask("06 12 34 56 78\n07 98 76 54 32")).toBe("<PHONE_1>\n<PHONE_2>");
+    expect(await mask("Call +44 20 7946 0958 3 times")).toBe("Call <PHONE_1> 3 times");
+    expect(await mask("Phones 0612345678 0798765432")).toBe("Phones <PHONE_1> <PHONE_2>");
+  });
+
+  it("finds dotted, bare and non-ASCII-digit phones", async () => {
+    for (const phone of ["06.12.34.56.78", "212.555.1234", "13812345678", "612345678", "2125551234", "212612345678", "966501234567", "０６１２３４５６７８", "٠٥٠١٢٣٤٥٦٧"]) {
+      expect(await mask(`Tel ${phone} ok`), phone).toBe("Tel <PHONE_1> ok");
+    }
+  });
+
+  it("finds IBANs in any case and grouping", async () => {
+    for (const value of ["fr14 2004 1010 0505 0001 3m02 606", "de89370400440532013000", "FR 14 2004 1010 0505 0001 3M02 606", "FR14.2004.1010.0505.0001.3M02.606", "FR14 20 04 10 10 05 05 00 01 3M 02 60 6"]) {
+      expect(await mask(`IBAN ${value} end`), value).toBe("IBAN <IBAN_1> end");
+    }
+  });
+
+  it("finds cards next to an expiry or a CVV, and dotted", async () => {
+    expect(await mask("Card 4111111111111111 12/27")).toBe("Card <CARD_1> 12/27");
+    expect(await mask("4111 1111 1111 1111 123")).toMatch(/^<CARD_1>/);
+    expect(await mask("4111.1111.1111.1111")).toBe("<CARD_1>");
+  });
+
+  it("finds national ids in lower case and with separators", async () => {
+    for (const value of ["12345678z", "12.345.678-Z", "12345678 Z", "ab123456c", "AB123456", "rssmra85t10a562s", "2 84 07 2a 123 456 64"]) {
+      const out = await mask(`id ${value} end`);
+      expect(out, value).not.toMatch(/\d{3}|[a-z]{6}\d/i);
+    }
+  });
+
+  it("masks CJK and Arabic names inside unspaced text and after joined prefixes", async () => {
+    expect(await mask("王小明说好的", ["王小明"])).toBe("<PERSON_1>说好的");
+    expect(await mask("请张伟确认", ["张伟"])).toBe("请<PERSON_1>确认");
+    expect(await mask("김민수는 말했다", ["김민수"])).toBe("<PERSON_1>는 말했다");
+    expect(await mask("ومحمد العتيبي وافق", ["محمد العتيبي"])).toBe("و<PERSON_1> وافق");
+  });
+
+  it("matches Greek final sigma, ß as ss, two-letter parts and a digit next to a name", async () => {
+    expect(await mask("ΝΙΚΟΣ ΠΑΠΑΔΟΠΟΥΛΟΣ approved", ["Νίκος Παπαδόπουλος"])).toBe("<PERSON_1> approved");
+    expect(await mask("Hans STRAUSS signed", ["Hans Strauß"])).toBe("<PERSON_1> signed");
+    expect(await mask("Ask Li or Wu Li", ["Li Wu"])).toBe("Ask <PERSON_1> or <PERSON_1> <PERSON_1>");
+    expect(await mask("user Marguerite2 logged in", ["Marguerite Quillfeather"])).toBe("user <PERSON_1>2 logged in");
+  });
+
+  it("merges a name that runs into an email instead of leaving part of it", async () => {
+    const out = await mask("Marguerite Quillfeather@example.com", ["Marguerite Quillfeather"]);
+    expect(out).toBe("<EMAIL_1>");
+  });
+
+  it("keeps a shared first name from naming the wrong person", async () => {
+    const vault = await runVault();
+    const masker = new Masker({ vault, names: ["Marie Curie", "Marie Dupont"] });
+    const out = masker.mask("Marie said hi");
+    expect(vault.valueOf(out.slice(0, out.indexOf(">") + 1))).toBe("Marie");
+  });
+
+  it("takes a combining mark after a name with it", async () => {
+    expect(await mask("Marguerité left", ["Marguerite Quillfeather"])).toBe("<PERSON_1> left");
+  });
+
+  it("merges many spans in linear time", async () => {
+    const text = Array.from({ length: 40000 }, (_, i) => `10.${(i >> 8) & 255}.${i & 255}.1`).join(" ");
+    const started = Date.now();
+    const out = await mask(text);
+    expect(out).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+    expect(Date.now() - started).toBeLessThan(4000);
+  });
+
+  it("leaves nothing the harness leak scanner can find", async () => {
+    const { SeedScanner } = await import("../src/harness/scanner.js");
+    const seeds = [
+      { id: "s-name", kind: "name", value: "Marguerite Quillfeather" },
+      { id: "s-email", kind: "email", value: "m.quillfeather@example.com" },
+      { id: "s-phone", kind: "phone", value: "+33 6 12 34 56 78" },
+      { id: "s-iban", kind: "iban", value: "DE89 3704 0044 0532 0130 00" },
+      { id: "s-card", kind: "card", value: "4111 1111 1111 1111" },
+      { id: "s-nid", kind: "national-id", value: "1 84 07 75 123 456 57" },
+    ] as const;
+    const text = [
+      "QUILLFEATHER, marguerite opened it; Marguerite's notes; quillfeather@ later",
+      "Mail M.Quillfeather@Example.com, call 06.12.34.56.78 or 0033612345678 or +33 (0)6 12 34 56 78",
+      "Pay de89 3704 0044 0532 0130 00 or DE 89 37040044 0532013000",
+      "Card 4111-1111-1111-1111 exp 12/27, NIR 184077512345657",
+    ].join("\n");
+    const masker = new Masker({ vault: await runVault(), names: ["Marguerite Quillfeather"] });
+    const out = masker.mask(text);
+    expect(new SeedScanner(seeds as never).scan(out)).toEqual([]);
+  });
+});

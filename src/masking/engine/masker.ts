@@ -65,11 +65,10 @@ export class Masker {
 
   /** Spans to mask in `text`, without overlaps, in order. */
   spans(text: string): Span[] {
-    const all = [...this.patterns.flatMap((d) => d.find(text)), ...(this.useNames ? this.names.find(text) : [])];
-    all.sort((a, b) => b.end - b.start - (a.end - a.start) || PRIORITY.indexOf(a.detector) - PRIORITY.indexOf(b.detector) || a.start - b.start);
-    const chosen: Span[] = [];
-    for (const s of all) if (!chosen.some((c) => s.start < c.end && c.start < s.end)) chosen.push(s);
-    return chosen.sort((a, b) => a.start - b.start);
+    // Detectors see ASCII digits; full-width and Arabic-Indic digits map one to one, so offsets hold.
+    const digits = asciiDigits(text);
+    const all = [...this.patterns.flatMap((d) => d.find(digits)), ...(this.useNames ? this.names.find(text) : [])];
+    return mergeOverlaps(all, text);
   }
 
   mask(text: string, options: MaskOptions = {}): string {
@@ -102,4 +101,45 @@ export class Masker {
   private count(into: Record<string, number>, key: string) {
     into[key] = (into[key] ?? 0) + 1;
   }
+}
+
+const DIGIT_BLOCKS = [0xff10, 0x0660, 0x06f0, 0x0966, 0x09e6];
+
+/** Full-width, Arabic-Indic, Persian, Devanagari and Bengali digits to ASCII, one UTF-16 unit each. */
+export function asciiDigits(text: string): string {
+  return text.replace(/[０-９٠-٩۰-۹०-९০-৯]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    const base = DIGIT_BLOCKS.find((b) => code >= b && code <= b + 9)!;
+    return String(code - base);
+  });
+}
+
+/**
+ * Overlapping spans become one span: nothing in either is left unmasked. The
+ * longest span (then the higher-priority detector) gives the kind; when it
+ * covers the whole group its value stands, otherwise the group's text does.
+ * A sweep by start: linear after the sort.
+ */
+export function mergeOverlaps(spans: Span[], text: string): Span[] {
+  const sorted = [...spans].sort((a, b) => a.start - b.start || b.end - a.end);
+  const out: Span[] = [];
+  let group: Span[] = [];
+  let groupEnd = -1;
+  const flush = () => {
+    if (group.length === 0) return;
+    const best = [...group].sort((a, b) => b.end - b.start - (a.end - a.start) || PRIORITY.indexOf(a.detector) - PRIORITY.indexOf(b.detector))[0]!;
+    const start = Math.min(...group.map((g) => g.start));
+    const end = Math.max(...group.map((g) => g.end));
+    out.push(start === best.start && end === best.end ? best : { ...best, start, end, value: text.slice(start, end) });
+    group = [];
+  };
+  for (const s of sorted) {
+    if (s.start >= groupEnd) {
+      flush();
+      groupEnd = s.end;
+    } else groupEnd = Math.max(groupEnd, s.end);
+    group.push(s);
+  }
+  flush();
+  return out;
 }

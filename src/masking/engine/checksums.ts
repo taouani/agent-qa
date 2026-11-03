@@ -48,7 +48,7 @@ export function frNir(raw: string): boolean {
 
 /** Spain: DNI (8 digits + letter) and NIE (X/Y/Z + 7 digits + letter). */
 export function esDni(raw: string): boolean {
-  const s = raw.replace(/[\s-]/g, "").toUpperCase();
+  const s = raw.replace(/[\s.-]/g, "").toUpperCase();
   const m = /^([XYZ]?)(\d{7,8})([A-Z])$/.exec(s);
   if (!m) return false;
   if (m[1] && m[2]!.length !== 7) return false;
@@ -85,7 +85,7 @@ export function nlBsn(raw: string): boolean {
 /** Portugal: NIF, 9 digits, mod 11. */
 export function ptNif(raw: string): boolean {
   const s = digitsOf(raw);
-  if (s.length !== 9 || !/^[1235689]/.test(s)) return false;
+  if (s.length !== 9 || s[0] === "0") return false;
   let sum = 0;
   for (let i = 0; i < 8; i++) sum += Number(s[i]) * (9 - i);
   const check = 11 - (sum % 11);
@@ -124,10 +124,10 @@ export function usSsn(raw: string): boolean {
   return a !== "000" && a !== "666" && a![0] !== "9" && b !== "00" && c !== "0000";
 }
 
-/** UK: National Insurance number, two letters, six digits, a letter A to D. */
+/** UK: National Insurance number, two letters, six digits, a letter A to D (often left off). */
 export function ukNino(raw: string): boolean {
   const s = raw.replace(/\s/g, "").toUpperCase();
-  if (!/^[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\d{6}[A-D]$/.test(s)) return false;
+  if (!/^[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\d{6}[A-D]?$/.test(s)) return false;
   return !/^(BG|GB|NK|KN|TN|NT|ZZ)/.test(s);
 }
 

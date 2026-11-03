@@ -49,36 +49,103 @@ function* matches(re: RegExp, text: string): Generator<RegExpExecArray> {
   }
 }
 
-const EMAIL = /(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}/gu;
+const EMAIL = /(?<![\p{L}\p{N}._%+'-])[\p{L}\p{N}._%+'-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.(?:xn--[a-z0-9-]+|\p{L}{2,})/giu;
 
 export const email: PatternDetector = {
   name: "email",
   find: (text) => [...matches(EMAIL, text)].map((m) => ({ start: m.index, end: m.index + m[0].length, detector: "email", kind: "EMAIL", value: m[0].toLowerCase() })),
 };
 
+/** A run of characters between separators, with its offsets in the text. */
+interface Piece {
+  start: number;
+  end: number;
+  text: string;
+}
+
+function pieces(text: string, start: number, end: number, separators: RegExp): Piece[] {
+  const out: Piece[] = [];
+  const re = new RegExp(`[^${separators.source}]+`, "g");
+  const slice = text.slice(start, end);
+  for (const m of slice.matchAll(re)) out.push({ start: start + m.index, end: start + m.index + m[0].length, text: m[0] });
+  return out;
+}
+
+/**
+ * Finds values made of consecutive pieces, longest first, left to right. A
+ * candidate run often holds two values, or a value and a neighbour (a CVV, a
+ * date): trying sub-runs at piece boundaries finds the value inside.
+ */
+function scanPieces(list: Piece[], maxPieces: number, accept: (from: number, to: number) => string | undefined): Array<{ from: number; to: number; value: string }> {
+  const found: Array<{ from: number; to: number; value: string }> = [];
+  for (let i = 0; i < list.length; ) {
+    let hit = false;
+    for (let j = Math.min(list.length - 1, i + maxPieces - 1); j >= i; j--) {
+      const value = accept(i, j);
+      if (value !== undefined) {
+        found.push({ from: i, to: j, value });
+        i = j + 1;
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) i++;
+  }
+  return found;
+}
+
 /** Regions whose national formats are tried: the 9 languages' main countries. International (+, 00) numbers are found for every region. */
 export const PHONE_REGIONS: CountryCode[] = ["FR", "GB", "US", "ES", "DE", "PT", "NL", "IT", "BE", "CH", "MA", "SA", "AE", "EG", "CN", "BR", "MX"];
+/** Regions where a number is commonly written as bare digits, with no trunk 0 or separator. */
+const BARE_REGIONS: CountryCode[] = ["CN", "ES", "PT", "US", "IT", "BR", "MX"];
 
-/** Phone-like runs: digits with spaces, dots, dashes or brackets, optionally after + or 00. */
-const PHONE_CANDIDATE = /(?<![\p{L}\p{N}+])(?:\+|00)?\(?\d[\d\s().-]{5,}\d(?![\p{L}\p{N}])/gu;
-/** Dates, decimal amounts and dotted versions look like phone numbers to a parser. */
-const NOT_A_PHONE = [/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/, /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/, /^\d+\.\d{1,2}$/, /^\d+(\.\d+){2,}$/];
+/** Digits with spaces, dots, dashes, slashes or brackets on one line, optionally after + or 00. */
+const PHONE_RUN = /(?<![\p{L}\p{N}])\+?\(?\d[\d \t ().\/-]*\d/gu;
+const PHONE_SEPARATORS = /\s().\/-/;
+/** Dates and decimal amounts look like phone numbers to a parser. */
+const NOT_A_PHONE = [/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/, /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/, /^\d+[.,]\d{1,2}$/];
 
 export function phoneDetector(regions: CountryCode[] = PHONE_REGIONS): PatternDetector {
   return {
     name: "phone",
-    find(text) {
+    find(original) {
       const out: Span[] = [];
-      for (const m of matches(PHONE_CANDIDATE, text)) {
-        const raw = m[0].replace(/[\s.(-]+$/, "");
-        const compact = raw.trim();
-        if (NOT_A_PHONE.some((re) => re.test(compact))) continue;
-        const international = /^(\+|00)/.test(compact);
-        // A bare run of digits in national format is too often an id or an amount; a phone number
-        // written nationally almost always has a trunk 0, a separator or brackets.
-        if (!international && !/^[(0]/.test(compact) && !/[\s.()-]/.test(compact)) continue;
-        const number = international ? parse(compact.replace(/^00/, "+")) : regions.map((r) => parse(compact, r)).find(Boolean);
-        if (number) out.push({ start: m.index, end: m.index + raw.length, detector: "phone", kind: "PHONE", value: number });
+      // IP addresses are digits and dots too: blank them out (same length, so offsets hold).
+      const text = original.replace(new RegExp(IPV4.source, "g"), (m) => " ".repeat(m.length));
+      const cache = new Map<string, string | undefined>();
+      const parseOnce = (key: string, run: () => string | undefined) => {
+        if (!cache.has(key)) cache.set(key, run());
+        return cache.get(key);
+      };
+      for (const m of matches(PHONE_RUN, text)) {
+        // Two or more spaces separate two values in a list or table.
+        let offset = 0;
+        for (const part of m[0].split(/(?=\s{2,})|(?<=\s{2,})/)) {
+          const partStart = m.index + offset;
+          offset += part.length;
+          if (!/\d/.test(part)) continue;
+          const list = pieces(text, partStart, partStart + part.length, PHONE_SEPARATORS);
+          const found = scanPieces(list, 8, (from, to) => {
+            const raw = text.slice(list[from]!.start, list[to]!.end);
+            const digits = raw.replace(/\D/g, "");
+            if (digits.length < 7 || digits.length > 15) return undefined;
+            if (NOT_A_PHONE.some((re) => re.test(raw))) return undefined;
+            const compact = list.slice(from, to + 1).map((p) => p.text).join(" ");
+            if (/^(\+|00)/.test(compact)) return parseOnce(compact, () => parse("+" + compact.replace(/^(\+|00)/, "")));
+            const shaped = to > from || compact.startsWith("0") || text[list[from]!.start - 1] === "(";
+            if (shaped) return parseOnce(compact, () => regions.map((r) => parse(compact, r)).find(Boolean));
+            // Bare digits: only where that is the usual way to write a number, or a full number with its country code.
+            if (digits.length < 9) return undefined;
+            return parseOnce("bare:" + compact, () => BARE_REGIONS.filter((r) => regions.includes(r)).map((r) => parse(compact, r)).find(Boolean) ?? (digits.length >= 11 ? parse("+" + digits) : undefined));
+          });
+          for (const f of found) {
+            let start = list[f.from]!.start;
+            let end = list[f.to]!.end;
+            if (text[start - 1] === "(") start--;
+            if (text[end] === ")" && text.slice(start, end).includes("(")) end++;
+            out.push({ start, end, detector: "phone", kind: "PHONE", value: f.value });
+          }
+        }
       }
       return out;
     },
@@ -90,36 +157,51 @@ function parse(text: string, region?: CountryCode): string | undefined {
   return n?.isValid() ? n.number : undefined;
 }
 
-const IBAN = /\b[A-Z]{2}\d{2}(?:[ -]?[A-Z0-9]{1,4}){3,8}\b/g;
+/** Country code, check digits, then groups of 1 to 4 with optional spaces, dots or dashes; any case. */
+const IBAN_RUN = /\b[A-Z]{2}[ .-]?\d{2}(?:[ .-]?[A-Z0-9]{1,4})+/gi;
 
 export const iban: PatternDetector = {
   name: "iban",
   find(text) {
     const out: Span[] = [];
-    for (const m of matches(IBAN, text)) {
-      // The pattern can run into a following word or number: try shorter prefixes, group by group.
-      const groups = m[0].split(/(?=[ -])/);
-      for (let n = groups.length; n >= 1; n--) {
-        const candidate = groups.slice(0, n).join("");
-        if (ibanValid(candidate)) {
-          out.push({ start: m.index, end: m.index + candidate.length, detector: "iban", kind: "IBAN", value: candidate.replace(/[\s-]/g, "").toUpperCase() });
+    const re = new RegExp(IBAN_RUN.source, IBAN_RUN.flags);
+    for (let m = re.exec(text); m; m = re.exec(text)) {
+      const list = pieces(text, m.index, m.index + m[0].length, /\s.-/);
+      // An IBAN starts at the country code; the run can continue into the next word or the next IBAN.
+      let hit = false;
+      for (let j = list.length - 1; j >= 0; j--) {
+        const candidate = text.slice(m.index, list[j]!.end);
+        if (ibanValid(candidate.replace(/[.]/g, ""))) {
+          out.push({ start: m.index, end: list[j]!.end, detector: "iban", kind: "IBAN", value: candidate.replace(/[\s.-]/g, "").toUpperCase() });
+          re.lastIndex = list[j]!.end;
+          hit = true;
           break;
         }
       }
+      // No IBAN here: look again from the next piece, which may start one.
+      if (!hit) re.lastIndex = list.length > 1 ? list[1]!.start : m.index + 1;
     }
     return out;
   },
 };
 
-const CARD = /(?<![\d-])[2-6]\d{3}(?:[ -]?\d){9,15}(?![\d-])/g;
+const CARD_RUN = /(?<!\d)[2-6]\d*(?:[ .-]?\d+)+/g;
 
 export const card: PatternDetector = {
   name: "card",
-  find: (text) =>
-    [...matches(CARD, text)].flatMap((m) => {
-      const digits = digitsOf(m[0]);
-      return digits.length >= 13 && digits.length <= 19 && luhn(digits) ? [{ start: m.index, end: m.index + m[0].length, detector: "card" as const, kind: "CARD", value: digits }] : [];
-    }),
+  find(text) {
+    const out: Span[] = [];
+    for (const m of matches(CARD_RUN, text)) {
+      const list = pieces(text, m.index, m.index + m[0].length, /\s.-/);
+      const found = scanPieces(list, 8, (from, to) => {
+        if (!/^[2-6]/.test(list[from]!.text)) return undefined;
+        const digits = list.slice(from, to + 1).map((p) => p.text).join("");
+        return digits.length >= 13 && digits.length <= 19 && luhn(digits) ? digits : undefined;
+      });
+      for (const f of found) out.push({ start: list[f.from]!.start, end: list[f.to]!.end, detector: "card", kind: "CARD", value: f.value });
+    }
+    return out;
+  },
 };
 
 const IPV4 = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]|\.\d)/g;
@@ -141,14 +223,14 @@ export const ip: PatternDetector = {
 };
 
 const NATIONAL: Array<{ re: RegExp; valid: (s: string) => boolean }> = [
-  { re: /\b[12378][ .]?\d{2}[ .]?\d{2}[ .]?(?:\d{2}|2[AB])[ .]?\d{3}[ .]?\d{3}[ .]?\d{2}\b/g, valid: frNir },
-  { re: /\b[XYZ]?\d{7,8}-?[A-Z]\b/g, valid: esDni },
-  { re: /\b[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-EHLMPRST][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]\b/g, valid: itCodiceFiscale },
+  { re: /\b[12378][ .]?\d{2}[ .]?\d{2}[ .]?(?:\d{2}|2[AB])[ .]?\d{3}[ .]?\d{3}[ .]?\d{2}\b/gi, valid: frNir },
+  { re: /\b[XYZ]?[ .-]?\d{1,2}[.]?\d{3}[.]?\d{3}[ .-]?[A-Z]\b/gi, valid: esDni },
+  { re: /\b[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-EHLMPRST][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]\b/gi, valid: itCodiceFiscale },
   { re: /(?<![\d.-])\d{3}[ .]?\d{3}[ .]?\d{3}(?![\d.-])/g, valid: (s) => nlBsn(s) || ptNif(s) },
   { re: /(?<![\d.-])\d{2}[ ]?\d{3}[ ]?\d{3}[ ]?\d{3}(?![\d.-])/g, valid: deSteuerId },
-  { re: /(?<!\d)\d{17}[\dXx](?![\dXx])/g, valid: cnResidentId },
+  { re: /(?<!\d)\d{6}[ ]?\d{8}[ ]?\d{3}[\dXx](?![\dXx])/g, valid: (s) => cnResidentId(s.replace(/\s/g, "")) },
   { re: /(?<![\d-])\d{3}[- ]\d{2}[- ]\d{4}(?![\d-])/g, valid: usSsn },
-  { re: /\b[A-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D]\b/g, valid: ukNino },
+  { re: /\b[A-Z]{2} ?\d{2} ?\d{2} ?\d{2}(?: ?[A-D])?\b/gi, valid: ukNino },
   { re: /(?<!\d)[12]\d{9}(?!\d)/g, valid: saNationalId },
 ];
 

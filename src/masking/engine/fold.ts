@@ -6,7 +6,8 @@
  */
 
 export function fold(text: string): string {
-  return text.normalize("NFKD").replace(/[\p{M}\p{Cf}]/gu, "").toLowerCase();
+  // ß is "ss" (STRAUSS, Strauß); final sigma is sigma, so one character at a time folds the same as a word.
+  return text.normalize("NFKD").replace(/[\p{M}\p{Cf}]/gu, "").toLowerCase().replace(/ß/g, "ss").replace(/ς/g, "σ");
 }
 
 export interface Folded {
