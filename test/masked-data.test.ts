@@ -227,7 +227,74 @@ describe("masked data service", () => {
   });
 });
 
+describe("review fixes", () => {
+  it("replaces criteria whole when they come from a description listed in masking.fields", async () => {
+    const desc = issue({ key: "ABC-1", description: adf("Private notes: acct 88-1234-ZZ\nAcceptance criteria:\n- Account 88-1234-ZZ of mrs roe can log in") });
+    const { svc } = service({ masking: { fields: { jira: ["description"] } } }, new FakeJira([desc]));
+    const r = (await svc.requirements({ key: "ABC-1" })).sources.requirements[0]!;
+    expect(JSON.stringify(r)).not.toContain("88-1234");
+    expect(r.acceptanceCriteria).toEqual([{ id: "AC1", text: expect.stringMatching(/^<PII_\d+>$/) }]);
+  });
+
+  it("replaces labels, components and fix versions whole when listed", async () => {
+    const tagged = issue({ key: "ABC-1", labels: ["client-jdupont-vip"], components: ["dupont account"], fixVersions: ["dupont-release"] });
+    const { svc } = service({ masking: { fields: { jira: ["labels", "components", "fixVersions"] } } }, new FakeJira([tagged]));
+    const { sources, report } = await svc.requirements({ key: "ABC-1" });
+    expect(JSON.stringify(sources)).not.toMatch(/dupont/i);
+    expect(report.wholeFields).toMatchObject({ "jira.labels": 1, "jira.components": 1, "jira.fixVersions": 1 });
+  });
+
+  it("reads again when the masking settings change", async () => {
+    const phone = issue({ key: "ABC-1", summary: "Call +33 6 12 34 56 78" });
+    const first = service({ masking: { detectors: ["email"] } }, new FakeJira([phone]));
+    expect((await first.svc.requirements({ key: "ABC-1" })).sources.requirements[0]!.summary).toContain("+33");
+    const second = service({ masking: {} }, new FakeJira([phone]));
+    const again = await second.svc.requirements({ key: "ABC-1" });
+    expect(again.cached).toBe(false);
+    expect(again.sources.requirements[0]!.summary).not.toContain("+33");
+    expect(JSON.stringify(again.sources)).not.toContain("ABC-1\"}\"");
+  });
+
+  it("masks a person's name in the JQL even with language names off", async () => {
+    const { svc } = service({ masking: { languages: [] } });
+    const { sources } = await svc.requirements({ jql: 'assignee = "Tobias Wrenhallow" OR assignee = wrenhallow' });
+    expect(sources.input).toEqual({ jql: 'assignee = "<PERSON_2>" OR assignee = <PERSON_2>' });
+    const files = await readFile(join(dir, RUN, "sources.json"), "utf8");
+    expect(files).not.toMatch(/wrenhallow/i);
+  });
+
+  it("does not repeat the acceptance criteria field among the extra fields", async () => {
+    const withAc = issue({ key: "ABC-1", acceptanceCriteria: adf("- one"), extraFields: { "Acceptance Criteria": adf("- one") } });
+    const jira = new FakeJira([withAc]);
+    jira.collect = async (input: JiraInput) => ({
+      input,
+      issues: [structuredClone(withAc)],
+      truncated: false,
+      unreachable: [],
+      extraFields: [{ id: "customfield_10100", name: "Acceptance Criteria", custom: true }],
+      acceptanceCriteriaField: { id: "customfield_10100", name: "Acceptance Criteria", custom: true },
+    });
+    const { svc } = service({ masking: { fields: { jira: ["CustomField_10100"] } } }, jira);
+    const r = (await svc.requirements({ key: "ABC-1" })).sources.requirements[0]!;
+    expect(r.extraFields).toEqual({});
+    expect(r.acceptanceCriteria).toEqual([{ id: "AC1", text: expect.stringMatching(/^<PII_\d+>$/) }]);
+  });
+});
+
 describe("acceptance criteria splitting", () => {
+  it("keeps numbers and abbreviations at the start of a line, and separate When lines", () => {
+    expect(splitCriteria("1.5 s maximum response time\ne.g. the badge\nE-mail is sent\nWhen offline, a banner is shown").map((c) => c.text)).toEqual([
+      "1.5 s maximum response time",
+      "e.g. the badge",
+      "E-mail is sent",
+      "When offline, a banner is shown",
+    ]);
+    expect(criteriaFromDescription("Acceptance criteria:\nGiven a\nThen b\n\nGiven c\nThen d\n\nOther text")).toEqual({
+      criteria: "Given a\nThen b\n\nGiven c\nThen d",
+      rest: "Other text",
+    });
+  });
+
   it("splits bullets and numbered lines, keeping Gherkin continuations", () => {
     expect(splitCriteria("1. First\n2) Second\n* Third")).toEqual([
       { id: "AC1", text: "First" },

@@ -72,6 +72,11 @@ const sourcesSchema = z
     /** The masked input: an issue key, or the JQL with any personal data in it replaced. */
     input: z.union([z.object({ key: z.string() }).strict(), z.object({ jql: z.string() }).strict()]),
     requirements: z.array(requirementSchema),
+    /**
+     * sha256 of the run id, the input's vault token and every setting that changes the output (masking, collect
+     * options, SOURCES_VERSION). A cache hit needs the same key; the raw input itself is never stored.
+     */
+    cacheKey: z.string().regex(/^[0-9a-f]{64}$/),
     truncated: z.boolean(),
     unreachable: z.array(z.string()),
     skippedPages: z.array(z.object({ issue: z.string(), reason: z.string() }).strict()),
@@ -108,7 +113,7 @@ export const MASKING_REPORT_ARTIFACT: ArtifactSpec<MaskingReport> = {
 };
 
 /** Bumped when masking or entity building changes, so cached sources are rebuilt. */
-export const SOURCES_VERSION = "sources-1";
+export const SOURCES_VERSION = "sources-2";
 
 const UNMASKED_FIELDS = [
   "jira.key",
@@ -160,20 +165,36 @@ export class MaskedDataService {
   /** Masked requirements for a Jira key or JQL filter, from the run folder when already read. */
   async requirements(input: JiraInput, options: LoadOptions = {}): Promise<LoadedSources> {
     const { store, runId, vault } = this.options;
-    const masker = this.masker();
-    const maskedInput = "key" in input ? { key: input.key.trim().toUpperCase() } : { jql: masker.mask(input.jql, { field: "input.jql" }) };
+    const rawInput = "key" in input ? { key: input.key.trim().toUpperCase() } : { jql: input.jql };
+    // The input stands in the key as a vault token: the same input gets the same token, and a JQL
+    // holding a name can't be guessed back from the hash.
+    const inputToken = vault.tokenFor("INPUT", JSON.stringify(rawInput));
+    await vault.save();
+    const cacheKey = hashInput(
+      JSON.stringify({
+        runId,
+        input: inputToken,
+        version: SOURCES_VERSION,
+        masking: this.options.config.masking,
+        detectors: this.detectors(),
+        languages: this.languages(),
+        collect: this.collectOptions(),
+        maxPages: this.options.config.atlassian?.jira?.maxPages ?? 20,
+      }),
+    );
 
     if (!options.refresh) {
       const cached = await store.readArtifact(runId, SOURCES_ARTIFACT);
       const report = await store.readArtifact(runId, MASKING_REPORT_ARTIFACT);
-      if (cached && report && JSON.stringify(cached.data.input) === JSON.stringify(maskedInput)) {
+      if (cached && report && cached.data.cacheKey === cacheKey) {
         return { sources: cached.data, report: report.data, inputs: cached.inputs, cached: true };
       }
     }
 
     const collection = await (await this.jira()).collect(input, this.collectOptions());
     const { pages, skipped } = await this.pages(collection);
-    const built = buildSources(collection, pages, skipped, masker, this.wholeFields(), maskedInput);
+    const masker = this.masker();
+    const built = buildSources(collection, pages, skipped, masker, this.wholeFields(), rawInput, cacheKey);
     await vault.save();
 
     const counts = masker.report();
@@ -209,15 +230,21 @@ export class MaskedDataService {
 
   /** `masking.fields.jira`, folded for matching by id or name. */
   private wholeFields(): Set<string> {
-    return new Set((this.options.config.masking.fields?.jira ?? []).map((f) => f.trim().toLowerCase()));
+    return new Set(this.wholeFieldNames().map((f) => f.toLowerCase()));
+  }
+
+  /** `masking.fields.jira`, trimmed, with `customfield_` ids in Jira's own case. */
+  private wholeFieldNames(): string[] {
+    return (this.options.config.masking.fields?.jira ?? []).map((f) => f.trim().replace(/^customfield_/i, "customfield_")).filter(Boolean);
   }
 
   private collectOptions(): CollectOptions {
     const jira = this.options.config.atlassian?.jira ?? {};
     // Fields masked whole are read too, unless they are standard ones the client already reads.
     const standard = new Set(["summary", "description", "assignee", "reporter", "creator", "labels", "components", "fixversions"]);
-    const whole = (this.options.config.masking.fields?.jira ?? []).filter((f) => !standard.has(f.trim().toLowerCase()));
-    const extraFields = [...new Set([...(jira.extraFields ?? []), ...whole])];
+    const whole = this.wholeFieldNames().filter((f) => !standard.has(f.toLowerCase()) && f.toLowerCase() !== "acceptancecriteria");
+    const acField = jira.acceptanceCriteriaField?.trim().toLowerCase();
+    const extraFields = [...new Set([...(jira.extraFields ?? []).map((f) => f.trim()), ...whole])].filter((f) => f.toLowerCase() !== acField);
     return {
       ...(jira.maxDepth !== undefined ? { maxDepth: jira.maxDepth } : {}),
       ...(jira.maxIssues !== undefined ? { maxIssues: jira.maxIssues } : {}),
@@ -277,8 +304,14 @@ function confluenceUrls(issue: JiraIssue, site: string): string[] {
 const AC_HEADING =
   /^\s*(?:#+\s*)?(?:acceptance criteria|critères d'acceptation|criteres d'acceptation|criterios de aceptación|criterios de aceptacion|akzeptanzkriterien|critérios de aceitação|criterios de aceitacao|acceptatiecriteria|criteri di accettazione|معايير القبول|验收标准)\s*[:：]?\s*$/iu;
 const NEXT_HEADING = /^\s*(?:#+\s*\S|[\p{Lu}][^.!?:]{0,60}[:：]\s*$)/u;
-const BULLET = /^\s*(?:[-*•·▪◦]|\d+[.)]|[a-z][.)]|AC\s*\d+\s*[:.)-]?)\s*/iu;
-const CONTINUES = /^\s*(?:and|but|then|when|et|mais|alors|quand|y|pero|entonces|cuando|und|aber|dann|wenn|e|mas|então|quando|en|maar|dan|als|ma|allora)\b/iu;
+/** A bullet, a number or letter with a dot or bracket, or "AC3:"; always followed by a space, so "1.5 s" and "e.g." stay. */
+const BULLET = /^\s*(?:[-*•·▪◦]|\d+[.)]|[a-z][.)]|AC\s*\d+\s*[:.)-]?)\s+/iu;
+/** A line that starts a Gherkin scenario. */
+const GHERKIN_START =
+  /^\s*(?:given|scenario|scenario outline|background|étant donné|etant donne|soit|scénario|scenario|dado|dada|escenario|cenário|cenario|angenommen|gegeben sei|szenario|gegeven|stel|scenario|dato|data|scenario|假如|假设|场景)\b/iu;
+/** Gherkin lines that continue a scenario: When, Then, And, But in the 9 languages. */
+const GHERKIN_NEXT =
+  /^\s*(?:and|but|then|when|et|mais|alors|quand|lorsque|y|pero|entonces|cuando|und|aber|dann|wenn|e|mas|então|entao|quando|en|maar|dan|als|ma|allora|quando|并且|而且|那么|当|但是)\s/iu;
 
 /**
  * Acceptance criteria as AC1, AC2...: one per line or bullet; Gherkin lines
@@ -292,7 +325,9 @@ export function splitCriteria(text: string): Array<{ id: string; text: string }>
     const bulleted = BULLET.test(line);
     const clean = line.replace(BULLET, "").trim();
     if (!clean) continue;
-    if (items.length > 0 && !bulleted && CONTINUES.test(clean)) items[items.length - 1] += "\n" + clean;
+    // A Gherkin step stays with the scenario it continues; elsewhere "When offline..." is its own criterion.
+    const last = items[items.length - 1];
+    if (last !== undefined && !bulleted && GHERKIN_START.test(last) && GHERKIN_NEXT.test(clean)) items[items.length - 1] += "\n" + clean;
     else items.push(clean);
   }
   return items.map((t, i) => ({ id: `AC${i + 1}`, text: t }));
@@ -310,7 +345,7 @@ export function criteriaFromDescription(text: string): { criteria: string; rest:
     if (end > at + 1 && NEXT_HEADING.test(line) && !BULLET.test(line)) break;
     if (end > at + 1 && !line.trim()) {
       const next = lines.slice(end + 1).find((l) => l.trim());
-      if (next === undefined || !BULLET.test(next)) break;
+      if (next === undefined || !(BULLET.test(next) || GHERKIN_START.test(next))) break;
     }
     end++;
   }
@@ -325,7 +360,8 @@ function buildSources(
   skipped: Array<{ issue: string; reason: string }>,
   masker: Masker,
   wholeFields: Set<string>,
-  input: MaskedSources["input"],
+  rawInput: MaskedSources["input"],
+  cacheKey: string,
 ): { sources: MaskedSources; inputs: InputRef[]; pageCount: number } {
   const normal = (name: string) => name.replace(/\s+/g, " ").trim();
   // Every person and mention is known before any text is masked, so a name gets its token everywhere.
@@ -349,8 +385,12 @@ function buildSources(
         .map((p) => ({ role: p.role, token: masker.mask(normal(p.displayName), { field: `jira.${p.role}`, whole: "PERSON" }) })),
     );
   }
+  // The input is masked after the people are known, so a name in the JQL gets the person's token.
+  const input: MaskedSources["input"] = "key" in rawInput ? rawInput : { jql: masker.mask(rawInput.jql, { field: "input.jql" }) };
 
   const fieldIds = new Map(collection.extraFields.map((f) => [f.name, f.id.toLowerCase()]));
+  const acField = collection.acceptanceCriteriaField;
+  if (acField) fieldIds.set(acField.name, acField.id.toLowerCase());
   const isWhole = (name: string) => wholeFields.has(name.toLowerCase()) || wholeFields.has(fieldIds.get(name) ?? "\u0000");
   const text = (value: string, field: string, name = field) =>
     isWhole(name) ? masker.mask(value, { field: `jira.${field}`, whole: "PII" }) : masker.mask(value, { field: `jira.${field}` });
@@ -384,11 +424,22 @@ function buildSources(
         acceptanceCriteriaSource = "description";
       }
     }
-    const acName = collection.acceptanceCriteriaField?.name ?? "acceptanceCriteria";
-    const maskedCriteria = criteriaText.trim() ? text(criteriaText, "acceptanceCriteria", acName) : "";
+    // Criteria taken from the description are as private as the description.
+    const acName = acceptanceCriteriaSource === "description" ? "description" : (acField?.name ?? "acceptanceCriteria");
+    const acWhole = isWhole(acName) || isWhole("acceptanceCriteria");
+    const maskedCriteria = !criteriaText.trim()
+      ? ""
+      : acWhole
+        ? masker.mask(criteriaText, { field: "jira.acceptanceCriteria", whole: "PII" })
+        : masker.mask(criteriaText, { field: "jira.acceptanceCriteria" });
 
     const extraFields: Record<string, string> = {};
-    for (const [name, value] of Object.entries(issue.extraFields)) extraFields[name] = text(value.text, `field.${name}`, name);
+    for (const [name, value] of Object.entries(issue.extraFields)) {
+      if (acField && name === acField.name) continue; // already the criteria
+      extraFields[name] = text(value.text, `field.${name}`, name);
+    }
+    const list = (values: string[], field: string) =>
+      values.map((v) => (isWhole(field) ? masker.mask(v, { field: `jira.${field}`, whole: "PII" }) : masker.mask(v, { field: `jira.${field}` })));
 
     return {
       key: issue.key,
@@ -403,12 +454,12 @@ function buildSources(
       links: issue.links.map((l) => ({ type: l.type, direction: l.direction, description: l.description, key: l.key })),
       summary: text(issue.summary, "summary"),
       description: text(description, "description"),
-      acceptanceCriteria: isWhole(acName) ? (maskedCriteria ? [{ id: "AC1", text: maskedCriteria }] : []) : splitCriteria(maskedCriteria),
+      acceptanceCriteria: acWhole ? (maskedCriteria ? [{ id: "AC1", text: maskedCriteria }] : []) : splitCriteria(maskedCriteria),
       acceptanceCriteriaSource,
       extraFields,
-      labels: issue.labels.map((l) => masker.mask(l, { field: "jira.labels" })),
-      components: issue.components.map((c) => masker.mask(c, { field: "jira.components" })),
-      fixVersions: issue.fixVersions.map((v) => masker.mask(v, { field: "jira.fixVersions" })),
+      labels: list(issue.labels, "labels"),
+      components: list(issue.components, "components"),
+      fixVersions: list(issue.fixVersions, "fixVersions"),
       people: peopleTokens.get(issue.key) ?? [],
       linkedPages,
       updated: issue.updated,
@@ -422,6 +473,7 @@ function buildSources(
   ];
   const sources: MaskedSources = {
     input,
+    cacheKey,
     requirements,
     truncated: collection.truncated,
     unreachable: collection.unreachable,
