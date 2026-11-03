@@ -210,6 +210,29 @@ export class JiraClient {
     }
   }
 
+  /**
+   * Issues in `project` carrying any of `labels`, as label → issue key, for
+   * finding tests pushed by an earlier run. Labels Jira can't hold (spaces,
+   * quotes) are skipped.
+   */
+  async findByLabels(project: string, labels: string[]): Promise<Map<string, string>> {
+    if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error("Not a Jira project key");
+    const wanted = [...new Set(labels.filter((l) => /^[^\s"'\\]{1,255}$/.test(l)))];
+    const found = new Map<string, string>();
+    for (let i = 0; i < wanted.length; i += CHUNK) {
+      const chunk = wanted.slice(i, i + CHUNK);
+      // Oldest first, so the first push's test wins when a label is on more than one issue.
+      const jql = `project = "${project}" AND labels in (${chunk.map((l) => `"${l}"`).join(", ")}) ORDER BY created ASC`;
+      const { issues } = await this.search(jql, ["labels"], 1000);
+      for (const raw of issues) {
+        const key = str(raw.key);
+        if (!key) continue;
+        for (const label of arr(obj(raw.fields).labels)) if (typeof label === "string" && chunk.includes(label) && !found.has(label)) found.set(label, key);
+      }
+    }
+    return found;
+  }
+
   /** Whether any of these issues has a child that isn't in `known`. */
   private async hasNewChildren(keys: string[], known: Map<string, unknown>): Promise<boolean> {
     const valid = keys.filter((k) => ISSUE_KEY.test(k));

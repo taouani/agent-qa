@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JiraCollection, JiraInput, JiraIssue } from "../src/connectors/index.js";
-import { configSchema, RunStore, WorkflowEngine } from "../src/core/index.js";
+import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine } from "../src/core/index.js";
+import type { XrayTest } from "../src/connectors/index.js";
 import { DataAccess } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
-import { requirementsWorkflow, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow, type TestCase } from "../src/workflows/index.js";
+import { requirementsWorkflow, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow, XRAY_PUSH_ARTIFACT, type TestCase } from "../src/workflows/index.js";
 
 const SITE = "https://acme.atlassian.net";
 const adf = (text: string) => ({ text, mentions: [], links: [] });
@@ -290,5 +291,83 @@ describe("test-cases workflow", () => {
         { path: "$.changes.2.case", message: "an edited case needs the whole corrected case" },
       ]),
     );
+  });
+
+  describe("with Xray configured", () => {
+    let sent: XrayTest[][];
+    let audit: MemoryAuditSink;
+    let xrayEngine: WorkflowEngine;
+
+    beforeEach(() => {
+      sent = [];
+      audit = new MemoryAuditSink();
+      const key = randomBytes(32);
+      const config = configSchema.parse({
+        version: 1,
+        atlassian: { site: SITE, email: "${env:E}", token: "${env:T}" },
+        xray: { clientId: "i", clientSecret: "${env:S}", projectKey: "QA" },
+        masking: { restoreOnWrite: true },
+      });
+      const data = new DataAccess({
+        root: dir,
+        store: runs,
+        config,
+        vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }),
+        jira,
+        confluence: { pages: async () => ({ pages: [], skipped: [] }) },
+        labels: { findByLabels: async () => new Map([["agent-qa:TC-ABC-2-001", "QA-9"]]) },
+        xray: {
+          importAndWait: async (tests) => {
+            sent.push(tests);
+            return { jobId: "job1", status: "successful", issues: tests.map((_, i) => ({ elementNumber: i, key: `QA-${10 + i}` })), errors: [] };
+          },
+        },
+        audit,
+      });
+      xrayEngine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(testCasesWorkflow({ data, runs }));
+    });
+
+    async function reviewed() {
+      const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
+      await xrayEngine.submit(first.runId, "analyze", good);
+      await xrayEngine.submit(first.runId, "cases", cases);
+      const after = await xrayEngine.submit(first.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-003", decision: "dropped" }] });
+      return { runId: first.runId, next: after.next };
+    }
+
+    it("asks, pushes the reviewed cases with real values, and writes xray-push@1", async () => {
+      const { runId, next } = await reviewed();
+      expect(next).toMatchObject({ stepId: "push", kind: "confirm" });
+      expect(next.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
+      expect(next.context).toContain("TC-ABC-2-001 | P2 | updates QA-9 | Case 1 for ABC-2");
+      const done = await xrayEngine.submit(runId, "push", { approve: true });
+      expect(done.next.kind).toBe("done");
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.map((t) => t.fields.summary)).toEqual(["[TC-ABC-1-001] Old case escalated for Marguerite Quillfeather", "[TC-ABC-1-002] Case 2 for ABC-1", "[TC-ABC-2-001] Case 1 for ABC-2"]);
+      expect(sent[0]![2]!.update_key).toBe("QA-9");
+      const push = (await runs.readArtifact(runId, XRAY_PUSH_ARTIFACT))!;
+      expect(push.data.counts).toEqual({ created: 2, updated: 1, failed: 0 });
+      expect(push.data.results[0]).toEqual({ tcId: "TC-ABC-1-001", action: "created", xrayKey: "QA-10", linkedTo: "ABC-1" });
+      const stored = JSON.stringify(push) + (await readFile(join(dir, "runs", runId, "xray-push.md"), "utf8"));
+      for (const s of SECRETS) expect(stored, s).not.toContain(s);
+      expect(audit.entries.map((e) => e.outcome)).toEqual(["approved", "done"]);
+    });
+
+    it("pushes nothing when the user says no", async () => {
+      const { runId } = await reviewed();
+      const done = await xrayEngine.submit(runId, "push", { approve: false });
+      expect(done.next.kind).toBe("done");
+      expect(sent).toHaveLength(0);
+      expect(audit.entries).toHaveLength(0);
+      expect(await runs.readArtifact(runId, XRAY_PUSH_ARTIFACT)).toBeUndefined();
+    });
+
+    it("skips the push when the review stopped the run", async () => {
+      const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
+      await xrayEngine.submit(first.runId, "analyze", good);
+      await xrayEngine.submit(first.runId, "cases", cases);
+      const after = await xrayEngine.submit(first.runId, "review", { approved: false, changes: [] });
+      expect(after.next.kind).toBe("done");
+    });
   });
 });

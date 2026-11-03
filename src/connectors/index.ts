@@ -20,3 +20,5 @@ export { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "./c
 export type { ConfluenceClientOptions, ConfluencePage, SkippedPage } from "./confluence.js";
 export { decodeEntities, parseStorage, storageToText } from "./storage.js";
 export type { StorageText } from "./storage.js";
+export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient } from "./xray.js";
+export type { XrayClientOptions, XrayJobIssue, XrayJobResult, XrayStep, XrayTest } from "./xray.js";

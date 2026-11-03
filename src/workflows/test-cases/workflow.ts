@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Artifact, InputRef, OutputError, StepContext, WorkflowDefinition } from "../../core/index.js";
+import type { RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
 import { analyzeStep, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
 import {
@@ -7,6 +8,8 @@ import {
   TEST_CASES_DRAFT_ARTIFACT,
   TEST_CASES_TEMPLATE_VERSION,
   testCaseSchema,
+  XRAY_PUSH_ARTIFACT,
+  type XrayPush,
   type TestCase,
   type TestCases,
   type TestCasesDraft,
@@ -23,6 +26,9 @@ import {
  *    last batch writes `test-cases-draft@1` for the reviewer.
  * 3. Review (confirm, decision 2): the user keeps, edits or drops cases; the
  *    core writes `test-cases@1` with each case's review and the kept rate.
+ * 4. Push (confirm, S1-10; only with an `xray` section the policy doesn't
+ *    deny): the user says whether to push the reviewed cases to Xray. The
+ *    data layer writes through `Policy.guard`; the core writes `xray-push@1`.
  */
 
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
@@ -72,6 +78,11 @@ const reviewSchema = z
   .strict();
 type Review = z.infer<typeof reviewSchema>;
 
+const pushSchema = z
+  .object({ approve: z.boolean().describe("true if the user said to push the cases to Xray, false if not") })
+  .strict();
+type Push = z.infer<typeof pushSchema>;
+
 type Ctx = StepContext<TestCasesInputs>;
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n[cut: ${text.length - max} more characters]` : text);
@@ -100,7 +111,7 @@ function checkCase(at: string, c: TestCase, byKey: Map<string, AnalyzedRequireme
   return errors;
 }
 
-export type TestCasesDeps = RequirementsDeps;
+export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData };
 
 export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestCasesInputs> {
   const requirementsRunOf = (ctx: Ctx) => ctx.inputs.requirementsRun ?? ctx.runId;
@@ -140,6 +151,14 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     if (!draft) throw new Error(`Run ${ctx.runId} has no test-cases-draft@1`);
     return draft;
   };
+
+  const reviewed = (ctx: Ctx) => deps.runs.readArtifact(ctx.runId, TEST_CASES_ARTIFACT);
+  const reviewedOf = async (ctx: Ctx): Promise<Artifact<TestCases>> => {
+    const art = await reviewed(ctx);
+    if (!art) throw new Error(`Run ${ctx.runId} has no test-cases@1`);
+    return art;
+  };
+  const planOf = async (ctx: Ctx) => deps.data.xrayPlan((await reviewedOf(ctx)).data.cases);
 
   return {
     id: "test-cases",
@@ -310,6 +329,42 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             },
           };
           await deps.runs.writeArtifact(ctx.runId, TEST_CASES_ARTIFACT, data, { inputs: inputsOf(ctx, art), templateVersion: TEST_CASES_TEMPLATE_VERSION });
+        },
+      },
+      {
+        id: "push",
+        kind: "confirm",
+        outputSchema: pushSchema,
+        // No test-cases@1 when the user stopped the review; nothing to push when they dropped every case.
+        when: async (ctx) => ((await reviewed(ctx))?.data.cases.length ?? 0) > 0 && (await deps.data.xrayEnabled()),
+        instructions: () =>
+          [
+            "Ask the user whether to push the reviewed test cases to Xray. The context names the project, how many tests are new and how many update tests an earlier push created, and lists each case. Wait for their answer.",
+            "Submit approve: true only if they said yes; approve: false pushes nothing and ends the run.",
+          ].join("\n"),
+        context: async (ctx) => {
+          const plan = await planOf(ctx);
+          const lines = (await reviewedOf(ctx)).data.cases.map((c) => `${c.id} | ${c.priority} | ${plan.existing[c.id] ? `updates ${plan.existing[c.id]}` : "new"} | ${c.title}`);
+          return [`Push to Xray project ${plan.project}: ${plan.create} new, ${plan.update} updated.`, ...lines].join("\n");
+        },
+        onAccept: async (ctx, push: Push) => {
+          if (!push.approve) return;
+          const art = await reviewedOf(ctx);
+          const outcome = await deps.data.pushToXray(ctx.runId, requirementsRunOf(ctx), art.data.cases, true);
+          if (outcome.status !== "done") return;
+          const { project, jobs, results } = outcome.result;
+          const count = (action: string) => results.filter((r) => r.action === action).length;
+          const data: XrayPush = {
+            testCases: { run: ctx.runId, sourceHash: art.sourceHash },
+            project,
+            jobs,
+            results,
+            counts: { created: count("created"), updated: count("updated"), failed: count("failed") },
+          };
+          await deps.runs.writeArtifact(ctx.runId, XRAY_PUSH_ARTIFACT, data, {
+            inputs: [{ kind: "artifact", ref: `${ctx.runId}/test-cases`, hash: art.sourceHash }],
+            templateVersion: TEST_CASES_TEMPLATE_VERSION,
+          });
         },
       },
     ],

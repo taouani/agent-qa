@@ -82,7 +82,19 @@ export const configSchema = z
       .optional(),
 
     xray: z
-      .object({ clientId: z.string().min(1), clientSecret: secretRef, projectKey: z.string().regex(/^[A-Z][A-Z0-9_]+$/) })
+      .object({
+        /** The API key's client id, or a secret reference to it. */
+        clientId: z.string().min(1),
+        clientSecret: secretRef,
+        /** Jira project the tests are created in. */
+        projectKey: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
+        /** Xray Cloud region URL; default https://xray.cloud.getxray.app. */
+        baseUrl: httpsUrl.optional(),
+        /** Jira priority name for each test priority; priorities left out are not set. */
+        priorities: z.object({ P1: z.string().min(1), P2: z.string().min(1), P3: z.string().min(1), P4: z.string().min(1) }).partial().strict().optional(),
+        /** Jira link type from each test to its requirement. Default "Test" (tests / is tested by). */
+        linkType: z.string().min(1).max(100).default("Test"),
+      })
       .strict()
       .optional(),
 
