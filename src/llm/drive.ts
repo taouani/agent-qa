@@ -5,6 +5,10 @@ import type { ModelDriver, ModelMessage, TokenUsage } from "./driver.js";
  * Answers a run's generate steps with a driver until the run needs a person
  * (a confirm step) or ends. A rejected answer is retried with the errors, as
  * many times as the step allows; the engine counts the attempts.
+ *
+ * The prompt always carries the step's JSON Schema, so a provider that can't
+ * enforce it (JSON mode only) still knows the shape. A retry sends the first
+ * prompt, the last answer and its errors, not every earlier answer.
  */
 
 export interface StepUsage extends TokenUsage {
@@ -26,6 +30,18 @@ export interface DriveResult {
   usage: StepUsage[];
 }
 
+/** A driver call failed; `usage` holds what the run had used before it. */
+export class DriveError extends Error {
+  constructor(
+    readonly step: Step,
+    readonly usage: StepUsage[],
+    options: { cause: unknown },
+  ) {
+    super(`Model call failed at step ${step.stepId}: ${options.cause instanceof Error ? options.cause.message : String(options.cause)}`, options);
+    this.name = "DriveError";
+  }
+}
+
 const SYSTEM =
   "You are a step in a QA workflow. Answer with one JSON value that matches the schema exactly. " +
   "Values like <PERSON_1> are placeholders for masked personal data: keep them exactly as they are and never guess what they stand for.";
@@ -33,19 +49,26 @@ const SYSTEM =
 export async function drive(engine: WorkflowEngine, first: Step, driver: ModelDriver, options: DriveOptions = {}): Promise<DriveResult> {
   const used: StepUsage[] = [];
   let step = first;
-  let history: ModelMessage[] = [];
+  let firstPrompt: ModelMessage = { role: "user", content: "" };
+  let retry: ModelMessage[] = [];
   let historyFor = "";
   while (step.kind === "generate") {
     if (historyFor !== step.stepId) {
-      history = [{ role: "user", content: prompt(step) }];
+      firstPrompt = { role: "user", content: prompt(step) };
+      retry = [];
       historyFor = step.stepId;
     }
-    const response = await driver.complete({
-      ...(options.model ? { model: options.model } : {}),
-      messages: [{ role: "system", content: SYSTEM }, ...history],
-      schema: step.outputSchema,
-      schemaName: step.stepId,
-    });
+    let response;
+    try {
+      response = await driver.complete({
+        ...(options.model ? { model: options.model } : {}),
+        messages: [{ role: "system", content: SYSTEM }, firstPrompt, ...retry],
+        schema: step.outputSchema,
+        schemaName: step.stepId,
+      });
+    } catch (cause) {
+      throw new DriveError(step, used, { cause });
+    }
     if (response.usage) {
       const entry: StepUsage = { stepId: step.stepId, attempt: step.attempt, ...response.usage, ...(response.model ? { model: response.model } : {}) };
       used.push(entry);
@@ -63,7 +86,7 @@ export async function drive(engine: WorkflowEngine, first: Step, driver: ModelDr
     const result = await engine.submit(step.runId, step.stepId, output);
     if (result.status === "rejected") {
       const errors = parseError ? [parseError, ...result.errors] : result.errors;
-      history = [...history, { role: "assistant", content: response.text }, { role: "user", content: retryPrompt(errors) }];
+      retry = [{ role: "assistant", content: response.text }, { role: "user", content: retryPrompt(errors) }];
     }
     step = result.next;
   }
@@ -71,7 +94,13 @@ export async function drive(engine: WorkflowEngine, first: Step, driver: ModelDr
 }
 
 function prompt(step: Step): string {
-  return [step.instructions, step.context ? `Context:\n${step.context}` : ""].filter(Boolean).join("\n\n");
+  return [
+    step.instructions,
+    step.context ? `Context:\n${step.context}` : "",
+    `Answer with JSON that matches this JSON Schema:\n${JSON.stringify(step.outputSchema)}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function retryPrompt(errors: OutputError[]): string {

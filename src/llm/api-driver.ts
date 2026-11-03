@@ -21,6 +21,11 @@ import type { ModelDriver, ModelRequest, ModelResponse, TokenUsage } from "./dri
  *   retries with the errors (see `drive`).
  * - A model id is never passed to the AI SDK as a bare string, which would
  *   route it through Vercel's gateway: every call goes straight to the provider.
+ * - The engine's schemas are not "strict" (optional keys, no
+ *   additionalProperties: false), so strict mode is turned off where the
+ *   provider allows it (OpenAI, OpenRouter, LiteLLM). xAI always sends
+ *   strict: true, so it gets JSON mode and relies on the schema in the prompt
+ *   (`drive` always puts it there).
  */
 
 export class ModelConfigError extends Error {
@@ -38,17 +43,25 @@ export interface ApiDriverOptions {
   /** Retries for rate limits and server errors, inside the AI SDK. Default 2. */
   maxRetries?: number;
   /** Replaces model creation, for tests. */
-  languageModel?: (provider: Provider, modelId: string) => LanguageModel | Promise<LanguageModel>;
+  languageModel?: (provider: Provider, modelId: string) => LanguageModelV4 | Promise<LanguageModelV4>;
   fetch?: typeof fetch;
 }
 
+/** A model object, never a bare id string (which the AI SDK would send to its gateway). */
+type LanguageModelV4 = Exclude<LanguageModel, string>;
+
 const OPENROUTER_URL = "https://openrouter.ai/api/v1";
+/** The same rule as `modelId` in the config schema: no spaces, colons or `..`. */
+const MODEL_NAME = /^[A-Za-z0-9._/@-]+$/;
+
+/** Providers whose schema is sent with strict mode off. */
+const NOT_STRICT = { openai: "openai", openrouter: "openrouter", litellm: "litellm" } as const;
 
 export function parseModelId(id: string): { provider: Provider; model: string } {
   const at = id.indexOf(":");
   const provider = id.slice(0, at) as Provider;
   const model = id.slice(at + 1);
-  if (at < 1 || !model || !(PROVIDERS as readonly string[]).includes(provider)) {
+  if (at < 1 || !MODEL_NAME.test(model) || model.split("/").includes("..") || !(PROVIDERS as readonly string[]).includes(provider)) {
     throw new ModelConfigError(`Not a provider:model id: ${JSON.stringify(id)}. Providers: ${PROVIDERS.join(", ")}.`);
   }
   return { provider, model };
@@ -56,7 +69,7 @@ export function parseModelId(id: string): { provider: Provider; model: string } 
 
 export class ApiDriver implements ModelDriver {
   readonly name = "api";
-  private readonly cache = new Map<string, Promise<LanguageModel>>();
+  private readonly cache = new Map<string, Promise<LanguageModelV4>>();
 
   constructor(private readonly options: ApiDriverOptions) {}
 
@@ -72,12 +85,13 @@ export class ApiDriver implements ModelDriver {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const id = this.modelFor(request);
+    const { provider } = parseModelId(id);
     const model = await this.model(id);
     const system = request.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
     const messages = request.messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
     const common = {
       model,
-      ...(system ? { system } : {}),
+      ...(system ? { instructions: system } : {}),
       messages,
       maxOutputTokens: this.options.maxOutputTokens ?? 16000,
       maxRetries: this.options.maxRetries ?? 2,
@@ -88,12 +102,15 @@ export class ApiDriver implements ModelDriver {
       return { text: result.text, model: id, usage: usage(result.totalUsage) };
     }
     try {
+      const name = request.schemaName ? { name: request.schemaName } : {};
+      const strictOff = provider in NOT_STRICT ? { providerOptions: { [NOT_STRICT[provider as keyof typeof NOT_STRICT]]: { strictJsonSchema: false } } } : {};
       const result = await generateText({
         ...common,
-        output: Output.object({
-          schema: jsonSchema(request.schema as Parameters<typeof jsonSchema>[0]),
-          ...(request.schemaName ? { name: request.schemaName } : {}),
-        }),
+        ...strictOff,
+        output:
+          provider === "xai"
+            ? Output.json(name)
+            : Output.object({ schema: jsonSchema(request.schema as Parameters<typeof jsonSchema>[0]), ...name }),
       });
       return { text: JSON.stringify(result.output), model: id, usage: usage(result.totalUsage) };
     } catch (error) {
@@ -106,7 +123,7 @@ export class ApiDriver implements ModelDriver {
     }
   }
 
-  private model(id: string): Promise<LanguageModel> {
+  private model(id: string): Promise<LanguageModelV4> {
     let model = this.cache.get(id);
     if (!model) {
       const { provider, model: modelId } = parseModelId(id);
@@ -118,7 +135,7 @@ export class ApiDriver implements ModelDriver {
     return model;
   }
 
-  private async create(provider: Provider, modelId: string): Promise<LanguageModel> {
+  private async create(provider: Provider, modelId: string): Promise<LanguageModelV4> {
     const ref = this.options.models.keys?.[provider];
     const apiKey = ref ? await resolveSecret(ref, this.options.secrets ?? {}) : undefined;
     const endpoint = this.options.models.endpoints?.[provider];
@@ -135,14 +152,15 @@ export class ApiDriver implements ModelDriver {
       case "xai":
         return createXai(common)(modelId);
       case "openrouter":
-        return createOpenAICompatible({ ...common, name: "openrouter", baseURL: endpoint ?? OPENROUTER_URL })(modelId);
+        return createOpenAICompatible({ ...common, name: "openrouter", baseURL: endpoint ?? OPENROUTER_URL, supportsStructuredOutputs: true })(modelId);
       case "litellm":
         if (!endpoint) throw new ModelConfigError("litellm needs models.endpoints.litellm, the URL of your LiteLLM proxy.");
-        return createOpenAICompatible({ ...common, name: "litellm", baseURL: endpoint })(modelId);
+        return createOpenAICompatible({ ...common, name: "litellm", baseURL: endpoint, supportsStructuredOutputs: true })(modelId);
     }
   }
 }
 
+/** `inputTokens` includes the cached tokens; `cachedInputTokens` is the part of it read from the cache. */
 function usage(u: { inputTokens: number | undefined; outputTokens: number | undefined; inputTokenDetails?: { cacheReadTokens: number | undefined } }): TokenUsage {
   const cached = u.inputTokenDetails?.cacheReadTokens;
   return { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0, ...(cached ? { cachedInputTokens: cached } : {}) };

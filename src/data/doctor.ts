@@ -1,5 +1,5 @@
 import { relative, resolve, sep } from "node:path";
-import { CATALOG_CHECKED, catalogModel, ConfigError, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
@@ -120,23 +120,23 @@ async function gitignoreCheck(cwd: string, caseInsensitive?: boolean): Promise<C
   };
 }
 
-function patternMatches(pattern: string, model: string): boolean {
-  return pattern.endsWith(":*") ? model.startsWith(pattern.slice(0, -1)) : pattern === model;
-}
-
 function modelsCheck(config: Config): CheckResult {
   const models = config.models;
   if (!models) {
     return { id: "models", title: "Models", status: "warn", detail: "no models section; only the IDE's own model can run workflows", fix: "Add models.default to run from the CLI." };
   }
   const used = [models.default, ...Object.values(models.workflows ?? {})];
-  const blocked = models.allowed ? used.filter((m) => !models.allowed!.some((p) => patternMatches(p, m))) : [];
+  const blocked = models.allowed ? used.filter((m) => !modelAllowed(m, models.allowed)) : [];
   if (blocked.length > 0) {
     return { id: "models", title: "Models", status: "fail", detail: `not in models.allowed: ${[...new Set(blocked)].join(", ")}`, fix: "Add them to models.allowed or pick allowed models." };
   }
+  // OpenRouter and LiteLLM route to any model, so only the direct providers are checked against the catalog.
+  const custom = [...new Set(used)].filter((m) => !["openrouter", "litellm"].includes(m.split(":")[0]!) && !catalogModel(m));
+  const customDetail = custom.length > 0 ? `not in the shipped catalog (checked ${CATALOG_CHECKED}): ${custom.join(", ")}; they run, but are untested` : "";
+  const also = customDetail ? `\n${customDetail}` : "";
   const providers = [...new Set(used.map((m) => m.split(":")[0]!))];
   if (providers.includes("litellm") && !models.endpoints?.litellm) {
-    return { id: "models", title: "Models", status: "warn", detail: "litellm models need models.endpoints.litellm (your proxy's URL)", fix: "Add models.endpoints.litellm." };
+    return { id: "models", title: "Models", status: "warn", detail: `litellm models need models.endpoints.litellm (your proxy's URL)${also}`, fix: "Add models.endpoints.litellm." };
   }
   const noKey = providers.filter((p) => !(models.keys as Record<string, string> | undefined)?.[p]);
   if (noKey.length > 0) {
@@ -144,18 +144,16 @@ function modelsCheck(config: Config): CheckResult {
       id: "models",
       title: "Models",
       status: "warn",
-      detail: `no API key configured for ${noKey.join(", ")}; those models run only through an IDE host`,
+      detail: `no API key configured for ${noKey.join(", ")}; those models run only through an IDE host${also}`,
       fix: "Add models.keys.<provider>: ${env:NAME} to run from the CLI or CI.",
     };
   }
-  // OpenRouter and LiteLLM route to any model, so only the direct providers are checked against the catalog.
-  const custom = [...new Set(used)].filter((m) => !["openrouter", "litellm"].includes(m.split(":")[0]!) && !catalogModel(m));
-  if (custom.length > 0) {
+  if (customDetail) {
     return {
       id: "models",
       title: "Models",
       status: "warn",
-      detail: `not in the shipped catalog (checked ${CATALOG_CHECKED}): ${custom.join(", ")}; they run, but are untested`,
+      detail: customDetail,
       fix: "Check the model id with the provider, or pick a catalog model.",
     };
   }

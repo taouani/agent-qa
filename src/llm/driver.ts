@@ -21,7 +21,7 @@ export interface ModelRequest {
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
-  /** Input tokens served from the provider's cache, when it reports them. */
+  /** The part of `inputTokens` read from the prompt cache (already counted in `inputTokens`). */
   cachedInputTokens?: number;
 }
 
