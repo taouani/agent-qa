@@ -101,6 +101,15 @@ const BARE_REGIONS: CountryCode[] = ["CN", "ES", "PT", "US", "IT", "BR", "MX"];
 /** Digits with spaces, dots, dashes, slashes or brackets on one line, optionally after + or 00. */
 const PHONE_RUN = /(?<![\p{L}\p{N}])\+?\(?\d[\d \t ().\/-]*\d/gu;
 const PHONE_SEPARATORS = /\s().\/-/;
+/** Shapes blanked before the phone scan: IPv4, dates, times, year ranges. */
+const NOT_PHONE_SHAPES = [
+  /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]|\.\d)/g,
+  // A date stands alone: 06.12.34.56.78 is a phone, not a date followed by more digits.
+  /(?<!\d[-/.]?)(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}(?![-/.]?\d)/g,
+  /(?<!\d[-/.]?)\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}(?![-/.]?\d)/g,
+  /(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)/g,
+  /(?<!\d)(?:19|20)\d{2}\s?[-–]\s?(?:19|20)\d{2}(?!\d)/g,
+];
 /** Dates and decimal amounts look like phone numbers to a parser. */
 const NOT_A_PHONE = [/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/, /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/, /^\d+[.,]\d{1,2}$/];
 
@@ -109,8 +118,10 @@ export function phoneDetector(regions: CountryCode[] = PHONE_REGIONS): PatternDe
     name: "phone",
     find(original) {
       const out: Span[] = [];
-      // IP addresses are digits and dots too: blank them out (same length, so offsets hold).
-      const text = original.replace(new RegExp(IPV4.source, "g"), (m) => " ".repeat(m.length));
+      // IP addresses, dates, times and year ranges are digits and separators too: blank them out
+      // (same length, so offsets hold) so no phone run starts or ends inside one.
+      let text = original;
+      for (const re of NOT_PHONE_SHAPES) text = text.replace(re, (m) => " ".repeat(m.length));
       const cache = new Map<string, string | undefined>();
       const parseOnce = (key: string, run: () => string | undefined) => {
         if (!cache.has(key)) cache.set(key, run());
@@ -134,7 +145,8 @@ export function phoneDetector(regions: CountryCode[] = PHONE_REGIONS): PatternDe
             const shaped = to > from || compact.startsWith("0") || text[list[from]!.start - 1] === "(";
             if (shaped) return parseOnce(compact, () => regions.map((r) => parse(compact, r)).find(Boolean));
             // Bare digits: only where that is the usual way to write a number, or a full number with its country code.
-            if (digits.length < 9) return undefined;
+            // Nine digits at least; and a 10-digit run starting with 1 is a Unix timestamp, not a US number.
+            if (digits.length < 9 || /^1\d{9}$/.test(digits)) return undefined;
             return parseOnce("bare:" + compact, () => BARE_REGIONS.filter((r) => regions.includes(r)).map((r) => parse(compact, r)).find(Boolean) ?? (digits.length >= 11 ? parse("+" + digits) : undefined));
           });
           for (const f of found) {
@@ -157,7 +169,9 @@ function parse(text: string, region?: CountryCode): string | undefined {
 }
 
 /** Country code, check digits, then groups of 1 to 4 with optional spaces, dots or dashes; any case. */
-const IBAN_RUN = /\b[A-Z]{2}[ .-]?\d{2}(?:[ .-]?[A-Z0-9]{1,4})+/gi;
+// At most 15 groups after the check digits: an IBAN has at most 30 characters there, and an
+// unbounded run would follow ordinary words to the end of a paragraph (quadratic).
+const IBAN_RUN = /\b[A-Z]{2}[ .-]?\d{2}(?:[ .-]?[A-Z0-9]{1,4}){1,15}/gi;
 
 export const iban: PatternDetector = {
   name: "iban",
@@ -223,13 +237,16 @@ export const ip: PatternDetector = {
 
 const NATIONAL: Array<{ re: RegExp; valid: (s: string) => boolean }> = [
   { re: /\b[12378][ .]?\d{2}[ .]?\d{2}[ .]?(?:\d{2}|2[AB])[ .]?\d{3}[ .]?\d{3}[ .]?\d{2}\b/gi, valid: frNir },
-  { re: /\b[XYZ]?[ .-]?\d{1,2}[.]?\d{3}[.]?\d{3}[ .-]?[A-Z]\b/gi, valid: esDni },
+  { re: /\b(?:[XYZ][ .-]?)?\d{1,2}[.]?\d{3}[.]?\d{3}[ .-]?[A-Z]\b/gi, valid: esDni },
   { re: /\b[A-Z]{6}[0-9LMNPQRSTUV]{2}[A-EHLMPRST][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]\b/gi, valid: itCodiceFiscale },
   { re: /(?<![\d.-])\d{3}[ .]?\d{3}[ .]?\d{3}(?![\d.-])/g, valid: (s) => nlBsn(s) || ptNif(s) },
   { re: /(?<![\d.-])\d{2}[ ]?\d{3}[ ]?\d{3}[ ]?\d{3}(?![\d.-])/g, valid: deSteuerId },
   { re: /(?<!\d)\d{6}[ ]?\d{8}[ ]?\d{3}[\dXx](?![\dXx])/g, valid: (s) => cnResidentId(s.replace(/\s/g, "")) },
   { re: /(?<![\d-])\d{3}[- ]\d{2}[- ]\d{4}(?![\d-])/g, valid: usSsn },
-  { re: /\b[A-Z]{2} ?\d{2} ?\d{2} ?\d{2}(?: ?[A-D])?\b/gi, valid: ukNino },
+  // NINO: with its suffix letter in any case; without it only in capitals and in the usual groupings,
+  // so "at 250000" or "by 100000" in prose is not an id.
+  { re: /\b[A-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D]\b/gi, valid: ukNino },
+  { re: /\b[A-Z]{2}(?:\d{6}| \d{2} \d{2} \d{2})\b(?! ?[A-Da-d]\b)/g, valid: ukNino },
   { re: /(?<!\d)[12]\d{9}(?!\d)/g, valid: saNationalId },
 ];
 

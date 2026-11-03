@@ -249,4 +249,21 @@ describe("review cases: formats that must not leak", () => {
     const out = masker.mask(text);
     expect(new SeedScanner(seeds as never).scan(out)).toEqual([]);
   });
+
+  it("leaves dates, times, year ranges, timestamps and prose quantities alone", async () => {
+    expect(await mask("Released on 2026-11-03 14:30:00Z")).toBe("Released on 2026-11-03 14:30:00Z");
+    expect(await mask("Range 2000-2010 and 2011-2020")).toBe("Range 2000-2010 and 2011-2020");
+    expect(await mask("shipped at 250000 units, by 100000")).toBe("shipped at 250000 units, by 100000");
+    expect(await mask("created 1700000000")).toBe("created 1700000000");
+    expect(await mask("DNI 12.345.678-Z")).toBe("DNI <NATIONAL_ID_1>");
+  });
+
+  it("stays linear on long unpunctuated text that starts like an IBAN", async () => {
+    const inputs = ["ab12 " + "const value equals other value plus one ".repeat(5000), "on 2026 " + "the user opens the case and saves it ".repeat(5000), "AB12 " + "ABCD ".repeat(40000)];
+    for (const input of inputs) {
+      const started = Date.now();
+      await mask(input);
+      expect(Date.now() - started).toBeLessThan(3000);
+    }
+  });
 });

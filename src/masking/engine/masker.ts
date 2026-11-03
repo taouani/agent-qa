@@ -127,9 +127,17 @@ export function mergeOverlaps(spans: Span[], text: string): Span[] {
   let groupEnd = -1;
   const flush = () => {
     if (group.length === 0) return;
-    const best = [...group].sort((a, b) => b.end - b.start - (a.end - a.start) || PRIORITY.indexOf(a.detector) - PRIORITY.indexOf(b.detector))[0]!;
-    const start = Math.min(...group.map((g) => g.start));
-    const end = Math.max(...group.map((g) => g.end));
+    let best = group[0]!;
+    for (const g of group) {
+      const longer = g.end - g.start - (best.end - best.start);
+      if (longer > 0 || (longer === 0 && PRIORITY.indexOf(g.detector) < PRIORITY.indexOf(best.detector))) best = g;
+    }
+    let start = Infinity;
+    let end = -Infinity;
+    for (const g of group) {
+      if (g.start < start) start = g.start;
+      if (g.end > end) end = g.end;
+    }
     out.push(start === best.start && end === best.end ? best : { ...best, start, end, value: text.slice(start, end) });
     group = [];
   };
