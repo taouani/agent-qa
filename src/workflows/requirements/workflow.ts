@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { OutputError, RunStore, WorkflowDefinition } from "../../core/index.js";
+import type { OutputError, RunStore, StepDefinition, WorkflowDefinition } from "../../core/index.js";
 import type { JiraInput, LoadedSources, Requirement, RequirementsData } from "../../data/index.js";
 import {
   QUALITY_GAPS,
@@ -25,7 +25,7 @@ import {
 
 export interface RequirementsDeps {
   data: RequirementsData;
-  runs: Pick<RunStore, "writeArtifact">;
+  runs: Pick<RunStore, "writeArtifact" | "readArtifact">;
 }
 
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
@@ -77,7 +77,7 @@ const analysisSchema = z
   .strict();
 type Analysis = z.infer<typeof analysisSchema>;
 
-function inputOf(inputs: RequirementsInputs): JiraInput {
+function inputOf(inputs: JiraInputs): JiraInput {
   return inputs.key !== undefined ? { key: inputs.key } : { jql: inputs.jql! };
 }
 
@@ -181,36 +181,45 @@ function build(loaded: LoadedSources, analysis: Analysis): RequirementsArtifact 
   return { input: loaded.sources.input, requirements, truncated: loaded.sources.truncated, unreachable: loaded.sources.unreachable };
 }
 
+/** Inputs of any workflow that starts from Jira: one key or one JQL filter. */
+export type JiraInputs = { key?: string | undefined; jql?: string | undefined };
+
+/** The analyze step, shared with the test-cases workflow. It writes requirements@1 when accepted. */
+export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepDefinition<I, Analysis> {
+  const load = (runId: string, inputs: I) => deps.data.requirements(runId, inputOf(inputs));
+  return {
+    id: "analyze",
+    kind: "generate",
+    outputSchema: analysisSchema,
+    instructions: () => INSTRUCTIONS,
+    context: async ({ runId, inputs }) => contextOf(await load(runId, inputs)),
+    check: async ({ runId, inputs }, output) => {
+      const loaded = await load(runId, inputs);
+      return check(loaded.sources.requirements, contextOf(loaded), output);
+    },
+    onAccept: async ({ runId, inputs }, output) => {
+      const loaded = await load(runId, inputs);
+      await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output), {
+        inputs: loaded.inputs,
+        templateVersion: REQUIREMENTS_TEMPLATE_VERSION,
+      });
+    },
+  };
+}
+
+/** A JQL filter can name a person, so the run folder keeps a vault token instead. */
+export async function sealJiraInputs<I extends JiraInputs>(deps: RequirementsDeps, runId: string, inputs: I): Promise<I> {
+  if (inputs.key === undefined && inputs.jql === undefined) return inputs;
+  const sealed = await deps.data.sealInput(runId, inputOf(inputs));
+  return "key" in sealed ? { ...inputs, key: sealed.key } : { ...inputs, jql: sealed.jql };
+}
+
 export function requirementsWorkflow(deps: RequirementsDeps): WorkflowDefinition<RequirementsInputs> {
-  const load = (runId: string, inputs: RequirementsInputs) => deps.data.requirements(runId, inputOf(inputs));
   return {
     id: "requirements",
     description: "Read a Jira issue or JQL filter (with children, linked issues and Confluence pages), mask it, and analyze it into requirements@1 with quality scores and open questions.",
     inputSchema: requirementsInputSchema,
-    // A JQL filter can name a person, so the run folder keeps a vault token instead.
-    prepareInputs: async (runId, inputs) => {
-      const sealed = await deps.data.sealInput(runId, inputOf(inputs));
-      return "key" in sealed ? { key: sealed.key } : { jql: sealed.jql };
-    },
-    steps: [
-      {
-        id: "analyze",
-        kind: "generate",
-        outputSchema: analysisSchema,
-        instructions: () => INSTRUCTIONS,
-        context: async ({ runId, inputs }) => contextOf(await load(runId, inputs)),
-        check: async ({ runId, inputs }, output) => {
-          const loaded = await load(runId, inputs);
-          return check(loaded.sources.requirements, contextOf(loaded), output);
-        },
-        onAccept: async ({ runId, inputs }, output) => {
-          const loaded = await load(runId, inputs);
-          await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output), {
-            inputs: loaded.inputs,
-            templateVersion: REQUIREMENTS_TEMPLATE_VERSION,
-          });
-        },
-      },
-    ],
+    prepareInputs: (runId, inputs) => sealJiraInputs(deps, runId, inputs),
+    steps: [analyzeStep<RequirementsInputs>(deps)],
   };
 }

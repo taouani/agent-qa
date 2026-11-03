@@ -343,6 +343,12 @@ describe("maskJql", () => {
     ['"Assignee" = jdoe OR worklogAuthor = asmith OR assignee was jdoe by bob', '"Assignee" = <PERSON_1> OR worklogAuthor = <PERSON_5> OR assignee was <PERSON_1> by <PERSON_6>'],
     ['assignee in (jdoe, "a)b", asmith) AND reporter in membersOf("team")', 'assignee in (<PERSON_1>, "<PERSON_7>", <PERSON_5>) AND reporter in membersOf("team")'],
     ["assignee in (jdoe, asmith", "assignee in (<PERSON_1>, <PERSON_5>"],
+    ["issuekey in updatedBy(jdoe) AND approval = pendingBy(asmith)", "issuekey in updatedBy(<PERSON_1>) AND approval = pendingBy(<PERSON_5>)"],
+    ["assignee in (jdoe (x), asmith) OR assignee = jdoe(", "assignee in (<PERSON_1> (<PERSON_8>), <PERSON_5>) OR assignee = <PERSON_1>("],
+    ["assignee in ((jdoe), asmith) AND summary ~ hello!", "assignee in ((<PERSON_1>), <PERSON_5>) AND summary ~ hello!"],
+    ["assignee was jdoe constructor asmith", "assignee was <PERSON_1> constructor asmith"],
+    ["project in projectsLeadByUser(jdoe) AND issueFunction in commentedBy(asmith) AND sprint in openSprints()", "project in projectsLeadByUser(<PERSON_1>) AND issueFunction in commentedBy(<PERSON_5>) AND sprint in openSprints()"],
+    ["issuekey in someNewFunction(jdoe) AND fixVersion in releasedVersions(ABC)", "issuekey in someNewFunction(<PERSON_1>) AND fixVersion in releasedVersions(ABC)"],
   ];
   it("replaces people field values, account ids and detected values with tokens", () => {
     const masker = new Masker({ vault });

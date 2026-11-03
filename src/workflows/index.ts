@@ -2,6 +2,7 @@
 import type { WorkflowDefinition } from "../core/index.js";
 import { requirementsWorkflow, type RequirementsDeps } from "./requirements/workflow.js";
 import { spikeWorkflow } from "./spike/workflow.js";
+import { testCasesWorkflow } from "./test-cases/workflow.js";
 
 export const MODULE = "workflows";
 export { spikeWorkflow } from "./spike/workflow.js";
@@ -10,9 +11,13 @@ export { requirementsInputSchema, requirementsWorkflow } from "./requirements/wo
 export type { RequirementsDeps, RequirementsInputs } from "./requirements/workflow.js";
 export { QUALITY_GAPS, REQUIREMENTS_ARTIFACT, REQUIREMENTS_TEMPLATE_VERSION, renderRequirements, requirementsArtifactSchema } from "./requirements/artifact.js";
 export type { AnalyzedRequirement, RequirementsArtifact } from "./requirements/artifact.js";
+export { ISSUES_PER_BATCH, testCasesInputSchema, testCasesWorkflow } from "./test-cases/workflow.js";
+export type { TestCasesDeps, TestCasesInputs } from "./test-cases/workflow.js";
+export { CASE_ID, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, TEST_CASES_TEMPLATE_VERSION, testCaseSchema, testCasesSchema } from "./test-cases/artifact.js";
+export type { TestCase, TestCases, TestCasesDraft } from "./test-cases/artifact.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function builtinWorkflows(deps: RequirementsDeps): ReadonlyArray<WorkflowDefinition<any>> {
-  return [spikeWorkflow, requirementsWorkflow(deps)];
+  return [spikeWorkflow, requirementsWorkflow(deps), testCasesWorkflow(deps)];
 }

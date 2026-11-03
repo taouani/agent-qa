@@ -18,6 +18,10 @@ export interface RequirementsData {
    * JQL filter becomes a vault token (it can name a person).
    */
   sealInput(runId: string, input: JiraInput): Promise<JiraInput>;
+  /** Free text added in a run (a review edit), masked with the run's vault: known people keep their tokens. */
+  maskTexts(runId: string, texts: string[], field: string): Promise<string[]>;
+  /** Whether the run's vault still holds tokens (vaults expire after 30 days). */
+  hasVault(runId: string): Promise<boolean>;
   /** Masked requirements for a key, a JQL filter or a sealed JQL token. */
   requirements(runId: string, input: JiraInput, options?: LoadOptions): Promise<LoadedSources>;
 }
@@ -63,6 +67,17 @@ export class DataAccess implements RequirementsData {
   async requirements(runId: string, input: JiraInput, options: LoadOptions = {}): Promise<LoadedSources> {
     const { vault, service } = await this.run(runId);
     return service.requirements(this.unseal(vault, input), options);
+  }
+
+  async hasVault(runId: string): Promise<boolean> {
+    return (await this.run(runId)).vault.size > 0;
+  }
+
+  async maskTexts(runId: string, texts: string[], field: string): Promise<string[]> {
+    const { service } = await this.run(runId);
+    const masked = texts.map((t) => service.maskText(t, field));
+    await service.saveVault();
+    return masked;
   }
 
   private unseal(vault: RunVault, input: JiraInput): JiraInput {
