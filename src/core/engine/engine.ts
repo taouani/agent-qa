@@ -145,6 +145,18 @@ export class WorkflowEngine {
     return this.render(registered, state);
   }
 
+  /**
+   * The open confirm step's fixed answer (see `StepDefinition.answers`), or
+   * undefined when the step has none or isn't a confirm step.
+   */
+  async fixedAnswer(runId: string, choice: "yes" | "no" | "unattended"): Promise<unknown> {
+    const { registered, state } = await this.load(runId);
+    if (state.status !== "running") return undefined;
+    const def = this.currentStep(registered.workflow, state);
+    if (def.kind !== "confirm" || !def.answers) return undefined;
+    return choice === "unattended" ? (def.answers.unattended ?? def.answers.yes) : def.answers[choice];
+  }
+
   /** The current step again, for a host that restarted. */
   async next(runId: string): Promise<Step> {
     const { registered, state } = await this.load(runId);

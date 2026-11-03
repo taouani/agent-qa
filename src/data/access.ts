@@ -66,6 +66,11 @@ export interface DataAccessOptions {
   audit?: AuditSink;
 }
 
+/** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
+export function secretSources(env: NodeJS.ProcessEnv = process.env): SecretSources {
+  return { env, keychain: keychainLookup() };
+}
+
 /** A sealed JQL input: the vault token that stands for it. */
 const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
@@ -194,7 +199,7 @@ export class DataAccess implements RequirementsData, XrayData {
   }
 
   private secrets(): SecretSources {
-    return this.options.secrets ?? { env: this.options.env ?? process.env, keychain: keychainLookup() };
+    return this.options.secrets ?? secretSources(this.options.env ?? process.env);
   }
 
   private async reveal(value: string): Promise<string> {

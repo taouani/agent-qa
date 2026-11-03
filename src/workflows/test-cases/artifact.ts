@@ -69,6 +69,8 @@ export const testCasesSchema = z
         dropped: z.number().int().min(0),
         /** kept / generated: cases accepted as written. 1 when nothing was generated. */
         keptRate: z.number().min(0).max(1),
+        /** Nobody reviewed (the CLI's --yes): every case counts as kept, so the kept rate says nothing. */
+        unattended: z.literal(true).optional(),
       })
       .strict(),
   })
@@ -113,7 +115,9 @@ export function renderTestCases(data: TestCases): string {
   return [
     "# Test cases",
     "",
-    `${data.cases.length} case(s) after review: ${r.kept} kept, ${r.edited} edited, ${r.dropped} dropped of ${r.generated} generated (kept rate ${Math.round(r.keptRate * 100)}%).`,
+    r.unattended
+      ? `${data.cases.length} case(s), accepted without a review (--yes).`
+      : `${data.cases.length} case(s) after review: ${r.kept} kept, ${r.edited} edited, ${r.dropped} dropped of ${r.generated} generated (kept rate ${Math.round(r.keptRate * 100)}%).`,
     ...(data.uncovered.length ? ["", `**Not covered after review:** ${data.uncovered.map((u) => `${u.requirement} ${u.criterion}`).join(", ")}`] : []),
     ...(data.skipped.length ? ["", `No acceptance criteria, so no cases: ${data.skipped.join(", ")}`] : []),
     ...renderCases(data.cases),

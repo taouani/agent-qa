@@ -6,6 +6,8 @@ import { StaticDriver } from "../llm/index.js";
 import { DataAccess, formatDoctor, runDoctor } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
+import { initCommand } from "./init.js";
+import { runCommand } from "./run.js";
 
 /**
  * The project folder: `AGENT_QA_ROOT`, else the folder holding
@@ -40,11 +42,38 @@ export function buildProgram(): Command {
     .description("Masked, validated QA deliverables and Playwright scripts from Jira, Confluence and Xray.")
     .version(VERSION);
 
-  const planned: Array<[string, string]> = [
-    ["init", "set up agent-qa.yaml and host settings"],
-    ["run <workflow>", "run a workflow from the CLI"],
-    ["profile", "build or refresh the framework profile"],
-  ];
+  program
+    .command("init")
+    .description("write agent-qa.yaml, .vscode/mcp.json and the .gitignore lines")
+    .option("--site <url>", "Jira site, e.g. https://acme.atlassian.net")
+    .option("--model <provider:model>", "the default model")
+    .option("--xray-project <key>", "Xray project key (adds the xray section)")
+    .option("--force", "replace an existing agent-qa.yaml")
+    .option("--cwd <dir>", "project folder (default: the current folder)")
+    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; cwd?: string }) => {
+      process.exitCode = await initCommand({ ...opts, root: resolve(opts.cwd ?? process.cwd()) });
+    });
+  program
+    .command("run [workflow]")
+    .description("run a workflow with the API model (exit 0 done, 1 failed, 2 bad setup or input, 3 waits for a person)")
+    .option("--key <issue>", "one Jira issue key")
+    .option("--jql <filter>", "a JQL filter")
+    .option("--from-run <runId>", "start test-cases from an earlier requirements run")
+    .option("--input <json>", "the workflow's inputs as JSON")
+    .option("--resume <runId>", "continue a run that stopped")
+    .option("--model <provider:model>", "the model for every step")
+    .option("--yes", "accept every confirm step without asking (the review then counts as unattended)")
+    .option("--no <step...>", "decline these confirm steps, e.g. --no push")
+    .option("--ci", "CI mode: nobody is asked, and ask write rules are denied (default when CI is set)")
+    .option("--cwd <dir>", "project folder (default: the current folder)")
+    .action(async (workflow: string | undefined, opts: Omit<Parameters<typeof runCommand>[0], "root" | "env" | "workflow"> & { cwd?: string }) => {
+      const { cwd, ...rest } = opts;
+      const env = process.env;
+      const root = cwd ? resolve(cwd) : projectRoot(process.cwd(), env);
+      process.exitCode = await runCommand({ ...rest, ...(workflow ? { workflow } : {}), root, env });
+    });
+
+  const planned: Array<[string, string]> = [["profile", "build or refresh the framework profile"]];
   for (const [name, description] of planned) {
     program
       .command(name)
