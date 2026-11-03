@@ -204,7 +204,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
         const onUsage = async (u: StepUsage) => {
           log(usageLine(u));
           // The cost report must never stop a run: the answer is already paid for.
-          await recordUsage(runs, id, [usageEntry(u, fallback)]).catch((error: unknown) => log(`  (cost not recorded: ${error instanceof Error ? error.message : String(error)})`));
+          await recordUsage(runs, id, [usageEntry(u, fallback)]).catch((error: unknown) => log(`  (cost not recorded: ${(error instanceof Error ? error.message : String(error)).split(opts.root).join(".")})`));
         };
         step = (await drive(engine, step, driver, { ...(model ? { model } : {}), onUsage })).step;
         continue;

@@ -70,7 +70,9 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
       () => undefined,
     );
   };
-  // Runs with a submit in flight: a second one racing it is a duplicate, never looked up again.
+  // Runs with a submit in flight: a second one racing it is taken as a duplicate and not looked up again.
+  // If it was a different answer the engine counted as the next attempt, one call goes unrecorded:
+  // undercounting is the safer error for a cost report than counting an answer twice.
   const inFlight = new Map<string, number>();
   const submit = async (id: string, stepId: string, output: unknown): Promise<SubmitResult> => {
     const racing = (inFlight.get(id) ?? 0) > 0;
@@ -88,8 +90,10 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
     // After a server restart the host may submit without asking for the step again: look it up (read-only).
     if (!before && !racing && options.runs) {
       const state = await engine.status(id).catch(() => undefined);
-      // An already-accepted step is a replay, not a new answer.
-      if (state && !state.accepted[stepId]) before = await engine.next(id).then((s) => (serve(s), served.get(id)), () => undefined);
+      // An already-accepted step is a replay, not a new answer; a confirm step is a person's answer, never
+      // recorded (and rendering it again could call a connector).
+      const confirm = state ? engine.confirmSteps(state.workflowId).some((c) => c.id === stepId) : true;
+      if (state && !confirm && !state.accepted[stepId]) before = await engine.next(id).then((s) => (serve(s), served.get(id)), () => undefined);
     }
     // Taken now, so a second submit of the same answer racing this one isn't recorded twice.
     const mine = before?.stepId === stepId ? before : undefined;

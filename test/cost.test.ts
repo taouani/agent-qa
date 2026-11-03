@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCost, COST_ARTIFACT, recordUsage, renderCost, RunStore, WorkflowEngine, type UsageEntry } from "../src/core/index.js";
 import { createMcpServer } from "../src/mcp/index.js";
 import { spikeWorkflow } from "../src/workflows/index.js";
@@ -123,5 +123,19 @@ describe("usage recording", () => {
     await client.connect(clientSide);
     await client.callTool({ name: "workflow_submit", arguments: { runId: step.runId, stepId: "analyze", output: { summary: "S.", acceptanceCriteria: ["A"], ambiguities: [] } } });
     expect((await runs.readUsage(step.runId)).map((e) => [e.stepId, e.promptChars])).toEqual([["analyze", step.instructions.length + step.context.length]]);
+    // A confirm answer is never recorded, and its step isn't rendered again to find out.
+    await engine.submit(step.runId, "analyze", { summary: "Create a case from a contact.", acceptanceCriteria: ["A"], ambiguities: [] });
+    const cases = Array.from({ length: 10 }, (_, i) => ({ id: `TC-SPIKE-1-${String(i + 1).padStart(3, "0")}`, title: `Case number ${i + 1}`, kind: "positive", priority: "P2", preconditions: [], steps: [{ action: "Open it", data: "", expected: "It opens" }] }));
+    expect((await engine.submit(step.runId, "cases", { cases })).next.stepId).toBe("push");
+    const [c2, s2] = InMemoryTransport.createLinkedPair();
+    await createMcpServer(engine, { runs }).connect(s2);
+    const client2 = new Client({ name: "t", version: "0" });
+    await client2.connect(c2);
+    const next = vi.spyOn(engine, "next");
+    const before = (await runs.readUsage(step.runId)).length;
+    const pushed = await client2.callTool({ name: "workflow_submit", arguments: { runId: step.runId, stepId: "push", output: { approve: false } } });
+    expect(pushed.isError).not.toBe(true);
+    expect(next).not.toHaveBeenCalled();
+    expect(await runs.readUsage(step.runId)).toHaveLength(before);
   });
 });
