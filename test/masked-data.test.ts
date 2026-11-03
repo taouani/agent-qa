@@ -263,6 +263,23 @@ describe("review fixes", () => {
     expect(files).not.toMatch(/wrenhallow/i);
   });
 
+  it("matches standard fields by their Jira names", async () => {
+    const tagged = issue({ key: "ABC-1", fixVersions: ["dupont-release"], components: ["dupont account"] });
+    const { svc } = service({ masking: { fields: { jira: ["Fix versions", "Component/s"] } } }, new FakeJira([tagged]));
+    expect(JSON.stringify((await svc.requirements({ key: "ABC-1" })).sources)).not.toMatch(/dupont/i);
+  });
+
+  it("treats an older sources file as a miss", async () => {
+    const { svc } = service();
+    await svc.requirements({ key: "ABC-1" });
+    const { writeFile } = await import("node:fs/promises");
+    const file = join(dir, RUN, "sources.json");
+    const old = JSON.parse(await readFile(file, "utf8"));
+    delete old.data.cacheKey;
+    await writeFile(file, JSON.stringify(old));
+    expect((await svc.requirements({ key: "ABC-1" })).cached).toBe(false);
+  });
+
   it("does not repeat the acceptance criteria field among the extra fields", async () => {
     const withAc = issue({ key: "ABC-1", acceptanceCriteria: adf("- one"), extraFields: { "Acceptance Criteria": adf("- one") } });
     const jira = new FakeJira([withAc]);
@@ -289,6 +306,8 @@ describe("acceptance criteria splitting", () => {
       "E-mail is sent",
       "When offline, a banner is shown",
     ]);
+    expect(splitCriteria("Data is exported nightly\nWhen offline, a banner is shown")).toHaveLength(2);
+    expect(splitCriteria("假如用户已登录\n当用户提交").map((c) => c.text)).toEqual(["假如用户已登录\n当用户提交"]);
     expect(criteriaFromDescription("Acceptance criteria:\nGiven a\nThen b\n\nGiven c\nThen d\n\nOther text")).toEqual({
       criteria: "Given a\nThen b\n\nGiven c\nThen d",
       rest: "Other text",

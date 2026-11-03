@@ -128,6 +128,27 @@ const UNMASKED_FIELDS = [
   "confluence.version",
 ];
 
+/** Standard fields the client always reads, by every name Jira gives them, to the name used here. */
+const STANDARD_FIELDS: Record<string, string> = {
+  summary: "summary",
+  description: "description",
+  assignee: "assignee",
+  reporter: "reporter",
+  creator: "creator",
+  labels: "labels",
+  label: "labels",
+  components: "components",
+  component: "components",
+  "component/s": "components",
+  fixversions: "fixVersions",
+  fixversion: "fixVersions",
+  "fix versions": "fixVersions",
+  "fix version": "fixVersions",
+  "fix version/s": "fixVersions",
+  acceptancecriteria: "acceptanceCriteria",
+  "acceptance criteria": "acceptanceCriteria",
+};
+
 const ALL_DETECTORS: DetectorName[] = ["email", "iban", "card", "national-id", "phone", "ip", "name"];
 const ALL_LANGUAGES: NameLanguage[] = ["en", "fr", "es", "de", "pt", "nl", "it", "ar", "zh"];
 
@@ -172,7 +193,6 @@ export class MaskedDataService {
     await vault.save();
     const cacheKey = hashInput(
       JSON.stringify({
-        runId,
         input: inputToken,
         version: SOURCES_VERSION,
         masking: this.options.config.masking,
@@ -184,8 +204,9 @@ export class MaskedDataService {
     );
 
     if (!options.refresh) {
-      const cached = await store.readArtifact(runId, SOURCES_ARTIFACT);
-      const report = await store.readArtifact(runId, MASKING_REPORT_ARTIFACT);
+      // An artifact that no longer parses (an older shape) is a miss, not an error.
+      const cached = await store.readArtifact(runId, SOURCES_ARTIFACT).catch(() => undefined);
+      const report = await store.readArtifact(runId, MASKING_REPORT_ARTIFACT).catch(() => undefined);
       if (cached && report && cached.data.cacheKey === cacheKey) {
         return { sources: cached.data, report: report.data, inputs: cached.inputs, cached: true };
       }
@@ -233,16 +254,19 @@ export class MaskedDataService {
     return new Set(this.wholeFieldNames().map((f) => f.toLowerCase()));
   }
 
-  /** `masking.fields.jira`, trimmed, with `customfield_` ids in Jira's own case. */
+  /** `masking.fields.jira`, trimmed, standard fields by their id whatever name is used, `customfield_` ids in Jira's case. */
   private wholeFieldNames(): string[] {
-    return (this.options.config.masking.fields?.jira ?? []).map((f) => f.trim().replace(/^customfield_/i, "customfield_")).filter(Boolean);
+    return (this.options.config.masking.fields?.jira ?? [])
+      .map((f) => f.trim())
+      .filter(Boolean)
+      .map((f) => STANDARD_FIELDS[f.toLowerCase()] ?? f.replace(/^customfield_/i, "customfield_"));
   }
 
   private collectOptions(): CollectOptions {
     const jira = this.options.config.atlassian?.jira ?? {};
     // Fields masked whole are read too, unless they are standard ones the client already reads.
-    const standard = new Set(["summary", "description", "assignee", "reporter", "creator", "labels", "components", "fixversions"]);
-    const whole = this.wholeFieldNames().filter((f) => !standard.has(f.toLowerCase()) && f.toLowerCase() !== "acceptancecriteria");
+    const standard = new Set(Object.values(STANDARD_FIELDS).map((f) => f.toLowerCase()));
+    const whole = this.wholeFieldNames().filter((f) => !standard.has(f.toLowerCase()));
     const acField = jira.acceptanceCriteriaField?.trim().toLowerCase();
     const extraFields = [...new Set([...(jira.extraFields ?? []).map((f) => f.trim()), ...whole])].filter((f) => f.toLowerCase() !== acField);
     return {
@@ -308,10 +332,10 @@ const NEXT_HEADING = /^\s*(?:#+\s*\S|[\p{Lu}][^.!?:]{0,60}[:：]\s*$)/u;
 const BULLET = /^\s*(?:[-*•·▪◦]|\d+[.)]|[a-z][.)]|AC\s*\d+\s*[:.)-]?)\s+/iu;
 /** A line that starts a Gherkin scenario. */
 const GHERKIN_START =
-  /^\s*(?:given|scenario|scenario outline|background|étant donné|etant donne|soit|scénario|scenario|dado|dada|escenario|cenário|cenario|angenommen|gegeben sei|szenario|gegeven|stel|scenario|dato|data|scenario|假如|假设|场景)\b/iu;
+  /^\s*(?:(?:given|scenario|scenario outline|background|étant donné|etant donne|scénario|dado que|escenario|cenário|cenario|angenommen|gegeben sei|szenario|gegeven|dato che)\b|假如|假设|场景)/iu;
 /** Gherkin lines that continue a scenario: When, Then, And, But in the 9 languages. */
 const GHERKIN_NEXT =
-  /^\s*(?:and|but|then|when|et|mais|alors|quand|lorsque|y|pero|entonces|cuando|und|aber|dann|wenn|e|mas|então|entao|quando|en|maar|dan|als|ma|allora|quando|并且|而且|那么|当|但是)\s/iu;
+  /^\s*(?:(?:and|but|then|when|et|mais|alors|quand|lorsque|y|pero|entonces|cuando|und|aber|dann|wenn|e|mas|então|entao|quando|en|maar|dan|als|ma|allora)\s|并且|而且|那么|当|但是)/iu;
 
 /**
  * Acceptance criteria as AC1, AC2...: one per line or bullet; Gherkin lines
