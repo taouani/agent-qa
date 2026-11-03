@@ -150,11 +150,11 @@ export const CHINESE_NOT_NAMES = new Set(list(`
   邓州 曾国 肖像 田野 袁世 于今 程控 苏州 魏国 丁点 任职 沈默 姚家 卢沟 崔莺 钟情 谭嗣 陆军 汪精
   范例 金子 石头 廖廖 贾乃 夏日 韦伯 付出 傅里 方才 白银 孟子 熊熊 秦岭 邱园 尹氏 段时 雷同 侯门 龙虾 史诗 陶冶
   黎巴 贺岁 顾及 毛病 郝家 龚家 邵家 万能 钱币 严禁 覃家 武汉 戴尔 莫斯 向往 汤姆 高兴 高中 高考 方针 白板 金牌 马克
-  周报 周会 向导 高亮 高端 高层 高于 张三 李四 王五
+  周报 周会 白名 向导 高亮 高端 高层 高于 张三 李四 王五
 `));
 
 /** Chinese surname characters that are far more often a word (于 "at", "than"): a name only with a title after. */
-export const CHINESE_WEAK_SURNAMES = new Set(["于"]);
+export const CHINESE_WEAK_SURNAMES = new Set(["于", "向"]);
 
 /**
  * Latin given names that are also everyday words or months (Amber in a RAG
@@ -170,6 +170,12 @@ export const AMBIGUOUS_GIVEN = new Set(list(`
  * رضا "satisfaction", حسن "good"): a name only after a title or with another
  * name part.
  */
+/** Everyday ال words that follow an ambiguous given name without being a family name. */
+export const ARABIC_AL_WORDS = new Set(list(`
+  العملاء العميل الطلب الطلبات المستخدم المستخدمين النظام الخدمة الخدمات الموظفين الموظف الحساب البيانات الفريق
+  الإدارة الادارة المشروع العمل الجودة التطبيق الموقع الشركة المنتج المنتجات الدعم السعر الحالة
+`));
+
 export const ARABIC_AMBIGUOUS = new Set(list(`صالح رضا حسن سعيد كريم أمين نور جمال كمال عادل وفاء هدى منى نبيل أمينة كريمة سعاد غادة`));
 
 /**
@@ -187,4 +193,6 @@ export const NOT_SURNAMES = new Set(list(`
   rule rules template templates object objects layout tab button link menu panel form section item items data batch
   job jobs schedule meeting call message notification alert summary details overview settings configuration version
   build environment sandbox production org experience community communities office department branch store
+  thanks thank regards cheers best hi hello dear greetings grusse gruesse danke merci cordialement bonjour gracias
+  saludos hola obrigado obrigada ola grazie saluti ciao groeten bedankt hallo
 `));

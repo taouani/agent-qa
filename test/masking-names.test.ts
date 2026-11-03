@@ -163,3 +163,33 @@ describe("second review round", () => {
     expect(masker.mask("Marguerite Quillfeather Jones")).toBe("<PERSON_1> <PERSON_2>");
   });
 });
+
+describe("third review round", () => {
+  it("takes an ال family name after an everyday-word given name", () => {
+    expect(names("وافق حسن الشمري على التغيير")).toEqual(["حسن الشمري"]);
+    expect(names("أرسل إلى سعيد القحطاني")).toEqual(["سعيد القحطاني"]);
+    expect(names("تواصل مع نبيل الحربي")).toEqual(["نبيل الحربي"]);
+    expect(names("تحسين رضا العملاء")).toEqual([]);
+    expect(names("كريم العلي سيراجع الطلب")).toEqual(["كريم العلي"]);
+  });
+
+  it("leaves 向 and 白名单 alone and sign-offs out of names", () => {
+    expect(names("向客户发送邮件")).toEqual([]);
+    expect(names("向用户发送通知")).toEqual([]);
+    expect(names("白名单已更新")).toEqual([]);
+    expect(names("Thanks, Paul")).toEqual(["Paul"]);
+    expect(names("Grüße, Anna")).toEqual(["Anna"]);
+  });
+
+  it("masks known and found names in linear time", async () => {
+    const { randomBytes } = await import("node:crypto");
+    const { Masker, MemoryVaultStorage, Vault } = await import("../src/masking/index.js");
+    const key = randomBytes(32);
+    const vault = await new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }).open("r");
+    const masker = new Masker({ vault, names: ["Marguerite Quillfeather"] });
+    const text = "Marguerite Quillfeather met Mme Dupont. ".repeat(25000);
+    const started = Date.now();
+    expect(masker.spans(text).length).toBe(50000);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+});

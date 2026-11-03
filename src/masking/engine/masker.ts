@@ -170,10 +170,14 @@ function outside(spans: Span[], cover: Span[], text: string): Span[] {
   if (cover.length === 0) return spans;
   const sorted = [...cover].sort((a, b) => a.start - b.start);
   const out: Span[] = [];
-  for (const s of spans) {
+  // Both lists in order, so the first cover worth looking at only moves forward: linear overall.
+  let first = 0;
+  for (const s of [...spans].sort((a, b) => a.start - b.start)) {
+    while (first < sorted.length && sorted[first]!.end <= s.start) first++;
     let at = s.start;
     const pieces: [number, number][] = [];
-    for (const c of sorted) {
+    for (let k = first; k < sorted.length; k++) {
+      const c = sorted[k]!;
       if (c.end <= at) continue;
       if (c.start >= s.end) break;
       if (c.start > at) pieces.push([at, c.start]);

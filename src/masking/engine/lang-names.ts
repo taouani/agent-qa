@@ -2,6 +2,7 @@ import type { Span } from "./detectors.js";
 import { fold } from "./fold.js";
 import {
   AMBIGUOUS_GIVEN,
+  ARABIC_AL_WORDS,
   ARABIC_AMBIGUOUS,
   ARABIC_GIVEN_NAMES,
   ARABIC_TITLES,
@@ -207,7 +208,8 @@ export class LanguageNameDetector {
     const words = [...text.matchAll(ARABIC_WORD)].map((m) => ({ text: m[0], start: m.index, end: m.index + m[0].length }));
     const spans: Span[] = [];
     // Strip a joined prefix (و and, ل ب to, ف so, ك as) stuck to a name: "ومحمد", "لمحمد".
-    const prefixLength = (w: string) => (w.length > 3 && "ولبفك".includes(w[0]!) && this.arabicGiven.has(w.slice(1)) ? 1 : 0);
+    const prefixLength = (w: string) =>
+      w.length > 3 && "ولبفك".includes(w[0]!) && !this.arabicGiven.has(w) && this.arabicGiven.has(w.slice(1)) ? 1 : 0;
     const bare = (w: string) => w.slice(prefixLength(w));
     const connector = (w: string) => ["بن", "بنت", "ابن", "أبو", "ابو", "عبد", "آل"].includes(w);
     const near = (a: { end: number }, b: { start: number }) => /^\s{1,2}$/.test(text.slice(a.end, b.start));
@@ -226,7 +228,9 @@ export class LanguageNameDetector {
           end = j;
           strong = true;
         } else if (t.startsWith("ال") && t.length > 3) {
+          if (ARABIC_AL_WORDS.has(t)) break; // "رضا العملاء": customer satisfaction, not a family name
           end = j;
+          strong = true;
           break;
         } else break;
       }
