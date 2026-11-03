@@ -32,7 +32,9 @@ jobs:
         if: env.HAS_NPM_TOKEN == 'true'
         with:
           version: npx changeset version
-          publish: npm run release
+          # While in prerelease mode (.changeset/pre.json), alphas go to the `next` dist-tag, so
+          # `npm i sf-agent-qa` keeps giving the latest stable release.
+          publish: ${{ hashFiles('.changeset/pre.json') != '' && 'npm run release -- --tag next' || 'npm run release' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

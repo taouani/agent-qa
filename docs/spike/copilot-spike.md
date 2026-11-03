@@ -1,5 +1,7 @@
 # Copilot spike (slice 0, T10)
 
+> Historical record. Since 2.0.0-alpha.0 the MCP server no longer offers `spike-test-cases`; to repeat the spike, check out a commit before it.
+
 **Question:** does GitHub Copilot in VS Code agent mode reliably follow Agent-QA's core-driven step loop (`workflow_start` → `workflow_submit` → … → `done`)?
 
 The spike uses a toy workflow, `spike-test-cases`, on three synthetic tickets (`SPIKE-1`, `SPIKE-2`, `SPIKE-3`). `SPIKE-2` contains masked personal data tokens such as `<PERSON_1>`. The workflow has three steps: analyze, write 10–30 test cases, and confirm a fake Xray push (nothing is pushed).
