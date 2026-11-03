@@ -47,7 +47,7 @@ export interface RunOptions {
   /** Progress and questions; default stderr. */
   log?: (line: string) => void;
   /** Asks the person a yes/no question. Default: a terminal prompt when stdin and stderr are TTYs; `false` never asks. */
-  ask?: ((question: string) => Promise<boolean>) | false;
+  ask?: ((question: string) => Promise<boolean | undefined>) | false;
   /** Replaces the API driver, for tests. */
   driver?: ModelDriver;
   /** Replaces the data access, for tests. */
@@ -58,13 +58,13 @@ class SetupError extends Error {}
 
 const defaultLog = (line: string) => void process.stderr.write(`${line}\n`);
 
-async function terminalAsk(question: string): Promise<boolean> {
+/** The person's answer; undefined when they interrupted (Ctrl-C or Ctrl-D), which leaves the step open. */
+async function terminalAsk(question: string): Promise<boolean | undefined> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim());
   } catch {
-    // Ctrl-C or Ctrl-D: no.
-    return false;
+    return undefined;
   } finally {
     rl.close();
   }
@@ -117,7 +117,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
     try {
       config = (await loadConfig(opts.root)).config;
     } catch (error) {
-      if (error instanceof ConfigError) throw new SetupError(error.code === "NOT_FOUND" ? "no agent-qa.yaml here: run agent-qa init first, or pass --cwd" : error.message);
+      // Paths relative to the project, so the message doesn't show the user's home folder.
+      if (error instanceof ConfigError) throw new SetupError(error.code === "NOT_FOUND" ? "no agent-qa.yaml here: run agent-qa init first, or pass --cwd" : error.message.split(error.file).join(relative(opts.root, error.file)));
       throw error;
     }
     if (!opts.driver && !config.models) throw new SetupError("agent-qa.yaml has no models section: set models.default, e.g. anthropic:<model-id>");
@@ -189,7 +190,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
       else if (opts.yes) choice = "unattended";
       else if (ask) {
         log(`\n${step.stepId}: please check this (in full in ${folder}):\n\n${step.context}\n`);
-        choice = (await ask(`${step.stepId}: accept?`)) ? "yes" : "no";
+        const said = await ask(`${step.stepId}: accept?`);
+        if (said !== undefined) choice = said ? "yes" : "no";
       }
       if (!choice) {
         log(`Run ${step.runId} waits at ${step.stepId}, a step for a person.`);
@@ -197,7 +199,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
         return EXIT.waiting;
       }
       const answer = await engine.fixedAnswer(step.runId, choice);
-      log(`- ${step.stepId}: ${choice === "no" ? "declined" : choice === "yes" ? "accepted" : "answered unattended (--yes)"}`);
+      const unattendedNo = choice === "unattended" && (answer as { approve?: unknown } | undefined)?.approve === false;
+      log(`- ${step.stepId}: ${choice === "no" ? "declined" : choice === "yes" ? "accepted" : unattendedNo ? `declined (--yes never accepts this step; use --accept ${step.stepId})` : "answered unattended (--yes)"}`);
       const result = await engine.submit(step.runId, step.stepId, answer);
       if (result.status === "rejected") {
         log(`The fixed answer to ${step.stepId} was rejected:`);

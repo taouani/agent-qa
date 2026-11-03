@@ -134,7 +134,7 @@ describe("agent-qa run", () => {
   it("never pushes on --yes alone, even when the policy only asks", async () => {
     await writeFile(join(dir, "agent-qa.yaml"), YAML.replace("xray: allow", "xray: ask"));
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true }))).toBe(EXIT.done);
-    expect(lines).toContain("- push: answered unattended (--yes)");
+    expect(lines).toContain("- push: declined (--yes never accepts this step; use --accept push)");
     expect(sent).toHaveLength(0);
     expect(audit.entries).toHaveLength(0);
   });
@@ -164,6 +164,11 @@ describe("agent-qa run", () => {
     const cases = (await new RunStore(join(dir, ".agent-qa", "runs")).readArtifact(runIdIn(), TEST_CASES_ARTIFACT))!;
     expect(cases.data.review.unattended).toBeUndefined();
     expect(sent).toHaveLength(0);
+  });
+
+  it("leaves the step open when the person interrupts the prompt", async () => {
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", ask: async () => undefined }))).toBe(EXIT.waiting);
+    expect(lines.at(-1)).toMatch(/--resume \S+ --accept review/);
   });
 
   it("in CI, skips a push the policy would have to ask for", async () => {
