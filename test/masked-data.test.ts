@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ConfluencePage, JiraCollection, JiraInput, JiraIssue } from "../src/connectors/index.js";
 import { configSchema, RunStore, type ConfigInput } from "../src/core/index.js";
-import { criteriaFromDescription, MaskedDataService, splitCriteria } from "../src/data/index.js";
+import { criteriaFromDescription, MaskedDataService, maskJql, splitCriteria } from "../src/data/index.js";
+import { Masker } from "../src/masking/index.js";
 import { MemoryVaultStorage, Vault, type RunVault } from "../src/masking/index.js";
 
 const SITE = "https://acme.atlassian.net";
@@ -328,5 +329,33 @@ describe("acceptance criteria splitting", () => {
     expect(criteriaFromDescription("Akzeptanzkriterien\n- eins")?.criteria).toBe("- eins");
     expect(criteriaFromDescription("验收标准：\n1. 可以提交")?.criteria).toBe("1. 可以提交");
     expect(criteriaFromDescription("No criteria here")).toBeUndefined();
+  });
+});
+
+describe("maskJql", () => {
+  const cases: Array<[string, string]> = [
+    ["project = ABC AND assignee = jdoe AND reporter = 5b10ac8d82e05b22cc7d4ef5", "project = ABC AND assignee = <PERSON_1> AND reporter = <PERSON_2>"],
+    ['assignee in (jdoe, "Doe, John", currentUser()) ORDER BY assignee DESC', 'assignee in (<PERSON_1>, "<PERSON_3>", currentUser()) ORDER BY assignee DESC'],
+    ["status changed by jdoe AND status changed from Open to Done ORDER BY created", "status changed by <PERSON_1> AND status changed from Open to Done ORDER BY created"],
+    ["assignee is EMPTY OR assignee = EMPTY OR watcher != 557058:f58131cb-b67d-43c7-b30d-6b58d40bd077", "assignee is EMPTY OR assignee = EMPTY OR watcher != <PERSON_4>"],
+    ['text ~ "mail jean.dupont@example.com" AND cf[10001] = 5b10ac8d82e05b22cc7d4ef5', "text ~ \"mail <EMAIL_1>\" AND cf[10001] = <PERSON_2>"],
+    ["assignee changed from jdoe to asmith by bob AND status changed from Open to Done", "assignee changed from <PERSON_1> to <PERSON_5> by <PERSON_6> AND status changed from Open to Done"],
+    ['"Assignee" = jdoe OR worklogAuthor = asmith OR assignee was jdoe by bob', '"Assignee" = <PERSON_1> OR worklogAuthor = <PERSON_5> OR assignee was <PERSON_1> by <PERSON_6>'],
+    ['assignee in (jdoe, "a)b", asmith) AND reporter in membersOf("team")', 'assignee in (<PERSON_1>, "<PERSON_7>", <PERSON_5>) AND reporter in membersOf("team")'],
+    ["assignee in (jdoe, asmith", "assignee in (<PERSON_1>, <PERSON_5>"],
+  ];
+  it("replaces people field values, account ids and detected values with tokens", () => {
+    const masker = new Masker({ vault });
+    for (const [jql, masked] of cases) expect(maskJql(jql, masker), jql).toBe(masked);
+  });
+
+  it("keeps quoted text whole, so a name in it is masked as one", () => {
+    const masker = new Masker({ vault });
+    masker.addNames(["Marguerite Quillfeather"]);
+    for (const jql of ['summary ~ "assignee = Marguerite Quillfeather"', 'status was Done AND summary ~ "written by Marguerite Quillfeather"']) {
+      const masked = maskJql(jql, masker);
+      expect(masked, jql).not.toMatch(/Marguerite|Quillfeather/);
+      expect(masked, jql).toContain("<PERSON_");
+    }
   });
 });

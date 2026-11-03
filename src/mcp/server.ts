@@ -21,7 +21,7 @@ function ok(value: unknown): CallToolResult {
 function fail(error: unknown): CallToolResult {
   const body =
     error instanceof EngineError
-      ? { error: error.code, message: error.message, errors: error.errors }
+      ? { error: error.code, message: error.message, errors: error.errors, ...(error.runId ? { runId: error.runId } : {}) }
       : { error: "INTERNAL", message: error instanceof Error ? error.message : String(error) };
   return { isError: true, content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
 }

@@ -18,13 +18,16 @@ export type EngineErrorCode =
   | "RUN_NOT_FOUND"
   | "RUN_COLLISION"
   | "STEP_MISMATCH"
-  | "RUN_CLOSED";
+  | "RUN_CLOSED"
+  | "CONTEXT_FAILED";
 
 export class EngineError extends Error {
   constructor(
     readonly code: EngineErrorCode,
     message: string,
     readonly errors: OutputError[] = [],
+    /** The run the error is about, when there is one (CONTEXT_FAILED from start). */
+    readonly runId?: string,
   ) {
     super(message);
     this.name = "EngineError";
@@ -119,11 +122,15 @@ export class WorkflowEngine {
       throw new EngineError("INVALID_INPUTS", `Invalid inputs for ${workflowId}`, toOutputErrors(parsed.error));
     }
     const timestamp = this.now().toISOString();
+    const runId = this.newRunId(workflowId, parsed.data);
+    // Before prepareInputs, so a colliding start writes nothing (prepareInputs may write the run's vault).
+    if (await this.store.load(runId)) throw new EngineError("RUN_COLLISION", `Run id already exists: ${runId}`);
+    const prepared = workflow.prepareInputs ? await workflow.prepareInputs(runId, parsed.data) : parsed.data;
     const state: RunState = {
-      runId: this.newRunId(workflowId, parsed.data),
+      runId,
       workflowId,
       status: "running",
-      inputs: parsed.data,
+      inputs: prepared,
       stepIndex: 0,
       attempt: 1,
       outputs: {},
@@ -131,7 +138,6 @@ export class WorkflowEngine {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    if (await this.store.load(state.runId)) throw new EngineError("RUN_COLLISION", `Run id already exists: ${state.runId}`);
     await this.store.save(state);
     return this.render(registered, state);
   }
@@ -159,8 +165,8 @@ export class WorkflowEngine {
       }
 
       const parsed = def.outputSchema.safeParse(output);
-      if (!parsed.success) {
-        const errors = toOutputErrors(parsed.error);
+      const errors = parsed.success ? await this.check(def, state, parsed.data) : toOutputErrors(parsed.error);
+      if (!parsed.success || errors.length > 0) {
         const max = def.maxAttempts ?? this.maxAttempts;
         const attempt = state.attempt;
         if (attempt >= max) {
@@ -170,7 +176,8 @@ export class WorkflowEngine {
           state.attempt = attempt + 1;
         }
         await this.save(state);
-        return { status: "rejected", errors, attempt, maxAttempts: max, next: await this.render(registered, state) };
+        const next = await this.renderAfter(registered, state, "rejected", errors);
+        return { status: "rejected", errors, attempt, maxAttempts: max, next };
       }
 
       await def.onAccept?.(this.ctx(state), parsed.data);
@@ -180,7 +187,7 @@ export class WorkflowEngine {
       if (state.stepIndex >= workflow.steps.length) state.status = "done";
       state.accepted[stepId] = true;
       await this.save(state);
-      return { status: "accepted", next: await this.render(registered, state) };
+      return { status: "accepted", next: await this.renderAfter(registered, state, "accepted", []) };
     });
   }
 
@@ -234,11 +241,43 @@ export class WorkflowEngine {
       stepId: def.id,
       kind: def.kind,
       instructions: def.instructions(ctx),
-      context: (await def.context?.(ctx)) ?? "",
+      context: await this.context(def, ctx),
       outputSchema: outputSchemas.get(def.id),
       attempt: state.attempt,
       maxAttempts: def.maxAttempts ?? this.maxAttempts,
     };
+  }
+
+  /** The step's own checks. A check that can't run (its data is unreachable) uses no attempt. */
+  private async check(def: StepDefinition<unknown, unknown>, state: RunState, output: unknown): Promise<OutputError[]> {
+    if (!def.check) return [];
+    try {
+      return await def.check(this.ctx(state), output);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new EngineError("CONTEXT_FAILED", `Run ${state.runId}, step ${def.id}: the answer couldn't be checked (${message}). Nothing was used up: fix the cause and submit again.`, [], state.runId);
+    }
+  }
+
+  /** The next step after a saved submit. If its context fails, say what happened to the answer. */
+  private async renderAfter(registered: Registered, state: RunState, outcome: "accepted" | "rejected", errors: OutputError[]): Promise<Step> {
+    try {
+      return await this.render(registered, state);
+    } catch (error) {
+      if (!(error instanceof EngineError) || error.code !== "CONTEXT_FAILED") throw error;
+      const said = outcome === "accepted" ? "The answer was accepted and saved. " : "The answer was rejected (see errors). ";
+      throw new EngineError("CONTEXT_FAILED", said + error.message, errors, state.runId);
+    }
+  }
+
+  /** The step's context. A failure (Jira unreachable, say) leaves the run open: `next` tries again. */
+  private async context(def: StepDefinition<unknown, unknown>, ctx: StepContext<unknown>): Promise<string> {
+    try {
+      return (await def.context?.(ctx)) ?? "";
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new EngineError("CONTEXT_FAILED", `Run ${ctx.runId}, step ${def.id}: ${message}. Fix the cause, then call workflow_next to try again.`, [], ctx.runId);
+    }
   }
 
   /** Serialize operations on one run so concurrent submits can't race. */

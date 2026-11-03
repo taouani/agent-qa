@@ -113,7 +113,7 @@ export const MASKING_REPORT_ARTIFACT: ArtifactSpec<MaskingReport> = {
 };
 
 /** Bumped when masking or entity building changes, so cached sources are rebuilt. */
-export const SOURCES_VERSION = "sources-2";
+export const SOURCES_VERSION = "sources-3";
 
 const UNMASKED_FIELDS = [
   "jira.key",
@@ -312,6 +312,154 @@ export class MaskedDataService {
   }
 }
 
+/** JQL fields whose values are people: usernames, account ids, emails or names. */
+const JQL_PEOPLE = new Set([
+  "assignee",
+  "reporter",
+  "creator",
+  "watcher",
+  "watchers",
+  "voter",
+  "voters",
+  "approver",
+  "approvers",
+  "worklogauthor",
+  "request participants",
+  "request participant",
+]);
+/** Values that name no one. */
+const JQL_KEEP = /^(?:empty|null)$/i;
+/** Atlassian account ids: 24 hex digits, or `123456:uuid`. */
+const ACCOUNT_ID = /\b(?:[0-9a-f]{24}|\d{6}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/giu;
+/** JQL tokens: space, strings (an unclosed one runs to the end), operators, brackets, commas, words. */
+const JQL_TOKEN = /\s+|"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|!=|!~|<=|>=|[=~<>(),]|[^\s"'(),=!~<>]+/gu;
+const JQL_OPERATORS = new Set(["=", "!=", "~", "!~", "<", ">", "<=", ">=", "in", "not", "was", "is"]);
+/** History predicates and whether their value is a person (`by`), the field's own kind (`from`, `to`) or a date. */
+const JQL_PREDICATES: Record<string, "person" | "field" | "other"> = { by: "person", from: "field", to: "field", after: "other", before: "other", on: "other", during: "other" };
+
+const unquote = (token: string) => {
+  const quote = /^["']/.exec(token)?.[0];
+  if (!quote) return token;
+  const closed = token.length > 1 && token.endsWith(quote);
+  return token.slice(1, closed ? -1 : undefined).replace(/\\(.)/g, "$1");
+};
+
+/**
+ * A JQL filter with personal data replaced. It is read token by token, so
+ * quoted text stays whole:
+ * - values of people fields (`assignee = jdoe`, `reporter in (a, "B C")`,
+ *   `assignee changed from a to b`) and of `by` in history clauses become
+ *   PERSON tokens; a known person keeps their token;
+ * - a list that doesn't close is masked to the end (fail closed);
+ * - account ids anywhere become PERSON tokens; the rest of the text goes
+ *   through the detectors like any free text.
+ * Only this masked copy is ever stored: the filter itself is sealed in the vault.
+ */
+export function maskJql(jql: string, masker: Pick<Masker, "mask">): string {
+  const tokens = jql.match(JQL_TOKEN) ?? [];
+  const isSpace = (t: string | undefined) => t !== undefined && /^\s+$/.test(t);
+  const nextIndex = (i: number) => {
+    let j = i + 1;
+    while (isSpace(tokens[j])) j++;
+    return j;
+  };
+  const person = (token: string) => {
+    const quote = /^["']/.exec(token)?.[0] ?? "";
+    const closing = quote && token.length > 1 && token.endsWith(quote) ? quote : "";
+    const bare = unquote(token).trim();
+    if (!bare || JQL_KEEP.test(bare)) return token;
+    const known = masker.mask(bare, { field: "input.jql" });
+    const masked = /^<[A-Z][A-Z0-9_]*_\d+>$/.test(known) ? known : masker.mask(bare, { field: "input.jql", whole: "PERSON" });
+    return quote + masked + closing;
+  };
+  const text = (token: string) => (isSpace(token) ? token : maskText(token, masker));
+
+  const out: string[] = [];
+  let field: string | undefined;
+  let history = false;
+  let expect: "person" | "other" | undefined;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!;
+    if (isSpace(t)) {
+      out.push(t);
+      continue;
+    }
+    const lower = t.toLowerCase();
+    if (expect) {
+      const asPerson = expect === "person";
+      if (lower === "not" || lower === "in" || lower === "is") {
+        out.push(t); // `was not in`, `not in`, `is not`: still before the value
+        continue;
+      }
+      if (t === "(") {
+        // A list: each item at the top level is a value; function arguments are text.
+        let depth = 0;
+        let j = i;
+        for (; j < tokens.length; j++) {
+          const u = tokens[j]!;
+          if (u === "(") depth++;
+          else if (u === ")") depth--;
+          const isFunction = /^[A-Za-z_][\w.]*$/.test(u) && tokens[nextIndex(j)] === "(";
+          if (u === "(" || u === ")" || u === "," || isSpace(u)) out.push(u);
+          else if (asPerson && depth === 1 && !isFunction) out.push(person(u));
+          else out.push(isFunction ? u : text(u));
+          if (depth === 0) break;
+        }
+        // An unclosed list: everything after it was treated as list items, masked as people when it held people.
+        i = j;
+      } else if (/^[A-Za-z_][\w.]*$/.test(t) && tokens[nextIndex(i)] === "(") {
+        out.push(t); // a function such as currentUser() or membersOf("team"): its arguments are text
+      } else {
+        out.push(asPerson ? person(t) : text(t));
+      }
+      expect = undefined;
+      continue;
+    }
+    if (lower === "and" || lower === "or" || lower === "order" || t === ")" || t === "(") {
+      field = undefined;
+      history = false;
+      out.push(t);
+      continue;
+    }
+    if (field === undefined) {
+      if (lower !== "not") field = unquote(t).trim().toLowerCase();
+      out.push(text(t));
+      continue;
+    }
+    if (lower === "changed" || lower === "was") {
+      history = true;
+      if (lower === "was") expect = JQL_PEOPLE.has(field) ? "person" : "other";
+      out.push(t);
+      continue;
+    }
+    if (history && lower in JQL_PREDICATES) {
+      const kind = JQL_PREDICATES[lower]!;
+      expect = kind === "person" || (kind === "field" && JQL_PEOPLE.has(field)) ? "person" : "other";
+      out.push(t);
+      continue;
+    }
+    if (JQL_OPERATORS.has(lower)) {
+      expect = JQL_PEOPLE.has(field) ? "person" : "other";
+      out.push(t);
+      continue;
+    }
+    out.push(text(t));
+  }
+  return out.join("");
+}
+
+/** Free JQL text: account ids as PERSON tokens, the rest through the detectors. */
+function maskText(text: string, masker: Pick<Masker, "mask">): string {
+  let out = "";
+  let at = 0;
+  for (const m of text.matchAll(ACCOUNT_ID)) {
+    out += (at < m.index ? masker.mask(text.slice(at, m.index), { field: "input.jql" }) : "") + masker.mask(m[0], { field: "input.jql", whole: "PERSON" });
+    at = m.index + m[0].length;
+  }
+  return out + (at < text.length ? masker.mask(text.slice(at), { field: "input.jql" }) : "");
+}
+
 /** Links on an issue that point at a Confluence page on this site. */
 function confluenceUrls(issue: JiraIssue, site: string): string[] {
   const candidates = [
@@ -410,7 +558,7 @@ function buildSources(
     );
   }
   // The input is masked after the people are known, so a name in the JQL gets the person's token.
-  const input: MaskedSources["input"] = "key" in rawInput ? rawInput : { jql: masker.mask(rawInput.jql, { field: "input.jql" }) };
+  const input: MaskedSources["input"] = "key" in rawInput ? rawInput : { jql: maskJql(rawInput.jql, masker) };
 
   const fieldIds = new Map(collection.extraFields.map((f) => [f.name, f.id.toLowerCase()]));
   const acField = collection.acceptanceCriteriaField;

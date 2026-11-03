@@ -52,6 +52,12 @@ export interface StepDefinition<I = unknown, O = unknown> {
   /** Defaults to the engine's maxAttempts (3). */
   maxAttempts?: number;
   /**
+   * Checks the schema can't express, run after the output parses: for example
+   * that every issue is answered once. Errors reject the answer like schema
+   * errors do, and count as an attempt.
+   */
+  check?: (ctx: StepContext<I>, output: O) => OutputError[] | Promise<OutputError[]>;
+  /**
    * Runs after the output is accepted, for example to write an artifact.
    * It must be safe to run twice: if saving the run state fails afterwards,
    * the step stays open and a retry runs it again.
@@ -63,6 +69,12 @@ export interface WorkflowDefinition<I = unknown> {
   id: string;
   description: string;
   inputSchema: z.ZodType<I>;
+  /**
+   * Runs once at start, after the inputs parse and the run id is known, before
+   * anything is saved. Use it to replace input values that must not be stored
+   * in the run folder (a JQL filter can name a person) with vault tokens.
+   */
+  prepareInputs?: (runId: string, inputs: I) => I | Promise<I>;
   // Steps differ in output type, so the list is typed loosely here.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   steps: ReadonlyArray<StepDefinition<I, any>>;
