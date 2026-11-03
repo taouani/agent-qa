@@ -99,7 +99,7 @@ export class ApiDriver implements ModelDriver {
 
     if (request.schema === undefined) {
       const result = await generateText(common);
-      return { text: result.text, model: id, usage: usage(result.totalUsage) };
+      return { text: result.text, model: id, ...usageOf(result.totalUsage) };
     }
     try {
       const name = request.schemaName ? { name: request.schemaName } : {};
@@ -112,11 +112,11 @@ export class ApiDriver implements ModelDriver {
             ? Output.json(name)
             : Output.object({ schema: jsonSchema(request.schema as Parameters<typeof jsonSchema>[0]), ...name }),
       });
-      return { text: JSON.stringify(result.output), model: id, usage: usage(result.totalUsage) };
+      return { text: JSON.stringify(result.output), model: id, ...usageOf(result.totalUsage) };
     } catch (error) {
       // The model answered but not in the shape asked for: hand the text back so the engine reports what's wrong.
       if (NoObjectGeneratedError.isInstance(error)) {
-        return { text: error.text ?? "", model: id, ...(error.usage ? { usage: usage(error.usage) } : {}) };
+        return { text: error.text ?? "", model: id, ...(error.usage ? usageOf(error.usage) : {}) };
       }
       if (NoOutputGeneratedError.isInstance(error)) return { text: "", model: id };
       throw error;
@@ -160,8 +160,18 @@ export class ApiDriver implements ModelDriver {
   }
 }
 
-/** `inputTokens` includes the cached tokens; `cachedInputTokens` is the part of it read from the cache. */
-function usage(u: { inputTokens: number | undefined; outputTokens: number | undefined; inputTokenDetails?: { cacheReadTokens: number | undefined } }): TokenUsage {
+/**
+ * `inputTokens` includes the cached tokens; `cachedInputTokens` is the part of it read from the cache.
+ * Undefined when the provider reported no counts, so the cost report doesn't price the call as free.
+ */
+type SdkUsage = { inputTokens: number | undefined; outputTokens: number | undefined; inputTokenDetails?: { cacheReadTokens: number | undefined } };
+const usageOf = (u: SdkUsage): { usage?: TokenUsage } => {
+  const value = usage(u);
+  return value ? { usage: value } : {};
+};
+
+function usage(u: SdkUsage): TokenUsage | undefined {
+  if (u.inputTokens === undefined || u.outputTokens === undefined) return undefined;
   const cached = u.inputTokenDetails?.cacheReadTokens;
-  return { inputTokens: u.inputTokens ?? 0, outputTokens: u.outputTokens ?? 0, ...(cached ? { cachedInputTokens: cached } : {}) };
+  return { inputTokens: u.inputTokens, outputTokens: u.outputTokens, ...(cached ? { cachedInputTokens: cached } : {}) };
 }

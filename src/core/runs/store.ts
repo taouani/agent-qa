@@ -95,6 +95,25 @@ export const inputRefSchema = z
   .strict();
 export type InputRef = z.infer<typeof inputRefSchema>;
 
+/** One model answer (or host-model submit) in a run, for `cost@1`. Sizes only, never text. */
+export const usageEntrySchema = z
+  .object({
+    at: z.string(),
+    stepId: z.string().min(1),
+    attempt: z.number().int().min(0),
+    /** `api`: the CLI called the model and has its token counts. `host-model`: an IDE's model answered; only sizes are known. */
+    driver: z.enum(["api", "host-model"]),
+    model: z.string().optional(),
+    inputTokens: z.number().int().min(0).optional(),
+    outputTokens: z.number().int().min(0).optional(),
+    cachedInputTokens: z.number().int().min(0).optional(),
+    /** Characters of the prompt (instructions and context; for the API, every message sent). */
+    promptChars: z.number().int().min(0),
+    answerChars: z.number().int().min(0),
+  })
+  .strict();
+export type UsageEntry = z.infer<typeof usageEntrySchema>;
+
 export const RUN_STATUSES = ["running", "needs-input", "done", "failed", "cancelled"] as const;
 export type RunManifestStatus = (typeof RUN_STATUSES)[number];
 
@@ -362,6 +381,46 @@ export class RunStore {
       });
       return artifact;
     });
+  }
+
+  /** Adds model use to the run's `steps/usage.jsonl`. */
+  async appendUsage(runId: string, entries: UsageEntry[]): Promise<void> {
+    const valid = entries.map((e) => {
+      const parsed = usageEntrySchema.safeParse(e);
+      if (!parsed.success) throw new RunStoreError("Invalid usage entry", issues(parsed.error));
+      return parsed.data;
+    });
+    if (valid.length === 0) return;
+    await this.locked(runId, async () => {
+      if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`);
+      await mkdir(join(this.dir(runId), "steps"), { recursive: true });
+      const file = join(this.dir(runId), "steps", "usage.jsonl");
+      // After a torn write (no final newline), start on a new line so this entry stays readable.
+      const torn = await readFile(file, "utf8").then((t) => t.length > 0 && !t.endsWith("\n"), () => false);
+      await appendFile(file, (torn ? "\n" : "") + valid.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    });
+  }
+
+  /** The run's model use; a line that doesn't parse or match (a torn write) is skipped. */
+  async readUsage(runId: string): Promise<UsageEntry[]> {
+    let text: string;
+    try {
+      text = await readFile(join(this.dir(runId), "steps", "usage.jsonl"), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const entries: UsageEntry[] = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = usageEntrySchema.safeParse(JSON.parse(line));
+        if (parsed.success) entries.push(parsed.data);
+      } catch {
+        // a torn line
+      }
+    }
+    return entries;
   }
 
   /** Read and validate an artifact. Undefined when the run has none by that name. */

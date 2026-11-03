@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { EngineError, VERSION, type WorkflowEngine } from "../core/index.js";
+import { EngineError, recordUsage, VERSION, type RunStore, type Step, type SubmitResult, type WorkflowEngine } from "../core/index.js";
 
 /** Instructions every host model gets for the step loop (contract 3). */
 export const LOOP_INSTRUCTIONS = [
@@ -46,9 +46,71 @@ function parseOutput(output: unknown): unknown {
 
 const runId = z.string().min(1).describe("Run id returned by workflow_start");
 
+export interface McpServerOptions {
+  /** The engine's run store: with it, the host model's answers are recorded for `cost@1` (sizes only). */
+  runs?: RunStore;
+}
+
 /** Build the MCP server for one engine. The transport is chosen by the caller. */
-export function createMcpServer(engine: WorkflowEngine): McpServer {
+export function createMcpServer(engine: WorkflowEngine, options: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: "agent-qa", version: VERSION }, { instructions: LOOP_INSTRUCTIONS });
+  // The last generate step handed to the host, per run: its prompt size goes with the answer.
+  const served = new Map<string, { stepId: string; attempt: number; promptChars: number }>();
+  const serve = (step: Step): Step => {
+    if (step.kind === "generate") served.set(step.runId, { stepId: step.stepId, attempt: step.attempt, promptChars: step.instructions.length + step.context.length });
+    else served.delete(step.runId);
+    if (served.size > 256) served.delete(served.keys().next().value!);
+    return step;
+  };
+  const record = async (id: string, stepId: string, output: unknown, before: { attempt: number; promptChars: number }) => {
+    if (!options.runs) return;
+    const answerChars = typeof output === "string" ? output.length : JSON.stringify(output).length;
+    // The cost record must never fail the host's submit.
+    await recordUsage(options.runs, id, [{ at: new Date().toISOString(), stepId, attempt: before.attempt, driver: "host-model", promptChars: before.promptChars, answerChars }]).catch(
+      () => undefined,
+    );
+  };
+  // Runs with a submit in flight: a second one racing it is taken as a duplicate and not looked up again.
+  // If it was a different answer the engine counted as the next attempt, one call goes unrecorded:
+  // undercounting is the safer error for a cost report than counting an answer twice.
+  const inFlight = new Map<string, number>();
+  const submit = async (id: string, stepId: string, output: unknown): Promise<SubmitResult> => {
+    const racing = (inFlight.get(id) ?? 0) > 0;
+    inFlight.set(id, (inFlight.get(id) ?? 0) + 1);
+    try {
+      return await submitOnce(id, stepId, output, racing);
+    } finally {
+      const n = (inFlight.get(id) ?? 1) - 1;
+      if (n > 0) inFlight.set(id, n);
+      else inFlight.delete(id);
+    }
+  };
+  const submitOnce = async (id: string, stepId: string, output: unknown, racing: boolean): Promise<SubmitResult> => {
+    let before = served.get(id);
+    // After a server restart the host may submit without asking for the step again: look it up (read-only).
+    if (!before && !racing && options.runs) {
+      const state = await engine.status(id).catch(() => undefined);
+      // An already-accepted step is a replay, not a new answer; a confirm step is a person's answer, never
+      // recorded (and rendering it again could call a connector).
+      const confirm = state ? engine.confirmSteps(state.workflowId).some((c) => c.id === stepId) : true;
+      if (state && !confirm && !state.accepted[stepId]) before = await engine.next(id).then((s) => (serve(s), served.get(id)), () => undefined);
+    }
+    // Taken now, so a second submit of the same answer racing this one isn't recorded twice.
+    const mine = before?.stepId === stepId ? before : undefined;
+    if (mine) served.delete(id);
+    let result: SubmitResult;
+    try {
+      result = await engine.submit(id, stepId, output);
+    } catch (error) {
+      // The answer was saved but the next step couldn't be shown: it still counts.
+      if (mine && error instanceof EngineError && error.code === "CONTEXT_FAILED" && /^The answer was (accepted|rejected)/.test(error.message)) await record(id, stepId, output, mine);
+      else if (mine && !served.has(id)) served.set(id, mine);
+      throw error;
+    }
+    if (mine) await record(id, stepId, output, mine);
+    serve(result.next);
+    return result;
+  };
 
   server.registerTool(
     "workflow_list",
@@ -70,7 +132,7 @@ export function createMcpServer(engine: WorkflowEngine): McpServer {
           .describe("Workflow inputs as a JSON object, e.g. { \"ticket\": \"SPIKE-1\" }. See workflow_list for each workflow's input schema."),
       },
     },
-    async ({ workflow, inputs }) => guard(() => engine.start(workflow, parseOutput(inputs))),
+    async ({ workflow, inputs }) => guard(async () => serve(await engine.start(workflow, parseOutput(inputs)))),
   );
 
   server.registerTool(
@@ -80,7 +142,7 @@ export function createMcpServer(engine: WorkflowEngine): McpServer {
       inputSchema: { runId },
       annotations: { readOnlyHint: true },
     },
-    async ({ runId: id }) => guard(() => engine.next(id)),
+    async ({ runId: id }) => guard(async () => serve(await engine.next(id))),
   );
 
   server.registerTool(
@@ -96,7 +158,7 @@ export function createMcpServer(engine: WorkflowEngine): McpServer {
           .describe("JSON object matching the step's outputSchema"),
       },
     },
-    async ({ runId: id, stepId, output }) => guard(() => engine.submit(id, stepId, parseOutput(output))),
+    async ({ runId: id, stepId, output }) => guard(() => submit(id, stepId, parseOutput(output))),
   );
 
   server.registerTool(

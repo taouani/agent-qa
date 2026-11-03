@@ -124,8 +124,10 @@ describe("agent-qa run", () => {
     expect(sent[0]![0]!.fields.summary).toBe("[TC-ABC-1-001] Old case escalated for <PERSON_1>");
     expect(lines).toContain("- review: answered unattended (--yes)");
     expect(lines).toContain("- push: accepted");
-    expect(lines.at(-1)).toMatch(/^Done\. Run folder: \.agent-qa[/\\]runs[/\\]\S+\n {2}masking-report\.json\n[^]* {2}xray-push\.json/);
+    expect(lines.at(-1)).toMatch(/^Done\. Run folder: \.agent-qa[/\\]runs[/\\]\S+\n {2}cost\.json\n[^]* {2}masking-report\.json\n[^]* {2}xray-push\.json/);
     expect(prompts.map((p) => p.schemaName)).toEqual(["analyze", "cases"]);
+    const cost = JSON.parse(await readFile(join(dir, ".agent-qa", "runs", runId, "cost.json"), "utf8"));
+    expect(cost.data.steps.map((st: { stepId: string; driver: string }) => [st.stepId, st.driver])).toEqual([["analyze", "api"], ["cases", "api"]]);
     for (const p of prompts) expect(JSON.stringify(p)).not.toContain("Quillfeather");
     expect(lines.join("\n")).not.toContain("Quillfeather");
     expect(await readFile(join(dir, ".agent-qa", "runs", runId, "test-cases.md"), "utf8")).toContain("accepted without a review (--yes)");
