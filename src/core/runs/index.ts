@@ -10,5 +10,8 @@ export {
   RunStore,
   RunStoreError,
   sourceHash,
+  usageEntrySchema,
 } from "./store.js";
-export type { Artifact, ArtifactSpec, InputRef, RunInit, RunManifest, RunManifestStatus, RunStoreOptions } from "./store.js";
+export { buildCost, COST_ARTIFACT, costSchema, recordUsage, renderCost } from "./cost.js";
+export type { Cost } from "./cost.js";
+export type { Artifact, ArtifactSpec, InputRef, RunInit, RunManifest, RunManifestStatus, RunStoreOptions, UsageEntry } from "./store.js";

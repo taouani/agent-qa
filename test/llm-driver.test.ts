@@ -202,7 +202,7 @@ describe("drive", () => {
       },
     }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DriveError);
-    expect((error as DriveError).usage).toEqual([{ stepId: "cases", attempt: 1, inputTokens: 7, outputTokens: 1 }]);
+    expect((error as DriveError).usage).toEqual([{ stepId: "cases", attempt: 1, inputTokens: 7, outputTokens: 1, promptChars: expect.any(Number), answerChars: 2 }]);
     expect((error as DriveError).message).toContain("rate limited");
     expect((await engine.status(first.runId)).status).not.toBe("failed");
   });

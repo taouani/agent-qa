@@ -27,12 +27,17 @@ export function projectRoot(cwd: string, env: NodeJS.ProcessEnv): string {
  * the vault are read from the project root (see `projectRoot`).
  */
 export function createEngine(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): WorkflowEngine {
+  return createMcpContext(cwd, env).engine;
+}
+
+/** The engine and its run store, for the MCP server (which records the host's answers for cost@1). */
+export function createMcpContext(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): { engine: WorkflowEngine; runs: RunStore } {
   const root = projectRoot(cwd, env);
   const runs = new RunStore(env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs"));
   const engine = new WorkflowEngine({ store: runs.stateStore({ host: "other", driver: "host-model" }), newRunId: runs.newRunId });
   const data = new DataAccess({ root, store: runs, env });
   for (const workflow of builtinWorkflows({ data, runs })) engine.register(workflow);
-  return engine;
+  return { engine, runs };
 }
 
 /** Commander collector for a repeatable option. */
@@ -150,7 +155,8 @@ export function buildProgram(): Command {
     .command("mcp")
     .description("start the MCP server for an IDE host (stdio)")
     .action(async () => {
-      await serveStdio(createEngine());
+      const { engine, runs } = createMcpContext();
+      await serveStdio(engine, { runs });
     });
 
   return program;

@@ -11,10 +11,14 @@ import type { ModelDriver, ModelMessage, TokenUsage } from "./driver.js";
  * prompt, the last answer and its errors, not every earlier answer.
  */
 
-export interface StepUsage extends TokenUsage {
+/** One model call. Tokens are absent when the driver didn't report them. */
+export interface StepUsage extends Partial<TokenUsage> {
   stepId: string;
   attempt: number;
   model?: string;
+  /** Characters sent (every message) and received, for the cost report. */
+  promptChars: number;
+  answerChars: number;
 }
 
 export interface DriveOptions {
@@ -59,21 +63,27 @@ export async function drive(engine: WorkflowEngine, first: Step, driver: ModelDr
       historyFor = step.stepId;
     }
     let response;
+    const messages: ModelMessage[] = [{ role: "system", content: SYSTEM }, firstPrompt, ...retry];
     try {
       response = await driver.complete({
         ...(options.model ? { model: options.model } : {}),
-        messages: [{ role: "system", content: SYSTEM }, firstPrompt, ...retry],
+        messages,
         schema: step.outputSchema,
         schemaName: step.stepId,
       });
     } catch (cause) {
       throw new DriveError(step, used, { cause });
     }
-    if (response.usage) {
-      const entry: StepUsage = { stepId: step.stepId, attempt: step.attempt, ...response.usage, ...(response.model ? { model: response.model } : {}) };
-      used.push(entry);
-      await options.onUsage?.(entry);
-    }
+    const entry: StepUsage = {
+      stepId: step.stepId,
+      attempt: step.attempt,
+      ...(response.usage ?? {}),
+      ...(response.model ? { model: response.model } : {}),
+      promptChars: messages.reduce((n, m) => n + m.content.length, 0),
+      answerChars: response.text.length,
+    };
+    used.push(entry);
+    await options.onUsage?.(entry);
 
     let output: unknown;
     let parseError: OutputError | undefined;

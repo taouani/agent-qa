@@ -1,7 +1,21 @@
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { ConfigError, EngineError, loadConfig, modelAllowed, PolicyDenied, RunStore, RunStoreError, WorkflowEngine, type Config, type Mode, type Step } from "../core/index.js";
+import {
+  ConfigError,
+  EngineError,
+  loadConfig,
+  modelAllowed,
+  PolicyDenied,
+  recordUsage,
+  RunStore,
+  RunStoreError,
+  WorkflowEngine,
+  type Config,
+  type Mode,
+  type Step,
+  type UsageEntry,
+} from "../core/index.js";
 import { DataAccess, secretSources } from "../data/index.js";
 import { ApiDriver, drive, DriveError, ModelConfigError, parseModelId, type ModelDriver, type StepUsage } from "../llm/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
@@ -95,9 +109,27 @@ function checkModel(id: string, config: Config): void {
 }
 
 function usageLine(u: StepUsage): string {
+  if (u.inputTokens === undefined) return `  ${u.stepId} attempt ${u.attempt}: no token counts${u.model ? `, ${u.model}` : ""}`;
   const cached = u.cachedInputTokens ? ` (${u.cachedInputTokens} cached)` : "";
-  return `  ${u.stepId} attempt ${u.attempt}: ${u.inputTokens} in${cached}, ${u.outputTokens} out${u.model ? `, ${u.model}` : ""}`;
+  return `  ${u.stepId} attempt ${u.attempt}: ${u.inputTokens} in${cached}, ${u.outputTokens ?? 0} out${u.model ? `, ${u.model}` : ""}`;
 }
+
+const usageEntry = (u: StepUsage, model: string | undefined): UsageEntry => {
+  const { stepId, attempt, inputTokens, outputTokens, cachedInputTokens, promptChars, answerChars } = u;
+  const m = u.model ?? model;
+  return {
+    at: new Date().toISOString(),
+    stepId,
+    attempt,
+    driver: "api",
+    ...(m ? { model: m } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    promptChars,
+    answerChars,
+  };
+};
 
 /** Runs or resumes a workflow; resolves to the exit code. Steps and errors hold masked text only, and unknown errors print only their name and message. */
 export async function runCommand(opts: RunOptions): Promise<number> {
@@ -165,7 +197,13 @@ export async function runCommand(opts: RunOptions): Promise<number> {
       if (step.kind === "generate" || step.kind === "confirm") last = step.stepId;
       if (step.kind === "generate") {
         log(`- ${step.stepId}: asking the model`);
-        step = (await drive(engine, step, driver, { ...(model ? { model } : {}), onUsage: (u) => log(usageLine(u)) })).step;
+        // Each call is recorded as it happens, so cost@1 is right even when the run stops later.
+        const id = step.runId;
+        const onUsage = async (u: StepUsage) => {
+          log(usageLine(u));
+          await recordUsage(runs, id, [usageEntry(u, model ?? config.models?.default)]);
+        };
+        step = (await drive(engine, step, driver, { ...(model ? { model } : {}), onUsage })).step;
         continue;
       }
       if (step.kind === "done") {
