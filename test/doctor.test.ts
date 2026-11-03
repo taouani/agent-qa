@@ -29,7 +29,7 @@ git:
   repo: acme/tests
   token: \${env:GITHUB_TOKEN}
 models:
-  default: anthropic:model-a
+  default: anthropic:claude-opus-5-5
   allowed: [anthropic:*]
   keys:
     anthropic: \${env:ANTHROPIC_API_KEY}
@@ -138,6 +138,8 @@ describe("agent-qa doctor", () => {
     expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/openai/) });
     await writeFile(join(dir, "agent-qa.yaml"), "version: 1\n");
     expect(byId(await doctor(ENV)).models!.status).toBe("warn");
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: anthropic:claude-custom-9\n  keys:\n    anthropic: ${env:ANTHROPIC_API_KEY}\n");
+    expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/not in the shipped catalog.*claude-custom-9/) });
   });
 
   it("reports unreachable services by host, and can skip the network", async () => {
