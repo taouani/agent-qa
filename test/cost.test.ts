@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -31,7 +31,7 @@ describe("cost@1", () => {
     ]);
     expect(cost.models).toEqual([expect.objectContaining({ model: "anthropic:claude-sonnet-5-5", calls: 3, usd: 7 })]);
     expect(cost.total).toMatchObject({ calls: 3, inputTokens: 2_500_000, outputTokens: 200_000, cachedInputTokens: 100, usd: 7, unpriced: [], hostModelCalls: 0 });
-    expect(renderCost(cost)).toContain("About $7.0000 for 3 model call(s)");
+    expect(renderCost(cost)).toContain("About $7.0000 for 3 priced model call(s) of 3");
   });
 
   it("counts unpriced models and host-model answers without guessing a price", () => {
@@ -47,6 +47,15 @@ describe("cost@1", () => {
     const md = renderCost(cost);
     expect(md).toContain("1 answer(s) came from the IDE's own model");
     expect(md).toContain("| cases | host model | 1 |  |  | 9000 | 3000 |  |");
+  });
+
+  it("prices a call only with both token counts, marks mixed rows and shows tiny amounts", () => {
+    const cost = buildCost([api({ outputTokens: undefined }), api({ inputTokens: 400, outputTokens: 0, model: "anthropic:claude-haiku-5-5" })]);
+    expect(cost.total.unpriced).toEqual(["anthropic:claude-sonnet-5-5 (no token counts)"]);
+    const md = renderCost(buildCost([api(), api({ inputTokens: undefined }), api({ stepId: "x", model: "anthropic:claude-haiku-5-5", inputTokens: 400, outputTokens: 0 })]));
+    expect(md).toContain("| $3.0000 (1 unpriced) |");
+    expect(md).toContain("| <$0.0001 |");
+    expect(cost.steps[1]!.unpricedCalls).toBe(0);
   });
 });
 
@@ -67,6 +76,17 @@ describe("usage recording", () => {
     await expect(recordUsage(runs, id, [{ ...api(), promptChars: -1 }])).rejects.toThrow("Invalid usage entry");
   });
 
+  it("keeps the entry after a torn line, and keeps cost@1 in step under parallel records", async () => {
+    const runs = new RunStore(dir);
+    const { id } = await runs.create({ workflow: "w", context: "c", host: "cli", driver: "api" });
+    await recordUsage(runs, id, [api({ stepId: "one" })]);
+    await appendFile(join(dir, id, "steps", "usage.jsonl"), '{"at":"x","stepId":"to');
+    await recordUsage(runs, id, [api({ stepId: "two" })]);
+    expect((await runs.readUsage(id)).map((e) => e.stepId)).toEqual(["one", "two"]);
+    await Promise.all(Array.from({ length: 10 }, (_, i) => recordUsage(runs, id, [api({ stepId: `p${i}` })])));
+    expect((await runs.readArtifact(id, COST_ARTIFACT))!.data.total.calls).toBe(12);
+  });
+
   it("records the host model's answers from the MCP server, sizes only", async () => {
     const runs = new RunStore(dir);
     const engine = new WorkflowEngine({ store: runs.stateStore({ host: "copilot", driver: "host-model" }), newRunId: runs.newRunId }).register(spikeWorkflow);
@@ -84,5 +104,24 @@ describe("usage recording", () => {
     ]);
     expect(usage[0]).not.toHaveProperty("inputTokens");
     expect(await readFile(join(dir, start.runId, "cost.md"), "utf8")).toContain("came from the IDE's own model");
+
+    // A rejected answer and its retry are two calls; a racing duplicate of an answer is one.
+    const bad = { cases: [] };
+    await call("workflow_submit", { runId: start.runId, stepId: "cases", output: bad });
+    const good = { cases: Array.from({ length: 10 }, (_, i) => ({ id: `TC-SPIKE-1-${String(i + 1).padStart(3, "0")}`, title: `Case number ${i + 1}`, kind: "positive", priority: "P2", preconditions: [], steps: [{ action: "Open it", data: "", expected: "It opens" }] })) };
+    await Promise.all([1, 2].map(() => call("workflow_submit", { runId: start.runId, stepId: "cases", output: good })));
+    expect((await runs.readUsage(start.runId)).map((e) => `${e.stepId}#${e.attempt}`)).toEqual(["analyze#1", "cases#1", "cases#2"]);
+  });
+
+  it("records an answer submitted to a restarted server without asking for the step again", async () => {
+    const runs = new RunStore(dir);
+    const engine = new WorkflowEngine({ store: runs.stateStore({ host: "copilot", driver: "host-model" }), newRunId: runs.newRunId }).register(spikeWorkflow);
+    const step = await engine.start("spike-test-cases", { ticket: "SPIKE-1" });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await createMcpServer(engine, { runs }).connect(serverSide);
+    const client = new Client({ name: "t", version: "0" });
+    await client.connect(clientSide);
+    await client.callTool({ name: "workflow_submit", arguments: { runId: step.runId, stepId: "analyze", output: { summary: "S.", acceptanceCriteria: ["A"], ambiguities: [] } } });
+    expect((await runs.readUsage(step.runId)).map((e) => [e.stepId, e.promptChars])).toEqual([["analyze", step.instructions.length + step.context.length]]);
   });
 });

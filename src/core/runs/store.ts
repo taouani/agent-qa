@@ -394,11 +394,14 @@ export class RunStore {
     await this.locked(runId, async () => {
       if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`);
       await mkdir(join(this.dir(runId), "steps"), { recursive: true });
-      await appendFile(join(this.dir(runId), "steps", "usage.jsonl"), valid.map((e) => JSON.stringify(e)).join("\n") + "\n");
+      const file = join(this.dir(runId), "steps", "usage.jsonl");
+      // After a torn write (no final newline), start on a new line so this entry stays readable.
+      const torn = await readFile(file, "utf8").then((t) => t.length > 0 && !t.endsWith("\n"), () => false);
+      await appendFile(file, (torn ? "\n" : "") + valid.map((e) => JSON.stringify(e)).join("\n") + "\n");
     });
   }
 
-  /** The run's model use; lines that don't parse (a torn write) are skipped. */
+  /** The run's model use; a line that doesn't parse or match (a torn write) is skipped. */
   async readUsage(runId: string): Promise<UsageEntry[]> {
     let text: string;
     try {

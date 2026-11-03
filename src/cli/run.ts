@@ -199,9 +199,12 @@ export async function runCommand(opts: RunOptions): Promise<number> {
         log(`- ${step.stepId}: asking the model`);
         // Each call is recorded as it happens, so cost@1 is right even when the run stops later.
         const id = step.runId;
+        // A model the driver didn't name is the configured one only for the API driver; a custom driver's calls stay unpriced.
+        const fallback = opts.driver ? undefined : (model ?? config.models?.default);
         const onUsage = async (u: StepUsage) => {
           log(usageLine(u));
-          await recordUsage(runs, id, [usageEntry(u, model ?? config.models?.default)]);
+          // The cost report must never stop a run: the answer is already paid for.
+          await recordUsage(runs, id, [usageEntry(u, fallback)]).catch((error: unknown) => log(`  (cost not recorded: ${error instanceof Error ? error.message : String(error)})`));
         };
         step = (await drive(engine, step, driver, { ...(model ? { model } : {}), onUsage })).step;
         continue;

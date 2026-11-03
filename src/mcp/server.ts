@@ -62,16 +62,48 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
     if (served.size > 256) served.delete(served.keys().next().value!);
     return step;
   };
+  const record = async (id: string, stepId: string, output: unknown, before: { attempt: number; promptChars: number }) => {
+    if (!options.runs) return;
+    const answerChars = typeof output === "string" ? output.length : JSON.stringify(output).length;
+    // The cost record must never fail the host's submit.
+    await recordUsage(options.runs, id, [{ at: new Date().toISOString(), stepId, attempt: before.attempt, driver: "host-model", promptChars: before.promptChars, answerChars }]).catch(
+      () => undefined,
+    );
+  };
+  // Runs with a submit in flight: a second one racing it is a duplicate, never looked up again.
+  const inFlight = new Map<string, number>();
   const submit = async (id: string, stepId: string, output: unknown): Promise<SubmitResult> => {
-    const before = served.get(id);
-    const result = await engine.submit(id, stepId, output);
-    if (options.runs && before?.stepId === stepId) {
-      const answerChars = typeof output === "string" ? output.length : JSON.stringify(output).length;
-      // The cost record must never fail the host's submit.
-      await recordUsage(options.runs, id, [
-        { at: new Date().toISOString(), stepId, attempt: before.attempt, driver: "host-model", promptChars: before.promptChars, answerChars },
-      ]).catch(() => undefined);
+    const racing = (inFlight.get(id) ?? 0) > 0;
+    inFlight.set(id, (inFlight.get(id) ?? 0) + 1);
+    try {
+      return await submitOnce(id, stepId, output, racing);
+    } finally {
+      const n = (inFlight.get(id) ?? 1) - 1;
+      if (n > 0) inFlight.set(id, n);
+      else inFlight.delete(id);
     }
+  };
+  const submitOnce = async (id: string, stepId: string, output: unknown, racing: boolean): Promise<SubmitResult> => {
+    let before = served.get(id);
+    // After a server restart the host may submit without asking for the step again: look it up (read-only).
+    if (!before && !racing && options.runs) {
+      const state = await engine.status(id).catch(() => undefined);
+      // An already-accepted step is a replay, not a new answer.
+      if (state && !state.accepted[stepId]) before = await engine.next(id).then((s) => (serve(s), served.get(id)), () => undefined);
+    }
+    // Taken now, so a second submit of the same answer racing this one isn't recorded twice.
+    const mine = before?.stepId === stepId ? before : undefined;
+    if (mine) served.delete(id);
+    let result: SubmitResult;
+    try {
+      result = await engine.submit(id, stepId, output);
+    } catch (error) {
+      // The answer was saved but the next step couldn't be shown: it still counts.
+      if (mine && error instanceof EngineError && error.code === "CONTEXT_FAILED" && /^The answer was (accepted|rejected)/.test(error.message)) await record(id, stepId, output, mine);
+      else if (mine && !served.has(id)) served.set(id, mine);
+      throw error;
+    }
+    if (mine) await record(id, stepId, output, mine);
     serve(result.next);
     return result;
   };
