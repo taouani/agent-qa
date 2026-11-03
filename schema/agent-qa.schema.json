@@ -111,6 +111,38 @@
         "projectKey": {
           "type": "string",
           "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "priorities": {
+          "type": "object",
+          "properties": {
+            "P1": {
+              "type": "string",
+              "minLength": 1
+            },
+            "P2": {
+              "type": "string",
+              "minLength": 1
+            },
+            "P3": {
+              "type": "string",
+              "minLength": 1
+            },
+            "P4": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "linkType": {
+          "default": "Test",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
         }
       },
       "required": [

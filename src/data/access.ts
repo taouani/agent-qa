@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { loadConfig, type Config, type RunStore, type SecretSources } from "../core/index.js";
-import type { ConfluenceClient, FetchLike, JiraClient, JiraInput } from "../connectors/index.js";
+import { FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
+import { JiraClient, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
+import { caseLabel, restorer, results, toXrayTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -26,6 +27,23 @@ export interface RequirementsData {
   requirements(runId: string, input: JiraInput, options?: LoadOptions): Promise<LoadedSources>;
 }
 
+/** The part of data access the Xray push needs (S1-10). */
+export interface XrayData {
+  /**
+   * Whether a push can happen: `agent-qa.yaml` has an `xray` section and the
+   * write policy doesn't deny Xray in this mode. False without a config.
+   */
+  xrayEnabled(): Promise<boolean>;
+  /** Which cases exist in Xray already (found by their `agent-qa:TC-ID` label). */
+  xrayPlan(cases: PushCase[]): Promise<XrayPlan>;
+  /**
+   * Pushes the cases through `Policy.guard` (target xray). `approved` is the
+   * user's answer, which is what an `ask` rule asks for. `tokensRun` is the
+   * run whose vault holds the tokens, for `masking.restoreOnWrite`.
+   */
+  pushToXray(runId: string, tokensRun: string, cases: PushCase[], approved: boolean): Promise<{ status: "done"; result: XrayPushResult } | { status: "declined" }>;
+}
+
 export interface DataAccessOptions {
   /** Project folder: `agent-qa.yaml` and `.agent-qa/vault/` live here. */
   root: string;
@@ -40,6 +58,12 @@ export interface DataAccessOptions {
   /** Replace the clients, for tests. */
   jira?: Pick<JiraClient, "collect">;
   confluence?: Pick<ConfluenceClient, "pages">;
+  xray?: Pick<XrayClient, "importAndWait">;
+  labels?: Pick<JiraClient, "findByLabels">;
+  /** `ide` (default) or `ci`: decides what an `ask` write rule does. */
+  mode?: Mode;
+  /** Where write decisions are recorded; default `.agent-qa/audit.jsonl`. */
+  audit?: AuditSink;
 }
 
 /** A sealed JQL input: the vault token that stands for it. */
@@ -47,7 +71,7 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData {
+export class DataAccess implements RequirementsData, XrayData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
@@ -80,6 +104,108 @@ export class DataAccess implements RequirementsData {
     return masked;
   }
 
+  async xrayEnabled(): Promise<boolean> {
+    let config: Config;
+    try {
+      config = await this.loadConfig();
+    } catch {
+      return false;
+    }
+    return config.xray !== undefined && this.policy(config).decide("xray").kind !== "deny";
+  }
+
+  async xrayPlan(cases: PushCase[]): Promise<XrayPlan> {
+    const config = await this.loadConfig();
+    const xray = this.xrayConfig(config);
+    const found = await (await this.labels(config)).findByLabels(xray.projectKey, cases.map((c) => caseLabel(c.id)));
+    const existing: Record<string, string> = {};
+    for (const c of cases) {
+      const key = found.get(caseLabel(c.id));
+      if (key) existing[c.id] = key;
+    }
+    const update = Object.keys(existing).length;
+    return { project: xray.projectKey, existing, create: cases.length - update, update };
+  }
+
+  async pushToXray(runId: string, tokensRun: string, cases: PushCase[], approved: boolean) {
+    // "No" never reaches the policy: under an `allow` rule it would not ask again.
+    if (!approved || cases.length === 0) return { status: "declined" as const };
+    const config = await this.loadConfig();
+    const xray = this.xrayConfig(config);
+    const plan = await this.xrayPlan(cases);
+    const restoreOnWrite = config.masking.restoreOnWrite;
+    const { vault } = restoreOnWrite ? await this.run(tokensRun) : { vault: undefined };
+    const restore = vault ? restorer((t) => vault.valueOf(t)) : (text: string) => text;
+    const policy = this.policy(config);
+    const summary = `Push ${cases.length} test case(s) to Xray project ${xray.projectKey} (${plan.create} new, ${plan.update} updated)`;
+    const client = await this.xrayClient(config);
+    const outcome = await policy.guard({ target: "xray", summary, runId }, async (grant) => {
+      const result: XrayPushResult = { project: xray.projectKey, jobs: [], results: [] };
+      for (let i = 0; i < cases.length; i += XRAY_BULK_LIMIT) {
+        const batch = cases.slice(i, i + XRAY_BULK_LIMIT);
+        const job = await client.importAndWait(batch.map((c) => toXrayTest(c, xray, plan.existing[c.id], restore)), grant);
+        result.jobs.push(job.jobId);
+        result.results.push(...results(batch, plan.existing, job));
+      }
+      // With real values sent, Xray's messages can quote them: keep none.
+      if (restoreOnWrite) for (const r of result.results) if (r.error) r.error = "rejected by Xray (message not kept: restoreOnWrite is on)";
+      return result;
+    });
+    return outcome.status === "done" ? { status: "done" as const, result: outcome.value } : { status: "declined" as const };
+  }
+
+  private async loadConfig(): Promise<Config> {
+    this.config ??= this.options.config ? Promise.resolve(this.options.config) : loadConfig(this.options.root).then((l) => l.config);
+    this.config.catch(() => (this.config = undefined));
+    return this.config;
+  }
+
+  /** The write policy. `confirm` says yes: the workflow's confirm step already asked the user. */
+  private policy(config: Config): Policy {
+    return new Policy({
+      rules: config.policy.writes,
+      mode: this.options.mode ?? "ide",
+      audit: this.options.audit ?? FileAuditSink.forRoot(this.options.root),
+      confirm: async () => true,
+    });
+  }
+
+  private xrayConfig(config: Config): NonNullable<Config["xray"]> {
+    if (!config.xray) throw new Error("agent-qa.yaml has no xray section: add clientId, clientSecret and projectKey to push to Xray.");
+    return config.xray;
+  }
+
+  private secrets(): SecretSources {
+    return this.options.secrets ?? { env: this.options.env ?? process.env, keychain: keychainLookup() };
+  }
+
+  private async reveal(value: string): Promise<string> {
+    return value.startsWith("${") ? resolveSecret(value, this.secrets()) : value;
+  }
+
+  private async labels(config: Config): Promise<Pick<JiraClient, "findByLabels">> {
+    if (this.options.labels) return this.options.labels;
+    const atlassian = config.atlassian;
+    if (!atlassian) throw new Error("agent-qa.yaml has no atlassian section: it is needed to find tests pushed before.");
+    return new JiraClient({
+      site: atlassian.site,
+      email: await this.reveal(atlassian.email),
+      token: await resolveSecret(atlassian.token, this.secrets()),
+      ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+    });
+  }
+
+  private async xrayClient(config: Config): Promise<Pick<XrayClient, "importAndWait">> {
+    if (this.options.xray) return this.options.xray;
+    const xray = this.xrayConfig(config);
+    return new XrayClient({
+      clientId: await this.reveal(xray.clientId),
+      clientSecret: await resolveSecret(xray.clientSecret, this.secrets()),
+      ...(xray.baseUrl ? { baseUrl: xray.baseUrl } : {}),
+      ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+    });
+  }
+
   private unseal(vault: RunVault, input: JiraInput): JiraInput {
     if ("key" in input || !SEALED.test(input.jql)) return input;
     const value = vault.valueOf(input.jql);
@@ -107,12 +233,10 @@ export class DataAccess implements RequirementsData {
 
   private async create(runId: string): Promise<{ vault: RunVault; service: MaskedDataService }> {
     const { root, env, store } = this.options;
-    this.config ??= this.options.config ? Promise.resolve(this.options.config) : loadConfig(root).then((l) => l.config);
-    this.config.catch(() => (this.config = undefined));
-    const config = await this.config;
+    const config = await this.loadConfig();
     this.vault ??= this.options.vault ?? new Vault({ storage: new FileVaultStorage(join(root, ".agent-qa", "vault")), keys: defaultKeyProvider(env) });
     const vault = await this.vault.open(runId);
-    const secrets = this.options.secrets ?? { env: env ?? process.env, keychain: keychainLookup() };
+    const secrets = this.secrets();
     const service = new MaskedDataService({
       config,
       store,

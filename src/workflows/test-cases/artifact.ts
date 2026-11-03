@@ -133,3 +133,49 @@ export const TEST_CASES_ARTIFACT: ArtifactSpec<TestCases> = {
   data: testCasesSchema,
   render: renderTestCases,
 };
+
+/**
+ * `xray-push@1` (S1-10): what one push to Xray did, per case. Written only
+ * after the write policy approved it and Xray finished the import jobs.
+ */
+export const xrayPushSchema = z
+  .object({
+    /** The test-cases@1 the push sent. */
+    testCases: source,
+    project: z.string(),
+    jobs: z.array(z.string()),
+    results: z.array(
+      z
+        .object({
+          tcId: z.string(),
+          action: z.enum(["created", "updated", "failed"]),
+          xrayKey: z.string().optional(),
+          linkedTo: z.string(),
+          error: z.string().optional(),
+        })
+        .strict(),
+    ),
+    counts: z.object({ created: z.number().int().min(0), updated: z.number().int().min(0), failed: z.number().int().min(0) }).strict(),
+  })
+  .strict();
+export type XrayPush = z.infer<typeof xrayPushSchema>;
+
+export function renderXrayPush(data: XrayPush): string {
+  const c = data.counts;
+  return [
+    "# Xray push",
+    "",
+    `Project ${data.project}: ${c.created} created, ${c.updated} updated, ${c.failed} failed.`,
+    "",
+    "| Case | Action | Xray test | Linked to | Error |",
+    "|---|---|---|---|---|",
+    ...data.results.map((r) => `| ${r.tcId} | ${r.action} | ${r.xrayKey ?? ""} | ${r.linkedTo} | ${r.error ? cell(r.error) : ""} |`),
+  ].join("\n") + "\n";
+}
+
+export const XRAY_PUSH_ARTIFACT: ArtifactSpec<XrayPush> = {
+  name: "xray-push",
+  schema: "xray-push@1",
+  data: xrayPushSchema,
+  render: renderXrayPush,
+};
