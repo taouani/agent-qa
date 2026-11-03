@@ -1,5 +1,6 @@
 import type { RunVault, TokenKind } from "../vault/index.js";
 import { PATTERN_DETECTORS, type DetectorName, type PatternDetector, type Span } from "./detectors.js";
+import { LanguageNameDetector, type NameLanguage } from "./lang-names.js";
 import { NameIndex } from "./names.js";
 
 /**
@@ -18,6 +19,8 @@ export interface MaskerOptions {
   detectors?: readonly DetectorName[];
   /** Names known up front, e.g. a configured list. */
   names?: Iterable<string>;
+  /** Languages for finding names nobody listed. Default: all nine. Empty: known names only. */
+  nameLanguages?: readonly NameLanguage[];
   /** Replaces the built-in pattern detectors, for tests. */
   patternDetectors?: PatternDetector[];
 }
@@ -46,12 +49,15 @@ export class Masker {
   private readonly patterns: PatternDetector[];
   private readonly names = new NameIndex();
   private readonly useNames: boolean;
+  private readonly langNames: LanguageNameDetector | undefined;
   private readonly counts: MaskingCounts = { byDetector: {}, byField: {}, wholeFields: {}, tokens: 0 };
 
   constructor(options: MaskerOptions) {
     this.vault = options.vault;
     const enabled = new Set<DetectorName>(options.detectors ?? PRIORITY);
     this.useNames = enabled.has("name");
+    const languages = options.nameLanguages;
+    this.langNames = this.useNames && (languages === undefined || languages.length > 0) ? new LanguageNameDetector(languages) : undefined;
     this.patterns =
       options.patternDetectors ??
       (Object.keys(PATTERN_DETECTORS) as PatternDetector["name"][]).filter((n) => enabled.has(n)).map((n) => PATTERN_DETECTORS[n]());
@@ -67,7 +73,10 @@ export class Masker {
   spans(text: string): Span[] {
     // Detectors see ASCII digits; full-width and Arabic-Indic digits map one to one, so offsets hold.
     const digits = asciiDigits(text);
-    const all = [...this.patterns.flatMap((d) => d.find(digits)), ...(this.useNames ? this.names.find(text) : [])];
+    const known = this.useNames ? this.names.find(text) : [];
+    // Found names only fill what known names leave, so a known person keeps one token in any order or format.
+    const found = this.langNames ? outside(this.langNames.find(text), known, text) : [];
+    const all = [...this.patterns.flatMap((d) => d.find(digits)), ...known, ...found];
     return mergeOverlaps(all, text);
   }
 
@@ -149,5 +158,38 @@ export function mergeOverlaps(spans: Span[], text: string): Span[] {
     group.push(s);
   }
   flush();
+  return out;
+}
+
+/**
+ * The parts of `spans` that no `cover` span overlaps, trimmed to letters:
+ * "Quillfeather, Marguerite" over two known parts leaves nothing, "Marguerite
+ * Quillfeather Jones" leaves "Jones".
+ */
+function outside(spans: Span[], cover: Span[], text: string): Span[] {
+  if (cover.length === 0) return spans;
+  const sorted = [...cover].sort((a, b) => a.start - b.start);
+  const out: Span[] = [];
+  // Both lists in order, so the first cover worth looking at only moves forward: linear overall.
+  let first = 0;
+  for (const s of [...spans].sort((a, b) => a.start - b.start)) {
+    while (first < sorted.length && sorted[first]!.end <= s.start) first++;
+    let at = s.start;
+    const pieces: [number, number][] = [];
+    for (let k = first; k < sorted.length; k++) {
+      const c = sorted[k]!;
+      if (c.end <= at) continue;
+      if (c.start >= s.end) break;
+      if (c.start > at) pieces.push([at, c.start]);
+      at = Math.max(at, c.end);
+    }
+    if (at < s.end) pieces.push([at, s.end]);
+    for (let [start, end] of pieces) {
+      while (start < end && !/[\p{L}\p{M}]/u.test(text[start]!)) start++;
+      while (end > start && !/[\p{L}\p{M}]/u.test(text[end - 1]!)) end--;
+      if (end - start === s.end - s.start) out.push(s);
+      else if (end > start) out.push({ ...s, start, end, value: text.slice(start, end).replace(/\s+/g, " ") });
+    }
+  }
   return out;
 }
