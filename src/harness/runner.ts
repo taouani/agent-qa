@@ -16,6 +16,8 @@ export interface SeededLeak extends SeedHit {
   caseId: string;
   /** 0-based index of the model call that carried the value. */
   call: number;
+  /** Set when the value was in text shown to an IDE's model (a confirm step), not in a model call; `call` is then the index among those. */
+  shown?: true;
 }
 
 export class SeededLeakError extends Error {
@@ -43,8 +45,22 @@ export class RecordingDriver implements ModelDriver {
     this.scanner = new SeedScanner(seeds);
   }
 
+  /** Texts shown to a model outside a call (see `observe`). */
+  readonly views: Array<{ leaks: SeededLeak[] }> = [];
+
   get leaks(): SeededLeak[] {
-    return this.calls.flatMap((c) => c.leaks);
+    return [...this.calls.flatMap((c) => c.leaks), ...this.views.flatMap((v) => v.leaks)];
+  }
+
+  /**
+   * Scans text a model would be shown without a call through this driver,
+   * such as a confirm step's question in an IDE. A seeded value fails the case.
+   */
+  observe(text: string): void {
+    const call = this.views.length;
+    const leaks = this.scanner.scan(text).map((h) => ({ ...h, caseId: this.caseId, call, shown: true as const }));
+    this.views.push({ leaks });
+    if (leaks.length > 0) throw new SeededLeakError(leaks);
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
@@ -63,6 +79,10 @@ export interface PipelineContext {
   /** The synthetic tickets, as a connector would return them: real (seeded) values, not masked. */
   tickets: SyntheticTicket[];
   driver: ModelDriver;
+  /** The seeds this case names, with their values. */
+  seeds: Seed[];
+  /** Scan text shown to a model outside `driver` (see `RecordingDriver.observe`). */
+  observe: (text: string) => void;
 }
 
 /** What the harness runs per case. Slice 1 plugs in the masked workflow pipeline. */
@@ -131,7 +151,8 @@ export async function runHarness(options: RunHarnessOptions): Promise<HarnessRep
     let status: CaseReport["status"] = "pass";
     let error: string | undefined;
     try {
-      await options.pipeline({ case: c, tickets: structuredClone(c.tickets), driver });
+      const seeds = options.seeds.filter((s) => c.seeds.includes(s.id));
+      await options.pipeline({ case: c, tickets: structuredClone(c.tickets), driver, seeds, observe: (text) => driver.observe(text) });
     } catch (e) {
       // A SeededLeakError this case's driver didn't record came from somewhere else: that's an error, not a pass.
       if (!(e instanceof SeededLeakError) || driver.leaks.length === 0) {

@@ -11,7 +11,7 @@ export interface HarnessSources {
 
 /**
  * Cases and seeds from `harness` in agent-qa.yaml, or the shipped synthetic set
- * when the section is missing. Jira sources need the Jira connector (slice 1).
+ * when the section is missing. Jira sources are skipped for now.
  */
 export async function harnessSources(config: Config | undefined, root: string): Promise<HarnessSources> {
   const at = (p: string) => (isAbsolute(p) ? p : join(root, p));
@@ -20,7 +20,7 @@ export async function harnessSources(config: Config | undefined, root: string): 
   const notes: string[] = [];
   for (const source of config.harness.sources) {
     if ("fixtures" in source) cases.push(...(await loadCases(at(source.fixtures))));
-    else notes.push("jira source skipped: the Jira connector arrives in slice 1");
+    else notes.push("jira source skipped: the harness reads fixtures only for now (a Jira source has no known seeds to check)");
   }
   const seeds = config.harness.seededPersonalData ? await loadSeeds(at(config.harness.seededPersonalData)) : DEFAULT_SEEDS;
   return { cases, seeds, notes };

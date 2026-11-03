@@ -32,15 +32,61 @@ export const seedSchema = z
   });
 export type Seed = z.infer<typeof seedSchema>;
 
+const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
+
+/**
+ * A synthetic Jira issue, shaped like what the Jira connector returns, so the
+ * masked pipeline reads it the way it reads Jira. Each place personal data can
+ * sit in Jira has a field: summary, description, the acceptance-criteria
+ * field, other text fields, people, labels and components.
+ */
 export const syntheticTicketSchema = z
   .object({
-    key: z.string().regex(/^[A-Z][A-Z0-9_]+-\d+$/),
+    key: z.string().regex(ISSUE_KEY),
+    /** Issue type. Default Story. */
+    type: z.string().min(1).default("Story"),
     summary: z.string().min(1),
     description: z.string(),
-    /** Extra Jira fields, e.g. reporter or a custom field. */
+    /** The acceptance-criteria field's text, when the project has one. */
+    acceptanceCriteria: z.string().optional(),
+    /** Other Jira text fields by name, e.g. a "Customer notes" custom field. */
     fields: z.record(z.string(), z.string()).default({}),
+    status: z.string().min(1).optional(),
+    priority: z.string().min(1).optional(),
+    fixVersions: z.array(z.string()).default([]),
+    /** Names of people @-mentioned in the description (Jira keeps them apart from the text too). */
+    mentions: z.array(z.string().min(1)).default([]),
+    /** Confluence pages linked from the issue (as remote links). */
+    pages: z.array(z.object({ title: z.string().min(1), body: z.string() }).strict()).default([]),
+    /** Reporter, assignee and creator, with an optional email. */
+    people: z
+      .array(z.object({ role: z.enum(["assignee", "reporter", "creator"]), displayName: z.string().min(1), email: z.string().optional() }).strict())
+      .default([]),
+    labels: z.array(z.string()).default([]),
+    components: z.array(z.string()).default([]),
+    /** The parent issue's key (a story's epic, a sub-task's story), in the same case. */
+    parent: z.string().regex(ISSUE_KEY).optional(),
+    /** Issue links to other tickets of the same case. */
+    links: z.array(z.object({ type: z.string().min(1).default("Relates"), key: z.string().regex(ISSUE_KEY) }).strict()).default([]),
   })
   .strict();
+
+/** Every text of a ticket a seed can hide in. */
+export function ticketTexts(t: SyntheticTicket): string[] {
+  return [
+    t.summary,
+    t.description,
+    t.acceptanceCriteria ?? "",
+    // Field names are project setup, not data: they reach the model as they are.
+    ...Object.values(t.fields),
+    ...t.people.flatMap((p) => [p.displayName, p.email ?? ""]),
+    ...t.labels,
+    ...t.components,
+    ...t.fixVersions,
+    ...t.mentions,
+    ...t.pages.flatMap((p) => [p.title, p.body]),
+  ];
+}
 export type SyntheticTicket = z.infer<typeof syntheticTicketSchema>;
 
 export const harnessCaseSchema = z
@@ -49,7 +95,19 @@ export const harnessCaseSchema = z
     description: z.string().min(1),
     workflow: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()),
-    tickets: z.array(syntheticTicketSchema).min(1),
+    tickets: z
+      .array(syntheticTicketSchema)
+      .min(1)
+      .superRefine((tickets, ctx) => {
+        const keys = new Set(tickets.map((t) => t.key));
+        if (keys.size !== tickets.length) ctx.addIssue({ code: "custom", message: "ticket keys must be unique" });
+        tickets.forEach((t, i) => {
+          if (t.parent && !keys.has(t.parent)) ctx.addIssue({ code: "custom", path: [i, "parent"], message: `${t.parent} is not a ticket of this case` });
+          t.links.forEach((l, j) => {
+            if (!keys.has(l.key)) ctx.addIssue({ code: "custom", path: [i, "links", j, "key"], message: `${l.key} is not a ticket of this case` });
+          });
+        });
+      }),
     /** Ids of the seeds placed in these tickets. Every one must appear in the tickets; a case without seeds proves nothing. */
     seeds: z.array(z.string()).min(1),
   })
@@ -75,52 +133,92 @@ export class HarnessCaseError extends Error {
   }
 }
 
-/** Every value is fake: reserved example domains, test IBAN and card numbers, fictional names. */
+/** Every value is fake: reserved example domains and IP range, test IBAN, card and id numbers, fictional names. */
 export const DEFAULT_SEEDS: Seed[] = [
   { id: "seed-name-1", kind: "name", value: "Marguerite Quillfeather" },
   { id: "seed-name-2", kind: "name", value: "Tobias Wrenhallow" },
+  { id: "seed-name-3", kind: "name", value: "Zephyrine Applewood" },
   { id: "seed-email-1", kind: "email", value: "m.quillfeather@example.com" },
+  { id: "seed-email-2", kind: "email", value: "t.wrenhallow@example.org" },
   { id: "seed-phone-1", kind: "phone", value: "+33 6 39 98 12 34" }, // range reserved for fiction
   { id: "seed-iban-1", kind: "iban", value: "DE89 3704 0044 0532 0130 00" },
   { id: "seed-card-1", kind: "card", value: "4111 1111 1111 1111" },
+  { id: "seed-national-id-1", kind: "national-id", value: "12345678Z" }, // Spanish DNI test number
+  { id: "seed-ip-1", kind: "ip", value: "192.0.2.44" }, // TEST-NET-1
 ];
 
-export const DEFAULT_CASES: HarnessCase[] = [
+/**
+ * The shipped cases run the real workflows. Between them they put seeds in
+ * place where the Jira and Confluence connectors hand data on: summary,
+ * description, @-mentions, the acceptance-criteria field, criteria inside the
+ * description, a custom text field, people, labels, components, fix versions,
+ * a linked Confluence page, a child issue, a linked issue and a JQL filter.
+ * Addresses have no detector yet, so no seed is an address.
+ */
+const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
   {
     id: "contact-case-form",
-    description: "A support story that names a customer, with their email and phone in the description.",
-    workflow: "spike-test-cases",
-    inputs: { ticket: "QAH-1" },
+    description: "A story with a sub-task: a customer's name, email and phone in the description and criteria, an IP in a custom field, the reporter's name and email.",
+    workflow: "test-cases",
+    inputs: { key: "QAH-1" },
     tickets: [
       {
         key: "QAH-1",
         summary: "Create a case from a contact record",
-        description:
-          "As an agent I open the contact Marguerite Quillfeather (m.quillfeather@example.com, +33 6 39 98 12 34) " +
-          "and click New Case. The case form opens with the contact pre-filled.",
-        fields: { reporter: "Tobias Wrenhallow" },
+        status: "To Do",
+        priority: "High",
+        description: "As an agent I open the contact Marguerite Quillfeather (m.quillfeather@example.com, +33 6 39 98 12 34) and click New Case. Ask @Tobias Wrenhallow for access.",
+        mentions: ["Tobias Wrenhallow"],
+        acceptanceCriteria: "- The case form opens with Marguerite Quillfeather pre-filled as the contact\n- The contact's phone +33 6 39 98 12 34 is shown on the form",
+        fields: { "Customer notes": "Last login from 192.0.2.44." },
+        people: [{ role: "reporter", displayName: "Tobias Wrenhallow", email: "t.wrenhallow@example.org" }],
       },
-    ],
-    seeds: ["seed-name-1", "seed-email-1", "seed-phone-1", "seed-name-2"],
-  },
-  {
-    id: "refund-payment-details",
-    description: "A billing story with an IBAN and a card number in the acceptance criteria.",
-    workflow: "spike-test-cases",
-    inputs: { ticket: "QAH-2" },
-    tickets: [
       {
         key: "QAH-2",
-        summary: "Refund to the original payment method",
-        description:
-          "Given the customer paid with card 4111 1111 1111 1111, the refund goes back to that card. " +
-          "When the card has expired, refund to IBAN DE89 3704 0044 0532 0130 00 instead.",
-        fields: {},
+        type: "Sub-task",
+        parent: "QAH-1",
+        summary: "Email Marguerite Quillfeather when the case is created",
+        description: "Acceptance criteria:\n- An email goes to m.quillfeather@example.com\n- Tobias Wrenhallow (t.wrenhallow@example.org) is copied",
+        labels: ["owner-m.quillfeather@example.com"],
       },
     ],
-    seeds: ["seed-card-1", "seed-iban-1"],
+    seeds: ["seed-name-1", "seed-email-1", "seed-phone-1", "seed-ip-1", "seed-name-2", "seed-email-2"],
+  },
+  {
+    id: "refund-epic-jql",
+    description: "A JQL filter that names a person, over an epic, a story with card and IBAN criteria, and a linked bug with a national id and no criteria.",
+    workflow: "test-cases",
+    inputs: { jql: 'project = QAH AND assignee = "Zephyrine Applewood"' },
+    tickets: [
+      { key: "QAH-3", type: "Epic", summary: "Refunds", description: "Refund rules agreed with Zephyrine Applewood." },
+      {
+        key: "QAH-4",
+        parent: "QAH-3",
+        summary: "Refund to the original payment method",
+        description: "Refunds go back to how the customer paid.",
+        acceptanceCriteria:
+          "- Given the customer paid with card 4111 1111 1111 1111, the refund goes back to that card\n- When the card has expired, the refund goes to IBAN DE89 3704 0044 0532 0130 00",
+        people: [{ role: "assignee", displayName: "Zephyrine Applewood" }],
+        components: ["Billing"],
+        fixVersions: ["2026.12 for Zephyrine Applewood"],
+        pages: [{ title: "Refund notes from Zephyrine Applewood", body: "Agreed on the call: test with card 4111 1111 1111 1111, and IBAN DE89 3704 0044 0532 0130 00 as the fallback." }],
+        links: [{ type: "Relates", key: "QAH-5" }],
+      },
+      { key: "QAH-5", type: "Bug", summary: "Refund failed for one customer", description: "The refund for the customer with DNI 12345678Z failed with a timeout." },
+    ],
+    seeds: ["seed-card-1", "seed-iban-1", "seed-name-3", "seed-national-id-1"],
+  },
+  {
+    id: "shipping-task-requirements",
+    description: "The requirements workflow alone, on a task with no criteria: a name and phone in the description.",
+    workflow: "requirements",
+    inputs: { key: "QAH-6" },
+    tickets: [{ key: "QAH-6", type: "Task", summary: "Update the delivery contact", description: "Deliveries for this account go to Tobias Wrenhallow, phone +33 6 39 98 12 34." }],
+    seeds: ["seed-name-2", "seed-phone-1"],
   },
 ];
+
+export const DEFAULT_CASES: HarnessCase[] = DEFAULT_CASE_INPUTS.map((c) => harnessCaseSchema.parse(c));
 
 /** Check that every seed a case names exists and actually appears in its tickets. */
 export function validateCases(cases: HarnessCase[], seeds: Seed[]): void {
@@ -133,7 +231,7 @@ export function validateCases(cases: HarnessCase[], seeds: Seed[]): void {
   for (const c of cases) {
     if (ids.has(c.id)) throw new HarnessCaseError(`Duplicate harness case id: ${c.id}`);
     ids.add(c.id);
-    const text = c.tickets.map((t) => [t.summary, t.description, ...Object.values(t.fields)].join("\n")).join("\n");
+    const text = c.tickets.map((t) => ticketTexts(t).join("\n")).join("\n");
     for (const id of c.seeds) {
       const seed = byId.get(id);
       if (!seed) throw new HarnessCaseError(`Case ${c.id} names unknown seed ${id}`);
