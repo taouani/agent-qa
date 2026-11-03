@@ -257,6 +257,8 @@ describe("test-cases workflow", () => {
     await later.submit(run.runId, "cases", cases);
     const edit = { approved: true, changes: [{ id: "TC-ABC-1-002", decision: "edited", case: tc("ABC-1", 2, ["AC2"], { title: "Mail bf@other.org" }) }] };
     await expect(later.submit(run.runId, "review", edit)).rejects.toMatchObject({ code: "CONTEXT_FAILED", message: expect.stringContaining("expired") });
+    // Drops need no masking, so they still work.
+    expect((await later.submit(run.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-003", decision: "dropped" }] })).status).toBe("accepted");
   });
 
   it("lets the user stop without fixing their changes", async () => {

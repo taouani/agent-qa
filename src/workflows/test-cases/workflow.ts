@@ -253,7 +253,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           const run = requirementsRunOf(ctx);
           // An expired vault starts again from <PERSON_1>, which would give a new value an old token.
           const art = await requirements(ctx);
-          if (/<[A-Z][A-Z0-9_]*_\d+>/.test(JSON.stringify(art.data)) && !(await deps.data.hasVault(run))) {
+          const edits = review.changes.some((c) => c.case);
+          if (edits && /<[A-Z][A-Z0-9_]*_\d+>/.test(JSON.stringify(art.data)) && !(await deps.data.hasVault(run))) {
             throw new Error(`the token vault of run ${run} has expired or was deleted, so edits can't be masked consistently; start a new run`);
           }
           const changes = await Promise.all(
