@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
-import { JiraClient, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, JiraClient, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
-import { caseLabel, restorer, results, toXrayTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
+import { caseLabel, caseTokens, restorer, results, toXrayTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -111,7 +111,8 @@ export class DataAccess implements RequirementsData, XrayData {
     } catch {
       return false;
     }
-    return config.xray !== undefined && this.policy(config).decide("xray").kind !== "deny";
+    // Earlier pushes are found through Jira, so the push needs the atlassian section too.
+    return config.xray !== undefined && (this.options.labels !== undefined || config.atlassian !== undefined) && this.policy(config).decide("xray").kind !== "deny";
   }
 
   async xrayPlan(cases: PushCase[]): Promise<XrayPlan> {
@@ -135,6 +136,11 @@ export class DataAccess implements RequirementsData, XrayData {
     const plan = await this.xrayPlan(cases);
     const restoreOnWrite = config.masking.restoreOnWrite;
     const { vault } = restoreOnWrite ? await this.run(tokensRun) : { vault: undefined };
+    if (vault) {
+      // An expired vault would send tokens while the user expects real values.
+      const missing = [...caseTokens(cases)].filter((t) => vault.valueOf(t) === undefined);
+      if (missing.length) throw new Error(`the token vault of run ${tokensRun} has no value for ${missing.length} token(s): it expired or was deleted, so the real values can't be restored. Start a new run.`);
+    }
     const restore = vault ? restorer((t) => vault.valueOf(t)) : (text: string) => text;
     const policy = this.policy(config);
     const summary = `Push ${cases.length} test case(s) to Xray project ${xray.projectKey} (${plan.create} new, ${plan.update} updated)`;
@@ -143,9 +149,18 @@ export class DataAccess implements RequirementsData, XrayData {
       const result: XrayPushResult = { project: xray.projectKey, jobs: [], results: [] };
       for (let i = 0; i < cases.length; i += XRAY_BULK_LIMIT) {
         const batch = cases.slice(i, i + XRAY_BULK_LIMIT);
-        const job = await client.importAndWait(batch.map((c) => toXrayTest(c, xray, plan.existing[c.id], restore)), grant);
-        result.jobs.push(job.jobId);
-        result.results.push(...results(batch, plan.existing, job));
+        try {
+          const job = await client.importAndWait(batch.map((c) => toXrayTest(c, xray, plan.existing[c.id], restore)), grant);
+          result.jobs.push(job.jobId);
+          result.results.push(...results(batch, plan.existing, job));
+        } catch (error) {
+          // Keep what earlier batches created: a rerun without that record could create them again.
+          if (!(error instanceof ConnectorError)) throw error;
+          if (error.jobId) result.jobs.push(error.jobId);
+          const why = `${error.message}${error.code === "TIMEOUT" ? "" : "; check Xray before pushing again"}`;
+          for (const c of cases.slice(i)) result.results.push({ tcId: c.id, action: "failed", linkedTo: c.requirement, error: why });
+          break;
+        }
       }
       // With real values sent, Xray's messages can quote them: keep none.
       if (restoreOnWrite) for (const r of result.results) if (r.error) r.error = "rejected by Xray (message not kept: restoreOnWrite is on)";

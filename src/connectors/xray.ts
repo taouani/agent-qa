@@ -51,7 +51,7 @@ export interface XrayJobIssue {
 export interface XrayJobResult {
   status: "successful" | "partially_successful" | "failed";
   issues: XrayJobIssue[];
-  /** Errors by element; values are Xray's messages, which hold only what was sent (masked). */
+  /** Errors by element: only the rejected field names, never Xray's texts. */
   errors: Array<{ elementNumber?: number; message: string }>;
 }
 
@@ -127,9 +127,9 @@ export class XrayClient {
     const answer = obj(await this.http.get(`${BULK_PATH}/${jobId}/status`));
     const status = answer.status;
     if (status === "pending" || status === "working") return undefined;
-    if (status !== "successful" && status !== "partially_successful" && status !== "failed") {
-      throw new ConnectorError("INVALID_RESPONSE", "Xray", "GET", `${BULK_PATH}/{jobId}/status`, undefined, "Xray job status is not one Agent-QA knows");
-    }
+    if (typeof status !== "string") throw new ConnectorError("INVALID_RESPONSE", "Xray", "GET", `${BULK_PATH}/{jobId}/status`, undefined, "Xray job status has no status");
+    // Any other status is final; one Agent-QA doesn't know (e.g. "unsuccessful") counts as failed, keeping its errors.
+    const final: XrayJobResult["status"] = status === "successful" || status === "partially_successful" ? status : "failed";
     const result = obj(answer.result);
     const issues = arr(result.issues)
       .map(obj)
@@ -137,23 +137,30 @@ export class XrayClient {
       .map((i) => ({ elementNumber: i.elementNumber as number, key: i.key as string }));
     const errors = arr(result.errors).map((e) => {
       const o = obj(e);
-      const message = typeof o.errors === "object" ? JSON.stringify(o.errors) : typeof o.message === "string" ? o.message : JSON.stringify(e);
+      // Only the field names: Xray's texts can quote data from Jira (names, summaries).
+      const fields = o.errors && typeof o.errors === "object" ? Object.keys(o.errors as Raw) : [];
+      const message = fields.length ? `rejected: ${fields.join(", ")}` : "rejected by Xray";
       return { ...(typeof o.elementNumber === "number" ? { elementNumber: o.elementNumber } : {}), message: message.slice(0, 500) };
     });
-    return { status, issues, errors };
+    return { status: final, issues, errors };
   }
 
   /** Imports and waits for the job to finish. */
   async importAndWait(tests: XrayTest[], grant: WriteGrant): Promise<XrayJobResult & { jobId: string }> {
     const jobId = await this.importTests(tests, grant);
     const deadline = this.now() + this.jobTimeoutMs;
-    for (;;) {
-      const result = await this.jobStatus(jobId);
-      if (result) return { ...result, jobId };
-      if (this.now() >= deadline) {
-        throw new ConnectorError("TIMEOUT", "Xray", "GET", `${BULK_PATH}/{jobId}/status`, undefined, `Xray import job ${jobId} did not finish in ${Math.round(this.jobTimeoutMs / 1000)} s; it may still complete in Xray`);
+    try {
+      for (;;) {
+        const result = await this.jobStatus(jobId);
+        if (result) return { ...result, jobId };
+        if (this.now() >= deadline) {
+          throw new ConnectorError("TIMEOUT", "Xray", "GET", `${BULK_PATH}/{jobId}/status`, undefined, `Xray import job ${jobId} did not finish in ${Math.round(this.jobTimeoutMs / 1000)} s; it may still complete in Xray, so check Xray before pushing again`);
+        }
+        await this.sleep(this.pollMs);
       }
-      await this.sleep(this.pollMs);
+    } catch (error) {
+      if (error instanceof ConnectorError) error.jobId = jobId;
+      throw error;
     }
   }
 }

@@ -39,6 +39,9 @@ export class ConnectorError extends Error {
     super(message ?? describe(code, service, method, path, status));
     this.name = "ConnectorError";
   }
+
+  /** For an Xray import job that was started: its id, so the record can point to it. */
+  jobId?: string;
 }
 
 function describe(code: ConnectorErrorCode, service: string, method: string, path: string, status?: number): string {

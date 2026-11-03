@@ -60,6 +60,12 @@ export function toXrayTest(c: PushCase, xray: NonNullable<Config["xray"]>, exist
   };
 }
 
+/** Every token in the cases' text. */
+export function caseTokens(cases: PushCase[]): Set<string> {
+  const texts = cases.flatMap((c) => [c.title, ...c.preconditions, ...c.steps.flatMap((s) => [s.action, s.data, s.expected])]);
+  return new Set(texts.flatMap((t) => t.match(TOKEN) ?? []));
+}
+
 /** Replaces tokens with their values, for `masking.restoreOnWrite`; unknown tokens stay. */
 export function restorer(valueOf: (token: string) => string | undefined): (text: string) => string {
   return (text) => text.replace(TOKEN, (t) => valueOf(t) ?? t);

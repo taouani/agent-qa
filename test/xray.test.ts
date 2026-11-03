@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FetchLike } from "../src/connectors/http.js";
 import { JiraClient } from "../src/connectors/jira.js";
 import { XrayClient, type XrayJobResult, type XrayTest } from "../src/connectors/xray.js";
+import { ConnectorError } from "../src/connectors/http.js";
 import { configSchema, MemoryAuditSink, Policy, PolicyDenied, RunStore, type WriteGrant } from "../src/core/index.js";
 import { DataAccess, toXrayTest, type PushCase } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
@@ -44,7 +45,7 @@ describe("XrayClient", () => {
     const client = new XrayClient({ clientId: "id", clientSecret: "secret", fetch, sleep: async () => {}, pollMs: 1 });
     const { run } = await grantFor();
     const result = await run((g) => client.importAndWait([TEST, TEST], g));
-    expect(result).toEqual({ jobId: "job1", status: "partially_successful", issues: [{ elementNumber: 0, key: "QA-7" }], errors: [{ elementNumber: 1, message: '{"summary":"too long"}' }] });
+    expect(result).toEqual({ jobId: "job1", status: "partially_successful", issues: [{ elementNumber: 0, key: "QA-7" }], errors: [{ elementNumber: 1, message: "rejected: summary" }] });
     expect(calls.filter((c) => c.path === "/api/v2/authenticate")).toHaveLength(1);
     expect(calls[0]!.body).toEqual({ client_id: "id", client_secret: "secret" });
     expect(calls.slice(1).every((c) => c.auth === "Bearer tok-1")).toBe(true);
@@ -62,12 +63,21 @@ describe("XrayClient", () => {
     const client = new XrayClient({ clientId: "id", clientSecret: "s", fetch, sleep: async () => void (now += 1000), now: () => now, jobTimeoutMs: 5000 });
     await expect(client.importTests([TEST], undefined as unknown as WriteGrant)).rejects.toThrow();
     const { run } = await grantFor();
-    await expect(run((g) => client.importAndWait([TEST], g))).rejects.toMatchObject({ code: "TIMEOUT" });
+    await expect(run((g) => client.importAndWait([TEST], g))).rejects.toMatchObject({ code: "TIMEOUT", jobId: "job2" });
   });
 
-  it("rejects bad answers: no token, no job id, unknown status", async () => {
+  it("counts an unknown final status as failed and keeps no Xray text", async () => {
+    const fetch: FetchLike = async (url) => new URL(url).pathname === "/api/v2/authenticate" ? ok("tok") : ok({ status: "unsuccessful", result: { errors: [{ elementNumber: 0, message: "user Ana Lima can't see QA" }, { errors: { steps: "x" } }] } });
+    expect(await new XrayClient({ clientId: "i", clientSecret: "s", fetch }).jobStatus("job4")).toEqual({
+      status: "failed",
+      issues: [],
+      errors: [{ elementNumber: 0, message: "rejected by Xray" }, { message: "rejected: steps" }],
+    });
+  });
+
+  it("rejects bad answers: no token, no job id, no status", async () => {
     const answers: Record<string, unknown> = { "/api/v2/authenticate": "", "/api/v2/import/test/bulk": { jobId: "../x" } };
-    const fetch: FetchLike = async (url) => ok(answers[new URL(url).pathname] ?? { status: "exploded" });
+    const fetch: FetchLike = async (url) => ok(answers[new URL(url).pathname] ?? { result: {} });
     const { run } = await grantFor();
     await expect(run((g) => new XrayClient({ clientId: "i", clientSecret: "s", fetch }).importTests([TEST], g))).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
     answers["/api/v2/authenticate"] = "tok";
@@ -90,7 +100,7 @@ describe("JiraClient.findByLabels", () => {
     const found = await jira.findByLabels("QA", [...labels, 'bad "label"']);
     expect([...found]).toEqual([["agent-qa:TC-ABC-1-001", "QA-1"]]);
     expect(jqls).toHaveLength(2);
-    expect(jqls[0]).toMatch(/^project = QA AND labels in \("agent-qa:TC-ABC-1-001", /);
+    expect(jqls[0]).toMatch(/^project = "QA" AND labels in \("agent-qa:TC-ABC-1-001", .*\) ORDER BY created ASC$/);
     expect(jqls.join()).not.toContain("bad");
     await expect(jira.findByLabels("qa; drop", labels)).rejects.toThrow("Not a Jira project key");
   });
@@ -134,7 +144,7 @@ describe("DataAccess.pushToXray", () => {
   let runs: RunStore;
   let sent: XrayTest[][];
   let audit: MemoryAuditSink;
-  let job: (tests: XrayTest[]) => XrayJobResult;
+  let job: (tests: XrayTest[], n: number) => XrayJobResult;
   const vaults = new MemoryVaultStorage();
   const key = Buffer.alloc(32, 7);
 
@@ -163,7 +173,7 @@ describe("DataAccess.pushToXray", () => {
       xray: {
         importAndWait: async (tests) => {
           sent.push(tests);
-          return { ...job(tests), jobId: `job${sent.length}` };
+          return { ...job(tests, sent.length), jobId: `job${sent.length}` };
         },
       },
       labels: { findByLabels: async () => new Map([["agent-qa:TC-ABC-1-002", "QA-55"]]) },
@@ -204,6 +214,8 @@ describe("DataAccess.pushToXray", () => {
     expect(audit.entries).toHaveLength(0);
     expect(await access().xrayEnabled()).toBe(true);
     expect(await access({ xray: false }).xrayEnabled()).toBe(false);
+    const noJira = new DataAccess({ root: dir, store: runs, config: configSchema.parse({ version: 1, xray: { clientId: "i", clientSecret: "${env:S}", projectKey: "QA" } }) });
+    expect(await noJira.xrayEnabled()).toBe(false);
     expect(await access({ writes: { xray: "deny" } }).xrayEnabled()).toBe(false);
     expect(await access({ mode: "ci" }).xrayEnabled()).toBe(false);
     expect(await access({ mode: "ci", writes: { xray: "allow" } }).xrayEnabled()).toBe(true);
@@ -224,6 +236,33 @@ describe("DataAccess.pushToXray", () => {
     expect(JSON.stringify(out)).not.toContain("Ana");
   });
 
+  it("refuses to restore with an expired vault instead of sending tokens", async () => {
+    await expect(access({ restoreOnWrite: true }).pushToXray("run-2", "gone-run", [pushCase(1)], true)).rejects.toThrow("expired or was deleted");
+    expect(sent).toHaveLength(0);
+    expect(audit.entries).toHaveLength(0);
+  });
+
+  it("keeps what earlier batches created when a later job fails", async () => {
+    job = (tests, n) => {
+      if (n === 2) {
+        const e = new ConnectorError("TIMEOUT", "Xray", "GET", "/x", undefined, "Xray import job job2 did not finish in 600 s; it may still complete in Xray, so check Xray before pushing again");
+        e.jobId = "job2";
+        throw e;
+      }
+      return { status: "successful", issues: tests.map((_, i) => ({ elementNumber: i, key: `QA-${100 + i}` })), errors: [] };
+    };
+    const many = Array.from({ length: 1002 }, (_, i) => pushCase(1, { id: `TC-ABC-${i + 1}-001`, requirement: `ABC-${i + 1}` }));
+    const out = await access().pushToXray("run-1", "run-1", many, true);
+    expect(out.status).toBe("done");
+    if (out.status !== "done") return;
+    expect(out.result.jobs).toEqual(["job1", "job2"]);
+    expect(out.result.results.filter((r) => r.action === "created")).toHaveLength(1000);
+    expect(out.result.results.slice(1000)).toEqual([
+      expect.objectContaining({ tcId: "TC-ABC-1001-001", action: "failed", error: expect.stringContaining("check Xray before pushing again") }),
+      expect.objectContaining({ tcId: "TC-ABC-1002-001", action: "failed" }),
+    ]);
+  });
+
   it("splits more than 1000 cases into several import jobs", async () => {
     const many = Array.from({ length: 1001 }, (_, i) => pushCase(1, { id: `TC-ABC-${i + 1}-001`, requirement: `ABC-${i + 1}` }));
     const out = await access().pushToXray("run-1", "run-1", many, true);
@@ -238,7 +277,7 @@ describe("DataAccess.pushToXray", () => {
       store: runs,
       config: configSchema.parse({ version: 1, atlassian: { site: "https://acme.atlassian.net", email: "e", token: "${env:T}" }, xray: { clientId: "i", clientSecret: "${env:S}", projectKey: "QA" } }),
       vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }),
-      xray: { importAndWait: async (tests) => ({ ...job(tests), jobId: "j" }) },
+      xray: { importAndWait: async (tests) => ({ ...job(tests, 1), jobId: "j" }) },
       labels: { findByLabels: async () => new Map() },
     });
     await data.pushToXray("run-1", "run-1", [pushCase(1)], true);

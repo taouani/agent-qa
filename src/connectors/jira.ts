@@ -221,7 +221,8 @@ export class JiraClient {
     const found = new Map<string, string>();
     for (let i = 0; i < wanted.length; i += CHUNK) {
       const chunk = wanted.slice(i, i + CHUNK);
-      const jql = `project = ${project} AND labels in (${chunk.map((l) => `"${l}"`).join(", ")})`;
+      // Oldest first, so the first push's test wins when a label is on more than one issue.
+      const jql = `project = "${project}" AND labels in (${chunk.map((l) => `"${l}"`).join(", ")}) ORDER BY created ASC`;
       const { issues } = await this.search(jql, ["labels"], 1000);
       for (const raw of issues) {
         const key = str(raw.key);
