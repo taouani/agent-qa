@@ -263,6 +263,31 @@ describe("DataAccess.pushToXray", () => {
     ]);
   });
 
+  it("fails the write, keeping nothing, when the import never started", async () => {
+    job = () => {
+      throw new ConnectorError("AUTH", "Xray", "POST", "/api/v2/authenticate", 401);
+    };
+    await expect(access().pushToXray("run-1", "run-1", [pushCase(1)], true)).rejects.toBeInstanceOf(ConnectorError);
+    expect(audit.entries.map((e) => e.outcome)).toEqual(["approved", "failed"]);
+  });
+
+  it("marks a timed-out batch as unknown, also with restoreOnWrite", async () => {
+    const vault = await new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }).open("req-3");
+    vault.tokenFor("PERSON", "Ana Lima");
+    await vault.save();
+    job = () => {
+      const e = new ConnectorError("TIMEOUT", "Xray", "GET", "/x", undefined, "Xray import job job1 did not finish in 600 s; it may still complete in Xray, so check Xray before pushing again");
+      e.jobId = "job1";
+      throw e;
+    };
+    const out = await access({ restoreOnWrite: true }).pushToXray("run-3", "req-3", [pushCase(1)], true);
+    expect(out.status === "done" && out.result).toEqual({
+      project: "QA",
+      jobs: ["job1"],
+      results: [{ tcId: "TC-ABC-1-001", action: "failed", linkedTo: "ABC-1", error: expect.stringMatching(/^unknown: .*check Xray before pushing again$/) }],
+    });
+  });
+
   it("splits more than 1000 cases into several import jobs", async () => {
     const many = Array.from({ length: 1001 }, (_, i) => pushCase(1, { id: `TC-ABC-${i + 1}-001`, requirement: `ABC-${i + 1}` }));
     const out = await access().pushToXray("run-1", "run-1", many, true);
