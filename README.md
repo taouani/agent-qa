@@ -38,7 +38,7 @@ npx -y sf-agent-qa@next run test-cases --key ABC-123
 npx -y sf-agent-qa@next run test-cases --jql "project = ABC AND fixVersion = 2.4" --ci --yes
 ```
 
-`--yes` accepts the review as unattended and never pushes; `--accept push` pushes. Each run's files are in `.agent-qa/runs/`, with a cost report. To check that no personal data reaches a model, see [docs/harness.md](docs/harness.md).
+`--yes` accepts the review as unattended and never pushes; `--accept push` pushes. In CI (`--ci`), a push also needs `policy.writes.xray: allow` in `agent-qa.yaml`, because `ask` is denied when nobody can be asked. Each run's files are in `.agent-qa/runs/`, with a cost report. To check that no personal data reaches a model, see [docs/harness.md](docs/harness.md).
 
 ## Development
 

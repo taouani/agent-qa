@@ -29,15 +29,23 @@ jobs:
       - run: npm ci
       # Opens a "Version packages" PR when changesets are pending; publishes when that PR is merged.
       - uses: changesets/action@v1
+        id: changesets
         if: env.HAS_NPM_TOKEN == 'true'
         with:
           version: npx changeset version
-          # While in prerelease mode (.changeset/pre.json), alphas go to the `next` dist-tag, so
-          # `npm i sf-agent-qa` keeps giving the latest stable release.
-          publish: ${{ hashFiles('.changeset/pre.json') != '' && 'npm run release -- --tag next' || 'npm run release' }}
+          # In prerelease mode (.changeset/pre.json) this publishes to the pre tag (alpha);
+          # changesets refuses a custom --tag in pre mode, so `next` is added below.
+          publish: npm run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           # Provenance only works in CI, so it's set here rather than in package.json.
           NPM_CONFIG_PROVENANCE: true
+      # Prereleases also go on the `next` dist-tag, so `npm i sf-agent-qa@next` gets them
+      # and `npm i sf-agent-qa` keeps giving the latest stable release.
+      - name: Tag the prerelease as next
+        if: steps.changesets.outputs.published == 'true' && hashFiles('.changeset/pre.json') != ''
+        run: npm dist-tag add "sf-agent-qa@$(node -p "require('./package.json').version")" next
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

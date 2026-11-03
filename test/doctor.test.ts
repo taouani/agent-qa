@@ -65,6 +65,16 @@ describe("agent-qa doctor", () => {
     expect(formatDoctor(results)).toMatch(/Ready\.\n$/);
   });
 
+  it("takes the provider's own key variable as a key, as init's comment says", async () => {
+    const noKeys = CONFIG.replace("  keys:\n    anthropic: \${env:ANTHROPIC_API_KEY}\n", "");
+    expect(noKeys).not.toContain("keys:");
+    await writeFile(join(dir, "agent-qa.yaml"), noKeys);
+    expect(byId(await doctor(ENV)).models).toMatchObject({ status: "pass" });
+    const missing = byId(await doctor({ ...ENV, ANTHROPIC_API_KEY: "" })).models!;
+    expect(missing).toMatchObject({ status: "warn", detail: expect.stringContaining("no API key for anthropic") });
+    expect(missing.fix).toContain("ANTHROPIC_API_KEY");
+  });
+
   it("names missing secrets by reference and never prints a value", async () => {
     await writeFile(join(dir, "agent-qa.yaml"), CONFIG);
     const results = byId(await doctor({ ...ENV, GITHUB_TOKEN: "" }, { keyring: keyring() }));
