@@ -2,3 +2,16 @@
 export const MODULE = "data";
 export { formatDoctor, runDoctor } from "./doctor.js";
 export type { CheckResult, CheckStatus, DoctorOptions } from "./doctor.js";
+export {
+  acceptanceCriterionSchema,
+  criteriaFromDescription,
+  linkedPageSchema,
+  MASKING_REPORT_ARTIFACT,
+  MaskedDataService,
+  maskingReportSchema,
+  requirementSchema,
+  SOURCES_ARTIFACT,
+  SOURCES_VERSION,
+  splitCriteria,
+} from "./requirements.js";
+export type { LoadedSources, LoadOptions, MaskedDataOptions, MaskedSources, MaskingReport, Requirement } from "./requirements.js";

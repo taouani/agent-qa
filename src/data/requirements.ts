@@ -1,0 +1,497 @@
+import { z } from "zod";
+import { hashInput, resolveSecret, type ArtifactSpec, type Config, type InputRef, type RunStore, type SecretSources } from "../core/index.js";
+import {
+  ConfluenceClient,
+  JiraClient,
+  pageIdFromUrl,
+  type CollectOptions,
+  type ConfluencePage,
+  type FetchLike,
+  type JiraCollection,
+  type JiraInput,
+  type JiraIssue,
+  type SkippedPage,
+} from "../connectors/index.js";
+import { Masker, type DetectorName, type NameLanguage, type RunVault } from "../masking/index.js";
+
+/**
+ * The masked data service (S1-6). It is the only caller of connectors: it
+ * reads a Jira ticket or JQL filter with its children, linked issues and
+ * linked Confluence pages, masks every free-text value, and hands workflows
+ * `Requirement` entities that hold tokens, never real values. The result is
+ * cached in the run folder (`sources.json`) with a `masking-report.json` that
+ * counts what was masked and never holds a value.
+ */
+
+// ---------------------------------------------------------------- schemas
+
+export const acceptanceCriterionSchema = z.object({ id: z.string().regex(/^AC\d+$/), text: z.string() }).strict();
+
+export const linkedPageSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    version: z.number().int(),
+    text: z.string(),
+  })
+  .strict();
+
+export const requirementSchema = z
+  .object({
+    key: z.string(),
+    type: z.string(),
+    status: z.string().optional(),
+    priority: z.string().optional(),
+    role: z.enum(["root", "child", "linked"]),
+    depth: z.number().int().min(0),
+    viaLink: z.boolean().optional(),
+    parent: z.string().optional(),
+    children: z.array(z.string()),
+    links: z.array(z.object({ type: z.string(), direction: z.enum(["inward", "outward"]), description: z.string(), key: z.string() }).strict()),
+    summary: z.string(),
+    description: z.string(),
+    acceptanceCriteria: z.array(acceptanceCriterionSchema),
+    /** Where the criteria came from: their own field, a heading in the description, or nowhere. */
+    acceptanceCriteriaSource: z.enum(["field", "description", "none"]),
+    extraFields: z.record(z.string(), z.string()),
+    labels: z.array(z.string()),
+    components: z.array(z.string()),
+    fixVersions: z.array(z.string()),
+    /** People on the issue, as tokens. */
+    people: z.array(z.object({ role: z.enum(["assignee", "reporter", "creator"]), token: z.string() }).strict()),
+    linkedPages: z.array(linkedPageSchema),
+    updated: z.string(),
+    /** sha256 of the issue's `updated` value and its linked pages' versions: same hash, same source. */
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+export type Requirement = z.infer<typeof requirementSchema>;
+
+const sourcesSchema = z
+  .object({
+    /** The masked input: an issue key, or the JQL with any personal data in it replaced. */
+    input: z.union([z.object({ key: z.string() }).strict(), z.object({ jql: z.string() }).strict()]),
+    requirements: z.array(requirementSchema),
+    truncated: z.boolean(),
+    unreachable: z.array(z.string()),
+    skippedPages: z.array(z.object({ issue: z.string(), reason: z.string() }).strict()),
+  })
+  .strict();
+export type MaskedSources = z.infer<typeof sourcesSchema>;
+
+export const SOURCES_ARTIFACT: ArtifactSpec<MaskedSources> = { name: "sources", schema: "sources@1", data: sourcesSchema };
+
+const countsSchema = z.record(z.string(), z.number().int().min(0));
+export const maskingReportSchema = z
+  .object({
+    byDetector: countsSchema,
+    byField: countsSchema,
+    /** Fields replaced whole (people, `masking.fields`), by field. */
+    wholeFields: countsSchema,
+    /** Distinct tokens issued in this run. */
+    tokens: z.number().int().min(0),
+    /** Fields passed through as they are, by rule: ids, types, statuses, dates. */
+    unmaskedFields: z.array(z.string()),
+    detectors: z.array(z.string()),
+    languages: z.array(z.string()),
+    issues: z.number().int().min(0),
+    pages: z.number().int().min(0),
+  })
+  .strict();
+export type MaskingReport = z.infer<typeof maskingReportSchema>;
+
+export const MASKING_REPORT_ARTIFACT: ArtifactSpec<MaskingReport> = {
+  name: "masking-report",
+  schema: "masking-report@1",
+  data: maskingReportSchema,
+  render: renderReport,
+};
+
+/** Bumped when masking or entity building changes, so cached sources are rebuilt. */
+export const SOURCES_VERSION = "sources-1";
+
+const UNMASKED_FIELDS = [
+  "jira.key",
+  "jira.type",
+  "jira.status",
+  "jira.priority",
+  "jira.parent",
+  "jira.children",
+  "jira.links",
+  "jira.updated",
+  "confluence.id",
+  "confluence.version",
+];
+
+const ALL_DETECTORS: DetectorName[] = ["email", "iban", "card", "national-id", "phone", "ip", "name"];
+const ALL_LANGUAGES: NameLanguage[] = ["en", "fr", "es", "de", "pt", "nl", "it", "ar", "zh"];
+
+// ---------------------------------------------------------------- service
+
+export interface MaskedDataOptions {
+  config: Config;
+  store: RunStore;
+  runId: string;
+  vault: RunVault;
+  secrets?: SecretSources;
+  fetch?: FetchLike;
+  /** Replace the clients, for tests. */
+  jira?: Pick<JiraClient, "collect">;
+  confluence?: Pick<ConfluenceClient, "pages">;
+}
+
+export interface LoadOptions {
+  /** Read Jira again even when the run already has sources for this input. */
+  refresh?: boolean;
+}
+
+export interface LoadedSources {
+  sources: MaskedSources;
+  report: MaskingReport;
+  /** One per issue and page, for the next artifact's `sourceHash`. */
+  inputs: InputRef[];
+  /** True when read from the run folder instead of Jira. */
+  cached: boolean;
+}
+
+export class MaskedDataService {
+  constructor(private readonly options: MaskedDataOptions) {}
+
+  /** Masked requirements for a Jira key or JQL filter, from the run folder when already read. */
+  async requirements(input: JiraInput, options: LoadOptions = {}): Promise<LoadedSources> {
+    const { store, runId, vault } = this.options;
+    const masker = this.masker();
+    const maskedInput = "key" in input ? { key: input.key.trim().toUpperCase() } : { jql: masker.mask(input.jql, { field: "input.jql" }) };
+
+    if (!options.refresh) {
+      const cached = await store.readArtifact(runId, SOURCES_ARTIFACT);
+      const report = await store.readArtifact(runId, MASKING_REPORT_ARTIFACT);
+      if (cached && report && JSON.stringify(cached.data.input) === JSON.stringify(maskedInput)) {
+        return { sources: cached.data, report: report.data, inputs: cached.inputs, cached: true };
+      }
+    }
+
+    const collection = await (await this.jira()).collect(input, this.collectOptions());
+    const { pages, skipped } = await this.pages(collection);
+    const built = buildSources(collection, pages, skipped, masker, this.wholeFields(), maskedInput);
+    await vault.save();
+
+    const counts = masker.report();
+    const report: MaskingReport = {
+      byDetector: counts.byDetector,
+      byField: counts.byField,
+      wholeFields: counts.wholeFields,
+      tokens: counts.tokens,
+      unmaskedFields: UNMASKED_FIELDS,
+      detectors: this.detectors(),
+      languages: this.languages(),
+      issues: built.sources.requirements.length,
+      pages: built.pageCount,
+    };
+    const source = { inputs: built.inputs, templateVersion: SOURCES_VERSION };
+    await store.writeArtifact(runId, SOURCES_ARTIFACT, built.sources, source);
+    await store.writeArtifact(runId, MASKING_REPORT_ARTIFACT, report, source);
+    return { sources: built.sources, report, inputs: built.inputs, cached: false };
+  }
+
+  private detectors(): DetectorName[] {
+    return (this.options.config.masking.detectors ?? ALL_DETECTORS).filter((d) => d !== "address");
+  }
+
+  private languages(): NameLanguage[] {
+    return this.options.config.masking.languages ?? ALL_LANGUAGES;
+  }
+
+  private masker(): Masker {
+    const detectors = this.options.config.masking.detectors;
+    return new Masker({ vault: this.options.vault, ...(detectors ? { detectors } : {}), nameLanguages: this.languages() });
+  }
+
+  /** `masking.fields.jira`, folded for matching by id or name. */
+  private wholeFields(): Set<string> {
+    return new Set((this.options.config.masking.fields?.jira ?? []).map((f) => f.trim().toLowerCase()));
+  }
+
+  private collectOptions(): CollectOptions {
+    const jira = this.options.config.atlassian?.jira ?? {};
+    // Fields masked whole are read too, unless they are standard ones the client already reads.
+    const standard = new Set(["summary", "description", "assignee", "reporter", "creator", "labels", "components", "fixversions"]);
+    const whole = (this.options.config.masking.fields?.jira ?? []).filter((f) => !standard.has(f.trim().toLowerCase()));
+    const extraFields = [...new Set([...(jira.extraFields ?? []), ...whole])];
+    return {
+      ...(jira.maxDepth !== undefined ? { maxDepth: jira.maxDepth } : {}),
+      ...(jira.maxIssues !== undefined ? { maxIssues: jira.maxIssues } : {}),
+      ...(jira.followLinks !== undefined ? { followLinks: jira.followLinks } : {}),
+      ...(jira.followLinkedChildren !== undefined ? { followLinkedChildren: jira.followLinkedChildren } : {}),
+      ...(jira.acceptanceCriteriaField ? { acceptanceCriteriaField: jira.acceptanceCriteriaField } : {}),
+      ...(extraFields.length ? { extraFields } : {}),
+    };
+  }
+
+  private async credentials(): Promise<{ site: string; email: string; token: string }> {
+    const atlassian = this.options.config.atlassian;
+    if (!atlassian) throw new Error("agent-qa.yaml has no atlassian section: add site, email and token to read Jira.");
+    const secrets = this.options.secrets ?? {};
+    const email = atlassian.email.startsWith("${") ? await resolveSecret(atlassian.email, secrets) : atlassian.email;
+    return { site: atlassian.site, email, token: await resolveSecret(atlassian.token, secrets) };
+  }
+
+  private async jira(): Promise<Pick<JiraClient, "collect">> {
+    return this.options.jira ?? new JiraClient({ ...(await this.credentials()), ...(this.options.fetch ? { fetch: this.options.fetch } : {}) });
+  }
+
+  private async confluence(): Promise<Pick<ConfluenceClient, "pages">> {
+    return this.options.confluence ?? new ConfluenceClient({ ...(await this.credentials()), ...(this.options.fetch ? { fetch: this.options.fetch } : {}) });
+  }
+
+  /** Confluence pages the issues link to (remote links and links in text), each read once. */
+  private async pages(collection: JiraCollection): Promise<{ pages: Map<string, ConfluencePage>; skipped: Array<{ issue: string; reason: SkippedPage["reason"] }> }> {
+    const site = this.options.config.atlassian?.site;
+    const maxPages = this.options.config.atlassian?.jira?.maxPages ?? 20;
+    const pages = new Map<string, ConfluencePage>();
+    const skipped: Array<{ issue: string; reason: SkippedPage["reason"] }> = [];
+    if (!site || maxPages === 0) return { pages, skipped };
+    const urls = new Map<string, string>(); // url -> first issue that links it
+    for (const issue of collection.issues) for (const url of confluenceUrls(issue, site)) if (!urls.has(url)) urls.set(url, issue.key);
+    if (urls.size === 0) return { pages, skipped };
+    const result = await (await this.confluence()).pages([...urls.keys()], { maxPages });
+    for (const page of result.pages) pages.set(page.id, page);
+    for (const s of result.skipped) skipped.push({ issue: urls.get(s.url) ?? "", reason: s.reason });
+    return { pages, skipped };
+  }
+}
+
+/** Links on an issue that point at a Confluence page on this site. */
+function confluenceUrls(issue: JiraIssue, site: string): string[] {
+  const candidates = [
+    ...issue.remoteLinks.map((l) => l.url),
+    ...issue.description.links,
+    ...(issue.acceptanceCriteria?.links ?? []),
+    ...Object.values(issue.extraFields).flatMap((f) => f.links),
+  ];
+  return [...new Set(candidates.filter((url) => "id" in pageIdFromUrl(url, site)))];
+}
+
+// ---------------------------------------------------------------- building
+
+const AC_HEADING =
+  /^\s*(?:#+\s*)?(?:acceptance criteria|critères d'acceptation|criteres d'acceptation|criterios de aceptación|criterios de aceptacion|akzeptanzkriterien|critérios de aceitação|criterios de aceitacao|acceptatiecriteria|criteri di accettazione|معايير القبول|验收标准)\s*[:：]?\s*$/iu;
+const NEXT_HEADING = /^\s*(?:#+\s*\S|[\p{Lu}][^.!?:]{0,60}[:：]\s*$)/u;
+const BULLET = /^\s*(?:[-*•·▪◦]|\d+[.)]|[a-z][.)]|AC\s*\d+\s*[:.)-]?)\s*/iu;
+const CONTINUES = /^\s*(?:and|but|then|when|et|mais|alors|quand|y|pero|entonces|cuando|und|aber|dann|wenn|e|mas|então|quando|en|maar|dan|als|ma|allora)\b/iu;
+
+/**
+ * Acceptance criteria as AC1, AC2...: one per line or bullet; Gherkin lines
+ * that continue a scenario (And, Then, When) stay with it.
+ */
+export function splitCriteria(text: string): Array<{ id: string; text: string }> {
+  const items: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const bulleted = BULLET.test(line);
+    const clean = line.replace(BULLET, "").trim();
+    if (!clean) continue;
+    if (items.length > 0 && !bulleted && CONTINUES.test(clean)) items[items.length - 1] += "\n" + clean;
+    else items.push(clean);
+  }
+  return items.map((t, i) => ({ id: `AC${i + 1}`, text: t }));
+}
+
+/** Criteria under an "Acceptance criteria" heading in the description, and the description without them. */
+export function criteriaFromDescription(text: string): { criteria: string; rest: string } | undefined {
+  const lines = text.split(/\r?\n/);
+  const at = lines.findIndex((l) => AC_HEADING.test(l));
+  if (at < 0) return undefined;
+  // The criteria end at the next heading, or at a blank line followed by a line that is not a bullet.
+  let end = at + 1;
+  while (end < lines.length) {
+    const line = lines[end]!;
+    if (end > at + 1 && NEXT_HEADING.test(line) && !BULLET.test(line)) break;
+    if (end > at + 1 && !line.trim()) {
+      const next = lines.slice(end + 1).find((l) => l.trim());
+      if (next === undefined || !BULLET.test(next)) break;
+    }
+    end++;
+  }
+  const criteria = lines.slice(at + 1, end).join("\n");
+  if (!criteria.trim()) return undefined;
+  return { criteria, rest: [...lines.slice(0, at), ...lines.slice(end)].join("\n").trim() };
+}
+
+function buildSources(
+  collection: JiraCollection,
+  pages: Map<string, ConfluencePage>,
+  skipped: Array<{ issue: string; reason: string }>,
+  masker: Masker,
+  wholeFields: Set<string>,
+  input: MaskedSources["input"],
+): { sources: MaskedSources; inputs: InputRef[]; pageCount: number } {
+  const normal = (name: string) => name.replace(/\s+/g, " ").trim();
+  // Every person and mention is known before any text is masked, so a name gets its token everywhere.
+  const people = new Set<string>();
+  for (const issue of collection.issues) {
+    for (const p of issue.people) {
+      if (p.displayName.trim()) people.add(normal(p.displayName));
+    }
+    for (const t of [issue.description, issue.acceptanceCriteria, ...Object.values(issue.extraFields)]) {
+      for (const m of t?.mentions ?? []) if (m.trim()) people.add(normal(m.replace(/^@/, "")));
+    }
+  }
+  masker.addNames(people);
+  // People first, so the reporter and assignee get the low token numbers.
+  const peopleTokens = new Map<string, Requirement["people"]>();
+  for (const issue of collection.issues) {
+    peopleTokens.set(
+      issue.key,
+      issue.people
+        .filter((p) => p.displayName.trim())
+        .map((p) => ({ role: p.role, token: masker.mask(normal(p.displayName), { field: `jira.${p.role}`, whole: "PERSON" }) })),
+    );
+  }
+
+  const fieldIds = new Map(collection.extraFields.map((f) => [f.name, f.id.toLowerCase()]));
+  const isWhole = (name: string) => wholeFields.has(name.toLowerCase()) || wholeFields.has(fieldIds.get(name) ?? "\u0000");
+  const text = (value: string, field: string, name = field) =>
+    isWhole(name) ? masker.mask(value, { field: `jira.${field}`, whole: "PII" }) : masker.mask(value, { field: `jira.${field}` });
+
+  const maskedPages = new Map<string, Requirement["linkedPages"][number]>();
+  const pageFor = (page: ConfluencePage) => {
+    let masked = maskedPages.get(page.id);
+    if (!masked) {
+      masked = {
+        id: page.id,
+        title: masker.mask(page.title, { field: "confluence.title" }),
+        version: page.version,
+        text: masker.mask(page.body.text, { field: "confluence.body" }),
+      };
+      maskedPages.set(page.id, masked);
+    }
+    return masked;
+  };
+  const requirements: Requirement[] = collection.issues.map((issue) => {
+    const linked = linkedPageIds(issue, pages);
+    const linkedPages = linked.map((id) => pageFor(pages.get(id)!));
+
+    let description = issue.description.text;
+    let criteriaText = issue.acceptanceCriteria?.text ?? "";
+    let acceptanceCriteriaSource: Requirement["acceptanceCriteriaSource"] = criteriaText.trim() ? "field" : "none";
+    if (acceptanceCriteriaSource === "none") {
+      const found = criteriaFromDescription(description);
+      if (found) {
+        criteriaText = found.criteria;
+        description = found.rest;
+        acceptanceCriteriaSource = "description";
+      }
+    }
+    const acName = collection.acceptanceCriteriaField?.name ?? "acceptanceCriteria";
+    const maskedCriteria = criteriaText.trim() ? text(criteriaText, "acceptanceCriteria", acName) : "";
+
+    const extraFields: Record<string, string> = {};
+    for (const [name, value] of Object.entries(issue.extraFields)) extraFields[name] = text(value.text, `field.${name}`, name);
+
+    return {
+      key: issue.key,
+      type: issue.type,
+      ...(issue.status ? { status: issue.status } : {}),
+      ...(issue.priority ? { priority: issue.priority } : {}),
+      role: issue.role,
+      depth: issue.depth,
+      ...(issue.viaLink ? { viaLink: true } : {}),
+      ...(issue.parent ? { parent: issue.parent } : {}),
+      children: issue.children,
+      links: issue.links.map((l) => ({ type: l.type, direction: l.direction, description: l.description, key: l.key })),
+      summary: text(issue.summary, "summary"),
+      description: text(description, "description"),
+      acceptanceCriteria: isWhole(acName) ? (maskedCriteria ? [{ id: "AC1", text: maskedCriteria }] : []) : splitCriteria(maskedCriteria),
+      acceptanceCriteriaSource,
+      extraFields,
+      labels: issue.labels.map((l) => masker.mask(l, { field: "jira.labels" })),
+      components: issue.components.map((c) => masker.mask(c, { field: "jira.components" })),
+      fixVersions: issue.fixVersions.map((v) => masker.mask(v, { field: "jira.fixVersions" })),
+      people: peopleTokens.get(issue.key) ?? [],
+      linkedPages,
+      updated: issue.updated,
+      sourceHash: hashInput(JSON.stringify({ key: issue.key, updated: issue.updated, pages: linked.map((id) => `${id}@${pages.get(id)!.version}`) })),
+    };
+  });
+
+  const inputs: InputRef[] = [
+    ...requirements.map((r) => ({ kind: "jira-issue" as const, ref: r.key, hash: hashInput(JSON.stringify(r)) })),
+    ...[...maskedPages.values()].map((p) => ({ kind: "confluence-page" as const, ref: p.id, hash: hashInput(JSON.stringify(p)) })),
+  ];
+  const sources: MaskedSources = {
+    input,
+    requirements,
+    truncated: collection.truncated,
+    unreachable: collection.unreachable,
+    skippedPages: skipped,
+  };
+  return { sources, inputs, pageCount: maskedPages.size };
+}
+
+/** Ids of the read pages an issue links to, in link order. */
+function linkedPageIds(issue: JiraIssue, pages: Map<string, ConfluencePage>): string[] {
+  const ids: string[] = [];
+  const urls = [
+    ...issue.remoteLinks.map((l) => l.url),
+    ...issue.description.links,
+    ...(issue.acceptanceCriteria?.links ?? []),
+    ...Object.values(issue.extraFields).flatMap((f) => f.links),
+  ];
+  for (const url of urls) {
+    for (const page of pages.values()) {
+      if (!ids.includes(page.id) && samePage(url, page)) ids.push(page.id);
+    }
+  }
+  return ids;
+}
+
+function samePage(url: string, page: ConfluencePage): boolean {
+  try {
+    const found = pageIdFromUrl(url, new URL(page.url).origin);
+    return "id" in found && found.id === page.id;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------- report view
+
+function renderReport(report: MaskingReport): string {
+  const rows = (counts: Record<string, number>) =>
+    Object.entries(counts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([k, v]) => `| ${k} | ${v} |`)
+      .join("\n") || "| (none) | 0 |";
+  return [
+    "# Masking report",
+    "",
+    `${report.issues} issue(s) and ${report.pages} page(s) read; ${report.tokens} distinct token(s) issued. This report holds counts only, never values.`,
+    "",
+    `Detectors: ${report.detectors.join(", ")}. Name languages: ${report.languages.join(", ") || "none"}.`,
+    "",
+    "## By detector",
+    "",
+    "| Detector | Masked |",
+    "|---|---|",
+    rows(report.byDetector),
+    "",
+    "## By field",
+    "",
+    "| Field | Masked |",
+    "|---|---|",
+    rows(report.byField),
+    "",
+    "## Replaced whole",
+    "",
+    "| Field | Values |",
+    "|---|---|",
+    rows(report.wholeFields),
+    "",
+    "## Passed through by rule",
+    "",
+    report.unmaskedFields.map((f) => `- ${f}`).join("\n"),
+    "",
+  ].join("\n");
+}

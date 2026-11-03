@@ -104,6 +104,8 @@ export interface JiraCollection {
   /** Linked issues that Jira would not return (deleted, archived, moved or restricted). */
   unreachable: string[];
   acceptanceCriteriaField?: JiraField;
+  /** The `extraFields` asked for, resolved to ids and names. Issues key them by name. */
+  extraFields: JiraField[];
 }
 
 export interface JiraClientOptions extends Partial<Omit<HttpClientOptions, "service" | "baseUrl" | "headers" | "writeTarget" | "readOnlyPosts">> {
@@ -367,7 +369,7 @@ export class JiraClient {
       await Promise.all(all.slice(i, i + REMOTE_LINK_CONCURRENCY).map(async (issue) => (issue.remoteLinks = await this.remoteLinks(issue.key))));
     }
 
-    return { input, issues: [...found.values()], truncated, unreachable, ...(acField ? { acceptanceCriteriaField: acField } : {}) };
+    return { input, issues: [...found.values()], truncated, unreachable, extraFields: extras, ...(acField ? { acceptanceCriteriaField: acField } : {}) };
   }
 }
 
