@@ -3,7 +3,6 @@ import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js"
 import {
   cnResidentId,
   deSteuerId,
-  digitsOf,
   esDni,
   frNir,
   ibanValid,
