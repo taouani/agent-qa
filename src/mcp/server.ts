@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { EngineError, recordUsage, VERSION, type RunStore, type Step, type SubmitResult, type WorkflowEngine } from "../core/index.js";
+import { EngineError, recordUsage, VERSION, type Approval, type RunStore, type Step, type SubmitResult, type WorkflowEngine } from "../core/index.js";
 
 /** Instructions every host model gets for the step loop (contract 3). */
 export const LOOP_INSTRUCTIONS = [
@@ -44,6 +44,9 @@ function parseOutput(output: unknown): unknown {
   }
 }
 
+/** How long the person has to answer the push prompt. */
+const ELICIT_TIMEOUT_MS = 10 * 60_000;
+
 const runId = z.string().min(1).describe("Run id returned by workflow_start");
 
 export interface McpServerOptions {
@@ -85,26 +88,29 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
    * model's. A model's "no" is kept without asking. Without elicitation, the
    * model's answer stands (the confirm step asked the user in chat).
    */
-  const personal = async (id: string, stepId: string, output: unknown): Promise<unknown> => {
-    if (!canElicit()) return output;
-    const approval = await engine.approval(id, stepId);
-    if (!approval || JSON.stringify(output) === JSON.stringify(approval.no)) return output;
+  // Called by the engine inside the run's lock, once the step is known to be open (see `WorkflowEngine.submit`).
+  const personal = async (id: string, stepId: string, { question, yes, no, output }: Approval & { output: unknown }): Promise<unknown> => {
+    if (JSON.stringify(output) === JSON.stringify(no)) return output;
     let answer;
     try {
-      answer = await server.server.elicitInput({
-        mode: "form",
-        message: approval.question,
-        requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Yes, go ahead", default: false } }, required: ["approve"] },
-      });
+      answer = await server.server.elicitInput(
+        {
+          mode: "form",
+          message: question,
+          requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Yes, go ahead", default: false } }, required: ["approve"] },
+        },
+        // The person may take a while: the SDK's default is a minute.
+        { timeout: ELICIT_TIMEOUT_MS },
+      );
     } catch (error) {
       throw new EngineError("CONTEXT_FAILED", `Couldn't ask the user to approve ${stepId} (${error instanceof Error ? error.message : String(error)}). Nothing was submitted: call workflow_submit again.`, [], id);
     }
-    return answer.action === "accept" && answer.content?.approve === true ? approval.yes : approval.no;
+    return answer.action === "accept" && answer.content?.approve === true ? yes : no;
   };
+  // The SDK reads an empty elicitation capability (the spec before modes existed) as form mode.
   const canElicit = () => {
     const caps = server.server.getClientCapabilities()?.elicitation as Record<string, unknown> | undefined;
-    // An empty elicitation capability means form mode (the spec before modes existed).
-    return caps !== undefined && (Object.keys(caps).length === 0 || "form" in caps);
+    return caps !== undefined && "form" in caps;
   };
 
   // Runs with a submit in flight: a second one racing it is taken as a duplicate and not looked up again.
@@ -137,7 +143,7 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
     if (mine) served.delete(id);
     let result: SubmitResult;
     try {
-      result = await engine.submit(id, stepId, await personal(id, stepId, output));
+      result = await engine.submit(id, stepId, output, canElicit() ? { approve: (a) => personal(id, stepId, a) } : {});
     } catch (error) {
       // The answer was saved but the next step couldn't be shown: it still counts.
       if (mine && error instanceof EngineError && error.code === "CONTEXT_FAILED" && /^The answer was (accepted|rejected)/.test(error.message)) await record(id, stepId, output, mine);

@@ -7,12 +7,13 @@ import { MemoryStateStore, WorkflowEngine, type WorkflowDefinition } from "../sr
 import { createMcpServer } from "../src/mcp/index.js";
 
 /** A one-step workflow whose confirm step needs the person's own yes, like the Xray push. */
-function pushWorkflow(pushed: boolean[], question: () => string = () => "Push 3 test case(s) to Xray project QA?"): WorkflowDefinition<{ n: number }> {
+function pushWorkflow(pushed: boolean[], question: () => string = () => "Push 3 test case(s) to Xray project QA?", before = false): WorkflowDefinition<{ n: number }> {
   return {
     id: "push-only",
     description: "Test: one approval step.",
     inputSchema: z.object({ n: z.number() }),
     steps: [
+      ...(before ? [{ id: "review", kind: "generate" as const, outputSchema: z.object({ ok: z.boolean() }), instructions: () => "Review." }] : []),
       {
         id: "push",
         kind: "confirm",
@@ -30,10 +31,10 @@ function pushWorkflow(pushed: boolean[], question: () => string = () => "Push 3 
 
 type Elicit = (message: string, schema: unknown) => ElicitResult | Promise<ElicitResult>;
 
-async function connect(options: { elicit?: Elicit; capabilities?: Record<string, unknown>; question?: () => string } = {}) {
+async function connect(options: { elicit?: Elicit; capabilities?: Record<string, unknown>; question?: () => string; review?: boolean } = {}) {
   const pushed: boolean[] = [];
   const asked: string[] = [];
-  const engine = new WorkflowEngine({ store: new MemoryStateStore(), newRunId: () => "run-1" }).register(pushWorkflow(pushed, options.question));
+  const engine = new WorkflowEngine({ store: new MemoryStateStore(), newRunId: () => "run-1" }).register(pushWorkflow(pushed, options.question, options.review));
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await createMcpServer(engine).connect(serverSide);
   const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: options.capabilities ?? (options.elicit ? { elicitation: { form: {} } } : {}) });
@@ -158,6 +159,36 @@ describe("MCP approval by elicitation (S1-13)", () => {
     expect(first.body).toMatchObject({ error: "CONTEXT_FAILED" });
     expect(asked).toEqual([]);
     expect(pushed).toEqual([]);
+  });
+
+  it("asks even when the model sends its yes in parallel with the step before (no race past the prompt)", async () => {
+    const { client, pushed, asked } = await connect({ review: true, elicit: () => ({ action: "decline" }) });
+    await start(client);
+    const [review, push] = await Promise.all([
+      call(client, "workflow_submit", { runId: "run-1", stepId: "review", output: { ok: true } }),
+      submit(client, true),
+    ]);
+    expect(review.body.status).toBe("accepted");
+    // The push submit either came too early (step mismatch) or was asked about: never a silent yes.
+    if (!push.isError) expect(asked).toHaveLength(1);
+    expect(pushed).not.toContain(true);
+  });
+
+  it("asks when the model sends its yes as a JSON string", async () => {
+    const { client, pushed, asked } = await connect({ elicit: () => ({ action: "decline" }) });
+    await start(client);
+    await call(client, "workflow_submit", { runId: "run-1", stepId: "push", output: '{"approve":true}' });
+    expect(asked).toHaveLength(1);
+    expect(pushed).toEqual([false]);
+  });
+
+  it("refuses approval on a step that can't take one", () => {
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() });
+    const wf = pushWorkflow([]);
+    const generate = { ...wf, steps: [{ ...wf.steps[0]!, kind: "generate" as const }] };
+    expect(() => engine.register(generate)).toThrow(/approval needs an unbatched confirm step/);
+    const batched = { ...wf, id: "b", steps: [{ ...wf.steps[0]!, batches: () => 2 }] };
+    expect(() => engine.register(batched)).toThrow(/approval needs an unbatched confirm step/);
   });
 
   it("doesn't ask for a step that isn't open", async () => {

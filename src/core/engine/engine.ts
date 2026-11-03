@@ -73,6 +73,18 @@ interface Registered {
  * The step state machine behind the MCP step protocol and the CLI runner.
  * One open step per run; every transition is saved before it is returned.
  */
+/** What a step that needs the person's own yes asks, and its fixed answers. */
+export interface Approval {
+  question: string;
+  yes: unknown;
+  no: unknown;
+}
+
+export interface SubmitOptions {
+  /** Replaces the output of an approval step with the person's own answer (see `WorkflowEngine.submit`). */
+  approve?: (approval: Approval & { output: unknown }) => Promise<unknown>;
+}
+
 export class WorkflowEngine {
   private readonly workflows = new Map<string, Registered>();
   private readonly locks = new Map<string, Promise<unknown>>();
@@ -97,6 +109,9 @@ export class WorkflowEngine {
     for (const id of ids) if (RESERVED_STEP_IDS.has(id)) throw invalid(`step id "${id}" is reserved`);
     // Batched steps are shown as `{id}_{n}`, so no step id may look like one.
     for (const id of ids) if (/_\d+$/.test(id)) throw invalid(`step id "${id}" can't end in _<number>`);
+    for (const s of workflow.steps) {
+      if (s.approval && (s.kind !== "confirm" || !s.answers || s.batches)) throw invalid(`step "${s.id}": approval needs an unbatched confirm step with answers`);
+    }
     // Convert every schema now, so a schema that can't be shown to a model fails at startup, not mid-run.
     const outputSchemas = new Map(workflow.steps.map((s) => [s.id, jsonSchemaOf(s.outputSchema, `${workflow.id}.${s.id}`)]));
     this.workflows.set(workflow.id, {
@@ -156,14 +171,17 @@ export class WorkflowEngine {
    * For the open step, when it is `stepId` and needs the person's own yes
    * (`StepDefinition.approval`): the question to ask and the fixed answers.
    */
-  async approval(runId: string, stepId: string): Promise<{ question: string; yes: unknown; no: unknown } | undefined> {
+  async approval(runId: string, stepId: string): Promise<Approval | undefined> {
     const { registered, state } = await this.load(runId);
     if (state.status !== "running") return undefined;
     const def = this.currentStep(registered.workflow, state);
     if (def.id !== stepId || def.kind !== "confirm" || !def.approval || !def.answers) return undefined;
-    const ctx = this.ctx(state);
-    const question = await this.guarded(state, def, "the question for the user couldn't be prepared", () => def.approval!.question(ctx));
-    return { question, yes: def.answers.yes, no: def.answers.no };
+    return this.approvalOf(state, def);
+  }
+
+  private async approvalOf(state: RunState, def: StepDefinition<unknown, unknown>): Promise<Approval> {
+    const question = await this.guarded(state, def, "the question for the user couldn't be prepared", () => def.approval!.question(this.ctx(state)));
+    return { question, yes: def.answers!.yes, no: def.answers!.no };
   }
 
   /**
@@ -184,7 +202,13 @@ export class WorkflowEngine {
     return this.render(registered, state);
   }
 
-  async submit(runId: string, stepId: string, output: unknown): Promise<SubmitResult> {
+  /**
+   * Submit the open step's output. With `approve`, a step that needs the
+   * person's own yes (`StepDefinition.approval`) gets its output from
+   * `approve` instead: it runs inside the run's lock, after the step is known
+   * to be the open one, so no other submit can move the run in between.
+   */
+  async submit(runId: string, stepId: string, output: unknown, options: SubmitOptions = {}): Promise<SubmitResult> {
     return this.withLock(runId, async () => {
       const { registered, state } = await this.load(runId);
       const { workflow } = registered;
@@ -200,6 +224,10 @@ export class WorkflowEngine {
       const openId = this.openId(def, batch, batches);
       if (openId !== stepId) {
         throw new EngineError("STEP_MISMATCH", `Open step is ${openId}, not ${stepId}`);
+      }
+      if (options.approve && def.approval && def.answers) {
+        const approval = await this.approvalOf(state, def);
+        output = await options.approve({ ...approval, output });
       }
 
       const parsed = def.outputSchema.safeParse(output);
