@@ -73,12 +73,10 @@ export class Masker {
   spans(text: string): Span[] {
     // Detectors see ASCII digits; full-width and Arabic-Indic digits map one to one, so offsets hold.
     const digits = asciiDigits(text);
-    // Known names come before found ones, so on an exact tie the known name's token (the full name) wins.
-    const all = [
-      ...this.patterns.flatMap((d) => d.find(digits)),
-      ...(this.useNames ? this.names.find(text) : []),
-      ...(this.langNames ? this.langNames.find(text) : []),
-    ];
+    const known = this.useNames ? this.names.find(text) : [];
+    // Found names only fill what known names leave, so a known person keeps one token in any order or format.
+    const found = this.langNames ? outside(this.langNames.find(text), known, text) : [];
+    const all = [...this.patterns.flatMap((d) => d.find(digits)), ...known, ...found];
     return mergeOverlaps(all, text);
   }
 
@@ -160,5 +158,34 @@ export function mergeOverlaps(spans: Span[], text: string): Span[] {
     group.push(s);
   }
   flush();
+  return out;
+}
+
+/**
+ * The parts of `spans` that no `cover` span overlaps, trimmed to letters:
+ * "Quillfeather, Marguerite" over two known parts leaves nothing, "Marguerite
+ * Quillfeather Jones" leaves "Jones".
+ */
+function outside(spans: Span[], cover: Span[], text: string): Span[] {
+  if (cover.length === 0) return spans;
+  const sorted = [...cover].sort((a, b) => a.start - b.start);
+  const out: Span[] = [];
+  for (const s of spans) {
+    let at = s.start;
+    const pieces: [number, number][] = [];
+    for (const c of sorted) {
+      if (c.end <= at) continue;
+      if (c.start >= s.end) break;
+      if (c.start > at) pieces.push([at, c.start]);
+      at = Math.max(at, c.end);
+    }
+    if (at < s.end) pieces.push([at, s.end]);
+    for (let [start, end] of pieces) {
+      while (start < end && !/[\p{L}\p{M}]/u.test(text[start]!)) start++;
+      while (end > start && !/[\p{L}\p{M}]/u.test(text[end - 1]!)) end--;
+      if (end - start === s.end - s.start) out.push(s);
+      else if (end > start) out.push({ ...s, start, end, value: text.slice(start, end).replace(/\s+/g, " ") });
+    }
+  }
   return out;
 }

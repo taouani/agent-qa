@@ -102,7 +102,7 @@ export const ARABIC_GIVEN_NAMES = list(`
 /** Titles that come before a name. Folded, without the trailing dot. */
 export const TITLES = list(`
   mr mrs ms miss mx dr prof sir madam dame
-  m mme mlle monsieur madame mademoiselle me maitre
+  m mme mlle monsieur madame mademoiselle maitre
   sr sra srta senor senora senorita don dona dna
   herr frau hr fr
   sig sigra ra ssa signor signora signorina dott dottssa ing avv
@@ -111,7 +111,7 @@ export const TITLES = list(`
   sayed sayyid sayyida sheikh cheikh hajj haj
 `);
 
-export const ARABIC_TITLES = list(`السيد السيدة الأستاذ الاستاذ الأستاذة الدكتور الدكتورة المهندس المهندسة الشيخ الحاج السيدة`);
+export const ARABIC_TITLES = list(`السيد السيدة الأستاذ الاستاذ الأستاذة الدكتور الدكتورة المهندس المهندسة الشيخ الحاج`);
 
 /** Particles inside a name: "van der Berg", "de la Cruz", "bin Laden", "dos Santos". */
 export const PARTICLES = new Set(list(`van von der den de del della di da dos das du la le los las al el bin ben ibn abu ter ten zu`));
@@ -130,10 +130,10 @@ export const CHINESE_TITLES_AFTER = list(`先生 女士 小姐 经理 老师 总
  * Characters that usually start the word after a name (verbs, particles,
  * conjunctions): a cued name stops before them, so 请张伟确认 gives 张伟.
  */
-export const CHINESE_STOP_AFTER = new Set([..."说是的在已和与及确负处审提批同要会将把被给对来去也都还就才让找问回发看做了吗呢吧"]);
+export const CHINESE_STOP_AFTER = new Set([..."说是的在已和与及确负处审提批同要会将把被给对来去也都还就才让找问回发看做了吗呢吧讨完认参反跟正"]);
 
 /** Words before a Chinese name that confirm it: 联系人 (contact), 客户 (customer), 负责人 (owner)... */
-export const CHINESE_CUES_BEFORE = list(`联系人 客户 负责人 用户 姓名 申请人 经办人 审批人 报告人 处理人 提交人 由 致 请 联系 通知 发给 抄送 尊敬的 亲爱的`);
+export const CHINESE_CUES_BEFORE = list(`联系人 客户 负责人 用户 姓名 申请人 经办人 审批人 报告人 处理人 提交人 由 致 请 联系 通知 发给 抄送 尊敬的 亲爱的 和 与 跟 给 让 找 问`);
 
 /**
  * Two-character words that start with a surname character but are not names:
@@ -144,10 +144,47 @@ export const CHINESE_NOT_NAMES = new Set(list(`
   谢谢 周末 周一 周二 周三 周四 周五 周六 周日 周期 周年 周围 周边 张贴 高级 高度 高效 高速 方法 方案 方向 方式 方便 方面
   于是 于此 马上 马达 金额 金融 石油 白色 白天 万一 万元 向上 向下 江湖 龙头 历史 史上 陈述 陈列 黄色 黄金 林业 杨树 曾经
   韩国 李子 刘海 程序 程度 苏醒 任务 任何 任意 范围 余额 余下 杜绝 叶子 钟表 钟点 陆续 陆地 夏天 夏季 付款 付费 熊猫 段落
-  雷达 陶瓷 黎明 贺卡 顾客 顾问 毛巾 毛利 钱包 严重 严格 武器 莫名 孔子 汤圆 田地 董事 潘多 蒋介 蔡司 沈阳 姚明 卢布 姜汁
-  崔健 谭雅 汪洋 廖化 贾宝 秦朝 邱比 江西 江苏 尹力 薛定 闫王 侯爵 龙门 毛泽 郝思 龚自 邵氏 覃塘 戴上 孔雀 汤匙 王国 王者
-  李白 张开 刘备 陈旧 杨柳 赵国 吴国 周到 徐徐 孙子 朱红 胡乱 郭外 何时 何处 何必 林子 罗列 郑重 梁山 宋朝 唐朝 许多 许可
-  冯唐 邓州 曹操 彭湃 曾国 肖像 田野 董卓 袁世 于今 程控 苏州 魏国 吕布 丁点 任职 沈默 姚家 卢沟 崔莺 钟情 谭嗣 陆军 汪精
-  范例 金子 石头 廖廖 贾乃 夏日 韦伯 付出 傅里 方才 白银 邹忌 孟子 熊熊 秦岭 邱园 尹氏 薛涛 段时 雷同 侯门 龙虾 史诗 陶冶
-  黎巴 贺岁 顾及 毛病 郝家 龚家 邵家 万能 钱币 严禁 覃家 武汉 戴尔 莫斯 孔子 向往 汤姆 高兴 高中 高考 方针 白板 金牌 马克
+  雷达 陶瓷 黎明 贺卡 顾客 顾问 毛巾 毛利 钱包 严重 严格 武器 莫名 汤圆 田地 董事 潘多 蒋介 蔡司 沈阳 卢布 姜汁
+  谭雅 汪洋 贾宝 秦朝 邱比 江西 江苏 尹力 薛定 闫王 侯爵 龙门 毛泽 郝思 龚自 邵氏 覃塘 戴上 孔雀 汤匙 王国 王者
+  张开 陈旧 杨柳 赵国 吴国 周到 徐徐 孙子 朱红 胡乱 郭外 何时 何处 何必 林子 罗列 郑重 梁山 宋朝 唐朝 许多 许可
+  邓州 曾国 肖像 田野 袁世 于今 程控 苏州 魏国 丁点 任职 沈默 姚家 卢沟 崔莺 钟情 谭嗣 陆军 汪精
+  范例 金子 石头 廖廖 贾乃 夏日 韦伯 付出 傅里 方才 白银 孟子 熊熊 秦岭 邱园 尹氏 段时 雷同 侯门 龙虾 史诗 陶冶
+  黎巴 贺岁 顾及 毛病 郝家 龚家 邵家 万能 钱币 严禁 覃家 武汉 戴尔 莫斯 向往 汤姆 高兴 高中 高考 方针 白板 金牌 马克
+  周报 周会 向导 高亮 高端 高层 高于 张三 李四 王五
+`));
+
+/** Chinese surname characters that are far more often a word (于 "at", "than"): a name only with a title after. */
+export const CHINESE_WEAK_SURNAMES = new Set(["于"]);
+
+/**
+ * Latin given names that are also everyday words or months (Amber in a RAG
+ * status, Jan for January): a name only with a surname part next to them.
+ */
+export const AMBIGUOUS_GIVEN = new Set(list(`
+  amber jan victoria april june august rose ruby jade summer hope faith joy iris lily poppy olive ivy dawn crystal
+  pearl aurora alba bianca fleur noor sky river eve felix
+`));
+
+/**
+ * Arabic given names that are also everyday adjectives or nouns (صالح "valid",
+ * رضا "satisfaction", حسن "good"): a name only after a title or with another
+ * name part.
+ */
+export const ARABIC_AMBIGUOUS = new Set(list(`صالح رضا حسن سعيد كريم أمين نور جمال كمال عادل وفاء هدى منى نبيل أمينة كريمة سعاد غادة`));
+
+/**
+ * Capitalised words in requirement text that are roles, products or UI terms,
+ * never a surname: "Sr. Account Executive", "HR Portal", "Jan Release".
+ */
+export const NOT_SURNAMES = new Set(list(`
+  executive executives developer developers manager managers director engineer engineers analyst architect consultant
+  administrator reviewer reviewers approver approvers representative rep agent agents officer specialist lead
+  review portal site translation later bank api region release releases team teams channel channels update updates
+  opportunity opportunities quote quotes service services cloud platform system systems module feature features
+  project projects sprint board ticket tickets issue issues epic story stories bug bugs request requests approval
+  role roles profile profiles group groups queue dashboard app apps console center centre desk hub support sales
+  marketing finance legal partner customer customers client clients vendor supplier integration flow flows process
+  rule rules template templates object objects layout tab button link menu panel form section item items data batch
+  job jobs schedule meeting call message notification alert summary details overview settings configuration version
+  build environment sandbox production org experience community communities office department branch store
 `));
