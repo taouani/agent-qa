@@ -91,7 +91,7 @@ function caseTexts(c: TestCase): string[] {
 function checkCase(at: string, c: TestCase, byKey: Map<string, AnalyzedRequirement>, known: Set<string>): OutputError[] {
   const errors: OutputError[] = [];
   const requirement = byKey.get(c.requirement.trim().toUpperCase());
-  if (!requirement) return [{ path: `${at}.requirement`, message: `${c.requirement} is not an issue to write cases for here (${[...byKey.keys()].join(", ")})` }];
+  if (!requirement) return [{ path: `${at}.requirement`, message: `is not an issue to write cases for here (${[...byKey.keys()].join(", ")})` }];
   if (!c.id.startsWith(`TC-${requirement.key}-`)) errors.push({ path: `${at}.id`, message: `must start with TC-${requirement.key}- for a case of ${requirement.key}` });
   const ids = new Set(requirement.acceptanceCriteria.map((ac) => ac.id));
   const bad = c.covers.filter((ac) => !ids.has(ac));
@@ -205,6 +205,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         id: "review",
         kind: "confirm",
         outputSchema: reviewSchema,
+        personalAnswer: true,
         when: async (ctx) => testable((await requirements(ctx)).data).length > 0,
         instructions: ({ runId }) =>
           [
@@ -230,14 +231,15 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           const seen = new Set<string>();
           review.changes.forEach((change, i) => {
             const at = `$.changes.${i}`;
-            if (!ids.has(change.id)) errors.push({ path: `${at}.id`, message: `${change.id} is not a draft case` });
-            if (seen.has(change.id)) errors.push({ path: `${at}.id`, message: `${change.id} is changed more than once` });
+            // Messages here never repeat what the user typed: it may hold personal data.
+            if (!ids.has(change.id)) errors.push({ path: `${at}.id`, message: "is not a draft case id" });
+            if (seen.has(change.id)) errors.push({ path: `${at}.id`, message: "this case is changed more than once" });
             seen.add(change.id);
             if (change.decision === "dropped" && change.case) errors.push({ path: `${at}.case`, message: "a dropped case has no case" });
             if (change.decision === "edited") {
               if (!change.case) errors.push({ path: `${at}.case`, message: "an edited case needs the whole corrected case" });
               else {
-                if (change.case.id !== change.id) errors.push({ path: `${at}.case.id`, message: `must stay ${change.id}` });
+                if (change.case.id !== change.id) errors.push({ path: `${at}.case.id`, message: "must stay the id of the case being edited" });
                 errors.push(...checkCase(`${at}.case`, change.case, byKey, known));
               }
             }
@@ -249,6 +251,11 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         sanitize: async (ctx, review: Review): Promise<Review> => {
           if (!review.approved) return { approved: false, changes: [] };
           const run = requirementsRunOf(ctx);
+          // An expired vault starts again from <PERSON_1>, which would give a new value an old token.
+          const art = await requirements(ctx);
+          if (/<[A-Z][A-Z0-9_]*_\d+>/.test(JSON.stringify(art.data)) && !(await deps.data.hasVault(run))) {
+            throw new Error(`the token vault of run ${run} has expired or was deleted, so edits can't be masked consistently; start a new run`);
+          }
           const changes = await Promise.all(
             review.changes.map(async (change) => {
               if (!change.case) return change;
@@ -259,7 +266,12 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
                 const [action, data, expected] = rest.slice(c.preconditions.length + i * 3, c.preconditions.length + i * 3 + 3) as [string, string, string];
                 return { action, data, expected };
               });
-              return { ...change, case: { ...c, title: title!, preconditions, steps } };
+              const masked = testCaseSchema.safeParse({ ...c, title: title!, preconditions, steps });
+              if (!masked.success) {
+                const where = masked.error.issues.map((i) => i.path.join(".")).join(", ");
+                throw new Error(`case ${c.id} no longer fits once its personal data is masked (${where}); shorten it and submit again`);
+              }
+              return { ...change, case: masked.data };
             }),
           );
           return { approved: true, changes };

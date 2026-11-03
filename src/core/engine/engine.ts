@@ -176,7 +176,8 @@ export class WorkflowEngine {
         const attempt = state.attempt;
         if (attempt >= max) {
           state.status = "failed";
-          state.failure = errors;
+          // A person's answer can be echoed in the messages; keep only where it went wrong.
+          state.failure = def.personalAnswer ? errors.map((e) => ({ path: e.path, message: "rejected (details not kept: the answer may hold personal data)" })) : errors;
         } else {
           state.attempt = attempt + 1;
         }

@@ -77,6 +77,11 @@ export interface StepDefinition<I = unknown, O = unknown> {
    */
   sanitize?: (ctx: StepContext<I>, output: O) => O | Promise<O>;
   /**
+   * The answer is a person's own words (a review), so error messages may echo
+   * personal data. When the attempts run out, the run keeps only the paths.
+   */
+  personalAnswer?: boolean;
+  /**
    * Runs after the output is accepted, for example to write an artifact.
    * It must be safe to run twice: if saving the run state fails afterwards,
    * the step stays open and a retry runs it again.

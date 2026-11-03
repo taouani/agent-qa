@@ -176,7 +176,7 @@ describe("test-cases workflow", () => {
         { path: "$.cases.1.covers", message: "ABC-1 has no AC9; its criteria are AC1, AC2" },
         { path: "$.cases.2.id", message: "TC-ABC-1-002 is used more than once" },
         { path: "$.cases.2.text.0", message: expect.stringContaining("<PERSON_9>") },
-        { path: "$.cases.3.requirement", message: expect.stringContaining("XYZ-1 is not an issue") },
+        { path: "$.cases.3.requirement", message: expect.stringContaining("is not an issue to write cases for here") },
         { path: "$.cases", message: "no case covers ABC-1 AC2" },
         { path: "$.cases", message: "no case covers ABC-2 AC1" },
       ]),
@@ -234,6 +234,31 @@ describe("test-cases workflow", () => {
     for (const s of [...SECRETS, "12 34 56 78"]) expect(all, s).not.toContain(s);
   });
 
+  it("keeps no personal data from a review that runs out of attempts", async () => {
+    const first = await engine.start("test-cases", { key: "ABC-1" });
+    await engine.submit(first.runId, "analyze", good);
+    await engine.submit(first.runId, "cases", cases);
+    const bad = { approved: true, changes: [{ id: "Marguerite Quillfeather", decision: "edited", case: tc("ABC-1", 1, ["AC1"], { requirement: "mq@example.com" }) }] };
+    for (let i = 0; i < 3; i++) await engine.submit(first.runId, "review", bad);
+    expect((await engine.status(first.runId)).status).toBe("failed");
+    const state = await readFile(join(dir, "runs", first.runId, "steps", "state.json"), "utf8");
+    for (const s of SECRETS) expect(state, s).not.toContain(s);
+  });
+
+  it("refuses to mask edits with an expired vault", async () => {
+    const first = await engine.start("test-cases", { key: "ABC-1" });
+    await engine.submit(first.runId, "analyze", good);
+    // A second front door whose vault storage is empty, as after the 30-day expiry.
+    const key = randomBytes(32);
+    const config = configSchema.parse({ version: 1, atlassian: { site: SITE, email: "${env:E}", token: "${env:T}" } });
+    const fresh = new DataAccess({ root: dir, store: runs, config, vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }), jira });
+    const later = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(testCasesWorkflow({ data: fresh, runs }));
+    const run = await later.start("test-cases", { requirementsRun: first.runId });
+    await later.submit(run.runId, "cases", cases);
+    const edit = { approved: true, changes: [{ id: "TC-ABC-1-002", decision: "edited", case: tc("ABC-1", 2, ["AC2"], { title: "Mail bf@other.org" }) }] };
+    await expect(later.submit(run.runId, "review", edit)).rejects.toMatchObject({ code: "CONTEXT_FAILED", message: expect.stringContaining("expired") });
+  });
+
   it("lets the user stop without fixing their changes", async () => {
     const first = await engine.start("test-cases", { key: "ABC-1" });
     await engine.submit(first.runId, "analyze", good);
@@ -258,8 +283,8 @@ describe("test-cases workflow", () => {
     const errors = result.status === "rejected" ? result.errors : [];
     expect(errors).toEqual(
       expect.arrayContaining([
-        { path: "$.changes.0.id", message: "TC-ABC-1-099 is not a draft case" },
-        { path: "$.changes.1.case.id", message: "must stay TC-ABC-1-001" },
+        { path: "$.changes.0.id", message: "is not a draft case id" },
+        { path: "$.changes.1.case.id", message: "must stay the id of the case being edited" },
         { path: "$.changes.2.case", message: "an edited case needs the whole corrected case" },
       ]),
     );
