@@ -13,6 +13,8 @@ Two rules shape the design:
 
 v2 is under active development and isn't ready to use yet. The first release, 2.0.0, is planned for 28 February 2027. Until then, use v1.
 
+Using it in an IDE: see [docs/ide.md](docs/ide.md).
+
 ## Development
 
 Requires Node.js 20 or later.

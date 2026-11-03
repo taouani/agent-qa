@@ -341,6 +341,13 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         outputSchema: pushSchema,
         // Pushing is never unattended: it takes the person's own yes (a terminal answer or --accept push).
         answers: { yes: { approve: true }, no: { approve: false }, unattended: { approve: false } },
+        // In an IDE that can ask the user directly, the yes comes from them, not the host model (Tarek, 3 Nov 2026).
+        approval: {
+          question: async (ctx) => {
+            const plan = await planOf(ctx);
+            return `Push ${plan.create + plan.update} reviewed test case(s) to Xray project ${plan.project}? ${plan.create} new, ${plan.update} updated.`;
+          },
+        },
         // No test-cases@1 when the user stopped the review; nothing to push when they dropped every case.
         when: async (ctx) => ((await reviewed(ctx))?.data.cases.length ?? 0) > 0 && (await deps.data.xrayEnabled()),
         instructions: () =>

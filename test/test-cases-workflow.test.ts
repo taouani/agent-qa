@@ -340,6 +340,10 @@ describe("test-cases workflow", () => {
       expect(next).toMatchObject({ stepId: "push", kind: "confirm" });
       expect(next.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
       expect(next.context).toContain("TC-ABC-2-001 | P2 | updates QA-9 | Case 1 for ABC-2");
+      // In an IDE that can elicit, the person answers this question themselves (S1-13).
+      expect(next.approval).toEqual({ yes: { approve: true } });
+      expect(await xrayEngine.approval(runId, "push")).toEqual({ question: "Push 3 reviewed test case(s) to Xray project QA? 2 new, 1 updated.", yes: { approve: true }, no: { approve: false } });
+      expect(await xrayEngine.approval(runId, "review")).toBeUndefined();
       const done = await xrayEngine.submit(runId, "push", { approve: true });
       expect(done.next.kind).toBe("done");
       expect(sent).toHaveLength(1);

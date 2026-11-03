@@ -153,6 +153,20 @@ export class WorkflowEngine {
   }
 
   /**
+   * For the open step, when it is `stepId` and needs the person's own yes
+   * (`StepDefinition.approval`): the question to ask and the fixed answers.
+   */
+  async approval(runId: string, stepId: string): Promise<{ question: string; yes: unknown; no: unknown } | undefined> {
+    const { registered, state } = await this.load(runId);
+    if (state.status !== "running") return undefined;
+    const def = this.currentStep(registered.workflow, state);
+    if (def.id !== stepId || def.kind !== "confirm" || !def.approval || !def.answers) return undefined;
+    const ctx = this.ctx(state);
+    const question = await this.guarded(state, def, "the question for the user couldn't be prepared", () => def.approval!.question(ctx));
+    return { question, yes: def.answers.yes, no: def.answers.no };
+  }
+
+  /**
    * The open confirm step's fixed answer (see `StepDefinition.answers`), or
    * undefined when the step has none or isn't a confirm step.
    */
@@ -337,6 +351,7 @@ export class WorkflowEngine {
       outputSchema: outputSchemas.get(def.id),
       attempt: state.attempt,
       maxAttempts: def.maxAttempts ?? this.maxAttempts,
+      ...(def.kind === "confirm" && def.approval && def.answers ? { approval: { yes: def.answers.yes } } : {}),
     };
   }
 

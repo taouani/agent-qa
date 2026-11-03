@@ -78,7 +78,7 @@ The spike passes if four of these five hold for both models.
 | 5 | Approval friction | Pass (1 click) | Pass (1 click) |
 
 **Findings for later slices:**
-- **The MCP prompt never appeared as a slash command.** Every run started with `#workflow_start "SPIKE-n"`. Slice 1 should find out why, or make the short instruction the documented way to start.
+- **The MCP prompt never appeared as a slash command.** Every run started with `#workflow_start "SPIKE-n"`. Slice 1 should find out why, or make the short instruction the documented way to start. Follow-up (S1-13): VS Code names MCP prompts `/<server>.<prompt>`, so the command was `/agent-qa.spike-test-cases`, not `/spike-test-cases`. Both ways are now documented in [docs/ide.md](../ide.md).
 - **The server has to be selected for each chat session.** Until it is, Copilot shows no agent-qa tools.
 - **VS Code refuses to start an MCP server until a chat message exists.** Step 4 of the runbook now covers this.
 - **VS Code flags `cwd` in `.vscode/mcp.json` as "partially supported"**, because it can't migrate it to the root `.mcp.json`. Consider using `AGENT_QA_RUNS_DIR` in `env` instead.

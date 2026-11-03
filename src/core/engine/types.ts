@@ -29,6 +29,8 @@ export interface Step {
   maxAttempts: number;
   /** For `failed` steps: why the run stopped. */
   errors?: OutputError[];
+  /** For confirm steps whose yes must come from the person (`StepDefinition.approval`): the yes answer. */
+  approval?: { yes: unknown };
 }
 
 export type SubmitResult =
@@ -87,6 +89,12 @@ export interface StepDefinition<I = unknown, O = unknown> {
    * decline, and `unattended` (default `yes`) when nobody looked (`--yes`).
    */
   answers?: { yes: O; no: O; unattended?: O };
+  /**
+   * The step's yes must come from the person, not the host model (an outside
+   * write). A host that can ask the user directly (MCP elicitation) does so
+   * with `question`, and the person's answer replaces the model's. Needs `answers`.
+   */
+  approval?: { question: (ctx: StepContext<I>) => string | Promise<string> };
   /**
    * Runs after the output is accepted, for example to write an artifact.
    * It must be safe to run twice: if saving the run state fails afterwards,
