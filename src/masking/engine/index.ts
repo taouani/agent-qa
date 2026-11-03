@@ -5,3 +5,5 @@ export type { DetectorName, PatternDetector, Span } from "./detectors.js";
 export { MIN_NAME_PART, NameIndex } from "./names.js";
 export { fold, foldWithMap } from "./fold.js";
 export * as checksums from "./checksums.js";
+export { LanguageNameDetector, NAME_LANGUAGES } from "./lang-names.js";
+export type { NameLanguage } from "./lang-names.js";

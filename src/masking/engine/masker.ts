@@ -1,5 +1,6 @@
 import type { RunVault, TokenKind } from "../vault/index.js";
 import { PATTERN_DETECTORS, type DetectorName, type PatternDetector, type Span } from "./detectors.js";
+import { LanguageNameDetector, type NameLanguage } from "./lang-names.js";
 import { NameIndex } from "./names.js";
 
 /**
@@ -18,6 +19,8 @@ export interface MaskerOptions {
   detectors?: readonly DetectorName[];
   /** Names known up front, e.g. a configured list. */
   names?: Iterable<string>;
+  /** Languages for finding names nobody listed. Default: all nine. Empty: known names only. */
+  nameLanguages?: readonly NameLanguage[];
   /** Replaces the built-in pattern detectors, for tests. */
   patternDetectors?: PatternDetector[];
 }
@@ -46,12 +49,15 @@ export class Masker {
   private readonly patterns: PatternDetector[];
   private readonly names = new NameIndex();
   private readonly useNames: boolean;
+  private readonly langNames: LanguageNameDetector | undefined;
   private readonly counts: MaskingCounts = { byDetector: {}, byField: {}, wholeFields: {}, tokens: 0 };
 
   constructor(options: MaskerOptions) {
     this.vault = options.vault;
     const enabled = new Set<DetectorName>(options.detectors ?? PRIORITY);
     this.useNames = enabled.has("name");
+    const languages = options.nameLanguages;
+    this.langNames = this.useNames && (languages === undefined || languages.length > 0) ? new LanguageNameDetector(languages) : undefined;
     this.patterns =
       options.patternDetectors ??
       (Object.keys(PATTERN_DETECTORS) as PatternDetector["name"][]).filter((n) => enabled.has(n)).map((n) => PATTERN_DETECTORS[n]());
@@ -67,7 +73,12 @@ export class Masker {
   spans(text: string): Span[] {
     // Detectors see ASCII digits; full-width and Arabic-Indic digits map one to one, so offsets hold.
     const digits = asciiDigits(text);
-    const all = [...this.patterns.flatMap((d) => d.find(digits)), ...(this.useNames ? this.names.find(text) : [])];
+    // Known names come before found ones, so on an exact tie the known name's token (the full name) wins.
+    const all = [
+      ...this.patterns.flatMap((d) => d.find(digits)),
+      ...(this.useNames ? this.names.find(text) : []),
+      ...(this.langNames ? this.langNames.find(text) : []),
+    ];
     return mergeOverlaps(all, text);
   }
 
