@@ -57,6 +57,26 @@ export const configSchema = z
         email: z.string().min(1),
         token: secretRef,
         confluence: z.object({ spaceKey: z.string().min(1), parentPageId: z.string().min(1).optional() }).strict().optional(),
+        /** How requirements are read from Jira. Every key has a default. */
+        jira: z
+          .object({
+            /** Field id or name holding acceptance criteria. Default: found by name; else read from the description. */
+            acceptanceCriteriaField: z.string().min(1).optional(),
+            /** More text fields to read into each requirement, by id or name. */
+            extraFields: z.array(z.string().min(1)).optional(),
+            /** Levels of child issues below each input issue. Default 3. */
+            maxDepth: z.number().int().min(0).max(5).optional(),
+            /** Most issues per run. Default 100. */
+            maxIssues: z.number().int().min(1).max(500).optional(),
+            /** Follow issue links one level out. Default true. */
+            followLinks: z.boolean().optional(),
+            /** Also read the children of linked issues. Default true. */
+            followLinkedChildren: z.boolean().optional(),
+            /** Most linked Confluence pages per run. Default 20. */
+            maxPages: z.number().int().min(0).max(100).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -98,7 +118,10 @@ export const configSchema = z
       .object({
         restoreOnWrite: z.boolean().default(false),
         detectors: z.array(z.enum(["email", "phone", "iban", "card", "national-id", "name", "address", "ip"])).optional(),
+        /** Fields always replaced whole, by source: `jira: [customfield_10042, "Customer phone"]`. */
         fields: z.record(z.string(), z.array(z.string().min(1))).optional(),
+        /** Languages for finding names that no people field lists. Default: all nine. */
+        languages: z.array(z.enum(["en", "fr", "es", "de", "pt", "nl", "it", "ar", "zh"])).optional(),
         presidio: z.object({ url: anyUrl.nullable() }).strict().optional(),
       })
       .strict()

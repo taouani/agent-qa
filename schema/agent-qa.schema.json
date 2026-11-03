@@ -50,6 +50,44 @@
             "spaceKey"
           ],
           "additionalProperties": false
+        },
+        "jira": {
+          "type": "object",
+          "properties": {
+            "acceptanceCriteriaField": {
+              "type": "string",
+              "minLength": 1
+            },
+            "extraFields": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "maxDepth": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5
+            },
+            "maxIssues": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "followLinks": {
+              "type": "boolean"
+            },
+            "followLinkedChildren": {
+              "type": "boolean"
+            },
+            "maxPages": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [
@@ -239,6 +277,23 @@
               "type": "string",
               "minLength": 1
             }
+          }
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "en",
+              "fr",
+              "es",
+              "de",
+              "pt",
+              "nl",
+              "it",
+              "ar",
+              "zh"
+            ]
           }
         },
         "presidio": {
