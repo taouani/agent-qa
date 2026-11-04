@@ -47,6 +47,8 @@ describe("pattern detectors", () => {
 
   it("does not take bare ids, amounts or dates for phone numbers", () => {
     expect(phoneDetector().find("Order 123456789 for 2026-11-02, total 1234567.89, case 00012345")).toEqual([]);
+    // Jira keys and test case ids are digits and dashes too (live check, 4 Nov 2026).
+    expect(phoneDetector().find("[TC-SFSC-3123-001] Verify, see SFSC-3123 and TC-ABC-1234567-012")).toEqual([]);
     // Found by the harness (S1-14): an IP at the end of a sentence was read as a phone number.
     expect(phoneDetector().find("Last login from 192.0.2.44.")).toEqual([]);
     expect(phoneDetector().find("Last login from 192.0.2.44")).toEqual([]);

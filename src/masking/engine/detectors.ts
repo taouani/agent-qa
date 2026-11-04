@@ -110,6 +110,8 @@ const NOT_PHONE_SHAPES = [
   /(?<!\d[-/.]?)\d{1,2}[-/.]\d{1,2}[-/.](?:19|20)?\d{2}(?![-/.]?\d)/g,
   /(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)/g,
   /(?<!\d)(?:19|20)\d{2}\s?[-–]\s?(?:19|20)\d{2}(?!\d)/g,
+  // Jira keys and Agent-QA test case ids: SFSC-3123, TC-SFSC-3123-001.
+  /(?<![\p{L}\p{N}_])(?:TC-)?[A-Z][A-Z0-9_]+-\d+(?:-\d+)?(?![\p{N}])/gu,
 ];
 /** Dates and decimal amounts look like phone numbers to a parser. */
 const NOT_A_PHONE = [/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/, /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/, /^\d+[.,]\d{1,2}$/];
