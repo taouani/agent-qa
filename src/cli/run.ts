@@ -245,7 +245,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
       const answer = await engine.fixedAnswer(step.runId, choice);
       const unattendedNo = choice === "unattended" && (answer as { approve?: unknown } | undefined)?.approve === false;
       log(`- ${step.stepId}: ${choice === "no" ? "declined" : choice === "yes" ? "accepted" : unattendedNo ? `declined (--yes never accepts this step; use --accept ${step.stepId})` : "answered unattended (--yes)"}`);
-      const result = await engine.submit(step.runId, step.stepId, answer);
+      // A fixed answer chosen by the person's flag or terminal answer; --yes never says yes to a person-only step.
+      const result = await engine.submit(step.runId, step.stepId, answer, { byPerson: choice !== "unattended" });
       if (result.status === "rejected") {
         log(`The fixed answer to ${step.stepId} was rejected:`);
         for (const e of result.errors) log(`  ${e.path}: ${e.message}`);

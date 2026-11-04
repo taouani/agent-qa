@@ -15,7 +15,7 @@ export { ISSUES_PER_BATCH, testCasesInputSchema, testCasesWorkflow } from "./tes
 export type { TestCasesDeps, TestCasesInputs } from "./test-cases/workflow.js";
 export { CASE_ID, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, TEST_CASES_TEMPLATE_VERSION, testCaseSchema, testCasesSchema, XRAY_PUSH_ARTIFACT, xrayPushSchema } from "./test-cases/artifact.js";
 export type { TestCase, TestCases, TestCasesDraft, XrayPush } from "./test-cases/artifact.js";
-export { FRAMEWORK_PROFILE_SPEC, profileInputSchema, profileWorkflow } from "./profile/workflow.js";
+export { profileInputSchema, profileWorkflow } from "./profile/workflow.js";
 export type { ProfileDeps, ProfileInputs } from "./profile/workflow.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */

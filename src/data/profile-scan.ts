@@ -16,6 +16,10 @@ const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "cove
 const CODE = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx"]);
 export const MAX_FILES = 3_000;
 export const MAX_FILE_BYTES = 512 * 1024;
+/** Bytes read in all: the scan runs on the server's thread, so it must stay quick. */
+export const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+/** Entries kept in each list (steps, pages, fixtures, features, paths). */
+export const MAX_ENTRIES = 2_000;
 /** Locator calls a page object or step can make, counted to learn the repo's style. */
 export const LOCATOR_FORMS = ["getByRole", "getByLabel", "getByText", "getByTestId", "getByPlaceholder", "getByTitle", "getByAltText", "css", "xpath"] as const;
 export type LocatorForm = (typeof LOCATOR_FORMS)[number];
@@ -91,10 +95,12 @@ function walk(root: string, dir: string, out: string[], limit: number): boolean 
   return false;
 }
 
-function read(root: string, file: string): string | undefined {
+function read(root: string, file: string, budget: { left: number }): string | undefined {
   try {
     const path = join(root, file);
-    if (lstatSync(path).size > MAX_FILE_BYTES) return undefined;
+    const size = lstatSync(path).size;
+    if (size > MAX_FILE_BYTES || size > budget.left) return undefined;
+    budget.left -= size;
     return readFileSync(path, "utf8");
   } catch {
     return undefined;
@@ -242,19 +248,24 @@ export function scanRepo(root: string): RepoScan {
     authFiles: [],
     unparsed: [],
   };
+  const budget = { left: MAX_TOTAL_BYTES };
   for (const file of files) {
+    if (budget.left <= 0) {
+      scan.truncated = true;
+      break;
+    }
     // Before anything is read: a file that may hold secrets is only listed.
     if (AUTH_PATH.test(file)) {
       scan.authFiles.push(file);
       if (!CODE.has(extname(file))) continue;
     }
     if (file.endsWith(".feature")) {
-      const text = read(root, file);
+      const text = read(root, file, budget);
       if (text !== undefined) scan.features.push(scanFeature(text, file));
       continue;
     }
     if (!CODE.has(extname(file)) || file.endsWith(".d.ts")) continue;
-    const text = read(root, file);
+    const text = read(root, file, budget);
     if (text === undefined) continue;
     const ast = parseCode(text, file);
     if (!ast) {
@@ -262,6 +273,12 @@ export function scanRepo(root: string): RepoScan {
       continue;
     }
     scanCode(ast, file, scan);
+  }
+  for (const key of ["steps", "pages", "fixtures", "features", "authFiles", "unparsed"] as const) {
+    if (scan[key].length > MAX_ENTRIES) {
+      scan[key].length = MAX_ENTRIES;
+      scan.truncated = true;
+    }
   }
   return scan;
 }

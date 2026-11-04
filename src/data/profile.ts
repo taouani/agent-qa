@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Node } from "@babel/types";
+import type { ArtifactSpec } from "../core/index.js";
 import { LOCATOR_FORMS, literalString, parseCode, scanRepo, walkAst, type LocatorForm } from "./profile-scan.js";
 import { hostCwd } from "./host.js";
 
@@ -24,14 +25,27 @@ const CONFIG_NAMES = ["playwright.config.ts", "playwright.config.mts", "playwrig
 /** Folders a Playwright project often lives in, looked at when the root has none. */
 const PROJECT_FOLDERS = ["e2e", "tests", "test", "playwright", "ui-tests", "automation", "qa"];
 
-/** One program and its arguments. No shell runs them, and nothing a shell would read as syntax is allowed. */
-const commandSchema = z.array(z.string().regex(/^[\p{L}\p{N}_@+=:,./\\ -]{1,300}$/u, "only letters, digits, spaces and _@+=:,./\\-")).min(1).max(8);
+/**
+ * The only commands a profile can hold, exactly: the ones a scan proposes.
+ * A hand-edited file can't add a program, so what runs is always one of these.
+ */
+export const KNOWN_COMMANDS = {
+  generate: [["npx", "bddgen"]],
+  test: [["npx", "playwright", "test"]],
+  typecheck: [["npx", "tsc", "--noEmit"]],
+} as const;
+const known = (name: keyof typeof KNOWN_COMMANDS) =>
+  z
+    .array(z.string())
+    .refine((c) => KNOWN_COMMANDS[name].some((k) => k.length === c.length && k.every((x, i) => x === c[i])), {
+      message: `must be one of: ${KNOWN_COMMANDS[name].map((k) => k.join(" ")).join(", ")}`,
+    });
 export const profileCommandsSchema = z
   .object({
     /** Turns features into tests (playwright-bdd's bddgen). Runs before `test`. */
-    generate: commandSchema.optional(),
-    test: commandSchema,
-    typecheck: commandSchema.optional(),
+    generate: known("generate").optional(),
+    test: known("test"),
+    typecheck: known("typecheck").optional(),
   })
   .strict();
 export type ProfileCommands = z.infer<typeof profileCommandsSchema>;
@@ -97,6 +111,20 @@ export const frameworkProfileSchema = z
   })
   .strict();
 export type FrameworkProfile = z.infer<typeof frameworkProfileSchema>;
+
+/** `framework-profile@1`: the scan as the person saw it, masked. Written once per run, then read back. */
+export const FRAMEWORK_PROFILE_SPEC: ArtifactSpec<FrameworkProfile> = {
+  name: FRAMEWORK_PROFILE_ARTIFACT.name,
+  schema: `${FRAMEWORK_PROFILE_ARTIFACT.name}@${FRAMEWORK_PROFILE_ARTIFACT.version}`,
+  data: frameworkProfileSchema,
+  render: (p) => `# Framework profile\n\n${describeProfile(p)}\n`,
+};
+
+/** The part a person reviews and agent-qa.profile.json keeps. */
+export const reviewedPart = (p: Pick<FrameworkProfile, "folder" | "kind" | "commands">) => JSON.stringify({ folder: p.folder, kind: p.kind, commands: p.commands ?? null });
+
+/** A version range as package.json writes one; anything else (text that could talk to a model) is dropped. */
+const VERSION = /^[\w.^~<>=*|+: -]{1,40}$/;
 
 export class ProfileError extends Error {
   constructor(message: string) {
@@ -202,7 +230,10 @@ export function scanFramework(root: string, folder?: string): FrameworkProfile {
   const pkg = readJson(join(dir, "package.json"));
   const deps = { ...(pkg?.dependencies as Record<string, string> | undefined), ...(pkg?.devDependencies as Record<string, string> | undefined) };
   const packages: Record<string, string> = {};
-  for (const [name, key] of Object.entries(PACKAGES)) if (typeof deps[name] === "string") packages[key] = deps[name];
+  for (const [name, key] of Object.entries(PACKAGES)) {
+    const v = Object.hasOwn(deps, name) ? deps[name] : undefined;
+    if (typeof v === "string") packages[key] = VERSION.test(v) ? v : "(not a version)";
+  }
 
   const configFile = configIn(dir);
   const config = configFile ? readPlaywrightConfig(readFileSync(join(dir, configFile), "utf8"), configFile) : { reporters: [], projects: [] };
@@ -281,8 +312,8 @@ export function describeProfile(p: FrameworkProfile): string {
     `Config: ${p.config.file ?? "none"}${p.config.bdd ? ` · features ${p.config.bdd.features.join(", ")} · steps ${p.config.bdd.steps.join(", ")}` : ""}${p.config.testDir ? ` · testDir ${p.config.testDir}` : ""}${p.config.reporters.length ? ` · reporters ${p.config.reporters.join(", ")}` : ""}${p.config.projects.length ? ` · projects ${p.config.projects.join(", ")}` : ""}`,
     `Steps: ${p.steps.length}${steps.size ? ` (${[...steps].map(([k, n]) => `${n} ${k}`).join(", ")})` : ""} · page objects: ${p.pages.length} · fixtures: ${p.fixtures.map((f) => f.name).join(", ") || "none"} · features: ${p.features.length} (${p.features.reduce((n, f) => n + f.scenarios, 0)} scenarios)`,
     `Locators, most used first: ${p.locatorRanking.map((f) => `${f} ${p.locators[f]}`).join(", ") || "none found"}`,
-    `Test data: ${p.testData.faker ? "faker" : "no faker"} · sign-in and user files (paths only, not read): ${p.authFiles.join(", ") || "none"}`,
-    ...(p.truncated ? [`The scan stopped after ${p.files} files.`] : []),
+    `Test data: ${p.testData.faker ? "faker" : "no faker"} · sign-in and user files (secret and data files are never read; code is parsed like other code): ${p.authFiles.join(", ") || "none"}`,
+    ...(p.truncated ? [`The scan hit a limit (${p.files} files read); some steps or pages may be missing.`] : []),
     ...(p.unparsed.length ? [`Could not be parsed: ${p.unparsed.join(", ")}`] : []),
     "",
     `Commands Agent-QA may run in ${p.folder} once you accept (no shell, nothing else):`,

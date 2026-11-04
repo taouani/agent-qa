@@ -3,7 +3,19 @@ import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSe
 import { ConnectorError, JiraClient, runHostCommand, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
-import { commandList, PROFILE_FILE, ProfileError, readSavedProfile, scanFramework, type FrameworkProfile, type ProfileCommands, type SavedProfile } from "./profile.js";
+import { createHash } from "node:crypto";
+import {
+  commandList,
+  FRAMEWORK_PROFILE_SPEC,
+  FRAMEWORK_PROFILE_TEMPLATE_VERSION,
+  PROFILE_FILE,
+  ProfileError,
+  readSavedProfile,
+  reviewedPart,
+  scanFramework,
+  type FrameworkProfile,
+  type SavedProfile,
+} from "./profile.js";
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
@@ -66,17 +78,18 @@ export interface HostData {
 }
 
 export interface ProfileData {
-  /** Scans the repo's Playwright project (nothing in it runs). Step texts come back masked with the run's vault. */
+  /** Scans the repo's Playwright project once per run (nothing in it runs) and keeps it as framework-profile@1. Every repo text comes back masked with the run's vault. */
   frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile>;
   /** The reviewed profile, or undefined. Throws ProfileError when the file is broken. */
   savedProfile(): Promise<SavedProfile | undefined>;
   /**
    * Scans again and saves the reviewed part (folder, kind, commands) to
    * agent-qa.profile.json through `Policy.guard` (target testCode). Call it
-   * only with the person's yes: it decides what Agent-QA may run. `shown` is
-   * the command list the person saw; if the repo changed since, nothing is saved.
+   * only with the person's yes: it decides what Agent-QA may run. It saves what
+   * this run showed the person (framework-profile@1); if the repo's folder, kind
+   * or commands changed since, nothing is saved.
    */
-  saveProfile(runId: string, folder?: string, shown?: ProfileCommands): Promise<{ status: "done"; profile: SavedProfile } | { status: "declined" }>;
+  saveProfile(runId: string, folder?: string): Promise<{ status: "done"; profile: SavedProfile } | { status: "declined" }>;
 }
 
 export interface DataAccessOptions {
@@ -120,6 +133,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
+  private readonly profiles = new Map<string, Promise<FrameworkProfile>>();
 
   constructor(private readonly options: DataAccessOptions) {}
 
@@ -274,10 +288,41 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   async frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile> {
-    const profile = scanFramework(this.options.root, folder);
+    // Scanned once per run: the question, the review and the save all use what the person saw.
+    let pending = this.profiles.get(runId);
+    if (!pending) {
+      pending = (async () => {
+        const cached = await this.options.store.readArtifact(runId, FRAMEWORK_PROFILE_SPEC);
+        if (cached) return cached.data;
+        const masked = await this.maskProfile(runId, scanFramework(this.options.root, folder));
+        const hash = createHash("sha256").update(JSON.stringify(masked)).digest("hex");
+        await this.options.store.writeArtifact(runId, FRAMEWORK_PROFILE_SPEC, masked, {
+          inputs: [{ kind: "repo-folder", ref: masked.folder, hash }],
+          templateVersion: FRAMEWORK_PROFILE_TEMPLATE_VERSION,
+        });
+        return masked;
+      })();
+      this.profiles.set(runId, pending);
+      pending.catch(() => this.profiles.delete(runId));
+    }
+    return pending;
+  }
+
+  /**
+   * Every text the repo wrote, masked with the run's vault: the scan reaches the
+   * host model as the review's context. Only the kind and the commands, which
+   * the scan picks from fixed lists, stay as they are.
+   */
+  private async maskProfile(runId: string, profile: FrameworkProfile): Promise<FrameworkProfile> {
     const { service } = await this.run(runId);
-    // Step texts are the repo's own words and can name people: the run keeps tokens, like every artifact.
-    const masked = { ...profile, steps: profile.steps.map((s) => ({ ...s, pattern: service.maskText(s.pattern, "profile.step") })) };
+    const mask = <T>(value: T, field: string): T => {
+      if (typeof value === "string") return service.maskText(value, field) as T;
+      if (Array.isArray(value)) return value.map((v) => mask(v, field)) as T;
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [service.maskText(k, field), mask(v, field)])) as T;
+      return value;
+    };
+    const { kind, commands, ...rest } = profile;
+    const masked = { ...mask(rest, "profile"), kind, ...(commands ? { commands } : {}) } as FrameworkProfile;
     await service.saveVault();
     return masked;
   }
@@ -286,11 +331,13 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return readSavedProfile(this.options.root);
   }
 
-  async saveProfile(runId: string, folder?: string, shown?: ProfileCommands) {
+  async saveProfile(runId: string, folder?: string) {
+    // What the person saw, from the run folder; then the repo now, masked the same way.
+    const shown = await this.frameworkProfile(runId, folder);
     const scanned = scanFramework(this.options.root, folder);
     if (scanned.kind === "empty" || !scanned.commands) throw new ProfileError(`no Playwright project in ${scanned.folder}: nothing to save`);
-    if (shown && JSON.stringify(commandList(shown)) !== JSON.stringify(commandList(scanned.commands))) {
-      throw new ProfileError("the project changed since the profile was shown: run the profile workflow again");
+    if (reviewedPart(shown) !== reviewedPart(await this.maskProfile(runId, scanned))) {
+      throw new ProfileError("the project changed since the profile was shown (folder, kind or commands): run the profile workflow again");
     }
     const profile: SavedProfile = { version: 1, folder: scanned.folder, kind: scanned.kind, commands: scanned.commands, reviewedAt: new Date().toISOString() };
     const config = await this.configOrDefault();

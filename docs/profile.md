@@ -14,9 +14,9 @@ Agent-QA parses the source; nothing in the repo is run or loaded.
 - Fixtures declared with `test.extend({...})`.
 - Feature files: the number of scenarios and the tags. Scenario titles and example rows are not kept, because they can hold names.
 - Locator use (`getByRole`, `getByLabel`, CSS, XPath and the others), counted and ranked so generated code follows your style.
-- Sign-in and user files (`.env*`, `auth/`, `users.json`, JWT and session code): listed by path. Their contents are never read.
+- Sign-in and user files (`.env*`, `auth/`, `users.json`, JWT and session code): listed by path. Secret and data files such as `.env` and `users.json` are never read. Sign-in code is parsed like any other code, for its steps and page objects only.
 
-The walk skips `node_modules`, build and report folders, `.features-gen` and links.
+The walk skips `node_modules`, build and report folders, `.features-gen` and links. It stops after 3,000 files or 32 MB. The scan runs once per profile run, and every text it found is masked before your IDE's model sees the review.
 
 ## Run it
 
@@ -28,7 +28,7 @@ agent-qa run profile --accept review     # scan, then save agent-qa.profile.json
 agent-qa run profile --input '{"folder":"e2e"}' --accept review   # when the project is in a sub-folder
 ```
 
-`--yes` never saves the profile. Saving takes your own yes, because the profile decides which commands Agent-QA may run.
+`--yes` never saves the profile. Saving takes your own yes, because the profile decides which commands Agent-QA may run. In an IDE that can't ask you directly (no MCP elicitation), the model's yes is refused, so run `agent-qa run profile --accept review` in a terminal instead. If the folder, kind or commands change between the review and your yes, nothing is saved.
 
 ## agent-qa.profile.json
 
@@ -48,7 +48,7 @@ Accepting saves the reviewed part next to `agent-qa.yaml`. Commit it, so CI uses
 }
 ```
 
-- These are the only commands Agent-QA runs in your repo. It runs them in `folder`, with no shell, and only after the `commands` write rule allows it (`policy.writes.commands`).
+- A profile can hold only these three commands, exactly; a file listing anything else is refused. They are the only commands Agent-QA runs in your repo. It runs them in `folder`, with no shell, and only after the `commands` write rule allows it (`policy.writes.commands`).
 - `npx` is never allowed to download a missing package.
 - The file is written through the policy layer as a `testCode` write. In CI, test code only leaves as a pull request, so CI never writes this file.
 

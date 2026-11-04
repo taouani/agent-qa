@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runHostCommand } from "../src/connectors/host.js";
-import { configSchema, MemoryAuditSink, Policy, PolicyDenied, RunStore, type WriteGrant } from "../src/core/index.js";
+import { assertGrant, configSchema, MemoryAuditSink, Policy, PolicyDenied, RunStore, type WriteGrant } from "../src/core/index.js";
 import { checkHostCommand, DataAccess, HostCommandRefused, hostCwd, hostEnv } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 
@@ -183,14 +183,22 @@ describe("DataAccess.runCommand", () => {
   const key = Buffer.alloc(32, 7);
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "agent-qa-hostdata-"));
-    await writeFile(join(dir, "say.js"), "console.log('Contact jane.doe@example.com'); process.exit(1)");
-    const profile = { version: 1, folder: ".", kind: "playwright", commands: { test: [NODE, "say.js"] }, reviewedAt: "2026-11-04T00:00:00.000Z" };
+    const profile = { version: 1, folder: ".", kind: "playwright", commands: { test: ["npx", "playwright", "test"] }, reviewedAt: "2026-11-04T00:00:00.000Z" };
     await writeFile(join(dir, "agent-qa.profile.json"), JSON.stringify(profile));
+    ran.length = 0;
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
+  /** The runner, stubbed: the profile allows only npx commands, which aren't installed here. */
+  const ran: string[][] = [];
+  const host: typeof runHostCommand = async (grant, options) => {
+    assertGrant(grant, "commands");
+    ran.push(options.argv);
+    return { exitCode: 1, timedOut: false, aborted: false, stdout: "Contact jane.doe@example.com\n", stderr: "", truncated: false, durationMs: 1 };
+  };
   function data(over: { mode?: "ide" | "ci"; commands?: "allow" | "ask" | "deny"; audit?: MemoryAuditSink } = {}) {
     return new DataAccess({
+      host,
       root: dir,
       store: new RunStore(join(dir, "runs")),
       config: configSchema.parse({ version: 1, policy: { writes: { commands: over.commands ?? "ask" } } }),
@@ -199,7 +207,7 @@ describe("DataAccess.runCommand", () => {
       ...(over.mode ? { mode: over.mode } : {}),
     });
   }
-  const request = { command: [NODE, "say.js"], purpose: "Run the generated specs" };
+  const request = { command: ["npx", "playwright", "test"], purpose: "Run the generated specs" };
 
   it("runs an approved command, masks its output and audits it", async () => {
     const audit = new MemoryAuditSink();
@@ -223,11 +231,13 @@ describe("DataAccess.runCommand", () => {
   it("refuses a command the profile doesn't list before asking or logging", async () => {
     const audit = new MemoryAuditSink();
     await expect(data({ audit }).runCommand("run-1", { command: [NODE, "-v"], purpose: "p" }, true)).rejects.toBeInstanceOf(HostCommandRefused);
+    expect(ran).toEqual([]);
     expect(audit.entries).toEqual([]);
   });
 
   it("runs only what agent-qa.profile.json lists, and nothing without one", async () => {
-    await expect(data().runCommand("run-1", { ...request, command: [NODE, "other.js"] }, true)).rejects.toThrow(/not a command the framework profile lists/);
+    await expect(data().runCommand("run-1", { ...request, command: ["npx", "bddgen"] }, true)).rejects.toThrow(/not a command the framework profile lists/);
+    expect(ran).toEqual([]);
     await rm(join(dir, "agent-qa.profile.json"));
     await expect(data().runCommand("run-1", request, true)).rejects.toThrow(/no reviewed framework profile/);
     await writeFile(join(dir, "agent-qa.profile.json"), "{ not json");

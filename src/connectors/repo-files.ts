@@ -17,13 +17,20 @@ export async function writeRepoFile(grant: WriteGrant, root: string, path: strin
   const rel = relative(resolve(root), target);
   if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${path} is outside the project folder`);
   const folder = dirname(target);
-  await mkdir(folder, { recursive: true });
-  // A link in the way could send the write elsewhere.
+  // A link in the way could send the write elsewhere: checked on the nearest folder that exists, before
+  // anything is created, and again once the folders exist.
   const realRoot = await realpath(root);
-  const realRel = relative(realRoot, await realpath(folder));
-  if (isAbsolute(realRel) || realRel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${path} links outside the project folder`);
-  const existing = await lstat(target).catch(() => undefined);
-  if (existing && !existing.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file`);
+  const inside = async (dir: string) => {
+    const rel = relative(realRoot, await realpath(dir));
+    if (isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${path} links outside the project folder`);
+  };
+  let existing = folder;
+  while (!(await lstat(existing).catch(() => undefined)) && dirname(existing) !== existing) existing = dirname(existing);
+  await inside(existing);
+  await mkdir(folder, { recursive: true });
+  await inside(folder);
+  const current = await lstat(target).catch(() => undefined);
+  if (current && !current.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file`);
   const temp = join(folder, `.${randomBytes(6).toString("hex")}.agent-qa.tmp`);
   try {
     await writeFile(temp, text, { encoding: "utf8", flag: "wx" });

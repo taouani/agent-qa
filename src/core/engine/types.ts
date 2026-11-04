@@ -94,7 +94,15 @@ export interface StepDefinition<I = unknown, O = unknown> {
    * write). A host that can ask the user directly (MCP elicitation) does so
    * with `question`, and the person's answer replaces the model's. Needs `answers`.
    */
-  approval?: { question: (ctx: StepContext<I>) => string | Promise<string> };
+  approval?: {
+    question: (ctx: StepContext<I>) => string | Promise<string>;
+    /**
+     * Only a person may say yes: without a way to ask them (no elicitation, or
+     * a submit that says it isn't the person's own answer), a yes is refused,
+     * never taken from the model. For a yes that lets Agent-QA run repo code.
+     */
+    personOnly?: boolean;
+  };
   /**
    * Runs after the output is accepted, for example to write an artifact.
    * It must be safe to run twice: if saving the run state fails afterwards,
