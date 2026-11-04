@@ -1,7 +1,26 @@
 /** `data` module. See eslint.config.js for what it may import. */
 export const MODULE = "data";
 export { DataAccess, secretSources } from "./access.js";
-export type { DataAccessOptions, HostData, RequirementsData, XrayData } from "./access.js";
+export type { DataAccessOptions, HostData, ProfileData, RequirementsData, XrayData } from "./access.js";
+export {
+  commandList,
+  describeProfile,
+  findProjectFolder,
+  FRAMEWORK_KINDS,
+  FRAMEWORK_PROFILE_ARTIFACT,
+  FRAMEWORK_PROFILE_TEMPLATE_VERSION,
+  frameworkProfileSchema,
+  PROFILE_FILE,
+  profileCommandsSchema,
+  ProfileError,
+  readPlaywrightConfig,
+  readSavedProfile,
+  savedProfileSchema,
+  scanFramework,
+} from "./profile.js";
+export type { FrameworkProfile, ProfileCommands, SavedProfile } from "./profile.js";
+export { LOCATOR_FORMS, scanFeature, scanRepo } from "./profile-scan.js";
+export type { LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
 export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";
 export type { HostCommandOutcome, HostCommandRequest } from "./host.js";
 export { caseLabel, toXrayTest } from "./xray.js";

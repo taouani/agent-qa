@@ -87,7 +87,7 @@ export function contextOf(workflowId: string, inputs: unknown): string {
 
 export const inputRefSchema = z
   .object({
-    kind: z.enum(["jira-issue", "confluence-page", "artifact", "git-diff"]),
+    kind: z.enum(["jira-issue", "confluence-page", "artifact", "git-diff", "repo-folder"]),
     ref: z.string().min(1),
     /** sha256 (hex) of the masked input. */
     hash: z.string().regex(HEX64, "must be a sha256 hex digest"),

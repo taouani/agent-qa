@@ -92,6 +92,8 @@ function inputsOf(opts: RunOptions): unknown {
     if (given) throw new SetupError("--resume continues a run with its own inputs: leave out --key, --jql, --from-run and --input");
     return undefined;
   }
+  // The profile workflow reads the repo, so it needs no input.
+  if (given === 0 && opts.workflow === "profile") return {};
   if (given !== 1) throw new SetupError("give exactly one of --key, --jql, --from-run or --input");
   if (opts.key !== undefined) return { key: opts.key };
   if (opts.jql !== undefined) return { jql: opts.jql };
@@ -153,7 +155,6 @@ export async function runCommand(opts: RunOptions): Promise<number> {
       if (error instanceof ConfigError) throw new SetupError(error.code === "NOT_FOUND" ? "no agent-qa.yaml here: run agent-qa init first, or pass --cwd" : error.message.split(error.file).join(relative(opts.root, error.file)));
       throw error;
     }
-    if (!opts.driver && !config.models) throw new SetupError("agent-qa.yaml has no models section: set models.default, e.g. anthropic:<model-id>");
 
     const mode: Mode = ci ? "ci" : "ide";
     const runs = new RunStore(opts.env.AGENT_QA_RUNS_DIR || join(opts.root, ".agent-qa", "runs"));
@@ -169,6 +170,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
       if (error instanceof RunStoreError) throw new SetupError(`can't resume ${opts.resume}: ${error.message}`);
       throw error;
     }
+    if (!opts.driver && !config.models && engine.usesModel(workflowId)) throw new SetupError("agent-qa.yaml has no models section: set models.default, e.g. anthropic:<model-id>");
     // Every flag names a real confirm step, so a typo can't let a step through.
     const confirms = engine.confirmSteps(workflowId);
     for (const id of [...(opts.accept ?? []), ...(opts.decline ?? [])]) {
@@ -178,7 +180,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
     if (both.length) throw new SetupError(`${both.join(", ")} is both accepted and declined`);
     const model = opts.model ?? config.models?.workflows?.[workflowId];
     if (!opts.driver && model) checkModel(model, config);
-    const driver = opts.driver ?? new ApiDriver({ models: config.models!, secrets: secretSources(opts.env) });
+    // No models section only when the workflow never asks a model (checked above).
+    const driver = opts.driver ?? (config.models ? new ApiDriver({ models: config.models, secrets: secretSources(opts.env) }) : undefined);
 
     let step: Step;
     if (opts.resume) {
@@ -206,7 +209,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
           // The cost report must never stop a run: the answer is already paid for.
           await recordUsage(runs, id, [usageEntry(u, fallback)]).catch((error: unknown) => log(`  (cost not recorded: ${(error instanceof Error ? error.message : String(error)).split(opts.root).join(".")})`));
         };
-        step = (await drive(engine, step, driver, { ...(model ? { model } : {}), onUsage })).step;
+        step = (await drive(engine, step, driver!, { ...(model ? { model } : {}), onUsage })).step;
         continue;
       }
       if (step.kind === "done") {

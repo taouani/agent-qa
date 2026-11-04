@@ -165,6 +165,13 @@ export class WorkflowEngine {
   }
 
   /** A workflow's confirm steps, and whether each has fixed answers (see `StepDefinition.answers`). */
+  /** Whether any step asks a model (a generate step). A workflow of confirm steps only needs none. */
+  usesModel(workflowId: string): boolean {
+    const registered = this.workflows.get(workflowId);
+    if (!registered) throw new EngineError("UNKNOWN_WORKFLOW", `Unknown workflow: ${workflowId}`);
+    return registered.workflow.steps.some((s) => s.kind === "generate");
+  }
+
   confirmSteps(workflowId: string): Array<{ id: string; answers: boolean }> {
     const registered = this.workflows.get(workflowId);
     if (!registered) throw new EngineError("UNKNOWN_WORKFLOW", `Unknown workflow: ${workflowId}`);

@@ -183,6 +183,9 @@ describe("DataAccess.runCommand", () => {
   const key = Buffer.alloc(32, 7);
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "agent-qa-hostdata-"));
+    await writeFile(join(dir, "say.js"), "console.log('Contact jane.doe@example.com'); process.exit(1)");
+    const profile = { version: 1, folder: ".", kind: "playwright", commands: { test: [NODE, "say.js"] }, reviewedAt: "2026-11-04T00:00:00.000Z" };
+    await writeFile(join(dir, "agent-qa.profile.json"), JSON.stringify(profile));
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
@@ -196,12 +199,11 @@ describe("DataAccess.runCommand", () => {
       ...(over.mode ? { mode: over.mode } : {}),
     });
   }
-  const allowed = [[NODE, "-e", "console.log('Contact jane.doe@example.com'); process.exit(1)"]];
-  const request = { command: allowed[0]!, purpose: "Run the generated specs" };
+  const request = { command: [NODE, "say.js"], purpose: "Run the generated specs" };
 
   it("runs an approved command, masks its output and audits it", async () => {
     const audit = new MemoryAuditSink();
-    const outcome = await data({ audit }).runCommand("run-1", request, allowed, true);
+    const outcome = await data({ audit }).runCommand("run-1", request, true);
     expect(outcome.status).toBe("done");
     if (outcome.status !== "done") return;
     expect(outcome.result.exitCode).toBe(1);
@@ -214,14 +216,22 @@ describe("DataAccess.runCommand", () => {
 
   it("runs nothing when the user said no", async () => {
     const audit = new MemoryAuditSink();
-    expect(await data({ audit }).runCommand("run-1", request, allowed, false)).toEqual({ status: "declined" });
+    expect(await data({ audit }).runCommand("run-1", request, false)).toEqual({ status: "declined" });
     expect(audit.entries).toEqual([]);
   });
 
   it("refuses a command the profile doesn't list before asking or logging", async () => {
     const audit = new MemoryAuditSink();
-    await expect(data({ audit }).runCommand("run-1", { command: [NODE, "-v"], purpose: "p" }, allowed, true)).rejects.toBeInstanceOf(HostCommandRefused);
+    await expect(data({ audit }).runCommand("run-1", { command: [NODE, "-v"], purpose: "p" }, true)).rejects.toBeInstanceOf(HostCommandRefused);
     expect(audit.entries).toEqual([]);
+  });
+
+  it("runs only what agent-qa.profile.json lists, and nothing without one", async () => {
+    await expect(data().runCommand("run-1", { ...request, command: [NODE, "other.js"] }, true)).rejects.toThrow(/not a command the framework profile lists/);
+    await rm(join(dir, "agent-qa.profile.json"));
+    await expect(data().runCommand("run-1", request, true)).rejects.toThrow(/no reviewed framework profile/);
+    await writeFile(join(dir, "agent-qa.profile.json"), "{ not json");
+    await expect(data().runCommand("run-1", request, true)).rejects.toThrow(/not valid JSON/);
   });
 
   it("stops on a broken agent-qa.yaml instead of using the default rules", async () => {
@@ -233,12 +243,12 @@ describe("DataAccess.runCommand", () => {
       audit: new MemoryAuditSink(),
       mode: "ci",
     });
-    await expect(loose.runCommand("run-1", request, allowed, true)).rejects.toThrow(/Invalid config/);
+    await expect(loose.runCommand("run-1", request, true)).rejects.toThrow(/Invalid config/);
   });
 
   it("obeys a deny rule, in CI too, and runs unasked in CI otherwise", async () => {
-    await expect(data({ commands: "deny" }).runCommand("run-1", request, allowed, true)).rejects.toBeInstanceOf(PolicyDenied);
-    await expect(data({ mode: "ci", commands: "deny" }).runCommand("run-1", request, allowed, true)).rejects.toBeInstanceOf(PolicyDenied);
-    expect((await data({ mode: "ci" }).runCommand("run-1", request, allowed, true)).status).toBe("done");
+    await expect(data({ commands: "deny" }).runCommand("run-1", request, true)).rejects.toBeInstanceOf(PolicyDenied);
+    await expect(data({ mode: "ci", commands: "deny" }).runCommand("run-1", request, true)).rejects.toBeInstanceOf(PolicyDenied);
+    expect((await data({ mode: "ci" }).runCommand("run-1", request, true)).status).toBe("done");
   });
 });
