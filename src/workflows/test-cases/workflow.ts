@@ -119,13 +119,20 @@ const numberOf = (id: string) => Number(/-(\d+)$/.exec(id)?.[1] ?? NaN);
  * one criterion in common), and a new case is numbered after every existing
  * test, so a rerun never overwrites a test with an unrelated case.
  */
-function checkReuse(at: string, c: TestCase, existing: ExistingTest[]): OutputError[] {
-  if (existing.length === 0) return [];
-  const highest = Math.max(...existing.map((t) => numberOf(t.id)).filter(Number.isFinite));
+function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: Map<string, string>): OutputError[] {
+  const numbers = [...existing.map((t) => t.id), ...[...unseen.keys()].filter((id) => id.startsWith(`TC-${c.requirement.trim().toUpperCase()}-`))]
+    .map(numberOf)
+    .filter(Number.isFinite);
+  if (numbers.length === 0) return [];
+  const highest = Math.max(...numbers);
   const next = `TC-${c.requirement.trim().toUpperCase()}-${String(highest + 1).padStart(3, "0")}`;
+  const hidden = unseen.get(c.id);
+  if (hidden) return [{ path: `${at}.id`, message: `${c.id} belongs to Xray test ${hidden}, which isn't linked to ${c.requirement} any more, so it can't be matched: number this case from ${next}` }];
   const same = existing.find((t) => t.id === c.id);
   if (same) {
-    if (same.covers.length && !c.covers.some((ac) => same.covers.includes(ac))) {
+    // A test whose criteria can't be read (edited by hand) is never taken over: it could be anything.
+    if (!same.covers.length) return [{ path: `${at}.id`, message: `${c.id} is an existing test whose covered criteria are unknown, so it can't be reused: number this case from ${next}` }];
+    if (!c.covers.some((ac) => same.covers.includes(ac))) {
       return [{ path: `${at}.id`, message: `${c.id} is an existing test of ${same.covers.join(", ")}, and this case covers ${c.covers.join(", ")}: keep the id only for a case that checks the same thing; otherwise number it from ${next}` }];
     }
     return [];
@@ -155,11 +162,22 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     const memoKey = `${ctx.runId}\n${keys.join(",")}`;
     let found = existingMemo.get(memoKey);
     if (!found) {
-      found = deps.data.existingTests(ctx.runId, keys);
+      // The requirements run's vault: its tokens are the ones the cases and the push use.
+      found = deps.data.existingTests(requirementsRunOf(ctx), keys);
       found.catch(() => existingMemo.delete(memoKey));
       existingMemo.set(memoKey, found);
     }
     return found;
+  };
+  /**
+   * Ids that an Xray test already has (by label) but that existingTests didn't
+   * show, such as a test whose link to the issue was removed: as Xray key per id.
+   */
+  const unseenTests = async (cases: TestCase[], existing: Record<string, ExistingTest[]>): Promise<Map<string, string>> => {
+    if (cases.length === 0 || !(await deps.data.xrayEnabled())) return new Map();
+    const shown = new Set(Object.values(existing).flatMap((tests) => tests.map((t) => t.id)));
+    const plan = await deps.data.xrayPlan(cases);
+    return new Map(Object.entries(plan.existing).filter(([id]) => !shown.has(id)));
   };
   const batchExisting = async (ctx: Ctx) => existingFor(ctx, (await batchIssues(ctx)).map((r) => r.key));
 
@@ -224,6 +242,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         check: async (ctx, output: CasesOutput) => {
           const issues = await batchIssues(ctx);
           const existing = await batchExisting(ctx);
+          const unseen = await unseenTests(output.cases.map((c) => ({ ...c, requirement: c.requirement.trim().toUpperCase() })), existing);
           const byKey = new Map(issues.map((r) => [r.key, r]));
           const known = tokensIn(await casesContext(ctx));
           const errors: OutputError[] = [];
@@ -238,7 +257,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             const key = c.requirement.trim().toUpperCase();
             perIssue.set(key, (perIssue.get(key) ?? 0) + 1);
             for (const ac of c.covers) covered.add(`${key} ${ac}`);
-            errors.push(...checkReuse(at, c, existing[key] ?? []));
+            errors.push(...checkReuse(at, c, existing[key] ?? [], unseen));
           });
           for (const r of issues) {
             const n = perIssue.get(r.key) ?? 0;
@@ -290,6 +309,9 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           const ids = new Set(draft.cases.map((c) => c.id));
           const byKey = new Map(art.requirements.map((r) => [r.key, r]));
           const known = tokensIn(JSON.stringify(art) + JSON.stringify(draft));
+          const existing = await existingFor(ctx, testable(art).map((r) => r.key));
+          const edited = review.changes.flatMap((c) => (c.case ? [{ ...c.case, requirement: c.case.requirement.trim().toUpperCase() }] : []));
+          const unseen = await unseenTests(edited, existing);
           const errors: OutputError[] = [];
           const seen = new Set<string>();
           review.changes.forEach((change, i) => {
@@ -304,6 +326,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
               else {
                 if (change.case.id !== change.id) errors.push({ path: `${at}.case.id`, message: "must stay the id of the case being edited" });
                 errors.push(...checkCase(`${at}.case`, change.case, byKey, known));
+                errors.push(...checkReuse(`${at}.case`, change.case, existing[change.case.requirement.trim().toUpperCase()] ?? [], unseen));
               }
             }
           });

@@ -249,13 +249,13 @@ export class JiraClient {
    * Tests an earlier push created for `issueKey` (S1 live check): issues in
    * `project` labelled `agent-qa` and linked to the issue, with their
    * `agent-qa:TC-{KEY}-NNN` id, title and the criteria the description says
-   * they cover. Oldest first; at most 200.
+   * they cover. Oldest first; at most 1000.
    */
   async findAgentTests(project: string, issueKey: string): Promise<AgentTest[]> {
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error("Not a Jira project key");
     assertKey(issueKey);
     const jql = `project = "${project}" AND labels = "agent-qa" AND issue in linkedIssues("${issueKey}") ORDER BY created ASC`;
-    const { issues } = await this.search(jql, ["summary", "labels", "description"], 200);
+    const { issues } = await this.search(jql, ["summary", "labels", "description"], 1000);
     const idPattern = new RegExp(`^agent-qa:(TC-${issueKey.replace(/[-]/g, "\\-")}-\\d{3,})$`);
     const out: AgentTest[] = [];
     const seen = new Set<string>();
@@ -267,7 +267,8 @@ export class JiraClient {
       seen.add(tcId);
       const summary = str(fields.summary) ?? "";
       const title = summary.startsWith(`[${tcId}] `) ? summary.slice(tcId.length + 3) : summary;
-      const covers = /Covers ([A-Za-z0-9_, -]+?) of /.exec(textOf(fields.description).text)?.[1]?.split(/,\s*/).filter(Boolean) ?? [];
+      // Only criterion ids (AC1, AC12): anything else in that line could be someone's text.
+      const covers = (/Covers ([A-Za-z0-9_, -]+?) of /.exec(textOf(fields.description).text)?.[1]?.split(/,\s*/) ?? []).filter((id) => /^[A-Z]{1,8}\d{1,4}$/.test(id));
       out.push({ key, tcId, title, covers });
     }
     return out;

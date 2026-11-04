@@ -115,7 +115,7 @@ describe("JiraClient.findAgentTests", () => {
       return ok({
         isLast: true,
         issues: [
-          { key: "QA-1", fields: { summary: "[TC-ABC-1-001] Escalate", labels: ["agent-qa", "agent-qa:TC-ABC-1-001"], description: doc("Covers AC1, AC3 of ABC-1 (positive, P1). Written by Agent-QA.") } },
+          { key: "QA-1", fields: { summary: "[TC-ABC-1-001] Escalate", labels: ["agent-qa", "agent-qa:TC-ABC-1-001"], description: doc("Covers AC1, AC3, Jane Doe of ABC-1 (positive, P1). Written by Agent-QA.") } },
           { key: "QA-2", fields: { summary: "Renamed by hand", labels: ["agent-qa", "agent-qa:TC-ABC-1-002"], description: null } },
           { key: "QA-3", fields: { summary: "[TC-ABC-12-001] Other issue", labels: ["agent-qa", "agent-qa:TC-ABC-12-001"] } },
           { key: "QA-4", fields: { summary: "[TC-ABC-1-001] Duplicate", labels: ["agent-qa", "agent-qa:TC-ABC-1-001"] } },

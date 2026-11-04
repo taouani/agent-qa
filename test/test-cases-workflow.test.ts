@@ -298,10 +298,13 @@ describe("test-cases workflow", () => {
     let audit: MemoryAuditSink;
     let xrayEngine: WorkflowEngine;
     let agentTests: Record<string, AgentTest[]>;
+    /** Tests found by label only (their link to the issue was removed). */
+    let labelOnly: Record<string, string>;
 
     beforeEach(() => {
       sent = [];
-      agentTests = {};
+      agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"] }] };
+      labelOnly = {};
       audit = new MemoryAuditSink();
       const key = randomBytes(32);
       const config = configSchema.parse({
@@ -319,7 +322,10 @@ describe("test-cases workflow", () => {
         confluence: { pages: async () => ({ pages: [], skipped: [] }) },
         labels: {
           findByLabels: async (_project: string, labels: string[]) => {
-            const all: Array<[string, string]> = [["agent-qa:TC-ABC-2-001", "QA-9"], ...Object.values(agentTests).flatMap((ts) => ts.map((t): [string, string] => [`agent-qa:${t.tcId}`, t.key]))];
+            const all: Array<[string, string]> = [
+              ...Object.values(agentTests).flatMap((ts) => ts.map((t): [string, string] => [`agent-qa:${t.tcId}`, t.key])),
+              ...Object.entries(labelOnly).map(([id, key]): [string, string] => [`agent-qa:${id}`, key]),
+            ];
             return new Map(all.filter(([l]) => labels.includes(l)));
           },
           findAgentTests: async (_project: string, key: string) => agentTests[key] ?? [],
@@ -347,7 +353,7 @@ describe("test-cases workflow", () => {
       const { runId, next } = await reviewed();
       expect(next).toMatchObject({ stepId: "push", kind: "confirm" });
       expect(next.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
-      expect(next.context).toContain("TC-ABC-2-001 | P2 | updates QA-9 | Case 1 for ABC-2");
+      expect(next.context).toContain("TC-ABC-2-001 | P2 | updates QA-9 (was: Case 1 for ABC-2) | Case 1 for ABC-2");
       // In an IDE that can elicit, the person answers this question themselves (S1-13).
       expect(next.approval).toEqual({ yes: { approve: true } });
       expect(await xrayEngine.approval(runId, "push")).toEqual({ question: "Push 3 reviewed test case(s) to Xray project QA? 2 new, 1 updated.", yes: { approve: true }, no: { approve: false } });
@@ -369,35 +375,44 @@ describe("test-cases workflow", () => {
       agentTests = {
         "ABC-1": [
           { key: "QA-7", tcId: "TC-ABC-1-001", title: "Old case escalated for Marguerite Quillfeather", covers: ["AC1"] },
+          { key: "QA-6", tcId: "TC-ABC-1-002", title: "Edited by hand", covers: [] },
           { key: "QA-8", tcId: "TC-ABC-1-004", title: "Owner notified", covers: ["AC2"] },
         ],
       };
+      labelOnly = { "TC-ABC-1-006": "QA-20" };
       const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
       const step = (await xrayEngine.submit(first.runId, "analyze", good)).next;
       expect(step.stepId).toBe("cases");
       const shown = JSON.parse(step.context.slice(step.context.indexOf("{")));
       expect(shown.issues[0].existingTests).toEqual([
         { id: "TC-ABC-1-001", title: "Old case escalated for <PERSON_1>", covers: ["AC1"] },
+        { id: "TC-ABC-1-002", title: "Edited by hand", covers: [] },
         { id: "TC-ABC-1-004", title: "Owner notified", covers: ["AC2"] },
       ]);
       for (const s of SECRETS) expect(step.context, s).not.toContain(s);
       const wrong = await xrayEngine.submit(first.runId, "cases", {
-        cases: [tc("ABC-1", 1, ["AC2"]), tc("ABC-1", 2, ["AC1"]), tc("ABC-2", 1, ["AC1"])],
+        cases: [tc("ABC-1", 1, ["AC2"]), tc("ABC-1", 2, ["AC1"]), tc("ABC-1", 3, ["AC1"]), tc("ABC-1", 6, ["AC1"]), tc("ABC-2", 1, ["AC1"])],
       });
       expect(wrong.status).toBe("rejected");
       expect((wrong as { errors: unknown }).errors).toEqual([
         { path: "$.cases.0.id", message: expect.stringContaining("TC-ABC-1-001 is an existing test of AC1, and this case covers AC2") },
-        { path: "$.cases.1.id", message: expect.stringContaining("number new cases from TC-ABC-1-005") },
+        { path: "$.cases.1.id", message: expect.stringContaining("covered criteria are unknown") },
+        { path: "$.cases.2.id", message: expect.stringContaining("number new cases from TC-ABC-1-007") },
+        { path: "$.cases.3.id", message: expect.stringContaining("belongs to Xray test QA-20, which isn't linked to ABC-1") },
       ]);
       const ok = await xrayEngine.submit(first.runId, "cases", {
-        cases: [tc("ABC-1", 1, ["AC1"]), tc("ABC-1", 5, ["AC2"]), tc("ABC-2", 1, ["AC1"])],
+        cases: [tc("ABC-1", 1, ["AC1"]), tc("ABC-1", 7, ["AC2"]), tc("ABC-2", 1, ["AC1"])],
       });
       expect(ok.status).toBe("accepted");
       expect(ok.next.context).toContain("TC-ABC-1-001 | P2 | positive | covers AC1 | updates QA-7 | Case 1 for ABC-1");
+      // A review edit can't turn an existing test into a check of something else either.
+      const bypass = await xrayEngine.submit(first.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-001", decision: "edited", case: tc("ABC-1", 1, ["AC2"]) }] });
+      expect(bypass.status).toBe("rejected");
+      expect((bypass as { errors: unknown }).errors).toEqual([{ path: "$.changes.0.case.id", message: expect.stringContaining("is an existing test of AC1") }]);
       const push = (await xrayEngine.submit(first.runId, "review", { approved: true, changes: [] })).next;
-      expect(push.context).toContain("Push to Xray project QA: 1 new, 2 updated.");
+      expect(push.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
       expect(push.context).toContain("TC-ABC-1-001 | P2 | updates QA-7 (was: Old case escalated for <PERSON_1>) | Case 1 for ABC-1");
-      expect(push.context).toContain("TC-ABC-1-005 | P2 | new |");
+      expect(push.context).toContain("TC-ABC-1-007 | P2 | new |");
     });
 
     it("pushes nothing when the user says no", async () => {
