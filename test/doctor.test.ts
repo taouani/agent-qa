@@ -132,6 +132,13 @@ describe("agent-qa doctor", () => {
     expect(byId(await doctor(ENV)).gitignore!.status).toBe("pass");
   });
 
+  it("tells you to run init when there is no config", async () => {
+    const results = byId(await doctor(ENV));
+    expect(results.config).toMatchObject({ status: "fail", fix: expect.stringContaining("agent-qa init") });
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 2\n");
+    expect(byId(await doctor(ENV)).config!.fix).toBe("Fix the problems above.");
+  });
+
   it("reports an unreadable config or .gitignore instead of crashing", async () => {
     await mkdir(join(dir, "agent-qa.yaml"));
     await mkdir(join(dir, ".gitignore"));
