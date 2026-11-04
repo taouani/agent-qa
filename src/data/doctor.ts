@@ -225,7 +225,7 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
       error instanceof ConfigError
         ? error.problems.map((p) => `${p.line ? `line ${p.line}: ` : ""}${p.path === "$" ? "" : `${p.path}: `}${shown(p.message)}`)
         : [shown((error as Error).message)];
-    results.push({ id: "config", title: "agent-qa.yaml", status: "fail", detail: problems.join("\n"), fix: error instanceof ConfigError && error.code === "NOT_FOUND" ? "Run `agent-qa init` in your project folder, or point at it with --cwd." : "Fix the problems above." });
+    results.push({ id: "config", title: "agent-qa.yaml", status: "fail", detail: problems.join("\n"), fix: error instanceof ConfigError && error.code === "NOT_FOUND" ? "Run doctor in your project folder (or point at it with --cwd), after `agent-qa init` there." : "Fix the problems above." });
   }
 
   if (config) results.push(await secretsCheck(config, env, keyring));
