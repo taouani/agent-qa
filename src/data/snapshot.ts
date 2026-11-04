@@ -3,13 +3,16 @@
  * Roles, attributes, labels and headings stay, so the model can name elements
  * the way generated code will. Personal data goes:
  *
- * - typed values (textbox, searchbox, spinbutton) always become tokens;
+ * - typed and picked values (textbox, searchbox, spinbutton, combobox, slider) always become tokens;
  * - everything inside a table row or cell (record values: names, amounts,
  *   ids) becomes tokens, except header rows;
  * - link targets keep their path only;
  * - all other text goes through the detectors (emails, phones, names…).
  *
  * - on a record page, the level-1 heading (the record's name) becomes a token.
+ *
+ * Values the run already knows (one the explorer typed, echoed in a toast)
+ * are put back as their tokens before the detectors run (data/explorer.ts).
  *
  * Known gap: field values on a record page that sit outside a table or an
  * input are only as safe as the detectors. The harness's stand-in app (S2-10)
@@ -24,7 +27,8 @@ export interface SnapshotMasker {
 }
 
 export const MAX_SNAPSHOT_CHARS = 40_000;
-const FIELD_ROLES = new Set(["textbox", "searchbox", "spinbutton"]);
+/** Roles whose `: value` is what was typed or picked: a lookup or picklist (combobox) included. */
+const FIELD_ROLES = new Set(["textbox", "searchbox", "spinbutton", "combobox", "slider"]);
 const RECORD_ROLES = new Set(["cell", "gridcell", "rowheader"]);
 const KEY = /^(\/?[A-Za-z][\w-]*)(?:\s+"((?:[^"\\]|\\.)*)")?((?:\s*\[[^\]]*\])*)\s*$/;
 
@@ -95,11 +99,19 @@ function parseLine(line: string): Entry | undefined {
   return { indent, role: k[1]!, ...(name !== undefined ? { name } : {}), attrs: k[3]!.trim(), ...(value !== undefined ? { value } : {}), children: rest.trim() === ":" };
 }
 
-/** A URL's path, without the query or fragment (they can carry search terms and ids). */
-function pathOnly(url: string): string {
+/** A URL's path, without the query or fragment (they can carry search terms and ids), decoded so detectors see the text. */
+export function pathOnly(url: string): string {
   const cut = url.search(/[?#]/);
-  return cut === -1 ? url : url.slice(0, cut);
+  const path = cut === -1 ? url : url.slice(0, cut);
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
 }
+
+/** A name or value as YAML would read it: quoted when it could be read as YAML syntax. */
+const scalar = (v: string) => (/^[\s\-\[\]{}'"!&*#|>%@`?,]|: |\s$|^$/.test(v) || v.includes(": ") ? JSON.stringify(v) : v);
 
 /**
  * A page title: Lightning titles a record page "{record} | {object} | Salesforce",
@@ -162,7 +174,7 @@ export function maskAriaSnapshot(aria: string, masker: SnapshotMasker, options: 
         else v = masker.detect(v);
       }
       const key = `${e.role}${name !== undefined ? ` ${JSON.stringify(name)}` : ""}${e.attrs ? ` ${e.attrs}` : ""}`;
-      line = `${pad}- ${key}${v !== undefined ? `: ${v}` : e.children ? ":" : ""}`;
+      line = `${pad}- ${key}${v !== undefined ? `: ${scalar(v)}` : e.children ? ":" : ""}`;
     }
     if (e.raw === undefined) stack.push({ indent: e.indent, record: isRecord });
     if (size + line.length + 1 > MAX_SNAPSHOT_CHARS) {

@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
+import { join, relative, isAbsolute } from "node:path";
 import { assertGrant, type WriteGrant } from "../core/index.js";
 
 /**
@@ -24,6 +25,12 @@ const STABLE_POLLS = 4;
 const BUSY = '[role="progressbar"]:visible, [aria-busy="true"]:visible, .slds-spinner_container:visible, lightning-spinner:visible';
 export const KEY = /^(?:[A-Za-z0-9]|F\d{1,2}|Enter|Tab|Escape|Space|Backspace|Delete|Arrow(?:Up|Down|Left|Right)|Home|End|PageUp|PageDown)(?:\+(?:[A-Za-z0-9]|Enter|Tab))?$|^(?:Control|Shift|Alt|Meta)\+[A-Za-z0-9]$/;
 
+/** An element as a function run in the page sees it (no DOM types in this package). */
+interface PageElement {
+  __agentQaClicks?: number;
+  addEventListener(type: string, listener: () => void, options?: { capture?: boolean }): void;
+}
+
 // The slice of Playwright's API used here, typed structurally: no dependency on its types.
 interface PwLocator {
   count(): Promise<number>;
@@ -37,6 +44,7 @@ interface PwLocator {
   press(key: string, options?: { timeout?: number }): Promise<void>;
   focus(options?: { timeout?: number }): Promise<void>;
   dispatchEvent(type: string): Promise<void>;
+  evaluate<R>(fn: (el: PageElement) => R): Promise<R>;
   waitFor(options?: { state?: "attached" | "visible" | "hidden"; timeout?: number }): Promise<void>;
   isVisible(): Promise<boolean>;
   innerText(options?: { timeout?: number }): Promise<string>;
@@ -93,9 +101,13 @@ const atLeast = (version: string, [major, minor]: readonly [number, number]) => 
 export function loadPlaywright(grant: WriteGrant, folder: string): LoadedPlaywright {
   assertGrant(grant, "commands");
   const load = createRequire(join(folder, "package.json"));
+  const root = realpathSync(folder);
   for (const from of ["@playwright/test", "playwright"]) {
     let version: string;
     try {
+      // Only the repo's own copy: Node would also look in every folder above it (~/node_modules).
+      const rel = relative(root, realpathSync(load.resolve(`${from}/package.json`)));
+      if (rel.split(/[\\/]/)[0] === ".." || isAbsolute(rel)) continue;
       version = (load(`${from}/package.json`) as { version: string }).version;
     } catch {
       continue;
@@ -333,10 +345,22 @@ export class ExplorerBrowser {
       switch (action.type) {
         case "click": {
           const before = await this.signature();
+          // Counts clicks that reach the element (or anything inside it), so a click is never sent twice.
+          const counting = await element
+            .evaluate((el) => {
+              el.__agentQaClicks = 0;
+              el.addEventListener("click", () => (el.__agentQaClicks = (el.__agentQaClicks ?? 0) + 1), { capture: true });
+              return true;
+            })
+            .catch(() => false);
           await element.click({ timeout });
           let settled = await this.settle();
           if ((await this.signature()) !== before) return done("ok", { matches, ...settled });
-          // Lightning's custom elements sometimes swallow a pointer click: the v1 fallbacks.
+          const reached = counting ? await element.evaluate((el) => (el.__agentQaClicks ?? 0) > 0).catch(() => true) : true;
+          // The click arrived, but nothing changed yet: the effect may be slow or out of the tree's sight
+          // (a popup, a download, an iframe). Clicking again could submit twice, so the model decides.
+          if (reached) return done("no-effect", { matches, reason: "the click reached the element, but the page didn't change", ...settled });
+          // The click never reached it (Lightning's custom elements sometimes swallow one): v1's fallbacks.
           await element.focus({ timeout }).catch(() => undefined);
           await element.press("Enter", { timeout }).catch(() => undefined);
           settled = await this.settle();
@@ -350,7 +374,7 @@ export class ExplorerBrowser {
           await element.fill(action.value, { timeout });
           return done("ok", { matches });
         case "select":
-          await element.selectOption({ label: action.value }, { timeout }).catch(() => element.selectOption(action.value, { timeout }));
+          await element.selectOption({ label: action.value }, { timeout: 3_000 }).catch(() => element.selectOption(action.value, { timeout }));
           return done("ok", { matches });
         case "check":
           await element.check({ timeout });

@@ -1,9 +1,9 @@
-import { resolve as resolvePath } from "node:path";
+import { hostCwd } from "./host.js";
 import type { Config, Policy } from "../core/index.js";
 import { ExplorerBrowser, loadPlaywright, type ActionOutcome, type ActionResult, type BrowserAction, type BrowserTarget, type PageSnapshot, type SalesforceSession } from "../connectors/index.js";
 import type { RunVault } from "../masking/index.js";
 import type { MaskedDataService } from "./requirements.js";
-import { maskAriaSnapshot, maskTitle } from "./snapshot.js";
+import { maskAriaSnapshot, maskTitle, pathOnly } from "./snapshot.js";
 
 /**
  * The explorer's browser, behind masking (S2-4). The model only ever sees a
@@ -12,8 +12,9 @@ import { maskAriaSnapshot, maskTitle } from "./snapshot.js";
  * browser and nothing else: not a file, not the run state, not a model.
  *
  * The browser's state is a function of the run's accepted actions: `sync`
- * applies the ones not applied yet, and after a restart it replays the open
- * case from its start, so an action is never performed twice.
+ * applies the ones not applied yet. After a restart (or when the browser was
+ * closed) it replays the open case from its start: the replayed actions run
+ * again on the org (a Save saves again), and the result says `replayed`.
  */
 
 /** What the workflow tells the browser where to go. Every string holds tokens, never real values. */
@@ -48,6 +49,8 @@ export interface MaskedPage {
   title: string;
   aria: string;
   truncated: boolean;
+  /** The case was started again and its actions replayed (after a restart): records may have been created twice. */
+  replayed?: boolean;
   /** The page is a sign-in page: the session ended. */
   signedOut: boolean;
   settledMs: number;
@@ -87,6 +90,9 @@ export interface ExplorerDeps {
 }
 
 const TOKEN = /<[A-Z][A-Z0-9_]*_\d+>/g;
+const HAS_TOKEN = /<[A-Z][A-Z0-9_]*_\d+>/;
+/** Values shorter than this aren't put back as tokens in free text: "a" or "10" would match everywhere. */
+const MIN_ECHO = 3;
 /** Browsers kept open at once, one per run. */
 const MAX_BROWSERS = 4;
 
@@ -100,13 +106,23 @@ export function isSalesforceSandbox(host: string): boolean {
 }
 
 const SIGN_IN_HOSTS = new Set(["login.salesforce.com", "test.salesforce.com"]);
+/** A web app the explorer may drive without Salesforce: only one on this machine (the harness's stand-in app). */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 interface Session {
   browser: BrowserLike;
-  /** The case open in the browser, and how many of its actions were applied. */
-  caseId?: string;
+  /** The case open in the browser (its id and setup), and the actions applied to it, as JSON. */
+  caseKey: string | undefined;
+  applied: string[];
   results: MaskedResult[];
   origin?: string;
+}
+
+type Masker = { detect(text: string, field?: string): string; token(value: string): string };
+
+/** A URL, or undefined. Never throws: Node's error would keep the input, which can hold a real value. */
+function safeUrl(value: string, base?: string): URL | undefined {
+  return URL.canParse(value, base) ? new URL(value, base) : undefined;
 }
 
 export class Explorer {
@@ -128,7 +144,9 @@ export class Explorer {
     }
     const base = config.playwright?.baseUrl;
     if (!base) throw new Error("agent-qa.yaml has no salesforce section and no playwright.baseUrl: nothing to explore");
-    return { kind: "web", host: new URL(base).host };
+    const url = new URL(base);
+    if (!LOCAL_HOSTS.has(url.hostname)) throw new Error(`playwright.baseUrl (${url.host}) isn't on this machine: without a salesforce section, the explorer only drives a local app`);
+    return { kind: "web", host: url.host };
   }
 
   /**
@@ -143,28 +161,67 @@ export class Explorer {
       if (!approved) throw new Error("exploring wasn't approved: the browser stays closed");
       const session = await this.session(runId, setup);
       const { vault, service } = await this.deps.run(setup.tokensRun);
-      if (session.caseId !== caseId || session.results.length > actions.length) {
-        await this.startCase(session, setup);
-        session.caseId = caseId;
+      const caseKey = JSON.stringify({ caseId, setup });
+      const wanted = actions.map((a) => JSON.stringify(a));
+      // Applied actions must be a prefix of the accepted ones; anything else starts the case again.
+      const diverged = session.applied.some((a, i) => wanted[i] !== a);
+      let replayed = false;
+      if (session.caseKey !== caseKey || diverged) {
+        // Cleared first: a start that fails must not leave the old case's actions counted.
+        session.caseKey = undefined;
+        session.applied = [];
         session.results = [];
+        await this.startCase(session, setup);
+        session.caseKey = caseKey;
+        replayed = actions.length > 0;
       }
-      for (let i = session.results.length; i < actions.length; i++) {
-        session.results.push(await this.apply(session, actions[i]!, vault, service));
+      const mask = this.masker(vault, service);
+      for (let i = session.applied.length; i < actions.length; i++) {
+        let result: MaskedResult;
+        try {
+          result = await this.apply(session, actions[i]!, vault, mask);
+        } catch (error) {
+          // Recorded, not retried: a half-done action must not run again on the next render.
+          result = { outcome: "error", settledMs: 0, busy: false, page: this.path(session.browser.url(), mask), reason: (error as Error).name };
+        }
+        session.applied.push(wanted[i]!);
+        session.results.push(result);
       }
-      const page = await this.page(session, vault, service);
+      const page = await this.page(session, mask);
       await service.saveVault();
-      return { results: [...session.results], page };
+      return { results: [...session.results], page: { ...page, ...(replayed ? { replayed } : {}) } };
     });
   }
 
-  async close(runId: string): Promise<void> {
-    const session = this.sessions.get(runId);
-    this.sessions.delete(runId);
-    await (await session?.catch(() => undefined))?.browser.close();
+  /** Closes the run's browser, after any action in flight. */
+  close(runId: string): Promise<void> {
+    return this.queued(runId, async () => {
+      const session = this.sessions.get(runId);
+      this.sessions.delete(runId);
+      await (await session?.catch(() => undefined))?.browser.close();
+    });
   }
 
   async closeAll(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((id) => this.close(id)));
+  }
+
+  /**
+   * Masking for what the browser shows: every value the cases' vault knows
+   * (a value the explorer just typed, echoed in a toast) is put back as its
+   * token first, plain or URL-encoded, then the detectors run.
+   */
+  private masker(vault: RunVault, service: MaskedDataService): Masker {
+    const known = vault
+      .entries()
+      .filter(([token, value]) => !token.startsWith("<INPUT_") && value.trim().length >= MIN_ECHO)
+      .flatMap(([token, value]) => [...new Set([value, encodeURIComponent(value)])].map((v) => [v, token] as const))
+      .sort((a, b) => b[0].length - a[0].length);
+    const echo = (text: string) => known.reduce((t, [value, token]) => (t.includes(value) ? t.split(value).join(token) : t), text);
+    return {
+      detect: (text: string, field = "browser.snapshot") => service.maskText(echo(text), field),
+      token: (value: string) => vault.tokenFor("VALUE", value),
+    };
   }
 
   private queued<T>(runId: string, fn: () => Promise<T>): Promise<T> {
@@ -180,16 +237,22 @@ export class Explorer {
 
   private session(runId: string, setup: ExploreSetup): Promise<Session> {
     let session = this.sessions.get(runId);
-    if (session) return session;
+    if (session) {
+      // Most recently used last, so eviction below drops the least recently used.
+      this.sessions.delete(runId);
+      this.sessions.set(runId, session);
+      return session;
+    }
     session = (async () => {
       const config = await this.deps.loadConfig();
       const target = await this.target(setup.role);
-      const folder = resolvePath(this.deps.root, await this.deps.playwrightFolder());
+      // Inside the project only: Playwright is loaded (and run) from this folder.
+      const folder = hostCwd(this.deps.root, await this.deps.playwrightFolder());
       const open = this.deps.openBrowser ?? openRepoBrowser;
       const summary = `Open a browser with the repo's Playwright, ${target.kind === "salesforce" ? `signed in as ${target.role} on ${target.host}` : `on ${target.host}`}, to explore test cases`;
       const outcome = await this.deps.policy(config).guard({ target: "commands", summary, runId }, (grant) => open(grant, { folder, headed: setup.headed ?? false }));
       if (outcome.status !== "done") throw new Error("the write policy refused to open a browser (policy.writes.commands)");
-      return { browser: outcome.value, results: [] };
+      return { browser: outcome.value, caseKey: undefined, applied: [], results: [] };
     })();
     session.catch(() => {
       if (this.sessions.get(runId) === session) this.sessions.delete(runId);
@@ -199,24 +262,29 @@ export class Explorer {
     return session;
   }
 
-  /** A fresh context, signed in, on the start page. */
+  /** A fresh context, signed in, on the start page. Checks the target again: the config may have changed. */
   private async startCase(session: Session, setup: ExploreSetup): Promise<void> {
     if (!setup.start.startsWith("/") || setup.start.startsWith("//")) throw new Error("the start page must be a path on the org, such as /lightning/n/Approval_App");
     const config = await this.deps.loadConfig();
+    const target = await this.target(setup.role);
     await session.browser.newCase();
-    if (config.salesforce) {
+    if (target.kind === "salesforce") {
       const signIn = await this.deps.salesforceSession(setup.role!);
       // The single-use URL goes to the browser and nowhere else.
       await session.browser.goto(signIn.frontdoorUrl);
-      session.origin = new URL(session.browser.url()).origin;
-      if (this.signedOut(session.browser.url())) throw new Error("Salesforce didn't open a session for the frontdoor URL: check the app's OAuth scopes (web or full)");
+      const landed = safeUrl(session.browser.url());
+      if (!landed || this.signedOut(landed.href)) throw new Error("Salesforce didn't open a session for the frontdoor URL: check the app's OAuth scopes (web or full)");
+      if (!isSalesforceSandbox(landed.hostname)) throw new Error("the sign-in landed outside a Salesforce sandbox: the explorer stops");
+      session.origin = landed.origin;
     } else {
       session.origin = new URL(config.playwright!.baseUrl).origin;
     }
-    await session.browser.goto(new URL(setup.start, session.origin).href);
+    const start = safeUrl(setup.start, session.origin);
+    if (!start || start.origin !== session.origin) throw new Error("the start page must be a path on the org, such as /lightning/n/Approval_App");
+    await session.browser.goto(start.href);
   }
 
-  private async apply(session: Session, action: MaskedAction, vault: RunVault, service: MaskedDataService): Promise<MaskedResult> {
+  private async apply(session: Session, action: MaskedAction, vault: RunVault, mask: Masker): Promise<MaskedResult> {
     const missing: string[] = [];
     const real = (text: string) => text.replace(TOKEN, (t) => vault.valueOf(t) ?? (missing.push(t), t));
     const target = (t: BrowserTarget): BrowserTarget => ({
@@ -230,8 +298,11 @@ export class Explorer {
     });
     let unmasked: BrowserAction;
     if (action.type === "goto") {
-      if (!action.path.startsWith("/") || action.path.startsWith("//")) return this.refused(session, service, "goto takes a path on the same site");
-      unmasked = { type: "goto", path: new URL(real(action.path), session.origin).href };
+      // No tokens in a path: the page's path comes back to the model, and would show the real value.
+      if (HAS_TOKEN.test(action.path)) return this.refused(session, mask, "goto takes a path without tokens: open a record by clicking it");
+      const to = action.path.startsWith("/") && !action.path.startsWith("//") ? safeUrl(action.path, session.origin) : undefined;
+      if (!to || to.origin !== session.origin) return this.refused(session, mask, "goto takes a path on the same site");
+      unmasked = { type: "goto", path: to.href };
     } else if (action.type === "press") {
       unmasked = { type: "press", key: action.key, ...(action.target ? { target: target(action.target) } : {}) };
     } else if (action.type === "fill" || action.type === "select") {
@@ -241,7 +312,7 @@ export class Explorer {
     } else {
       unmasked = { type: action.type, target: target(action.target) };
     }
-    if (missing.length) return this.refused(session, service, `the vault has no value for ${[...new Set(missing)].join(", ")}`, "unknown-token");
+    if (missing.length) return this.refused(session, mask, `the vault has no value for ${[...new Set(missing)].join(", ")}`, "unknown-token");
     const r = await session.browser.act(unmasked);
     return {
       outcome: r.outcome,
@@ -249,25 +320,24 @@ export class Explorer {
       ...(r.recovery ? { recovery: r.recovery } : {}),
       settledMs: r.settledMs,
       busy: r.busy,
-      page: this.path(r.url, service),
+      page: this.path(r.url, mask),
       // Reasons are fixed texts from the connector, or an error class name.
-      ...(r.reason ? { reason: service.maskText(r.reason, "browser.reason") } : {}),
+      ...(r.reason ? { reason: mask.detect(r.reason, "browser.reason") } : {}),
       ...(r.dialogs ? { dialogs: r.dialogs } : {}),
     };
   }
 
-  private refused(session: Session, service: MaskedDataService, reason: string, outcome: MaskedResult["outcome"] = "refused"): MaskedResult {
-    return { outcome, settledMs: 0, busy: false, page: this.path(session.browser.url(), service), reason };
+  private refused(session: Session, mask: Masker, reason: string, outcome: MaskedResult["outcome"] = "refused"): MaskedResult {
+    return { outcome, settledMs: 0, busy: false, page: this.path(session.browser.url(), mask), reason };
   }
 
-  private async page(session: Session, vault: RunVault, service: MaskedDataService): Promise<MaskedPage> {
+  private async page(session: Session, mask: Masker): Promise<MaskedPage> {
     const snap = await session.browser.snapshot();
-    const masker = { detect: (t: string) => service.maskText(t, "browser.snapshot"), token: (v: string) => vault.tokenFor("VALUE", v) };
-    const path = this.path(snap.url, service);
-    const masked = maskAriaSnapshot(snap.aria, masker, { recordPage: path.startsWith("/lightning/r/") });
+    const path = this.path(snap.url, mask);
+    const masked = maskAriaSnapshot(snap.aria, mask, { recordPage: path.startsWith("/lightning/r/") });
     return {
       path,
-      title: maskTitle(snap.title, masker),
+      title: maskTitle(snap.title, mask),
       aria: masked.text,
       truncated: masked.truncated,
       signedOut: this.signedOut(snap.url),
@@ -276,12 +346,10 @@ export class Explorer {
     };
   }
 
-  private path(url: string, service: MaskedDataService): string {
-    try {
-      return service.maskText(new URL(url).pathname, "browser.path");
-    } catch {
-      return "(no page)";
-    }
+  /** Path only, decoded, then masked: no origin, query or fragment. */
+  private path(url: string, mask: Masker): string {
+    const u = safeUrl(url);
+    return u ? mask.detect(pathOnly(u.pathname), "browser.path") : "(no page)";
   }
 
   private signedOut(url: string): boolean {

@@ -384,6 +384,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     await this.explorer?.close(runId);
   }
 
+  /** Closes every browser this instance opened. */
+  async close(): Promise<void> {
+    await this.explorer?.closeAll();
+  }
+
   async frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile> {
     // Scanned once per run: the question, the review and the save all use what the person saw.
     let pending = this.profiles.get(runId);

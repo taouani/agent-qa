@@ -267,16 +267,16 @@ export class WorkflowEngine {
 
       const stepCtx = def.batches ? this.ctx(state, batch, batches) : this.ctx(state);
       const kept = def.sanitize ? await this.guarded(state, def, "the answer couldn't be prepared", () => def.sanitize!(stepCtx, parsed.data)) : parsed.data;
-      await def.onAccept?.(stepCtx, kept);
+      let parts: unknown[] | undefined;
       if (def.batches) {
-        const parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
+        parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
         parts[batch] = kept;
-        state.outputs[def.id] = parts;
-      } else {
-        state.outputs[def.id] = kept;
       }
+      // Decided before onAccept, so a loop check that fails leaves nothing done.
+      const stop = def.until ? (await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!({ ...this.ctx(state, batch, batches), outputs: { ...state.outputs, [def.id]: parts } }, kept))) === true : false;
+      await def.onAccept?.(stepCtx, kept);
+      state.outputs[def.id] = def.batches ? parts : kept;
       state.attempt = 1;
-      const stop = def.until ? await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!(this.ctx(state, batch, batches), kept)) : false;
       if (!stop && batch + 1 < batches) {
         state.batch = batch + 1;
       } else {

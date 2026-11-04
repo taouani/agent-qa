@@ -269,6 +269,14 @@ export class RunVault {
     return Object.hasOwn(this.plain.entries, token) ? this.plain.entries[token] : undefined;
   }
 
+  /**
+   * Every token and its value, for masking text that may echo any of them
+   * (a page showing a value the explorer typed). Only masking should call this.
+   */
+  entries(): Array<[token: string, value: string]> {
+    return Object.entries(this.plain.entries);
+  }
+
   /** Real values of every token of one kind, e.g. the run's known people. Only masking should call this. */
   valuesOf(kind: TokenKind): string[] {
     return Object.entries(this.plain.entries)

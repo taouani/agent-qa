@@ -27,7 +27,10 @@ const ARIA = `- 'heading "Approval: request" [level=1]'
           - /url: /r/1
       - cell "john@acme.com"
 - paragraph: "Hello: \\"quoted\\" it's"
-- button "Save" [disabled]`;
+- button "Save" [disabled]
+- combobox "Account": Acme Corp
+- slider "Pct": "42"
+- listitem: "- leading dash"`;
 
 describe("maskAriaSnapshot", () => {
   const tokens = new Map<string, string>();
@@ -52,7 +55,11 @@ describe("maskAriaSnapshot", () => {
     expect(text).toMatch(/- row "<VALUE_\d+>":/);
     expect(text).toMatch(/- cell "<VALUE_\d+>":\n {8}- link "<VALUE_\d+>":/);
     expect(text).toContain('- cell "<EMAIL_1>"');
-    expect(text).toContain('- paragraph: Hello: "quoted" it\'s');
+    expect(text).toContain('- paragraph: "Hello: \\"quoted\\" it\'s"');
+    // Lookups, picklists and sliders hold a picked value: a token too.
+    expect(text).toMatch(/- combobox "Account": <VALUE_\d+>/);
+    expect(text).toMatch(/- slider "Pct": <VALUE_\d+>/);
+    expect(text).toContain('- listitem: "- leading dash"');
     expect(text).toContain('- button "Save" [disabled]');
     for (const real of ["Acme Corp", "John Smith", "Jane Doe", "jane@x.com", "john@acme.com"]) expect(text).not.toContain(real);
     // The same value, the same token: the cell and its link name the same record.
@@ -90,6 +97,7 @@ function fakeBrowser() {
   const log: string[] = [];
   let url = "about:blank";
   let opened = 0;
+  let typed = "";
   const open: OpenBrowser = async (grant, options) => {
     assertGrant(grant, "commands");
     opened++;
@@ -106,10 +114,12 @@ function fakeBrowser() {
       },
       url: () => url,
       async snapshot(): Promise<PageSnapshot> {
-        return { url: `${url}?q=jane.doe@example.com`, title: "Jane Doe | Salesforce", aria: '- row "Jane Doe jane.doe@example.com":\n  - cell "Jane Doe"\n- textbox "Comments": call Jane Doe', settledMs: 5, busy: false };
+        return { url: `${url}?q=jane.doe@example.com`, title: "Jane Doe | Salesforce", aria: `- row "Jane Doe jane.doe@example.com":\n  - cell "Jane Doe"\n- textbox "Comments": call Jane Doe${typed ? `\n- status: Request "${typed}" was created.` : ""}`, settledMs: 5, busy: false };
       },
       async act(action: BrowserAction): Promise<ActionResult> {
         log.push(`act ${JSON.stringify(action)}`);
+        if (action.type === "fill") typed = action.value;
+        if (action.type === "goto") url = action.path;
         return { outcome: "ok", matches: 1, settledMs: 5, busy: false, url };
       },
       async close() {
@@ -194,8 +204,23 @@ describe("DataAccess explorer", () => {
     expect(fake.log.filter((l) => l.startsWith("act"))).toHaveLength(1);
     // A goto must stay on the site.
     const third2: BrowserAction[] = [...actions, { type: "fill", target: { label: "Comments" }, value: "<PERSON_99>" }];
-    const fourth = await access.explorerSync("run-1", setup, "TC-A-1-001", [...third2, { type: "goto", path: "https://evil.example/" }], true);
+    const fourth = await access.explorerSync("run-1", setup, "TC-A-1-001", [...third2, { type: "goto", path: "https://evil.example/" }, { type: "goto", path: `/lightning/r/${token}/view` }], true);
     expect(fourth.results[2]).toMatchObject({ outcome: "refused" });
+    // A path with a token would come back as the page's path, with the real value in it.
+    expect(fourth.results[3]).toMatchObject({ outcome: "refused", reason: expect.stringContaining("without tokens") });
+    expect(fake.log.filter((l) => l.startsWith("act"))).toHaveLength(1);
+  });
+
+  it("puts a value the explorer typed back as its token when the page echoes it", async () => {
+    const fake = fakeBrowser();
+    const access = data(fake.open);
+    const { page } = await access.explorerSync("run-3", setup, "TC-A-1-001", [], true);
+    const token = /- cell "(<[A-Z]+_\d+>)"/.exec(page.aria)![1]!;
+    // The model types the record's name (a token) into a field; the app echoes it in a toast.
+    const after = await access.explorerSync("run-3", setup, "TC-A-1-001", [{ type: "fill", target: { label: "Comments" }, value: `About ${token}` }], true);
+    expect(fake.log.at(-1)).toContain('"value":"About Jane Doe"');
+    expect(after.page.aria).toContain(`- status: Request "About ${token}" was created.`);
+    expect(JSON.stringify(after)).not.toContain("Jane Doe");
     expect(fake.opened()).toBe(1);
   });
 
@@ -212,6 +237,35 @@ describe("DataAccess explorer", () => {
     expect(fake.log.filter((l) => l === "newCase")).toHaveLength(3);
     await restarted.explorerClose("run-2");
     expect(fake.log.at(-1)).toBe("close");
+  });
+
+  it("says when it replayed a case, and starts again cleanly after a failed start", async () => {
+    const fake = fakeBrowser();
+    const actions: BrowserAction[] = [{ type: "click", target: { role: "button", name: "New" } }];
+    const first = data(fake.open);
+    expect((await first.explorerSync("run-4", setup, "TC-A-1-001", [], true)).page.replayed).toBeUndefined();
+    expect((await first.explorerSync("run-4", setup, "TC-A-1-001", actions, true)).page.replayed).toBeUndefined();
+    expect((await data(fake.open).explorerSync("run-4", setup, "TC-A-1-001", actions, true)).page.replayed).toBe(true);
+    // A failed sign-in for the next case: the old case's actions no longer count.
+    const flaky = data(fake.open);
+    await flaky.explorerSync("run-5", setup, "TC-A-1-001", actions, true);
+    const real = (flaky as unknown as { salesforceSession: unknown }).salesforceSession;
+    (flaky as unknown as { salesforceSession: () => Promise<never> }).salesforceSession = async () => {
+      throw new Error("down");
+    };
+    await expect(flaky.explorerSync("run-5", setup, "TC-A-1-002", [], true)).rejects.toThrow("down");
+    (flaky as unknown as { salesforceSession: unknown }).salesforceSession = real;
+    const acts = fake.log.filter((l) => l.startsWith("act")).length;
+    await flaky.explorerSync("run-5", setup, "TC-A-1-001", actions, true);
+    expect(fake.log.filter((l) => l.startsWith("act")).length).toBe(acts + 1);
+  });
+
+  it("drives a web app only on this machine", async () => {
+    const fake = fakeBrowser();
+    const web = (baseUrl: string) =>
+      new DataAccess({ root: dir, store: new RunStore(join(dir, "runs")), config: configSchema.parse({ version: 1, playwright: { baseUrl } }), audit: new MemoryAuditSink(), browser: fake.open });
+    await expect(web("https://intranet.example").explorerTarget()).rejects.toThrow(/isn't on this machine/);
+    expect(await web("http://localhost:4173").explorerTarget()).toEqual({ kind: "web", host: "localhost:4173" });
   });
 });
 
@@ -237,12 +291,14 @@ describe.skipIf(!playwrightFolder)("ExplorerBrowser (real Chromium)", () => {
     await writeFile(
       page,
       `<h1>Requests</h1>
-      <button id="lazy">Slow save</button><div id="out"></div>
+      <button id="lazy">Slow save</button><button id="slower">Slower save</button><div id="out"></div>
       <custom-btn></custom-btn>
       <label>Comment <input id="c"></label>
       <button>Twin</button><button>Twin</button>
       <script>
-        document.getElementById("lazy").addEventListener("click", () => setTimeout(() => { document.getElementById("out").innerHTML = "<p>Saved</p>"; }, 600));
+        window.saves = 0; window.slow = 0;
+        document.getElementById("lazy").addEventListener("click", () => setTimeout(() => { window.saves++; document.getElementById("out").innerHTML = "<p>Saved</p>"; }, 300));
+        document.getElementById("slower").addEventListener("click", () => setTimeout(() => { window.slow++; document.getElementById("out").innerHTML = "<p>saved " + window.slow + "</p>"; }, 1500));
         customElements.define("custom-btn", class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: "open" }); r.innerHTML = "<button>Shadow</button>"; r.querySelector("button").addEventListener("click", () => document.getElementById("out").innerHTML = "<p>Shadow clicked</p>"); } });
       </script>`,
     );
@@ -263,8 +319,13 @@ describe.skipIf(!playwrightFolder)("ExplorerBrowser (real Chromium)", () => {
     await browser.goto(`file://${page}`);
     const snap = await browser.snapshot();
     expect(snap.aria).toContain('button "Shadow"');
-    expect(await browser.act({ type: "click", target: { role: "button", name: "Slow save" } })).toMatchObject({ outcome: "ok" });
+    const slow = await browser.act({ type: "click", target: { role: "button", name: "Slow save" } });
+    expect(slow).toMatchObject({ outcome: "ok" });
+    expect(slow.recovery).toBeUndefined();
     expect((await browser.snapshot()).aria).toContain("Saved");
+    // An effect later than the settle window: the click reached the button, so it is never sent again.
+    expect(await browser.act({ type: "click", target: { role: "button", name: "Slower save" } })).toMatchObject({ outcome: "no-effect", reason: expect.stringContaining("reached the element") });
+    expect((await browser.snapshot()).aria).toContain("saved 1");
     expect(await browser.act({ type: "click", target: { role: "button", name: "Shadow" } })).toMatchObject({ outcome: "ok" });
     expect(await browser.act({ type: "click", target: { role: "button", name: "Twin" } })).toMatchObject({ outcome: "ambiguous", matches: 2 });
     expect(await browser.act({ type: "click", target: { role: "button", name: "Twin", nth: 1 } })).toMatchObject({ outcome: "no-effect" });
