@@ -1,9 +1,10 @@
-import { join } from "node:path";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
-import { ConnectorError, JiraClient, runHostCommand, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, JiraClient, runHostCommand, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import {
   commandList,
   FRAMEWORK_PROFILE_SPEC,
@@ -77,6 +78,18 @@ export interface HostData {
   runCommand(runId: string, request: HostCommandRequest, approved: boolean): Promise<{ status: "done"; result: HostCommandOutcome } | { status: "declined" }>;
 }
 
+export interface SalesforceData {
+  /** The roles agent-qa.yaml names users for. */
+  salesforceRoles(): Promise<string[]>;
+  /**
+   * Signs in the role's user (JWT bearer flow) and returns a single-use
+   * frontdoor URL. Secret: it opens a session as that user, so it is never
+   * logged, stored, masked into a context or shown to a model. Mint it right
+   * before opening it: it works once, for about a minute.
+   */
+  salesforceSession(role: string): Promise<SalesforceSession>;
+}
+
 export interface ProfileData {
   /** Scans the repo's Playwright project once per run (nothing in it runs) and keeps it as framework-profile@1. Every repo text comes back masked with the run's vault. */
   frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile>;
@@ -129,11 +142,12 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, SalesforceData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
   private readonly profiles = new Map<string, Promise<FrameworkProfile>>();
+  private sfAuth: Promise<SalesforceAuth> | undefined;
 
   constructor(private readonly options: DataAccessOptions) {}
 
@@ -285,6 +299,37 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     };
     await service.saveVault();
     return { status: "done" as const, result };
+  }
+
+  async salesforceRoles(): Promise<string[]> {
+    return Object.keys((await this.salesforceConfig()).users);
+  }
+
+  async salesforceSession(role: string): Promise<SalesforceSession> {
+    const sf = await this.salesforceConfig();
+    if (!Object.hasOwn(sf.users, role)) throw new Error(`agent-qa.yaml has no Salesforce user for the role ${JSON.stringify(role.slice(0, 60))}; the roles are ${Object.keys(sf.users).join(", ")}`);
+    const auth = await this.salesforceAuth(sf);
+    return auth.session(await this.reveal(sf.users[role]!));
+  }
+
+  private async salesforceConfig(): Promise<NonNullable<Config["salesforce"]>> {
+    const sf = (await this.loadConfig()).salesforce;
+    if (!sf) throw new Error("agent-qa.yaml has no salesforce section: add baseUrl, loginUrl, clientId, privateKey (or privateKeyFile) and users to sign in.");
+    return sf;
+  }
+
+  /** One client per process: the key is read once. */
+  private async salesforceAuth(sf: NonNullable<Config["salesforce"]>): Promise<SalesforceAuth> {
+    this.sfAuth ??= (async () =>
+      new SalesforceAuth({
+        loginUrl: sf.loginUrl,
+        ...(sf.audience ? { audience: sf.audience } : {}),
+        clientId: await this.reveal(sf.clientId),
+        privateKey: await salesforceKey(sf, this.options.root, this.secrets()),
+        ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+      }))();
+    this.sfAuth.catch(() => (this.sfAuth = undefined));
+    return this.sfAuth;
   }
 
   async frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile> {
@@ -462,5 +507,16 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       ...(this.options.confluence ? { confluence: this.options.confluence } : {}),
     });
     return { vault, service };
+  }
+}
+
+/** The Salesforce private key (PEM): from its secret reference, or from privateKeyFile. */
+export async function salesforceKey(sf: NonNullable<Config["salesforce"]>, root: string, secrets: SecretSources): Promise<string> {
+  if (sf.privateKey) return resolveSecret(sf.privateKey, secrets);
+  const path = isAbsolute(sf.privateKeyFile!) ? sf.privateKeyFile! : resolvePath(root, sf.privateKeyFile!);
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(`salesforce.privateKeyFile can't be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
   }
 }

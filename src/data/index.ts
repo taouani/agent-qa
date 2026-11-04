@@ -1,7 +1,8 @@
 /** `data` module. See eslint.config.js for what it may import. */
 export const MODULE = "data";
-export { DataAccess, secretSources } from "./access.js";
-export type { DataAccessOptions, HostData, ProfileData, RequirementsData, XrayData } from "./access.js";
+export { DataAccess, salesforceKey, secretSources } from "./access.js";
+export type { DataAccessOptions, HostData, ProfileData, RequirementsData, SalesforceData, XrayData } from "./access.js";
+export type { SalesforceSession } from "../connectors/index.js";
 export {
   commandList,
   describeProfile,

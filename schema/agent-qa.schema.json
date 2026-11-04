@@ -191,15 +191,49 @@
           "format": "uri"
         },
         "auth": {
-          "default": "storage-state",
+          "default": "jwt",
           "type": "string",
-          "enum": [
-            "storage-state"
-          ]
+          "const": "jwt"
+        },
+        "loginUrl": {
+          "default": "https://login.salesforce.com",
+          "type": "string",
+          "format": "uri"
+        },
+        "audience": {
+          "type": "string",
+          "format": "uri"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "privateKey": {
+          "type": "string",
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+        },
+        "privateKeyFile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "users": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,59}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
         }
       },
       "required": [
-        "baseUrl"
+        "baseUrl",
+        "clientId",
+        "users"
       ],
       "additionalProperties": false
     },

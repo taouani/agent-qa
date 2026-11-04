@@ -60,6 +60,7 @@ describe("agent-qa doctor", () => {
       ["vault-key", "pass"],
       ["gitignore", "pass"],
       ["models", "pass"],
+      ["salesforce", "skip"],
       ["network", "pass"],
     ]);
     expect(formatDoctor(results)).toMatch(/Ready\.\n$/);
