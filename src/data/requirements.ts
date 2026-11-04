@@ -113,7 +113,7 @@ export const MASKING_REPORT_ARTIFACT: ArtifactSpec<MaskingReport> = {
 };
 
 /** Bumped when masking or entity building changes, so cached sources are rebuilt. */
-export const SOURCES_VERSION = "sources-3";
+export const SOURCES_VERSION = "sources-4";
 
 const UNMASKED_FIELDS = [
   "jira.key",
@@ -212,7 +212,7 @@ export class MaskedDataService {
       }
     }
 
-    const collection = await (await this.jira()).collect(input, this.collectOptions());
+    const collection = withoutTests(await (await this.jira()).collect(input, this.collectOptions()));
     const { pages, skipped } = await this.pages(collection);
     const masker = this.masker();
     const built = buildSources(collection, pages, skipped, masker, this.wholeFields(), rawInput, cacheKey);
@@ -757,4 +757,23 @@ function renderReport(report: MaskingReport): string {
     report.unmaskedFields.map((f) => `- ${f}`).join("\n"),
     "",
   ].join("\n");
+}
+
+/** Xray's own issue types: tests and their containers, never requirements. */
+const XRAY_TYPES = /^(test|test set|test plan|test execution|pre-?condition)$/i;
+
+/**
+ * The collection without tests reached through links or children: Agent-QA's
+ * own (an `agent-qa:TC-…` label) and any Xray test issue. A rerun would otherwise
+ * read the tests its first push linked to the issue as requirements. The
+ * issue asked for is always kept.
+ */
+export function withoutTests(collection: JiraCollection): JiraCollection {
+  const isTest = (i: JiraIssue) => i.role !== "root" && (i.labels.some((l) => l.startsWith("agent-qa:TC-")) || XRAY_TYPES.test(i.type.trim()));
+  const dropped = new Set(collection.issues.filter(isTest).map((i) => i.key));
+  if (dropped.size === 0) return collection;
+  return {
+    ...collection,
+    issues: collection.issues.filter((i) => !dropped.has(i.key)).map((i) => ({ ...i, children: i.children.filter((k) => !dropped.has(k)) })),
+  };
 }

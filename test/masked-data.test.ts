@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ConfluencePage, JiraCollection, JiraInput, JiraIssue } from "../src/connectors/index.js";
 import { configSchema, RunStore, type ConfigInput } from "../src/core/index.js";
-import { criteriaFromDescription, MaskedDataService, maskJql, splitCriteria } from "../src/data/index.js";
+import { criteriaFromDescription, MaskedDataService, maskJql, splitCriteria, withoutTests } from "../src/data/index.js";
 import { Masker } from "../src/masking/index.js";
 import { MemoryVaultStorage, Vault, type RunVault } from "../src/masking/index.js";
 
@@ -296,6 +296,31 @@ describe("review fixes", () => {
     const r = (await svc.requirements({ key: "ABC-1" })).sources.requirements[0]!;
     expect(r.extraFields).toEqual({});
     expect(r.acceptanceCriteria).toEqual([{ id: "AC1", text: expect.stringMatching(/^<PII_\d+>$/) }]);
+  });
+});
+
+describe("withoutTests", () => {
+  it("leaves out linked or child test issues, never the issue asked for", () => {
+    const collection: JiraCollection = {
+      input: { key: "SFSC-3123" },
+      truncated: false,
+      unreachable: [],
+      extraFields: [],
+      issues: [
+        issue({ key: "SFSC-3123", children: ["SFSC-3200", "SFSC-3201"] }),
+        issue({ key: "SFSC-3124", type: "Test", role: "linked", labels: ["agent-qa", "agent-qa:TC-SFSC-3123-001"] }),
+        issue({ key: "SFSC-3125", type: "Task", role: "linked", labels: ["agent-qa", "agent-qa:TC-SFSC-3123-002"] }),
+        issue({ key: "SFSC-3126", type: "Story", role: "linked", labels: ["agent-qa"] }),
+        issue({ key: "SFSC-3200", type: "Test Set", role: "child", depth: 1 }),
+        issue({ key: "SFSC-3201", type: "Sub-task", role: "child", depth: 1 }),
+        issue({ key: "SFSC-3300", type: "Story", role: "linked" }),
+      ],
+    };
+    const kept = withoutTests(collection);
+    expect(kept.issues.map((i) => i.key)).toEqual(["SFSC-3123", "SFSC-3126", "SFSC-3201", "SFSC-3300"]);
+    expect(kept.issues[0]!.children).toEqual(["SFSC-3201"]);
+    const root = withoutTests({ ...collection, issues: [issue({ key: "SFSC-3124", type: "Test" })] });
+    expect(root.issues).toHaveLength(1);
   });
 });
 

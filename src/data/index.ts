@@ -18,6 +18,7 @@ export {
   requirementSchema,
   SOURCES_ARTIFACT,
   SOURCES_VERSION,
+  withoutTests,
   splitCriteria,
 } from "./requirements.js";
 export type { LoadedSources, LoadOptions, MaskedDataOptions, MaskedSources, MaskingReport, Requirement } from "./requirements.js";
