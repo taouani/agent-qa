@@ -3,12 +3,13 @@ import type { Config } from "../config/index.js";
 
 /**
  * The policy layer (slice 0, T6). Every write outside the run folder goes
- * through `Policy.guard`: pushes to Xray, Confluence publishes, test code, and
- * any Jira change. Connectors that write take a `WriteGrant`, which only
+ * through `Policy.guard`: pushes to Xray, Confluence publishes, test code, any
+ * Jira change, and running the host repo's own commands (S2-1), which write
+ * reports and generated files there. Connectors that write take a `WriteGrant`, which only
  * `guard` can create, so an unguarded write doesn't type-check.
  */
 
-export const WRITE_TARGETS = ["xray", "confluence", "testCode", "jira"] as const;
+export const WRITE_TARGETS = ["xray", "confluence", "testCode", "jira", "commands"] as const;
 export type WriteTarget = (typeof WRITE_TARGETS)[number];
 export type WriteRule = "allow" | "ask" | "deny";
 export type Mode = "ide" | "ci";
@@ -116,6 +117,8 @@ export class Policy {
     if (this.options.mode === "ci") {
       // CI rule: test code only ever leaves as a pull or merge request.
       if (target === "testCode") return { kind: "pull-request" };
+      // A CI job runs in its own checkout, and nobody is there to answer: commands the profile lists may run.
+      if (target === "commands") return { kind: "allow" };
       if (rule === "ask") {
         return { kind: "deny", reason: `nobody can answer "ask" in CI; set policy.writes.${target}: allow to write from CI` };
       }

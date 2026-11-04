@@ -70,6 +70,7 @@ export function configTemplate(opts: Pick<InitOptions, "site" | "model" | "xrayP
     "    confluence: ask",
     "    testCode: ask",
     "    jira: deny",
+    "    commands: ask # running your repo's test commands; asked once per run, and allowed in CI unless deny",
     "",
   );
   return lines.join("\n");

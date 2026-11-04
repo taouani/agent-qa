@@ -13,7 +13,7 @@ import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 const ok = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
 
 async function grantFor(): Promise<{ run: <T>(fn: (g: WriteGrant) => Promise<T>) => Promise<T> }> {
-  const policy = new Policy({ rules: { xray: "allow", confluence: "ask", testCode: "ask", jira: "deny" }, mode: "ide", audit: new MemoryAuditSink() });
+  const policy = new Policy({ rules: { xray: "allow", confluence: "ask", testCode: "ask", jira: "deny", commands: "ask" }, mode: "ide", audit: new MemoryAuditSink() });
   return {
     run: async (fn) => {
       const r = await policy.guard({ target: "xray", summary: "test" }, fn);
@@ -188,7 +188,7 @@ describe("DataAccess.pushToXray", () => {
       version: 1,
       atlassian: { site: "https://acme.atlassian.net", email: "${env:E}", token: "${env:T}" },
       ...(over.xray === false ? {} : { xray: { clientId: "i", clientSecret: "${env:S}", projectKey: "QA" } }),
-      ...(over.writes ? { policy: { writes: { xray: "ask", confluence: "ask", testCode: "ask", jira: "deny", ...over.writes } } } : {}),
+      ...(over.writes ? { policy: { writes: { xray: "ask", confluence: "ask", testCode: "ask", jira: "deny", commands: "ask", ...over.writes } } } : {}),
       ...(over.restoreOnWrite ? { masking: { restoreOnWrite: true } } : {}),
     });
     return new DataAccess({

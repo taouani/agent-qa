@@ -147,13 +147,15 @@ export const configSchema = z
             confluence: writePolicy.default("ask"),
             testCode: writePolicy.default("ask"),
             jira: writePolicy.default("deny"),
+            /** Running the commands the framework profile lists (tests, type check) in your repo. In CI, anything but deny allows. */
+            commands: writePolicy.default("ask"),
           })
           .strict()
           // Factory defaults: each parse gets its own object, so a caller can't change another's defaults.
-          .default(() => ({ xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const })),
+          .default(() => ({ xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const, commands: "ask" as const })),
       })
       .strict()
-      .default(() => ({ writes: { xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const } })),
+      .default(() => ({ writes: { xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const, commands: "ask" as const } })),
 
     harness: z
       .object({

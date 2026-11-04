@@ -89,7 +89,7 @@ describe("agent-qa.yaml", () => {
   it("needs only a version, and applies safe defaults", () => {
     const config = parseConfig("version: 1\n");
     expect(config.masking.restoreOnWrite).toBe(false);
-    expect(config.policy.writes).toEqual({ xray: "ask", confluence: "ask", testCode: "ask", jira: "deny" });
+    expect(config.policy.writes).toEqual({ xray: "ask", confluence: "ask", testCode: "ask", jira: "deny", commands: "ask" });
   });
 
   it("rejects a secret field that isn't a reference, with its line", () => {
@@ -156,6 +156,7 @@ describe("agent-qa.yaml hardening", () => {
       confluence: "ask",
       testCode: "ask",
       jira: "deny",
+      commands: "ask",
     });
     expect(parseConfig("version: 1\npolicy: {}\n").policy.writes.jira).toBe("deny");
   });
