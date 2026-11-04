@@ -82,6 +82,7 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
       () => undefined,
     );
   };
+  const [YES, NO] = ["Yes, go ahead", "No"];
   /**
    * For a step that needs the person's own yes: when the host can ask the user
    * directly (MCP elicitation), ask, and submit their answer instead of the
@@ -89,7 +90,6 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
    * model's answer stands (the confirm step asked the user in chat).
    */
   // Called by the engine inside the run's lock, once the step is known to be open (see `WorkflowEngine.submit`).
-  const [YES, NO] = ["Yes, go ahead", "No"];
   const personal = async (id: string, stepId: string, { question, yes, no, output }: Approval & { output: unknown }): Promise<unknown> => {
     if (JSON.stringify(output) === JSON.stringify(no)) return output;
     let answer;

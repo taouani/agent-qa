@@ -97,11 +97,16 @@ describe("MCP approval by elicitation (S1-13)", () => {
   });
 
   it("pushes nothing on an answer outside the choices, and the step stays open", async () => {
-    const { client, pushed } = await connect({ elicit: () => ({ action: "accept", content: { answer: "yes", approve: true } }) });
+    let answer: ElicitResult = { action: "accept", content: { answer: "yes" } };
+    const { client, pushed } = await connect({ elicit: () => answer });
     await start(client);
     const result = await submit(client, true);
     expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.body)).toContain("Nothing was submitted");
     expect(pushed).toEqual([]);
+    answer = { action: "accept", content: { answer: "Yes, go ahead" } };
+    expect((await submit(client, true)).body.next).toMatchObject({ kind: "done" });
+    expect(pushed).toEqual([true]);
   });
 
   it("keeps the model's no without asking", async () => {
