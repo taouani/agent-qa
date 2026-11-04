@@ -407,7 +407,7 @@ describe("test-cases workflow", () => {
       const ok = await xrayEngine.submit(first.runId, "cases", {
         cases: [
           tc("ABC-1", 1, ["AC1"], { title: "Escalated: old case for <PERSON_1>" }),
-          tc("ABC-1", 4, ["AC2"], { title: "Owner gets told by email" }),
+          tc("ABC-1", 4, ["AC2"], { title: "The owner gets told" }),
           tc("ABC-1", 7, ["AC1"]),
           tc("ABC-2", 1, ["AC1"]),
         ],
@@ -435,7 +435,8 @@ describe("test-cases workflow", () => {
       expect(sameCheck("Verify the field", "Verify the other")).toBe(false);
       expect(sameCheck("Escalated: old case for <PERSON_1>", "Old case escalated for <PERSON_1>")).toBe(true);
       expect(sameCheck("Login fails with invalid password", "Login with an invalid password fails")).toBe(true);
-      expect(sameCheck("Owner notified", "Owner notified by email when escalated")).toBe(true);
+      expect(sameCheck("Access is denied", "Access deny shown")).toBe(false);
+      expect(sameCheck("User cannot delete the log", "User can't delete the log")).toBe(true);
     });
 
     it("doesn't take different checks for the same one", () => {
@@ -448,6 +449,14 @@ describe("test-cases workflow", () => {
         ["Email field is required", "Phone field is required"],
         ["Refund over 500 needs approval", "Refund under 500 needs no approval"],
         ["Login", "Login is blocked after 5 failed attempts"],
+        ["Owner notified", "Owner notified by email when escalated"],
+        ["Case is created from the contact form", "Duplicate case is created from the contact form"],
+        ["Refund is approved by the manager", "Partial refund is approved by the manager"],
+        ["Owner is notified when case escalates", "Owner is notified twice when case escalates"],
+        ["Discount applied at checkout", "Discount applied at checkout for VIP customers"],
+        ["Refund over 500 EUR needs approval", "Refund under 100 EUR needs approval"],
+        ["Order total shows in EUR", "Order total shows in US dollars"],
+        ["Escalated case for <PERSON_1>", "Escalated case for <PERSON_2>"],
       ];
       for (const [a, b] of different) expect(sameCheck(a!, b!), `${a} / ${b}`).toBe(false);
     });

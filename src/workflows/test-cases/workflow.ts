@@ -118,29 +118,51 @@ const numberOf = (id: string) => Number(/-(\d+)$/.exec(id)?.[1] ?? NaN);
 const FILLER = new Set(
   "the a an and or of to for in on at by with from is are be that this its it as when then than verify verifies check checks ensure ensures test tests validate validates confirm confirms should can".split(" "),
 );
-/** Words that turn a check into its opposite: titles that differ in them check different things. */
-const POLARITY = new Set("not no without never cannot fail fails failed failing invalid reject rejects rejected denied deny blocked block error errors missing empty unauthorized forbidden".split(" "));
+/** Words that turn a check into its opposite, by kind: titles that differ in them check different things. */
+const POLARITY = new Map(
+  Object.entries({
+    not: "not no without never",
+    fail: "fail fails failed failing error errors",
+    invalid: "invalid wrong incorrect",
+    refuse: "reject rejects rejected deny denies denied block blocks blocked forbidden unauthorized",
+    missing: "missing empty",
+  }).flatMap(([kind, ws]) => ws.split(" ").map((w) => [w, kind] as const)),
+);
+/** Words that narrow a check to another case of it: one title having one the other lacks is another check. */
+const QUALIFIER = new Set(
+  "duplicate duplicated partial partially twice again multiple bulk concurrent concurrently first second third last all only every each single none some other another new existing same different more less over under above below before after max min maximum minimum eur usd gbp chf jpy dollar dollars euro euros pound pounds yen".split(" "),
+);
 const stem = (w: string) => w.replace(/(?:ing|ed|es|s)$/, (end) => (w.length - end.length >= 3 ? "" : end));
-const rawWords = (text: string) => text.toLowerCase().replace(/n['’]t\b/g, " not").split(/[^\p{L}\p{N}_<>]+/u).filter((w) => w.length > 1 && !FILLER.has(w));
+const rawWords = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/\bcan(?:no|['’])t\b|n['’]t\b/g, " not")
+    .split(/[^\p{L}\p{N}_<>]+/u)
+    .filter((w) => w.length > 1 && !FILLER.has(w));
+const narrows = (w: string) => QUALIFIER.has(w) || /\d/.test(w) || /^<[a-z]+_\d+>$/.test(w);
 
 /**
  * Whether two titles name the same check. Deliberately strict, since a wrong
  * match overwrites a test in Xray, while a missed one only adds a test:
- * - the same negations and failure words ("not", "fails", "invalid"...);
+ * - the same kinds of negation and failure words ("not", "fails", "invalid"...);
+ * - no number, currency, masked value or qualifier ("duplicate", "partial",
+ *   "twice", "over"...) in one title only;
  * - at least two meaningful words in common, and at least half of all words;
- * - not one word swapped for another ("password" for "username", "EUR" for
- *   "USD"), which is how two different checks usually differ.
+ * - each title has a word the other lacks (a title plus words is a narrower
+ *   check), but not one word swapped for another ("password" for "username").
  */
 export function sameCheck(a: string, b: string): boolean {
   const [ra, rb] = [rawWords(a), rawWords(b)];
-  const polarity = (ws: string[]) => [...new Set(ws.filter((w) => POLARITY.has(w)).map(stem))].sort().join(" ");
+  const polarity = (ws: string[]) => [...new Set(ws.flatMap((w) => POLARITY.get(w) ?? []))].sort().join(" ");
   if (polarity(ra) !== polarity(rb)) return false;
+  if (ra.filter((w) => !rb.includes(w)).some(narrows) || rb.filter((w) => !ra.includes(w)).some(narrows)) return false;
   const [x, y] = [new Set(ra.map(stem)), new Set(rb.map(stem))];
   const shared = [...x].filter((w) => y.has(w)).length;
   const onlyX = x.size - shared;
   const onlyY = y.size - shared;
   if (shared < 2 || shared / (shared + onlyX + onlyY) < 0.5) return false;
-  return !(onlyX === 1 && onlyY === 1);
+  if (onlyX === 0 && onlyY === 0) return true;
+  return onlyX > 0 && onlyY > 0 && !(onlyX === 1 && onlyY === 1);
 }
 
 /**
