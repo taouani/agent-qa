@@ -29,7 +29,7 @@ export ATLASSIAN_EMAIL=you@example.com ATLASSIAN_TOKEN=... XRAY_CLIENT_ID=... XR
 npx -y sf-agent-qa@next doctor
 ```
 
-**In VS Code with Copilot** (agent mode), start the MCP server from `.vscode/mcp.json`, then run `/agent-qa.test-cases` with inputs such as `{"key":"ABC-123"}` or `{"jql":"project = ABC AND sprint in openSprints()"}`. Copilot writes the cases, you review them, and Agent-QA asks you before anything goes to Xray. See [docs/ide.md](docs/ide.md).
+**In VS Code with Copilot** (agent mode), start the MCP server from `.vscode/mcp.json`, then run `/mcp.agent-qa.test-cases` (type `/agent-qa` and pick it) with inputs such as `{"key":"ABC-123"}` or `{"jql":"project = ABC AND sprint in openSprints()"}`. Copilot writes the cases, you review them, and Agent-QA asks you before anything goes to Xray. See [docs/ide.md](docs/ide.md).
 
 **From a terminal or CI**, with a model API key (`ANTHROPIC_API_KEY` for the default model):
 

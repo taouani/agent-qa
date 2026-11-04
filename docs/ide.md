@@ -4,14 +4,14 @@ Agent-QA runs in your IDE as an MCP server. `agent-qa init` writes `.vscode/mcp.
 
 ## Starting a workflow
 
-Each workflow is an MCP prompt with one argument, `inputs`, as JSON. In VS Code (Copilot agent mode) an MCP prompt is a slash command named `/<server>.<prompt>`, so with the server named `agent-qa` in `mcp.json` the commands are `/agent-qa.test-cases` and `/agent-qa.requirements`. VS Code asks for `inputs`; enter, for example:
+Each workflow is an MCP prompt with one argument, `inputs`, as JSON. In VS Code (Copilot agent mode) an MCP prompt is a slash command named `/mcp.<server>.<prompt>`, so with the server named `agent-qa` in `mcp.json` the commands are `/mcp.agent-qa.test-cases` and `/mcp.agent-qa.requirements`. Typing `/agent-qa` in the chat lists both. Pick one and press Tab: VS Code shows a box titled "Value for: inputs". Type the inputs as JSON in its field and press Enter, for example:
 
 ```text
 {"key":"ABC-123"}
 {"jql":"project = ABC AND sprint in openSprints()"}
 ```
 
-If you renamed the server in `mcp.json`, use that name instead of `agent-qa`. The command name comes from the VS Code documentation; the Copilot spike only tried `/spike-test-cases`, which doesn't exist, so it hasn't been checked in a real run yet.
+If you renamed the server in `mcp.json`, use that name instead of `agent-qa`.
 
 If the slash command doesn't show up, ask the model to call the start tool directly. This always works, and it's what the Copilot spike used:
 
