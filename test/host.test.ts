@@ -17,6 +17,17 @@ async function withGrant<T>(fn: (g: WriteGrant) => Promise<T>): Promise<T> {
   return outcome.value;
 }
 
+/** Starts a process in its own session that holds stdout for 30 s, and prints its pid to stderr. */
+const LEFTOVER = `const c = require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] }); c.unref(); console.error("leftover:" + c.pid)`;
+function endLeftover(stderr: string): void {
+  const pid = Number(/leftover:(\d+)/.exec(stderr)?.[1]);
+  try {
+    if (pid) process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
 const base = { cwd: process.cwd(), env: process.env, timeoutMs: 20_000, maxOutputBytes: 64 * 1024 };
 
 describe("runHostCommand (S2-1)", () => {
@@ -60,16 +71,18 @@ describe("runHostCommand (S2-1)", () => {
 
   it("reports the real exit code and returns when a leftover process keeps the output open", async () => {
     // The child exits at once; its own child, in a new session, holds stdout for 30 s.
-    const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] }).unref(); console.log("bye")`;
+    const script = `${LEFTOVER}; console.log("bye")`;
     const r = await withGrant((g) => runHostCommand(g, { ...base, timeoutMs: 20_000, argv: [NODE, "-e", script] }));
+    endLeftover(r.stderr);
     expect(r).toMatchObject({ exitCode: 0, timedOut: false });
     expect(r.stdout).toContain("bye");
     expect(r.durationMs).toBeLessThan(10_000);
   });
 
   it("keeps the time limit when a leftover process keeps the output open", async () => {
-    const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] }).unref(); setTimeout(() => {}, 60000)`;
+    const script = `${LEFTOVER}; setTimeout(() => {}, 60000)`;
     const r = await withGrant((g) => runHostCommand(g, { ...base, timeoutMs: 500, argv: [NODE, "-e", script] }));
+    endLeftover(r.stderr);
     expect(r).toMatchObject({ exitCode: null, timedOut: true });
     expect(r.durationMs).toBeLessThan(10_000);
   });

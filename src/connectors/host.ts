@@ -71,15 +71,18 @@ const KILL_GRACE_MS = 3_000;
 /** After the program exits, how long to wait for a process it left behind to let go of the output pipes. */
 const PIPE_GRACE_MS = 2_000;
 
-/** Ends the process and everything it started (a test runner starts browsers and workers). */
-function killTree(child: ReturnType<typeof spawn>): void {
-  if (child.pid === undefined) return;
+/**
+ * Ends the process and everything it started (a test runner starts browsers and workers).
+ * Returns the pending SIGKILL timer, if any, so it can be cancelled once the tree is gone.
+ */
+function killTree(child: ReturnType<typeof spawn>): NodeJS.Timeout | undefined {
+  if (child.pid === undefined) return undefined;
   if (process.platform === "win32") {
     // taskkill /T ends the whole tree. By full path: a taskkill.cmd in the current folder must not run instead.
     const taskkill = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`;
     const killer = spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     killer.on("error", () => child.kill("SIGKILL"));
-    return;
+    return undefined;
   }
   // The child leads its own process group (detached), so this reaches its children too,
   // even after the child itself has exited. SIGTERM first, so they can clean up.
@@ -91,7 +94,9 @@ function killTree(child: ReturnType<typeof spawn>): void {
     }
   };
   signal("SIGTERM");
-  setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS).unref();
+  const later = setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS);
+  later.unref();
+  return later;
 }
 
 export async function runHostCommand(grant: WriteGrant, options: HostCommandOptions): Promise<HostCommandResult> {
@@ -109,6 +114,8 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     /** Set when the program itself exits; undefined while it runs. */
     let exited: { code: number | null } | undefined;
     const timers: NodeJS.Timeout[] = [];
+    /** SIGKILL timers: cleared when the pipes close, since the group may be gone and its ID reused. */
+    const kills: NodeJS.Timeout[] = [];
     const child = spawn(program, args, {
       cwd: options.cwd,
       env: options.env,
@@ -116,7 +123,8 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    const finish = () => {
+    const finish = (closed = false) => {
+      if (closed) for (const t of kills) clearTimeout(t);
       if (settled) return;
       settled = true;
       for (const t of timers) clearTimeout(t);
@@ -137,18 +145,22 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     };
     let killedWhileRunning = false;
     const stop = () => {
-      if (!exited) killedWhileRunning = true;
-      killTree(child);
+      killedWhileRunning = true;
+      const kill = killTree(child);
+      if (kill) kills.push(kill);
       // A hard limit: whatever the tree does, the call returns.
-      timers.push(setTimeout(finish, KILL_GRACE_MS + PIPE_GRACE_MS));
+      timers.push(setTimeout(() => finish(), KILL_GRACE_MS + PIPE_GRACE_MS));
     };
     timers.push(
       setTimeout(() => {
+        // Already finished on its own: the exit grace below ends the call.
+        if (exited) return;
         timedOut = true;
         stop();
       }, options.timeoutMs),
     );
     const onAbort = () => {
+      if (exited) return;
       aborted = true;
       stop();
     };
@@ -170,11 +182,16 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
       // Wait briefly for the rest of the output, then return even if a leftover process keeps the pipes open.
       timers.push(
         setTimeout(() => {
-          killTree(child); // whatever is left in its process group
+          // What is left in its process group. Not on Windows: there the ID may already belong
+          // to another program, and taskkill /T would end it and its children.
+          if (process.platform !== "win32") {
+            const kill = killTree(child);
+            if (kill) kills.push(kill);
+          }
           finish();
         }, PIPE_GRACE_MS),
       );
     });
-    child.on("close", finish);
+    child.on("close", () => finish(true));
   });
 }
