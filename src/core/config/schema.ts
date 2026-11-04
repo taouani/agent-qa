@@ -108,9 +108,38 @@ export const configSchema = z
       .strict()
       .optional(),
 
+    /**
+     * Salesforce sign-in for the explorer and generated tests (S2-3): the JWT
+     * bearer flow of an External Client App, one user per role. Nothing is stored:
+     * each sign-in mints a single-use frontdoor URL.
+     */
     salesforce: z
-      .object({ baseUrl: httpsUrl, auth: z.enum(["storage-state"]).default("storage-state") })
+      .object({
+        /** The org's My Domain URL, e.g. https://acme--uat.sandbox.my.salesforce.com. */
+        baseUrl: httpsUrl,
+        auth: z.literal("jwt").default("jwt"),
+        /** https://login.salesforce.com, or https://test.salesforce.com for a sandbox. */
+        loginUrl: httpsUrl.default("https://login.salesforce.com"),
+        /** The assertion's audience. Default: https://test.salesforce.com for test.salesforce.com and sandbox My Domains, else https://login.salesforce.com. */
+        audience: httpsUrl.optional(),
+        /** The app's consumer key, or a secret reference to it. */
+        clientId: z.string().min(1),
+        /** The app's private key (PEM), as a secret reference. Or give privateKeyFile. */
+        privateKey: secretRef.optional(),
+        /** Path to the private key file (PEM), outside the repo, or a secret reference holding the path. The file holds the secret, not this setting. */
+        privateKeyFile: z
+          .string()
+          .min(1)
+          .max(1000)
+          .refine((v) => !/-----BEGIN|[\r\n]/.test(v), "a path to the key file, not the key itself (use privateKey: ${env:NAME} for the key)")
+          .optional(),
+        /** The Salesforce username for each role, e.g. StoreManager-FRA: user@acme.com.uat, or a secret reference. */
+        users: z
+          .record(z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,59}$/, "a role name: letters, digits, _ . -"), z.string().min(1).max(200))
+          .refine((u) => Object.keys(u).length > 0, "name at least one user"),
+      })
       .strict()
+      .refine((s) => (s.privateKey === undefined) !== (s.privateKeyFile === undefined), { message: "give exactly one of privateKey or privateKeyFile", path: ["privateKey"] })
       .optional(),
 
     models: z

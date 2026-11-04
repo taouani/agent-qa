@@ -30,7 +30,11 @@ git:
 
 salesforce:
   baseUrl: https://acme--qa.sandbox.my.salesforce.com
-  auth: storage-state
+  loginUrl: https://test.salesforce.com
+  clientId: \${env:SF_CLIENT_ID}
+  privateKey: \${env:SF_JWT_KEY}
+  users:
+    StoreManager-FRA: \${env:SF_USER_SM_FRA}
 
 models:
   default: anthropic:claude-model-x

@@ -64,6 +64,15 @@ export function configTemplate(opts: Pick<InitOptions, "site" | "model" | "xrayP
   ];
   lines.push(...(opts.xrayProject ? xray : xray.map((l) => `# ${l.replace(/^# /, "")}`)), "");
   lines.push(
+    "# Salesforce sign-in for Playwright: the JWT bearer flow of an External Client App, one user per role.",
+    "# salesforce:",
+    "#   baseUrl: https://YOUR-ORG.my.salesforce.com",
+    "#   loginUrl: https://test.salesforce.com # sandboxes; production uses https://login.salesforce.com",
+    "#   clientId: ${env:SF_CLIENT_ID}",
+    "#   privateKey: ${env:SF_JWT_KEY} # or privateKeyFile: ../certs/server.key (outside the repo)",
+    "#   users:",
+    "#     StoreManager-FRA: ${env:SF_USER_STOREMANAGER_FRA}",
+    "",
     "policy:",
     "  writes:",
     "    xray: ask # allow, ask or deny; in CI, ask is denied (test code always goes as a pull request)",

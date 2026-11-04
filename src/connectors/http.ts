@@ -42,6 +42,8 @@ export class ConnectorError extends Error {
 
   /** For an Xray import job that was started: its id, so the record can point to it. */
   jobId?: string;
+  /** The service's own error code, when the client reads one (`HttpClientOptions.errorCode`). */
+  remoteCode?: string;
 }
 
 /**
@@ -126,6 +128,12 @@ export interface HttpClientOptions {
   fetch?: FetchLike;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /**
+   * Reads a machine code from an error body, e.g. OAuth's `invalid_grant`.
+   * Only a bare code (lowercase letters, digits, `_`, up to 60) is kept, as
+   * `ConnectorError.remoteCode`; the body itself never goes into an error.
+   */
+  errorCode?: (body: string) => string | undefined;
 }
 
 export type Method = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
@@ -335,7 +343,10 @@ export class HttpClient {
         if (hinted !== undefined && hinted > this.maxWaitMs) throw fail(codeFor(status), false, status);
         throw fail(codeFor(status), canRetry || status === 429, status, hinted);
       }
-      throw fail(codeFor(status), false, status);
+      const failed = fail(codeFor(status), false, status);
+      const remote = this.options.errorCode?.(text);
+      if (remote !== undefined && /^[a-z0-9_]{1,60}$/.test(remote)) failed.error.remoteCode = remote;
+      throw failed;
     } finally {
       clearTimeout(timer);
     }
