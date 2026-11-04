@@ -20,6 +20,15 @@ export interface PushCase {
   covers: string[];
 }
 
+/** A test an earlier push created, as a rerun sees it. */
+export interface ExistingTest {
+  id: string;
+  xrayKey: string;
+  /** Masked. */
+  title: string;
+  covers: string[];
+}
+
 export interface XrayPlan {
   project: string;
   /** Existing test per case id, from an earlier push. */

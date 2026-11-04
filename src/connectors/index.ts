@@ -15,6 +15,7 @@ export type {
   JiraLink,
   JiraPerson,
   JiraRemoteLink,
+  AgentTest,
 } from "./jira.js";
 export { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "./confluence.js";
 export type { ConfluenceClientOptions, ConfluencePage, SkippedPage } from "./confluence.js";

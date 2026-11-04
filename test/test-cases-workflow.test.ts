@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { JiraCollection, JiraInput, JiraIssue } from "../src/connectors/index.js";
 import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine } from "../src/core/index.js";
-import type { XrayTest } from "../src/connectors/index.js";
+import type { AgentTest, XrayTest } from "../src/connectors/index.js";
 import { DataAccess } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 import { requirementsWorkflow, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow, XRAY_PUSH_ARTIFACT, type TestCase } from "../src/workflows/index.js";
@@ -297,9 +297,11 @@ describe("test-cases workflow", () => {
     let sent: XrayTest[][];
     let audit: MemoryAuditSink;
     let xrayEngine: WorkflowEngine;
+    let agentTests: Record<string, AgentTest[]>;
 
     beforeEach(() => {
       sent = [];
+      agentTests = {};
       audit = new MemoryAuditSink();
       const key = randomBytes(32);
       const config = configSchema.parse({
@@ -315,7 +317,13 @@ describe("test-cases workflow", () => {
         vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }),
         jira,
         confluence: { pages: async () => ({ pages: [], skipped: [] }) },
-        labels: { findByLabels: async () => new Map([["agent-qa:TC-ABC-2-001", "QA-9"]]) },
+        labels: {
+          findByLabels: async (_project: string, labels: string[]) => {
+            const all: Array<[string, string]> = [["agent-qa:TC-ABC-2-001", "QA-9"], ...Object.values(agentTests).flatMap((ts) => ts.map((t): [string, string] => [`agent-qa:${t.tcId}`, t.key]))];
+            return new Map(all.filter(([l]) => labels.includes(l)));
+          },
+          findAgentTests: async (_project: string, key: string) => agentTests[key] ?? [],
+        },
         xray: {
           importAndWait: async (tests) => {
             sent.push(tests);
@@ -355,6 +363,41 @@ describe("test-cases workflow", () => {
       const stored = JSON.stringify(push) + (await readFile(join(dir, "runs", runId, "xray-push.md"), "utf8"));
       for (const s of SECRETS) expect(stored, s).not.toContain(s);
       expect(audit.entries.map((e) => e.outcome)).toEqual(["approved", "done"]);
+    });
+
+    it("on a rerun, keeps existing ids only for the same check and numbers new cases after them", async () => {
+      agentTests = {
+        "ABC-1": [
+          { key: "QA-7", tcId: "TC-ABC-1-001", title: "Old case escalated for Marguerite Quillfeather", covers: ["AC1"] },
+          { key: "QA-8", tcId: "TC-ABC-1-004", title: "Owner notified", covers: ["AC2"] },
+        ],
+      };
+      const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
+      const step = (await xrayEngine.submit(first.runId, "analyze", good)).next;
+      expect(step.stepId).toBe("cases");
+      const shown = JSON.parse(step.context.slice(step.context.indexOf("{")));
+      expect(shown.issues[0].existingTests).toEqual([
+        { id: "TC-ABC-1-001", title: "Old case escalated for <PERSON_1>", covers: ["AC1"] },
+        { id: "TC-ABC-1-004", title: "Owner notified", covers: ["AC2"] },
+      ]);
+      for (const s of SECRETS) expect(step.context, s).not.toContain(s);
+      const wrong = await xrayEngine.submit(first.runId, "cases", {
+        cases: [tc("ABC-1", 1, ["AC2"]), tc("ABC-1", 2, ["AC1"]), tc("ABC-2", 1, ["AC1"])],
+      });
+      expect(wrong.status).toBe("rejected");
+      expect((wrong as { errors: unknown }).errors).toEqual([
+        { path: "$.cases.0.id", message: expect.stringContaining("TC-ABC-1-001 is an existing test of AC1, and this case covers AC2") },
+        { path: "$.cases.1.id", message: expect.stringContaining("number new cases from TC-ABC-1-005") },
+      ]);
+      const ok = await xrayEngine.submit(first.runId, "cases", {
+        cases: [tc("ABC-1", 1, ["AC1"]), tc("ABC-1", 5, ["AC2"]), tc("ABC-2", 1, ["AC1"])],
+      });
+      expect(ok.status).toBe("accepted");
+      expect(ok.next.context).toContain("TC-ABC-1-001 | P2 | positive | covers AC1 | updates QA-7 | Case 1 for ABC-1");
+      const push = (await xrayEngine.submit(first.runId, "review", { approved: true, changes: [] })).next;
+      expect(push.context).toContain("Push to Xray project QA: 1 new, 2 updated.");
+      expect(push.context).toContain("TC-ABC-1-001 | P2 | updates QA-7 (was: Old case escalated for <PERSON_1>) | Case 1 for ABC-1");
+      expect(push.context).toContain("TC-ABC-1-005 | P2 | new |");
     });
 
     it("pushes nothing when the user says no", async () => {
