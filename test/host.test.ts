@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -96,9 +97,14 @@ describe("runHostCommand (S2-1)", () => {
     const alive = () => {
       try {
         process.kill(pid, 0);
-        return true;
       } catch {
         return false;
+      }
+      // A killed process that init hasn't reaped yet is a zombie (state Z): dead.
+      try {
+        return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+      } catch {
+        return true; // no /proc (macOS)
       }
     };
     await new Promise((done) => setTimeout(done, 4_500));
