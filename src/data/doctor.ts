@@ -1,5 +1,6 @@
 import { relative, resolve, sep } from "node:path";
 import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { ConnectorError, selectFetch } from "../connectors/index.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
@@ -162,6 +163,15 @@ function modelsCheck(config: Config, env: NodeJS.ProcessEnv): CheckResult {
   return { id: "models", title: "Models", status: "pass", detail: `${used.length} model setting(s), keys for ${providers.join(", ")}` };
 }
 
+/** The same fetch the connectors use for each host, so a proxy in HTTPS_PROXY is used here too. */
+function proxyAwareFetch(env: NodeJS.ProcessEnv): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const f = await selectFetch(env, new URL(url).origin);
+    return f(url, init ?? {});
+  }) as typeof fetch;
+}
+
 async function reachable(url: string, fetcher: typeof fetch, timeoutMs: number): Promise<string | undefined> {
   try {
     // Any HTTP answer, even 401, means the host is reachable; credentials are checked by the connectors.
@@ -170,6 +180,7 @@ async function reachable(url: string, fetcher: typeof fetch, timeoutMs: number):
   } catch (error) {
     const e = error as Error & { cause?: { code?: string; name?: string } };
     if (e.name === "TimeoutError") return `timed out after ${timeoutMs} ms`;
+    if (error instanceof ConnectorError) return error.message; // a proxy URL that can't be used
     return e.cause?.code ?? e.cause?.name ?? e.name ?? "error";
   }
 }
@@ -193,8 +204,9 @@ async function reachabilityCheck(config: Config, fetcher: typeof fetch, timeoutM
         status: "fail",
         detail: down.map(([name, url, error]) => `${name} at ${new URL(url).host}: ${error}`).join("\n"),
         fix:
-          "Check the URL and your network. Behind a proxy, Node's fetch uses HTTPS_PROXY only when NODE_USE_ENV_PROXY=1 " +
-          "(Node 22.21+/24.5+); for a proxy that re-signs TLS, set NODE_EXTRA_CA_CERTS to its CA certificate.",
+          "Check the URL and your network. Behind a proxy, set HTTPS_PROXY (and NO_PROXY for hosts that skip it); " +
+          "for a proxy that re-signs TLS (a CERT or SELF_SIGNED code), set NODE_EXTRA_CA_CERTS to its CA certificate (.pem). " +
+          "ENOTFOUND means the host name didn't resolve.",
       };
 }
 
@@ -239,7 +251,7 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
   results.push(config ? modelsCheck(config, env) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
   if (!config) results.push({ id: "network", title: "Services", status: "skip", detail: "needs a valid config" });
   else if (options.online === false) results.push({ id: "network", title: "Services", status: "skip", detail: "skipped (--offline)" });
-  else results.push(await reachabilityCheck(config, options.fetch ?? fetch, options.timeoutMs ?? 5000));
+  else results.push(await reachabilityCheck(config, options.fetch ?? proxyAwareFetch(env), options.timeoutMs ?? 5000));
   return results;
 }
 

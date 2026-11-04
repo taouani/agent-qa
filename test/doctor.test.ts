@@ -132,6 +132,13 @@ describe("agent-qa doctor", () => {
     expect(byId(await doctor(ENV)).gitignore!.status).toBe("pass");
   });
 
+  it("reports an unusable proxy URL in the services check", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), CONFIG);
+    const env = { ...ENV, HTTPS_PROXY: "socks5://proxy:1080" };
+    const results = byId(await runDoctor({ cwd: dir, env, keyring: keyring({ "sf-agent-qa/xray-secret": "s3" }), nodeVersion: "v22.1.0", caseInsensitive: false }));
+    expect(results.network).toMatchObject({ status: "fail", detail: expect.stringContaining("SOCKS is not supported") });
+  });
+
   it("tells you to run init when there is no config", async () => {
     const results = byId(await doctor(ENV));
     expect(results.config).toMatchObject({ status: "fail", fix: expect.stringContaining("agent-qa init") });
