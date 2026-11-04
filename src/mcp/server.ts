@@ -82,6 +82,7 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
       () => undefined,
     );
   };
+  const [YES, NO] = ["Yes, go ahead", "No"];
   /**
    * For a step that needs the person's own yes: when the host can ask the user
    * directly (MCP elicitation), ask, and submit their answer instead of the
@@ -97,7 +98,8 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
         {
           mode: "form",
           message: question,
-          requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Yes, go ahead", default: false } }, required: ["approve"] },
+          // Plain strings, not a boolean: hosts show a boolean as "False / True".
+          requestedSchema: { type: "object", properties: { answer: { type: "string", title: "Your answer", enum: [YES, NO], default: NO } }, required: ["answer"] },
         },
         // The person may take a while: the SDK's default is a minute.
         { timeout: ELICIT_TIMEOUT_MS },
@@ -105,7 +107,7 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
     } catch (error) {
       throw new EngineError("CONTEXT_FAILED", `Couldn't ask the user to approve ${stepId} (${error instanceof Error ? error.message : String(error)}). Nothing was submitted: call workflow_submit again.`, [], id);
     }
-    return answer.action === "accept" && answer.content?.approve === true ? yes : no;
+    return answer.action === "accept" && answer.content?.answer === YES ? yes : no;
   };
   // The SDK reads an empty elicitation capability (the spec before modes existed) as form mode.
   const canElicit = () => {
