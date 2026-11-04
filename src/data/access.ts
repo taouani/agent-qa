@@ -3,7 +3,7 @@ import { FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type 
 import { ConnectorError, JiraClient, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
-import { caseLabel, caseTokens, restorer, results, toXrayTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
+import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -34,6 +34,13 @@ export interface XrayData {
    * write policy doesn't deny Xray in this mode. False without a config.
    */
   xrayEnabled(): Promise<boolean>;
+  /**
+   * Tests earlier pushes created for these issues, for a rerun to reuse their
+   * ids: per issue, each test's TC id, Xray key, masked title and covered
+   * criteria. Empty when Xray isn't set up. Titles are masked with the run's
+   * vault, since a push with restoreOnWrite wrote real values.
+   */
+  existingTests(runId: string, issueKeys: string[]): Promise<Record<string, ExistingTest[]>>;
   /** Which cases exist in Xray already (found by their `agent-qa:TC-ID` label). */
   xrayPlan(cases: PushCase[]): Promise<XrayPlan>;
   /**
@@ -59,7 +66,7 @@ export interface DataAccessOptions {
   jira?: Pick<JiraClient, "collect">;
   confluence?: Pick<ConfluenceClient, "pages">;
   xray?: Pick<XrayClient, "importAndWait">;
-  labels?: Pick<JiraClient, "findByLabels">;
+  labels?: Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests">>;
   /** `ide` (default) or `ci`: decides what an `ask` write rule does. */
   mode?: Mode;
   /** Where write decisions are recorded; default `.agent-qa/audit.jsonl`. */
@@ -118,6 +125,22 @@ export class DataAccess implements RequirementsData, XrayData {
     }
     // Earlier pushes are found through Jira, so the push needs the atlassian section too.
     return config.xray !== undefined && (this.options.labels !== undefined || config.atlassian !== undefined) && this.policy(config).decide("xray").kind !== "deny";
+  }
+
+  async existingTests(runId: string, issueKeys: string[]): Promise<Record<string, ExistingTest[]>> {
+    if (issueKeys.length === 0 || !(await this.xrayEnabled())) return {};
+    const config = await this.loadConfig();
+    const xray = this.xrayConfig(config);
+    const labels = await this.labels(config);
+    if (!labels.findAgentTests) return {};
+    const { service } = await this.run(runId);
+    const out: Record<string, ExistingTest[]> = {};
+    for (const key of issueKeys) {
+      const tests = await labels.findAgentTests(xray.projectKey, key);
+      if (tests.length) out[key] = tests.map((t) => ({ id: t.tcId, xrayKey: t.key, title: service.maskText(t.title, "xray.existing"), covers: t.covers }));
+    }
+    await service.saveVault();
+    return out;
   }
 
   async xrayPlan(cases: PushCase[]): Promise<XrayPlan> {
@@ -206,7 +229,7 @@ export class DataAccess implements RequirementsData, XrayData {
     return value.startsWith("${") ? resolveSecret(value, this.secrets()) : value;
   }
 
-  private async labels(config: Config): Promise<Pick<JiraClient, "findByLabels">> {
+  private async labels(config: Config): Promise<Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests">>> {
     if (this.options.labels) return this.options.labels;
     const atlassian = config.atlassian;
     if (!atlassian) throw new Error("agent-qa.yaml has no atlassian section: it is needed to find tests pushed before.");

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Artifact, InputRef, OutputError, StepContext, WorkflowDefinition } from "../../core/index.js";
-import type { RequirementsData, XrayData } from "../../data/index.js";
+import type { ExistingTest, RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
 import { analyzeStep, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
 import {
@@ -112,6 +112,34 @@ function checkCase(at: string, c: TestCase, byKey: Map<string, AnalyzedRequireme
   return errors;
 }
 
+const numberOf = (id: string) => Number(/-(\d+)$/.exec(id)?.[1] ?? NaN);
+
+/**
+ * A case may take an existing test's id only to check the same thing (at least
+ * one criterion in common), and a new case is numbered after every existing
+ * test, so a rerun never overwrites a test with an unrelated case.
+ */
+function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: Map<string, string>): OutputError[] {
+  const numbers = [...existing.map((t) => t.id), ...[...unseen.keys()].filter((id) => id.startsWith(`TC-${c.requirement.trim().toUpperCase()}-`))]
+    .map(numberOf)
+    .filter(Number.isFinite);
+  if (numbers.length === 0) return [];
+  const highest = Math.max(...numbers);
+  const next = `TC-${c.requirement.trim().toUpperCase()}-${String(highest + 1).padStart(3, "0")}`;
+  const hidden = unseen.get(c.id);
+  if (hidden) return [{ path: `${at}.id`, message: `${c.id} belongs to Xray test ${hidden}, which isn't linked to ${c.requirement} any more, so it can't be matched: number this case from ${next}` }];
+  const same = existing.find((t) => t.id === c.id);
+  if (same) {
+    // A test whose criteria can't be read (edited by hand) is never taken over: it could be anything.
+    if (!same.covers.length) return [{ path: `${at}.id`, message: `${c.id} is an existing test whose covered criteria are unknown, so it can't be reused: number this case from ${next}` }];
+    if (!c.covers.some((ac) => same.covers.includes(ac))) {
+      return [{ path: `${at}.id`, message: `${c.id} is an existing test of ${same.covers.join(", ")}, and this case covers ${c.covers.join(", ")}: keep the id only for a case that checks the same thing; otherwise number it from ${next}` }];
+    }
+    return [];
+  }
+  return numberOf(c.id) <= highest ? [{ path: `${at}.id`, message: `numbers up to ${highest} belong to earlier tests (see existingTests): number new cases from ${next}` }] : [];
+}
+
 export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData };
 
 export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestCasesInputs> {
@@ -128,8 +156,34 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     return all.slice(batch * ISSUES_PER_BATCH, (batch + 1) * ISSUES_PER_BATCH);
   };
 
+  // Read once per run and batch: every render of a step's context must show the same tests.
+  const existingMemo = new Map<string, Promise<Record<string, ExistingTest[]>>>();
+  const existingFor = (ctx: Ctx, keys: string[]) => {
+    const memoKey = `${ctx.runId}\n${keys.join(",")}`;
+    let found = existingMemo.get(memoKey);
+    if (!found) {
+      // The requirements run's vault: its tokens are the ones the cases and the push use.
+      found = deps.data.existingTests(requirementsRunOf(ctx), keys);
+      found.catch(() => existingMemo.delete(memoKey));
+      existingMemo.set(memoKey, found);
+    }
+    return found;
+  };
+  /**
+   * Ids that an Xray test already has (by label) but that existingTests didn't
+   * show, such as a test whose link to the issue was removed: as Xray key per id.
+   */
+  const unseenTests = async (cases: TestCase[], existing: Record<string, ExistingTest[]>): Promise<Map<string, string>> => {
+    if (cases.length === 0 || !(await deps.data.xrayEnabled())) return new Map();
+    const shown = new Set(Object.values(existing).flatMap((tests) => tests.map((t) => t.id)));
+    const plan = await deps.data.xrayPlan(cases);
+    return new Map(Object.entries(plan.existing).filter(([id]) => !shown.has(id)));
+  };
+  const batchExisting = async (ctx: Ctx) => existingFor(ctx, (await batchIssues(ctx)).map((r) => r.key));
+
   const casesContext = async (ctx: Ctx): Promise<string> => {
     const art = (await requirements(ctx)).data;
+    const existing = await batchExisting(ctx);
     const byKey = new Map(art.requirements.map((r) => [r.key, r]));
     const issues = (await batchIssues(ctx)).map((r) => {
       const parent = r.parent ? byKey.get(r.parent) : undefined;
@@ -142,6 +196,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         acceptanceCriteria: r.acceptanceCriteria.map((ac) => `${ac.id}: ${ac.text}`),
         ...(r.openQuestions.length ? { openQuestions: r.openQuestions } : {}),
         ...(Object.keys(r.extraFields).length ? { extraFields: r.extraFields } : {}),
+        ...(existing[r.key]?.length ? { existingTests: existing[r.key]!.map((t) => ({ id: t.id, title: t.title, covers: t.covers })) } : {}),
       };
     });
     return JSON.stringify({ issues }, null, 2);
@@ -179,12 +234,15 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             `Write test cases for the issues in the context${(ctx.batches ?? 1) > 1 ? ` (batch ${(ctx.batch ?? 0) + 1} of ${ctx.batches}; other issues come in other batches)` : ""}.`,
             "Every acceptance criterion must be covered by at least one case; add negative and edge cases where the criterion allows them. Use the open questions to find edge cases, but don't invent behaviour the issue doesn't state.",
             `Number each issue's cases TC-{KEY}-001, TC-{KEY}-002, and so on (for example TC-ABC-12-001), at most ${MAX_CASES_PER_ISSUE} per issue. requirement is the issue key; covers lists the criteria ids (AC1, AC2...) the case checks.`,
+            "Some issues list existingTests: tests an earlier run already put in Xray. A case that checks the same thing as an existing test keeps that test's id (its wording may improve), so the test is updated, not duplicated. Never give an existing id to a case that checks something else: it would overwrite that test. Number new cases after the highest existing id. Existing tests you don't write a case for are left as they are.",
             "Priorities: P1 the main path and anything that loses data or money, P2 important negative cases, P3 secondary and edge cases, P4 cosmetic.",
             "Steps are concrete actions with the data to use and the expected result. Values like <PERSON_1> are masked personal data: keep them exactly as they are and don't make up new ones.",
           ].join("\n"),
         context: casesContext,
         check: async (ctx, output: CasesOutput) => {
           const issues = await batchIssues(ctx);
+          const existing = await batchExisting(ctx);
+          const unseen = await unseenTests(output.cases.map((c) => ({ ...c, requirement: c.requirement.trim().toUpperCase() })), existing);
           const byKey = new Map(issues.map((r) => [r.key, r]));
           const known = tokensIn(await casesContext(ctx));
           const errors: OutputError[] = [];
@@ -199,6 +257,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             const key = c.requirement.trim().toUpperCase();
             perIssue.set(key, (perIssue.get(key) ?? 0) + 1);
             for (const ac of c.covers) covered.add(`${key} ${ac}`);
+            errors.push(...checkReuse(at, c, existing[key] ?? [], unseen));
           });
           for (const r of issues) {
             const n = perIssue.get(r.key) ?? 0;
@@ -237,7 +296,9 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           ].join("\n"),
         context: async (ctx) => {
           const draft = (await draftOf(ctx)).data;
-          const lines = draft.cases.map((c) => `${c.id} | ${c.priority} | ${c.type} | covers ${c.covers.join(", ")} | ${c.title}`);
+          const existing = await existingFor(ctx, testable((await requirements(ctx)).data).map((r) => r.key));
+          const xrayKey = new Map(Object.values(existing).flatMap((tests) => tests.map((t) => [t.id, t.xrayKey] as const)));
+          const lines = draft.cases.map((c) => `${c.id} | ${c.priority} | ${c.type} | covers ${c.covers.join(", ")}${xrayKey.has(c.id) ? ` | updates ${xrayKey.get(c.id)}` : ""} | ${c.title}`);
           return [`${draft.cases.length} draft case(s):`, ...lines].join("\n");
         },
         check: async (ctx, review: Review) => {
@@ -248,6 +309,9 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           const ids = new Set(draft.cases.map((c) => c.id));
           const byKey = new Map(art.requirements.map((r) => [r.key, r]));
           const known = tokensIn(JSON.stringify(art) + JSON.stringify(draft));
+          const existing = await existingFor(ctx, testable(art).map((r) => r.key));
+          const edited = review.changes.flatMap((c) => (c.case ? [{ ...c.case, requirement: c.case.requirement.trim().toUpperCase() }] : []));
+          const unseen = await unseenTests(edited, existing);
           const errors: OutputError[] = [];
           const seen = new Set<string>();
           review.changes.forEach((change, i) => {
@@ -262,6 +326,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
               else {
                 if (change.case.id !== change.id) errors.push({ path: `${at}.case.id`, message: "must stay the id of the case being edited" });
                 errors.push(...checkCase(`${at}.case`, change.case, byKey, known));
+                errors.push(...checkReuse(`${at}.case`, change.case, existing[change.case.requirement.trim().toUpperCase()] ?? [], unseen));
               }
             }
           });
@@ -357,7 +422,13 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           ].join("\n"),
         context: async (ctx) => {
           const plan = await planOf(ctx);
-          const lines = (await reviewedOf(ctx)).data.cases.map((c) => `${c.id} | ${c.priority} | ${plan.existing[c.id] ? `updates ${plan.existing[c.id]}` : "new"} | ${c.title}`);
+          const existing = await existingFor(ctx, testable((await requirements(ctx)).data).map((r) => r.key));
+          const was = new Map(Object.values(existing).flatMap((tests) => tests.map((t) => [t.id, t.title] as const)));
+          const lines = (await reviewedOf(ctx)).data.cases.map((c) => {
+            const update = plan.existing[c.id];
+            const before = update && was.has(c.id) ? ` (was: ${was.get(c.id)})` : "";
+            return `${c.id} | ${c.priority} | ${update ? `updates ${update}${before}` : "new"} | ${c.title}`;
+          });
           return [`Push to Xray project ${plan.project}: ${plan.create} new, ${plan.update} updated.`, ...lines].join("\n");
         },
         onAccept: async (ctx, push: Push) => {
