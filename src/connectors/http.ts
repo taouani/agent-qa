@@ -44,6 +44,32 @@ export class ConnectorError extends Error {
   jobId?: string;
 }
 
+/**
+ * The system error code behind a failed fetch (undici puts it on `cause`),
+ * such as ENOTFOUND or SELF_SIGNED_CERT_IN_CHAIN. Only a bare code is kept,
+ * never a message, which can quote a host or a path.
+ */
+export function networkCause(error: unknown): string | undefined {
+  for (let e = error, depth = 0; e && typeof e === "object" && depth < 4; e = (e as { cause?: unknown }).cause, depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(code)) return code;
+  }
+  return undefined;
+}
+
+const TLS_CODES = /CERT|SELF_SIGNED|UNABLE_TO_(GET|VERIFY)|ERR_TLS|ERR_SSL/;
+
+/** A network error's message, with what its cause usually means. */
+export function networkMessage(where: string, cause: string | undefined): string {
+  if (!cause) return `${where}: network error. If you are behind a proxy, set HTTPS_PROXY; for a corporate CA, set NODE_EXTRA_CA_CERTS.`;
+  const hint = TLS_CODES.test(cause)
+    ? "The certificate isn't trusted: behind a proxy that re-signs TLS, start node with --use-system-ca (Node 22.15+), or set NODE_EXTRA_CA_CERTS to its CA certificate (.pem)."
+    : cause === "ENOTFOUND" || cause === "EAI_AGAIN"
+      ? "The host name didn't resolve: check the site URL in agent-qa.yaml; on a network that only reaches out through a proxy, set HTTPS_PROXY."
+      : "The connection failed: if you are behind a proxy, set HTTPS_PROXY (and NO_PROXY for hosts that skip it).";
+  return `${where}: network error (${cause}). ${hint}`;
+}
+
 function describe(code: ConnectorErrorCode, service: string, method: string, path: string, status?: number): string {
   const where = `${service} ${method} ${path}`;
   switch (code) {
@@ -242,8 +268,12 @@ export class HttpClient {
 
   private async attempt(url: URL, method: Method, options: RequestOptions, canRetry: boolean): Promise<unknown> {
     const service = this.options.service;
-    const fail = (code: ConnectorErrorCode, retry: boolean, status?: number, waitMs?: number) =>
-      new AttemptError(new ConnectorError(code, service, method, url.pathname, status), retry, waitMs);
+    const fail = (code: ConnectorErrorCode, retry: boolean, status?: number, waitMs?: number, message?: string) =>
+      new AttemptError(new ConnectorError(code, service, method, url.pathname, status, message), retry, waitMs);
+    const dropped = (error: unknown, status?: number) =>
+      controller.signal.aborted
+        ? fail("TIMEOUT", canRetry, status)
+        : fail("NETWORK", canRetry, status, undefined, networkMessage(`${service} ${method} ${url.pathname}`, networkCause(error)));
 
     // Header names are case-insensitive: normalise so a caller's content-type replaces the default.
     const headers: Record<string, string> = { accept: "application/json" };
@@ -270,9 +300,9 @@ export class HttpClient {
           signal: controller.signal,
           redirect: "manual",
         });
-      } catch {
+      } catch (error) {
         // A timed-out or dropped write may have landed; only retry it when that is safe.
-        throw fail(controller.signal.aborted ? "TIMEOUT" : "NETWORK", canRetry);
+        throw dropped(error);
       }
 
       // The timeout also covers reading the body. The body of an error is read (so the
@@ -280,8 +310,8 @@ export class HttpClient {
       let text: string;
       try {
         text = response.status === 204 ? "" : await response.text();
-      } catch {
-        throw fail(controller.signal.aborted ? "TIMEOUT" : "NETWORK", canRetry, response.status);
+      } catch (error) {
+        throw dropped(error, response.status);
       }
 
       const status = response.status;

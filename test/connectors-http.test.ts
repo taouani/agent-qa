@@ -3,6 +3,7 @@ import {
   ConnectorError,
   HttpClient,
   nodeHandlesProxy,
+  networkCause,
   noProxyMatches,
   parseRetryAfter,
   selectFetch,
@@ -150,6 +151,26 @@ describe("HttpClient retries", () => {
     await expect(c.get("/x")).rejects.toMatchObject({ code: "HTTP", status: 503 });
     expect(calls).toHaveLength(4);
     expect(waits).toEqual([500, 1000, 2000]);
+  });
+
+  it.each([
+    ["SELF_SIGNED_CERT_IN_CHAIN", /\(SELF_SIGNED_CERT_IN_CHAIN\).*NODE_EXTRA_CA_CERTS/],
+    ["ENOTFOUND", /\(ENOTFOUND\).*site URL/],
+    ["ECONNREFUSED", /\(ECONNREFUSED\).*HTTPS_PROXY/],
+  ])("names the cause of a network error (%s), never its message", async (code, expected) => {
+    const cause = Object.assign(new Error("getaddrinfo failed for secret.example.com/path?jql=Jane"), { code });
+    const { fetch } = fakeFetch([new TypeError("fetch failed", { cause }), new TypeError("fetch failed", { cause }), new TypeError("fetch failed", { cause }), new TypeError("fetch failed", { cause })]);
+    const { c } = client(fetch);
+    const error = (await c.get("/x").catch((e: unknown) => e)) as ConnectorError;
+    expect(error).toMatchObject({ code: "NETWORK" });
+    expect(error.message).toMatch(expected);
+    expect(error.message).not.toContain("secret.example.com");
+  });
+
+  it("keeps only a bare error code as the cause", () => {
+    expect(networkCause(new TypeError("fetch failed", { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }))).toBe("UND_ERR_CONNECT_TIMEOUT");
+    expect(networkCause(new TypeError("fetch failed", { cause: { code: "not a code: Jane" } }))).toBeUndefined();
+    expect(networkCause(new TypeError("fetch failed"))).toBeUndefined();
   });
 
   it("retries a GET whose body read fails", async () => {
