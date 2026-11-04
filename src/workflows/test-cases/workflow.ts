@@ -114,10 +114,62 @@ function checkCase(at: string, c: TestCase, byKey: Map<string, AnalyzedRequireme
 
 const numberOf = (id: string) => Number(/-(\d+)$/.exec(id)?.[1] ?? NaN);
 
+/** Words that say nothing about what a test checks. */
+const FILLER = new Set(
+  "the a an and or of to for in on at by with from is are be that this its it as when then than verify verifies check checks ensure ensures test tests validate validates confirm confirms should can".split(" "),
+);
+/** Words that turn a check into its opposite, by kind: titles that differ in them check different things. */
+const POLARITY = new Map(
+  Object.entries({
+    not: "not no without never",
+    fail: "fail fails failed failing error errors",
+    invalid: "invalid wrong incorrect",
+    refuse: "reject rejects rejected deny denies denied block blocks blocked forbidden unauthorized",
+    missing: "missing empty",
+  }).flatMap(([kind, ws]) => ws.split(" ").map((w) => [w, kind] as const)),
+);
+/** Words that narrow a check to another case of it: one title having one the other lacks is another check. */
+const QUALIFIER = new Set(
+  "duplicate duplicated partial partially twice again multiple bulk concurrent concurrently first second third last all only every each single none some other another new existing same different more less over under above below before after max min maximum minimum eur usd gbp chf jpy dollar dollars euro euros pound pounds yen".split(" "),
+);
+const stem = (w: string) => w.replace(/(?:ing|ed|es|s)$/, (end) => (w.length - end.length >= 3 ? "" : end));
+const rawWords = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/\bcan(?:no|['’])t\b|n['’]t\b/g, " not")
+    .split(/[^\p{L}\p{N}_<>]+/u)
+    .filter((w) => w.length > 1 && !FILLER.has(w));
+const narrows = (w: string) => QUALIFIER.has(w) || /\d/.test(w) || /^<[a-z]+_\d+>$/.test(w);
+
 /**
- * A case may take an existing test's id only to check the same thing (at least
- * one criterion in common), and a new case is numbered after every existing
- * test, so a rerun never overwrites a test with an unrelated case.
+ * Whether two titles name the same check. Deliberately strict, since a wrong
+ * match overwrites a test in Xray, while a missed one only adds a test:
+ * - the same kinds of negation and failure words ("not", "fails", "invalid"...);
+ * - no number, currency, masked value or qualifier ("duplicate", "partial",
+ *   "twice", "over"...) in one title only;
+ * - at least two meaningful words in common, and at least half of all words;
+ * - each title has a word the other lacks (a title plus words is a narrower
+ *   check), but not one word swapped for another ("password" for "username").
+ */
+export function sameCheck(a: string, b: string): boolean {
+  const [ra, rb] = [rawWords(a), rawWords(b)];
+  const polarity = (ws: string[]) => [...new Set(ws.flatMap((w) => POLARITY.get(w) ?? []))].sort().join(" ");
+  if (polarity(ra) !== polarity(rb)) return false;
+  if (ra.filter((w) => !rb.includes(w)).some(narrows) || rb.filter((w) => !ra.includes(w)).some(narrows)) return false;
+  const [x, y] = [new Set(ra.map(stem)), new Set(rb.map(stem))];
+  const shared = [...x].filter((w) => y.has(w)).length;
+  const onlyX = x.size - shared;
+  const onlyY = y.size - shared;
+  if (shared < 2 || shared / (shared + onlyX + onlyY) < 0.5) return false;
+  if (onlyX === 0 && onlyY === 0) return true;
+  return onlyX > 0 && onlyY > 0 && !(onlyX === 1 && onlyY === 1);
+}
+
+/**
+ * A case may take an existing test's id only to check the same thing: the same
+ * title, reworded at most. Criterion numbers aren't compared, since a later run
+ * can number the criteria differently. A new case is numbered after every
+ * existing test, so a rerun never overwrites a test with an unrelated case.
  */
 function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: Map<string, string>): OutputError[] {
   const numbers = [...existing.map((t) => t.id), ...[...unseen.keys()].filter((id) => id.startsWith(`TC-${c.requirement.trim().toUpperCase()}-`))]
@@ -130,12 +182,8 @@ function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: M
   if (hidden) return [{ path: `${at}.id`, message: `${c.id} belongs to Xray test ${hidden}, which isn't linked to ${c.requirement} any more, so it can't be matched: number this case from ${next}` }];
   const same = existing.find((t) => t.id === c.id);
   if (same) {
-    // A test whose criteria can't be read (edited by hand) is never taken over: it could be anything.
-    if (!same.covers.length) return [{ path: `${at}.id`, message: `${c.id} is an existing test whose covered criteria are unknown, so it can't be reused: number this case from ${next}` }];
-    if (!c.covers.some((ac) => same.covers.includes(ac))) {
-      return [{ path: `${at}.id`, message: `${c.id} is an existing test of ${same.covers.join(", ")}, and this case covers ${c.covers.join(", ")}: keep the id only for a case that checks the same thing; otherwise number it from ${next}` }];
-    }
-    return [];
+    if (sameCheck(c.title, same.title)) return [];
+    return [{ path: `${at}.id`, message: `${c.id} is the existing test "${same.title}", which this case doesn't match: keep the id only for a case that checks the same thing (keep its title, reworded at most), otherwise number it from ${next}` }];
   }
   return numberOf(c.id) <= highest ? [{ path: `${at}.id`, message: `numbers up to ${highest} belong to earlier tests (see existingTests): number new cases from ${next}` }] : [];
 }
@@ -196,7 +244,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         acceptanceCriteria: r.acceptanceCriteria.map((ac) => `${ac.id}: ${ac.text}`),
         ...(r.openQuestions.length ? { openQuestions: r.openQuestions } : {}),
         ...(Object.keys(r.extraFields).length ? { extraFields: r.extraFields } : {}),
-        ...(existing[r.key]?.length ? { existingTests: existing[r.key]!.map((t) => ({ id: t.id, title: t.title, covers: t.covers })) } : {}),
+        // Criterion numbers of an earlier run are left out: they can mean other criteria now.
+        ...(existing[r.key]?.length ? { existingTests: existing[r.key]!.map((t) => ({ id: t.id, title: t.title })) } : {}),
       };
     });
     return JSON.stringify({ issues }, null, 2);
@@ -234,7 +283,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             `Write test cases for the issues in the context${(ctx.batches ?? 1) > 1 ? ` (batch ${(ctx.batch ?? 0) + 1} of ${ctx.batches}; other issues come in other batches)` : ""}.`,
             "Every acceptance criterion must be covered by at least one case; add negative and edge cases where the criterion allows them. Use the open questions to find edge cases, but don't invent behaviour the issue doesn't state.",
             `Number each issue's cases TC-{KEY}-001, TC-{KEY}-002, and so on (for example TC-ABC-12-001), at most ${MAX_CASES_PER_ISSUE} per issue. requirement is the issue key; covers lists the criteria ids (AC1, AC2...) the case checks.`,
-            "Some issues list existingTests: tests an earlier run already put in Xray. A case that checks the same thing as an existing test keeps that test's id (its wording may improve), so the test is updated, not duplicated. Never give an existing id to a case that checks something else: it would overwrite that test. Number new cases after the highest existing id. Existing tests you don't write a case for are left as they are.",
+            "Some issues list existingTests: tests an earlier run already put in Xray. A case that checks the same thing as an existing test keeps that test's id and its title (reworded at most), so the test is updated, not duplicated; the criteria may be numbered differently now, so match on what the test checks, not on numbers. Never give an existing id to a case that checks something else: it would overwrite that test. Number new cases after the highest existing id. Existing tests you don't write a case for are left as they are.",
             "Priorities: P1 the main path and anything that loses data or money, P2 important negative cases, P3 secondary and edge cases, P4 cosmetic.",
             "Steps are concrete actions with the data to use and the expected result. Values like <PERSON_1> are masked personal data: keep them exactly as they are and don't make up new ones.",
           ].join("\n"),
@@ -326,7 +375,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
               else {
                 if (change.case.id !== change.id) errors.push({ path: `${at}.case.id`, message: "must stay the id of the case being edited" });
                 errors.push(...checkCase(`${at}.case`, change.case, byKey, known));
-                errors.push(...checkReuse(`${at}.case`, change.case, existing[change.case.requirement.trim().toUpperCase()] ?? [], unseen));
+                const key = change.case.requirement.trim().toUpperCase();
+                errors.push(...checkReuse(`${at}.case`, change.case, existing[key] ?? [], unseen));
               }
             }
           });
