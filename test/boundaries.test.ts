@@ -40,6 +40,14 @@ describe("module boundaries", () => {
     expect(await lint("src/cli/x.mts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
   });
 
+  it("lets only the browser connector load CommonJS from the user's repo", async () => {
+    const code = 'import { createRequire } from "node:module";\nexport { createRequire };\n';
+    expect(await lint("src/connectors/browser.ts", code)).toEqual([]);
+    expect(await lint("src/connectors/other.ts", code)).toContain("@typescript-eslint/no-restricted-imports");
+    expect(await lint("src/data/x.ts", code)).toContain("@typescript-eslint/no-restricted-imports");
+    expect(await lint("src/connectors/browser.ts", 'import spawn from "cross-spawn";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
+  });
+
   it("lets only the host command runner start processes", async () => {
     expect(await lint("src/connectors/host.ts", 'import spawn from "cross-spawn";\nexport { spawn };\n')).toEqual([]);
     expect(await lint("src/connectors/other.ts", 'import spawn from "cross-spawn";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");

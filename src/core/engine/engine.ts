@@ -118,6 +118,7 @@ export class WorkflowEngine {
     for (const id of ids) if (/_\d+$/.test(id)) throw invalid(`step id "${id}" can't end in _<number>`);
     for (const s of workflow.steps) {
       if (s.approval && (s.kind !== "confirm" || !s.answers || s.batches)) throw invalid(`step "${s.id}": approval needs an unbatched confirm step with answers`);
+      if (s.until && !s.batches) throw invalid(`step "${s.id}": until needs batches (the cap)`);
     }
     // Convert every schema now, so a schema that can't be shown to a model fails at startup, not mid-run.
     const outputSchemas = new Map(workflow.steps.map((s) => [s.id, jsonSchemaOf(s.outputSchema, `${workflow.id}.${s.id}`)]));
@@ -275,7 +276,8 @@ export class WorkflowEngine {
         state.outputs[def.id] = kept;
       }
       state.attempt = 1;
-      if (batch + 1 < batches) {
+      const stop = def.until ? await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!(this.ctx(state, batch, batches), kept)) : false;
+      if (!stop && batch + 1 < batches) {
         state.batch = batch + 1;
       } else {
         delete state.batch;

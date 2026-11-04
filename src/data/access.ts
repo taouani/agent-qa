@@ -18,6 +18,7 @@ import {
   type SavedProfile,
 } from "./profile.js";
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
+import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
 /**
@@ -105,6 +106,23 @@ export interface ProfileData {
   saveProfile(runId: string, folder?: string): Promise<{ status: "done"; profile: SavedProfile } | { status: "declined" }>;
 }
 
+/** The explorer's browser (S2-4): masked pages in, masked actions out. */
+export interface ExplorerData {
+  /** Where exploring goes, for the person's approval. Throws for a production org or an unknown role. */
+  explorerTarget(role?: string): Promise<ExplorerTarget>;
+  /**
+   * Brings the run's browser to the end of `actions` on case `caseId`: opens
+   * it on first use (through `Policy.guard`, target commands), starts each
+   * case in a fresh signed-in context, applies only actions not applied yet,
+   * and replays the case after a restart. Returns each action's result and
+   * the page now, masked with `setup.tokensRun`'s vault. `approved` is the
+   * person's yes to exploring.
+   */
+  explorerSync(runId: string, setup: ExploreSetup, caseId: string, actions: MaskedAction[], approved: boolean): Promise<{ results: MaskedResult[]; page: MaskedPage }>;
+  /** Closes the run's browser. */
+  explorerClose(runId: string): Promise<void>;
+}
+
 export interface DataAccessOptions {
   /** Project folder: `agent-qa.yaml` and `.agent-qa/vault/` live here. */
   root: string;
@@ -127,6 +145,8 @@ export interface DataAccessOptions {
   audit?: AuditSink;
   /** Replace the command runner, for tests. */
   host?: typeof runHostCommand;
+  /** Replace the explorer's browser, for tests. */
+  browser?: OpenBrowser;
 }
 
 /** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
@@ -142,12 +162,13 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, SalesforceData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, SalesforceData, ExplorerData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
   private readonly profiles = new Map<string, Promise<FrameworkProfile>>();
   private sfAuth: Promise<SalesforceAuth> | undefined;
+  private explorer: Explorer | undefined;
 
   constructor(private readonly options: DataAccessOptions) {}
 
@@ -336,6 +357,31 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       });
     }
     return this.sfAuth;
+  }
+
+  private explorerOf(): Explorer {
+    this.explorer ??= new Explorer({
+      root: this.options.root,
+      loadConfig: () => this.loadConfig(),
+      policy: (config) => this.policy(config),
+      run: (runId) => this.run(runId),
+      salesforceSession: (role) => this.salesforceSession(role),
+      playwrightFolder: async () => (await this.savedProfile())?.folder ?? ".",
+      ...(this.options.browser ? { openBrowser: this.options.browser } : {}),
+    });
+    return this.explorer;
+  }
+
+  explorerTarget(role?: string): Promise<ExplorerTarget> {
+    return this.explorerOf().target(role);
+  }
+
+  explorerSync(runId: string, setup: ExploreSetup, caseId: string, actions: MaskedAction[], approved: boolean) {
+    return this.explorerOf().sync(runId, setup, caseId, actions, approved);
+  }
+
+  async explorerClose(runId: string): Promise<void> {
+    await this.explorer?.close(runId);
   }
 
   async frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile> {

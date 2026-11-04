@@ -28,3 +28,5 @@ export type { HostCommandOptions, HostCommandResult } from "./host.js";
 export { writeRepoFile } from "./repo-files.js";
 export { defaultAudience, normalizePem, OAUTH_HINTS, SalesforceAuth, SalesforceAuthError, SalesforceSession, signAssertion } from "./salesforce.js";
 export type { SalesforceAuthOptions } from "./salesforce.js";
+export { BrowserError, ExplorerBrowser, KEY, loadPlaywright, MIN_PLAYWRIGHT } from "./browser.js";
+export type { ActionOutcome, ActionResult, BrowserAction, BrowserTarget, LoadedPlaywright, OpenBrowserOptions, PageSnapshot } from "./browser.js";

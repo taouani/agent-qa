@@ -67,6 +67,13 @@ export interface StepDefinition<I = unknown, O = unknown> {
    */
   batches?: (ctx: StepContext<I>) => number | Promise<number>;
   /**
+   * For a batched step used as a loop (one browser action per batch, say):
+   * after a batch is accepted, true ends the step early. `batches` is then the
+   * cap. It sees the outputs with the accepted batch in them, and must give the
+   * same answer for the same outputs.
+   */
+  until?: (ctx: StepContext<I>, output: O) => boolean | Promise<boolean>;
+  /**
    * Checks the schema can't express, run after the output parses: for example
    * that every issue is answered once. Errors reject the answer like schema
    * errors do, and count as an attempt.
