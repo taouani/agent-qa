@@ -309,14 +309,15 @@ describe("withoutTests", () => {
       issues: [
         issue({ key: "SFSC-3123", children: ["SFSC-3200", "SFSC-3201"] }),
         issue({ key: "SFSC-3124", type: "Test", role: "linked", labels: ["agent-qa", "agent-qa:TC-SFSC-3123-001"] }),
-        issue({ key: "SFSC-3125", type: "Task", role: "linked", labels: ["agent-qa"] }),
+        issue({ key: "SFSC-3125", type: "Task", role: "linked", labels: ["agent-qa", "agent-qa:TC-SFSC-3123-002"] }),
+        issue({ key: "SFSC-3126", type: "Story", role: "linked", labels: ["agent-qa"] }),
         issue({ key: "SFSC-3200", type: "Test Set", role: "child", depth: 1 }),
         issue({ key: "SFSC-3201", type: "Sub-task", role: "child", depth: 1 }),
         issue({ key: "SFSC-3300", type: "Story", role: "linked" }),
       ],
     };
     const kept = withoutTests(collection);
-    expect(kept.issues.map((i) => i.key)).toEqual(["SFSC-3123", "SFSC-3201", "SFSC-3300"]);
+    expect(kept.issues.map((i) => i.key)).toEqual(["SFSC-3123", "SFSC-3126", "SFSC-3201", "SFSC-3300"]);
     expect(kept.issues[0]!.children).toEqual(["SFSC-3201"]);
     const root = withoutTests({ ...collection, issues: [issue({ key: "SFSC-3124", type: "Test" })] });
     expect(root.issues).toHaveLength(1);

@@ -764,12 +764,12 @@ const XRAY_TYPES = /^(test|test set|test plan|test execution|pre-?condition)$/i;
 
 /**
  * The collection without tests reached through links or children: Agent-QA's
- * own (label `agent-qa`) and any Xray test issue. A rerun would otherwise
+ * own (an `agent-qa:TC-…` label) and any Xray test issue. A rerun would otherwise
  * read the tests its first push linked to the issue as requirements. The
  * issue asked for is always kept.
  */
 export function withoutTests(collection: JiraCollection): JiraCollection {
-  const isTest = (i: JiraIssue) => i.role !== "root" && (i.labels.includes("agent-qa") || XRAY_TYPES.test(i.type.trim()));
+  const isTest = (i: JiraIssue) => i.role !== "root" && (i.labels.some((l) => l.startsWith("agent-qa:TC-")) || XRAY_TYPES.test(i.type.trim()));
   const dropped = new Set(collection.issues.filter(isTest).map((i) => i.key));
   if (dropped.size === 0) return collection;
   return {
