@@ -31,3 +31,7 @@ Pushing test cases to Xray writes outside your machine, so it needs your own yes
 If the prompt can't be shown (it fails or is closed with an error), nothing is submitted and the step stays open: ask the model to submit the push step again.
 
 In the CLI, the push takes a terminal answer or `--accept push`. `--yes` never pushes.
+
+## Behind a corporate proxy
+
+If `agent-qa doctor` shows a certificate error such as `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, your network re-signs HTTPS with a company certificate that Node doesn't trust by default. Start node with `--use-system-ca` (Node 22.15 and later) so it uses the operating system's certificates, in `mcp.json` too: `"command": "node", "args": ["--use-system-ca", "<path>/dist/cli/bin.js", "mcp"]`. Or set `NODE_EXTRA_CA_CERTS` to the company CA file (.pem). If the network only reaches out through a proxy, set `HTTPS_PROXY` (and `NO_PROXY`). Never set `NODE_TLS_REJECT_UNAUTHORIZED=0`: it turns off certificate checks for your Jira and Xray tokens.

@@ -1,6 +1,6 @@
 import { relative, resolve, sep } from "node:path";
 import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
-import { ConnectorError, selectFetch } from "../connectors/index.js";
+import { ConnectorError, networkCause, selectFetch } from "../connectors/index.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
@@ -181,7 +181,7 @@ async function reachable(url: string, fetcher: typeof fetch, timeoutMs: number):
     const e = error as Error & { cause?: { code?: string; name?: string } };
     if (e.name === "TimeoutError") return `timed out after ${timeoutMs} ms`;
     if (error instanceof ConnectorError) return error.message; // a proxy URL that can't be used
-    return e.cause?.code ?? e.cause?.name ?? e.name ?? "error";
+    return networkCause(error) ?? e.cause?.name ?? e.name ?? "error";
   }
 }
 
@@ -205,7 +205,7 @@ async function reachabilityCheck(config: Config, fetcher: typeof fetch, timeoutM
         detail: down.map(([name, url, error]) => `${name} at ${new URL(url).host}: ${error}`).join("\n"),
         fix:
           "Check the URL and your network. Behind a proxy, set HTTPS_PROXY (and NO_PROXY for hosts that skip it); " +
-          "for a proxy that re-signs TLS (a CERT or SELF_SIGNED code), set NODE_EXTRA_CA_CERTS to its CA certificate (.pem). " +
+          "for a proxy that re-signs TLS (a CERT or SELF_SIGNED code), run node with --use-system-ca (Node 22.15+) or set NODE_EXTRA_CA_CERTS to its CA certificate (.pem). " +
           "ENOTFOUND means the host name didn't resolve.",
       };
 }
