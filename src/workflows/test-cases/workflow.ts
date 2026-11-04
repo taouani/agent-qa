@@ -118,29 +118,38 @@ const numberOf = (id: string) => Number(/-(\d+)$/.exec(id)?.[1] ?? NaN);
 const FILLER = new Set(
   "the a an and or of to for in on at by with from is are be that this its it as when then than verify verifies check checks ensure ensures test tests validate validates confirm confirms should can".split(" "),
 );
-const words = (text: string) => new Set(text.toLowerCase().split(/[^\p{L}\p{N}_<>]+/u).filter((w) => w.length > 1 && !FILLER.has(w)));
-const normal = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim();
+/** Words that turn a check into its opposite: titles that differ in them check different things. */
+const POLARITY = new Set("not no without never cannot fail fails failed failing invalid reject rejects rejected denied deny blocked block error errors missing empty unauthorized forbidden".split(" "));
+const stem = (w: string) => w.replace(/(?:ing|ed|es|s)$/, (end) => (w.length - end.length >= 3 ? "" : end));
+const rawWords = (text: string) => text.toLowerCase().replace(/n['’]t\b/g, " not").split(/[^\p{L}\p{N}_<>]+/u).filter((w) => w.length > 1 && !FILLER.has(w));
 
 /**
- * Whether two titles name the same check: most of the shorter title's words
- * (filler left out) are in the other, and at least two of them, or the only one.
+ * Whether two titles name the same check. Deliberately strict, since a wrong
+ * match overwrites a test in Xray, while a missed one only adds a test:
+ * - the same negations and failure words ("not", "fails", "invalid"...);
+ * - at least two meaningful words in common, and at least half of all words;
+ * - not one word swapped for another ("password" for "username", "EUR" for
+ *   "USD"), which is how two different checks usually differ.
  */
 export function sameCheck(a: string, b: string): boolean {
-  const [x, y] = [words(a), words(b)];
+  const [ra, rb] = [rawWords(a), rawWords(b)];
+  const polarity = (ws: string[]) => [...new Set(ws.filter((w) => POLARITY.has(w)).map(stem))].sort().join(" ");
+  if (polarity(ra) !== polarity(rb)) return false;
+  const [x, y] = [new Set(ra.map(stem)), new Set(rb.map(stem))];
   const shared = [...x].filter((w) => y.has(w)).length;
-  const smaller = Math.min(x.size, y.size);
-  if (smaller === 0) return false;
-  return shared / smaller >= 0.6 && (shared >= 2 || smaller === 1);
+  const onlyX = x.size - shared;
+  const onlyY = y.size - shared;
+  if (shared < 2 || shared / (shared + onlyX + onlyY) < 0.5) return false;
+  return !(onlyX === 1 && onlyY === 1);
 }
 
 /**
  * A case may take an existing test's id only to check the same thing: the same
- * title (in other words) or a criterion of the same text. Criterion numbers
- * aren't compared, since a later run can number the criteria differently. A
- * new case is numbered after every existing test, so a rerun never overwrites
- * a test with an unrelated case.
+ * title, reworded at most. Criterion numbers aren't compared, since a later run
+ * can number the criteria differently. A new case is numbered after every
+ * existing test, so a rerun never overwrites a test with an unrelated case.
  */
-function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: Map<string, string>, criteria: Map<string, string>): OutputError[] {
+function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: Map<string, string>): OutputError[] {
   const numbers = [...existing.map((t) => t.id), ...[...unseen.keys()].filter((id) => id.startsWith(`TC-${c.requirement.trim().toUpperCase()}-`))]
     .map(numberOf)
     .filter(Number.isFinite);
@@ -151,15 +160,11 @@ function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: M
   if (hidden) return [{ path: `${at}.id`, message: `${c.id} belongs to Xray test ${hidden}, which isn't linked to ${c.requirement} any more, so it can't be matched: number this case from ${next}` }];
   const same = existing.find((t) => t.id === c.id);
   if (same) {
-    const texts = new Set(same.criteria.map(normal));
-    const sameCriterion = c.covers.some((ac) => texts.has(normal(criteria.get(ac) ?? "\u0000")));
-    if (sameCheck(c.title, same.title) || sameCriterion) return [];
+    if (sameCheck(c.title, same.title)) return [];
     return [{ path: `${at}.id`, message: `${c.id} is the existing test "${same.title}", which this case doesn't match: keep the id only for a case that checks the same thing (keep its title, reworded at most), otherwise number it from ${next}` }];
   }
   return numberOf(c.id) <= highest ? [{ path: `${at}.id`, message: `numbers up to ${highest} belong to earlier tests (see existingTests): number new cases from ${next}` }] : [];
 }
-
-const criteriaOf = (r: AnalyzedRequirement | undefined) => new Map((r?.acceptanceCriteria ?? []).map((ac) => [ac.id, ac.text]));
 
 export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData };
 
@@ -218,7 +223,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         ...(r.openQuestions.length ? { openQuestions: r.openQuestions } : {}),
         ...(Object.keys(r.extraFields).length ? { extraFields: r.extraFields } : {}),
         // Criterion numbers of an earlier run are left out: they can mean other criteria now.
-        ...(existing[r.key]?.length ? { existingTests: existing[r.key]!.map((t) => ({ id: t.id, title: t.title, ...(t.criteria.length ? { criteria: t.criteria } : {}) })) } : {}),
+        ...(existing[r.key]?.length ? { existingTests: existing[r.key]!.map((t) => ({ id: t.id, title: t.title })) } : {}),
       };
     });
     return JSON.stringify({ issues }, null, 2);
@@ -279,7 +284,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             const key = c.requirement.trim().toUpperCase();
             perIssue.set(key, (perIssue.get(key) ?? 0) + 1);
             for (const ac of c.covers) covered.add(`${key} ${ac}`);
-            errors.push(...checkReuse(at, c, existing[key] ?? [], unseen, criteriaOf(byKey.get(key))));
+            errors.push(...checkReuse(at, c, existing[key] ?? [], unseen));
           });
           for (const r of issues) {
             const n = perIssue.get(r.key) ?? 0;
@@ -349,7 +354,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
                 if (change.case.id !== change.id) errors.push({ path: `${at}.case.id`, message: "must stay the id of the case being edited" });
                 errors.push(...checkCase(`${at}.case`, change.case, byKey, known));
                 const key = change.case.requirement.trim().toUpperCase();
-                errors.push(...checkReuse(`${at}.case`, change.case, existing[key] ?? [], unseen, criteriaOf(byKey.get(key))));
+                errors.push(...checkReuse(`${at}.case`, change.case, existing[key] ?? [], unseen));
               }
             }
           });
@@ -457,13 +462,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         onAccept: async (ctx, push: Push) => {
           if (!push.approve) return;
           const art = await reviewedOf(ctx);
-          // Each test carries its criteria's text, so a later run can match it whatever the numbering.
-          const byKey = new Map((await requirements(ctx)).data.requirements.map((r) => [r.key, r]));
-          const cases = art.data.cases.map((c) => {
-            const texts = criteriaOf(byKey.get(c.requirement));
-            return { ...c, criteria: c.covers.flatMap((id) => (texts.has(id) ? [{ id, text: texts.get(id)! }] : [])) };
-          });
-          const outcome = await deps.data.pushToXray(ctx.runId, requirementsRunOf(ctx), cases, true);
+          const outcome = await deps.data.pushToXray(ctx.runId, requirementsRunOf(ctx), art.data.cases, true);
           if (outcome.status !== "done") return;
           const { project, jobs, results } = outcome.result;
           const count = (action: string) => results.filter((r) => r.action === action).length;

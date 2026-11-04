@@ -137,15 +137,7 @@ export class DataAccess implements RequirementsData, XrayData {
     const out: Record<string, ExistingTest[]> = {};
     for (const key of issueKeys) {
       const tests = await labels.findAgentTests(xray.projectKey, key);
-      if (tests.length) {
-        out[key] = tests.map((t) => ({
-          id: t.tcId,
-          xrayKey: t.key,
-          title: service.maskText(t.title, "xray.existing"),
-          covers: t.covers,
-          criteria: (t.criteria ?? []).map((c) => service.maskText(c, "xray.existing")),
-        }));
-      }
+      if (tests.length) out[key] = tests.map((t) => ({ id: t.tcId, xrayKey: t.key, title: service.maskText(t.title, "xray.existing"), covers: t.covers }));
     }
     await service.saveVault();
     return out;

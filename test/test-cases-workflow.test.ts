@@ -304,7 +304,7 @@ describe("test-cases workflow", () => {
 
     beforeEach(() => {
       sent = [];
-      agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"], criteria: [] }] };
+      agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"] }] };
       labelOnly = {};
       audit = new MemoryAuditSink();
       const key = randomBytes(32);
@@ -375,11 +375,10 @@ describe("test-cases workflow", () => {
     it("on a rerun, keeps an existing id only for the same check, whatever the criterion numbers", async () => {
       agentTests = {
         "ABC-1": [
-          // Pushed before criteria text was written: matched by title only.
-          { key: "QA-7", tcId: "TC-ABC-1-001", title: "Old case escalated for Marguerite Quillfeather", covers: ["AC3"], criteria: [] },
-          { key: "QA-6", tcId: "TC-ABC-1-002", title: "Edited by hand", covers: [], criteria: [] },
-          // Numbered AC5 by its run; its text matches today's AC2.
-          { key: "QA-8", tcId: "TC-ABC-1-004", title: "Owner gets told", covers: ["AC5"], criteria: ["The owner is notified"] },
+          { key: "QA-7", tcId: "TC-ABC-1-001", title: "Old case escalated for Marguerite Quillfeather", covers: ["AC3"] },
+          { key: "QA-6", tcId: "TC-ABC-1-002", title: "Edited by hand", covers: [] },
+          // Numbered AC5 by its run: today's criteria are numbered differently.
+          { key: "QA-8", tcId: "TC-ABC-1-004", title: "Owner gets told", covers: ["AC5"] },
         ],
       };
       labelOnly = { "TC-ABC-1-006": "QA-20" };
@@ -390,7 +389,7 @@ describe("test-cases workflow", () => {
       expect(shown.issues[0].existingTests).toEqual([
         { id: "TC-ABC-1-001", title: "Old case escalated for <PERSON_1>" },
         { id: "TC-ABC-1-002", title: "Edited by hand" },
-        { id: "TC-ABC-1-004", title: "Owner gets told", criteria: ["The owner is notified"] },
+        { id: "TC-ABC-1-004", title: "Owner gets told" },
       ]);
       for (const s of SECRETS) expect(step.context, s).not.toContain(s);
       const wrong = await xrayEngine.submit(first.runId, "cases", {
@@ -408,7 +407,7 @@ describe("test-cases workflow", () => {
       const ok = await xrayEngine.submit(first.runId, "cases", {
         cases: [
           tc("ABC-1", 1, ["AC1"], { title: "Escalated: old case for <PERSON_1>" }),
-          tc("ABC-1", 4, ["AC2"], { title: "Notification reaches the owner" }),
+          tc("ABC-1", 4, ["AC2"], { title: "Owner gets told by email" }),
           tc("ABC-1", 7, ["AC1"]),
           tc("ABC-2", 1, ["AC1"]),
         ],
@@ -427,15 +426,30 @@ describe("test-cases workflow", () => {
       expect(push.context).toContain("TC-ABC-1-001 | P2 | updates QA-7 (was: Old case escalated for <PERSON_1>) | Escalated: old case for <PERSON_1>");
       expect(push.context).toContain("TC-ABC-1-007 | P2 | new |");
       await xrayEngine.submit(first.runId, "push", { approve: true });
-      // The pushed test carries its criteria's text, with real values (restoreOnWrite is on).
-      expect(sent[0]![1]!.fields.description).toContain("Criteria:\n- AC2: The owner is notified");
+      expect(sent[0]!.map((t) => t.update_key)).toEqual(["QA-7", "QA-8", undefined, undefined]);
     });
 
     it("matches titles that name the same check", () => {
       expect(sameCheck("Verify AccountDeletionLog__c against the approved WW model", "Check AccountDeletionLog__c matches the WW model")).toBe(true);
       expect(sameCheck("Email field definition", "Snapshot value persistence")).toBe(false);
-      expect(sameCheck("Owner notified", "Owner notified by email when escalated")).toBe(true);
       expect(sameCheck("Verify the field", "Verify the other")).toBe(false);
+      expect(sameCheck("Escalated: old case for <PERSON_1>", "Old case escalated for <PERSON_1>")).toBe(true);
+      expect(sameCheck("Login fails with invalid password", "Login with an invalid password fails")).toBe(true);
+      expect(sameCheck("Owner notified", "Owner notified by email when escalated")).toBe(true);
+    });
+
+    it("doesn't take different checks for the same one", () => {
+      const different = [
+        ["Discount is applied at checkout", "Discount is not applied at checkout for an expired code"],
+        ["Discount is applied at checkout", "Discount isn't applied at checkout"],
+        ["Login fails with invalid password", "Login fails with invalid username"],
+        ["Refund approved by manager", "Refund rejected by manager"],
+        ["Order total shows in EUR", "Order total shows in USD"],
+        ["Email field is required", "Phone field is required"],
+        ["Refund over 500 needs approval", "Refund under 500 needs no approval"],
+        ["Login", "Login is blocked after 5 failed attempts"],
+      ];
+      for (const [a, b] of different) expect(sameCheck(a!, b!), `${a} / ${b}`).toBe(false);
     });
 
     it("pushes nothing when the user says no", async () => {
