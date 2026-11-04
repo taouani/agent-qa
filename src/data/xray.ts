@@ -18,6 +18,8 @@ export interface PushCase {
   preconditions: string[];
   steps: Array<{ action: string; data: string; expected: string }>;
   covers: string[];
+  /** The covered criteria's text, written to the test so a later run can match it by text. */
+  criteria?: Array<{ id: string; text: string }>;
 }
 
 /** A test an earlier push created, as a rerun sees it. */
@@ -26,7 +28,10 @@ export interface ExistingTest {
   xrayKey: string;
   /** Masked. */
   title: string;
+  /** Criterion ids as that run numbered them: a later run can number its criteria differently. */
   covers: string[];
+  /** The covered criteria's text, masked; empty for tests pushed before it was written. */
+  criteria: string[];
 }
 
 export interface XrayPlan {
@@ -51,6 +56,7 @@ export function toXrayTest(c: PushCase, xray: NonNullable<Config["xray"]>, exist
   const description = [
     c.preconditions.length ? `Preconditions:\n${c.preconditions.map((p) => `- ${restore(p)}`).join("\n")}` : "",
     `Covers ${c.covers.join(", ")} of ${c.requirement} (${c.type}, ${c.priority}). Written by Agent-QA.`,
+    c.criteria?.length ? `Criteria:\n${c.criteria.map((ac) => `- ${ac.id}: ${restore(ac.text)}`).join("\n")}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -71,7 +77,7 @@ export function toXrayTest(c: PushCase, xray: NonNullable<Config["xray"]>, exist
 
 /** Every token in the cases' text. */
 export function caseTokens(cases: PushCase[]): Set<string> {
-  const texts = cases.flatMap((c) => [c.title, ...c.preconditions, ...c.steps.flatMap((s) => [s.action, s.data, s.expected])]);
+  const texts = cases.flatMap((c) => [c.title, ...c.preconditions, ...c.steps.flatMap((s) => [s.action, s.data, s.expected]), ...(c.criteria ?? []).map((ac) => ac.text)]);
   return new Set(texts.flatMap((t) => t.match(TOKEN) ?? []));
 }
 

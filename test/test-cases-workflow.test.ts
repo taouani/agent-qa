@@ -9,6 +9,7 @@ import type { AgentTest, XrayTest } from "../src/connectors/index.js";
 import { DataAccess } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 import { requirementsWorkflow, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow, XRAY_PUSH_ARTIFACT, type TestCase } from "../src/workflows/index.js";
+import { sameCheck } from "../src/workflows/test-cases/workflow.js";
 
 const SITE = "https://acme.atlassian.net";
 const adf = (text: string) => ({ text, mentions: [], links: [] });
@@ -303,7 +304,7 @@ describe("test-cases workflow", () => {
 
     beforeEach(() => {
       sent = [];
-      agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"] }] };
+      agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"], criteria: [] }] };
       labelOnly = {};
       audit = new MemoryAuditSink();
       const key = randomBytes(32);
@@ -371,12 +372,14 @@ describe("test-cases workflow", () => {
       expect(audit.entries.map((e) => e.outcome)).toEqual(["approved", "done"]);
     });
 
-    it("on a rerun, keeps existing ids only for the same check and numbers new cases after them", async () => {
+    it("on a rerun, keeps an existing id only for the same check, whatever the criterion numbers", async () => {
       agentTests = {
         "ABC-1": [
-          { key: "QA-7", tcId: "TC-ABC-1-001", title: "Old case escalated for Marguerite Quillfeather", covers: ["AC1"] },
-          { key: "QA-6", tcId: "TC-ABC-1-002", title: "Edited by hand", covers: [] },
-          { key: "QA-8", tcId: "TC-ABC-1-004", title: "Owner notified", covers: ["AC2"] },
+          // Pushed before criteria text was written: matched by title only.
+          { key: "QA-7", tcId: "TC-ABC-1-001", title: "Old case escalated for Marguerite Quillfeather", covers: ["AC3"], criteria: [] },
+          { key: "QA-6", tcId: "TC-ABC-1-002", title: "Edited by hand", covers: [], criteria: [] },
+          // Numbered AC5 by its run; its text matches today's AC2.
+          { key: "QA-8", tcId: "TC-ABC-1-004", title: "Owner gets told", covers: ["AC5"], criteria: ["The owner is notified"] },
         ],
       };
       labelOnly = { "TC-ABC-1-006": "QA-20" };
@@ -385,34 +388,54 @@ describe("test-cases workflow", () => {
       expect(step.stepId).toBe("cases");
       const shown = JSON.parse(step.context.slice(step.context.indexOf("{")));
       expect(shown.issues[0].existingTests).toEqual([
-        { id: "TC-ABC-1-001", title: "Old case escalated for <PERSON_1>", covers: ["AC1"] },
-        { id: "TC-ABC-1-002", title: "Edited by hand", covers: [] },
-        { id: "TC-ABC-1-004", title: "Owner notified", covers: ["AC2"] },
+        { id: "TC-ABC-1-001", title: "Old case escalated for <PERSON_1>" },
+        { id: "TC-ABC-1-002", title: "Edited by hand" },
+        { id: "TC-ABC-1-004", title: "Owner gets told", criteria: ["The owner is notified"] },
       ]);
       for (const s of SECRETS) expect(step.context, s).not.toContain(s);
       const wrong = await xrayEngine.submit(first.runId, "cases", {
-        cases: [tc("ABC-1", 1, ["AC2"]), tc("ABC-1", 2, ["AC1"]), tc("ABC-1", 3, ["AC1"]), tc("ABC-1", 6, ["AC1"]), tc("ABC-2", 1, ["AC1"])],
+        cases: [tc("ABC-1", 1, ["AC1"]), tc("ABC-1", 2, ["AC1"]), tc("ABC-1", 3, ["AC1"]), tc("ABC-1", 6, ["AC1"]), tc("ABC-1", 4, ["AC1"]), tc("ABC-2", 1, ["AC1"])],
       });
       expect(wrong.status).toBe("rejected");
       expect((wrong as { errors: unknown }).errors).toEqual([
-        { path: "$.cases.0.id", message: expect.stringContaining("TC-ABC-1-001 is an existing test of AC1, and this case covers AC2") },
-        { path: "$.cases.1.id", message: expect.stringContaining("covered criteria are unknown") },
+        { path: "$.cases.0.id", message: expect.stringContaining('TC-ABC-1-001 is the existing test "Old case escalated for <PERSON_1>", which this case doesn\'t match') },
+        { path: "$.cases.1.id", message: expect.stringContaining('TC-ABC-1-002 is the existing test "Edited by hand"') },
         { path: "$.cases.2.id", message: expect.stringContaining("number new cases from TC-ABC-1-007") },
         { path: "$.cases.3.id", message: expect.stringContaining("belongs to Xray test QA-20, which isn't linked to ABC-1") },
+        { path: "$.cases.4.id", message: expect.stringContaining("TC-ABC-1-004 is the existing test") },
+        { path: "$.cases", message: "no case covers ABC-1 AC2" },
       ]);
       const ok = await xrayEngine.submit(first.runId, "cases", {
-        cases: [tc("ABC-1", 1, ["AC1"]), tc("ABC-1", 7, ["AC2"]), tc("ABC-2", 1, ["AC1"])],
+        cases: [
+          tc("ABC-1", 1, ["AC1"], { title: "Escalated: old case for <PERSON_1>" }),
+          tc("ABC-1", 4, ["AC2"], { title: "Notification reaches the owner" }),
+          tc("ABC-1", 7, ["AC1"]),
+          tc("ABC-2", 1, ["AC1"]),
+        ],
       });
       expect(ok.status).toBe("accepted");
-      expect(ok.next.context).toContain("TC-ABC-1-001 | P2 | positive | covers AC1 | updates QA-7 | Case 1 for ABC-1");
+      expect(ok.next.context).toContain("TC-ABC-1-001 | P2 | positive | covers AC1 | updates QA-7 | Escalated: old case for <PERSON_1>");
       // A review edit can't turn an existing test into a check of something else either.
-      const bypass = await xrayEngine.submit(first.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-001", decision: "edited", case: tc("ABC-1", 1, ["AC2"]) }] });
+      const bypass = await xrayEngine.submit(first.runId, "review", {
+        approved: true,
+        changes: [{ id: "TC-ABC-1-001", decision: "edited", case: tc("ABC-1", 1, ["AC1"], { title: "Something unrelated" }) }],
+      });
       expect(bypass.status).toBe("rejected");
-      expect((bypass as { errors: unknown }).errors).toEqual([{ path: "$.changes.0.case.id", message: expect.stringContaining("is an existing test of AC1") }]);
+      expect((bypass as { errors: unknown }).errors).toEqual([{ path: "$.changes.0.case.id", message: expect.stringContaining("is the existing test") }]);
       const push = (await xrayEngine.submit(first.runId, "review", { approved: true, changes: [] })).next;
-      expect(push.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
-      expect(push.context).toContain("TC-ABC-1-001 | P2 | updates QA-7 (was: Old case escalated for <PERSON_1>) | Case 1 for ABC-1");
+      expect(push.context).toContain("Push to Xray project QA: 2 new, 2 updated.");
+      expect(push.context).toContain("TC-ABC-1-001 | P2 | updates QA-7 (was: Old case escalated for <PERSON_1>) | Escalated: old case for <PERSON_1>");
       expect(push.context).toContain("TC-ABC-1-007 | P2 | new |");
+      await xrayEngine.submit(first.runId, "push", { approve: true });
+      // The pushed test carries its criteria's text, with real values (restoreOnWrite is on).
+      expect(sent[0]![1]!.fields.description).toContain("Criteria:\n- AC2: The owner is notified");
+    });
+
+    it("matches titles that name the same check", () => {
+      expect(sameCheck("Verify AccountDeletionLog__c against the approved WW model", "Check AccountDeletionLog__c matches the WW model")).toBe(true);
+      expect(sameCheck("Email field definition", "Snapshot value persistence")).toBe(false);
+      expect(sameCheck("Owner notified", "Owner notified by email when escalated")).toBe(true);
+      expect(sameCheck("Verify the field", "Verify the other")).toBe(false);
     });
 
     it("pushes nothing when the user says no", async () => {

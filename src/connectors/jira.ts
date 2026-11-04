@@ -146,6 +146,8 @@ export interface AgentTest {
   title: string;
   /** Criteria ids from the description's "Covers AC1, AC2 of KEY" line. */
   covers: string[];
+  /** Criteria text from the description's "Criteria:" list (pushes from 4 Nov 2026 on). */
+  criteria: string[];
 }
 const REMOTE_LINK_CONCURRENCY = 4;
 
@@ -268,8 +270,12 @@ export class JiraClient {
       const summary = str(fields.summary) ?? "";
       const title = summary.startsWith(`[${tcId}] `) ? summary.slice(tcId.length + 3) : summary;
       // Only criterion ids (AC1, AC12): anything else in that line could be someone's text.
-      const covers = (/Covers ([A-Za-z0-9_, -]+?) of /.exec(textOf(fields.description).text)?.[1]?.split(/,\s*/) ?? []).filter((id) => /^[A-Z]{1,8}\d{1,4}$/.test(id));
-      out.push({ key, tcId, title, covers });
+      const description = textOf(fields.description).text;
+      const covers = (/Covers ([A-Za-z0-9_, -]+?) of /.exec(description)?.[1]?.split(/,\s*/) ?? []).filter((id) => /^[A-Z]{1,8}\d{1,4}$/.test(id));
+      // Jira may give the list back as a bullet list or as lines: either way each item starts with ACn.
+      const list = description.split(/(?:^|\n)\s*Criteria:/)[1] ?? "";
+      const criteria = [...list.matchAll(/^\s*(?:[-•*]\s*)?AC\d+:\s*(.+)$/gm)].map((m) => m[1]!.trim()).filter(Boolean).slice(0, 30);
+      out.push({ key, tcId, title, covers, criteria });
     }
     return out;
   }

@@ -109,13 +109,12 @@ describe("JiraClient.findByLabels", () => {
 describe("JiraClient.findAgentTests", () => {
   it("finds an issue's earlier tests with their id, title and covered criteria", async () => {
     const jqls: string[] = [];
-    const doc = (text: string) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
     const fetch: FetchLike = async (_url, init) => {
       jqls.push((JSON.parse(String(init.body)) as { jql: string }).jql);
       return ok({
         isLast: true,
         issues: [
-          { key: "QA-1", fields: { summary: "[TC-ABC-1-001] Escalate", labels: ["agent-qa", "agent-qa:TC-ABC-1-001"], description: doc("Covers AC1, AC3, Jane Doe of ABC-1 (positive, P1). Written by Agent-QA.") } },
+          { key: "QA-1", fields: { summary: "[TC-ABC-1-001] Escalate", labels: ["agent-qa", "agent-qa:TC-ABC-1-001"], description: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "Covers AC1, AC3, Jane Doe of ABC-1 (positive, P1). Written by Agent-QA." }] }, { type: "paragraph", content: [{ type: "text", text: "Criteria:" }, { type: "hardBreak" }, { type: "text", text: "- AC1: A case is escalated" }, { type: "hardBreak" }, { type: "text", text: "- AC3: The owner is told" }] }] } } },
           { key: "QA-2", fields: { summary: "Renamed by hand", labels: ["agent-qa", "agent-qa:TC-ABC-1-002"], description: null } },
           { key: "QA-3", fields: { summary: "[TC-ABC-12-001] Other issue", labels: ["agent-qa", "agent-qa:TC-ABC-12-001"] } },
           { key: "QA-4", fields: { summary: "[TC-ABC-1-001] Duplicate", labels: ["agent-qa", "agent-qa:TC-ABC-1-001"] } },
@@ -124,8 +123,8 @@ describe("JiraClient.findAgentTests", () => {
     };
     const jira = new JiraClient({ site: "https://example.atlassian.net", email: "e", token: "t", fetch, sleep: async () => {} });
     expect(await jira.findAgentTests("QA", "ABC-1")).toEqual([
-      { key: "QA-1", tcId: "TC-ABC-1-001", title: "Escalate", covers: ["AC1", "AC3"] },
-      { key: "QA-2", tcId: "TC-ABC-1-002", title: "Renamed by hand", covers: [] },
+      { key: "QA-1", tcId: "TC-ABC-1-001", title: "Escalate", covers: ["AC1", "AC3"], criteria: ["A case is escalated", "The owner is told"] },
+      { key: "QA-2", tcId: "TC-ABC-1-002", title: "Renamed by hand", covers: [], criteria: [] },
     ]);
     expect(jqls).toEqual(['project = "QA" AND labels = "agent-qa" AND issue in linkedIssues("ABC-1") ORDER BY created ASC']);
     await expect(jira.findAgentTests("QA", 'ABC-1") OR ("x')).rejects.toThrow();
