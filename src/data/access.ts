@@ -4,7 +4,7 @@ import { ConnectorError, JiraClient, runHostCommand, SalesforceAuth, writeRepoFi
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import {
   commandList,
   FRAMEWORK_PROFILE_SPEC,
@@ -320,15 +320,21 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
 
   /** One client per process: the key is read once. */
   private async salesforceAuth(sf: NonNullable<Config["salesforce"]>): Promise<SalesforceAuth> {
-    this.sfAuth ??= (async () =>
-      new SalesforceAuth({
-        loginUrl: sf.loginUrl,
-        ...(sf.audience ? { audience: sf.audience } : {}),
-        clientId: await this.reveal(sf.clientId),
-        privateKey: await salesforceKey(sf, this.options.root, this.secrets()),
-        ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
-      }))();
-    this.sfAuth.catch(() => (this.sfAuth = undefined));
+    if (!this.sfAuth) {
+      const pending = (async () =>
+        new SalesforceAuth({
+          loginUrl: sf.loginUrl,
+          ...(sf.audience ? { audience: sf.audience } : {}),
+          orgUrl: sf.baseUrl,
+          clientId: await this.reveal(sf.clientId),
+          privateKey: await salesforceKey(sf, this.options.root, this.secrets()),
+          ...(this.options.fetch ? { fetch: this.options.fetch } : {}),
+        }))();
+      this.sfAuth = pending;
+      pending.catch(() => {
+        if (this.sfAuth === pending) this.sfAuth = undefined;
+      });
+    }
     return this.sfAuth;
   }
 
@@ -510,13 +516,25 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 }
 
+/** A PEM key is a few KB: anything larger is not the key file. */
+const MAX_KEY_BYTES = 64 * 1024;
+
+/** The key file's absolute path: privateKeyFile, or the path its secret reference holds, against the project root. */
+export async function salesforceKeyPath(sf: NonNullable<Config["salesforce"]>, root: string, secrets: SecretSources): Promise<string | undefined> {
+  if (!sf.privateKeyFile) return undefined;
+  const path = sf.privateKeyFile.startsWith("${") ? (await resolveSecret(sf.privateKeyFile, secrets)).trim() : sf.privateKeyFile;
+  return isAbsolute(path) ? path : resolvePath(root, path);
+}
+
 /** The Salesforce private key (PEM): from its secret reference, or from privateKeyFile. */
 export async function salesforceKey(sf: NonNullable<Config["salesforce"]>, root: string, secrets: SecretSources): Promise<string> {
   if (sf.privateKey) return resolveSecret(sf.privateKey, secrets);
-  const path = isAbsolute(sf.privateKeyFile!) ? sf.privateKeyFile! : resolvePath(root, sf.privateKeyFile!);
+  const path = (await salesforceKeyPath(sf, root, secrets))!;
   try {
+    if ((await stat(path)).size > MAX_KEY_BYTES) throw new Error("salesforce.privateKeyFile is too large to be a PEM key");
     return await readFile(path, "utf8");
   } catch (error) {
-    throw new Error(`salesforce.privateKeyFile can't be read (${(error as NodeJS.ErrnoException).code ?? "error"})`);
+    if (!(error as NodeJS.ErrnoException).code) throw error;
+    throw new Error(`salesforce.privateKeyFile can't be read (${(error as NodeJS.ErrnoException).code})`);
   }
 }

@@ -1,7 +1,7 @@
-import { relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { ConnectorError, networkCause, SalesforceAuth, SalesforceAuthError, selectFetch } from "../connectors/index.js";
-import { salesforceKey } from "./access.js";
+import { salesforceKey, salesforceKeyPath } from "./access.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
@@ -91,20 +91,25 @@ async function secretsCheck(config: Config, env: NodeJS.ProcessEnv, keyring: Key
  * each role's user gets an access token, as the reference repo's auth check
  * does. No frontdoor URL is minted and no username is printed: only role names.
  */
-async function salesforceCheck(config: Config, root: string, env: NodeJS.ProcessEnv, keyring: KeyringFactory, online: boolean, fetcher?: typeof fetch): Promise<CheckResult> {
+async function salesforceCheck(config: Config, root: string, env: NodeJS.ProcessEnv, keyring: KeyringFactory, online: boolean, fetcher: typeof fetch, timeoutMs: number): Promise<CheckResult> {
   const sf = config.salesforce;
   const base = { id: "salesforce", title: "Salesforce sign-in" };
   if (!sf) return { ...base, status: "skip", detail: "no salesforce section" };
   const secrets = { env, keychain: keychainLookup(keyring) };
   let auth: SalesforceAuth;
+  let keyPath: string | undefined;
   try {
+    keyPath = await salesforceKeyPath(sf, root, secrets);
     const clientId = sf.clientId.startsWith("${") ? await resolveSecret(sf.clientId, secrets) : sf.clientId;
-    auth = new SalesforceAuth({ loginUrl: sf.loginUrl, ...(sf.audience ? { audience: sf.audience } : {}), clientId, privateKey: await salesforceKey(sf, root, secrets), ...(fetcher ? { fetch: fetcher } : {}), retries: 0 });
+    auth = new SalesforceAuth({ loginUrl: sf.loginUrl, ...(sf.audience ? { audience: sf.audience } : {}), clientId, orgUrl: sf.baseUrl, privateKey: await salesforceKey(sf, root, secrets), fetch: fetcher, timeoutMs, retries: 0 });
   } catch (error) {
     return { ...base, status: "fail", detail: (error as Error).message, fix: "Point salesforce.privateKey or privateKeyFile at the External Client App's RSA private key (PEM)." };
   }
   const notes: string[] = [];
-  if (sf.privateKeyFile && !relative(root, resolve(root, sf.privateKeyFile)).startsWith("..")) notes.push("privateKeyFile is inside the project: keep it out of git");
+  const keyRel = keyPath && insideFolder(root, keyPath) ? relative(root, keyPath).split(sep).join("/") : undefined;
+  if (keyRel && !isIgnored(await loadIgnoreRules(root, [keyRel]), keyRel)) {
+    notes.push("privateKeyFile is inside the project and not gitignored: move it out, or ignore it");
+  }
   const roles = Object.keys(sf.users);
   if (!online) return { ...base, status: notes.length ? "warn" : "pass", detail: [`key read; ${roles.length} role(s): ${roles.join(", ")} (not signed in: --offline)`, ...notes].join("\n") };
   const failed: string[] = [];
@@ -113,11 +118,16 @@ async function salesforceCheck(config: Config, root: string, env: NodeJS.Process
       const user = sf.users[role]!;
       await auth.accessToken(user.startsWith("${") ? await resolveSecret(user, secrets) : user);
     } catch (error) {
-      failed.push(`${role}: ${error instanceof SalesforceAuthError || error instanceof ConnectorError ? error.message : (error as Error).name}`);
+      failed.push(`${role}: ${error instanceof SalesforceAuthError || error instanceof ConnectorError ? error.message : error instanceof Error && error.name === "SecretError" ? error.message : (error as Error).name}`);
     }
   }
   if (failed.length) return { ...base, status: "fail", detail: failed.join("\n"), fix: "Fix each role's user or the app setup as the message says, then run doctor again." };
   return { ...base, status: notes.length ? "warn" : "pass", detail: [`${roles.length} role(s) signed in: ${roles.join(", ")}`, ...notes].join("\n") };
+}
+
+function insideFolder(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 async function vaultCheck(env: NodeJS.ProcessEnv, keyring: KeyringFactory): Promise<CheckResult> {
@@ -284,7 +294,7 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
     results.push({ id: "gitignore", title: ".gitignore", status: "fail", detail: `can't be read: ${shown((error as Error).message)}` });
   }
   results.push(config ? modelsCheck(config, env) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
-  if (config) results.push(await salesforceCheck(config, root, env, keyring, options.online !== false, options.fetch));
+  if (config) results.push(await salesforceCheck(config, root, env, keyring, options.online !== false, options.fetch ?? proxyAwareFetch(env), options.timeoutMs ?? 5000));
   if (!config) results.push({ id: "network", title: "Services", status: "skip", detail: "needs a valid config" });
   else if (options.online === false) results.push({ id: "network", title: "Services", status: "skip", detail: "skipped (--offline)" });
   else results.push(await reachabilityCheck(config, options.fetch ?? proxyAwareFetch(env), options.timeoutMs ?? 5000));

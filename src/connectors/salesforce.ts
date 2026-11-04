@@ -1,4 +1,5 @@
 import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
+import { inspect } from "node:util";
 import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 
 /**
@@ -18,8 +19,10 @@ import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } fr
 export interface SalesforceAuthOptions {
   /** https://login.salesforce.com, https://test.salesforce.com or the My Domain URL. */
   loginUrl: string;
-  /** Audience of the assertion. Default: the login URL's origin. Sandboxes use https://test.salesforce.com. */
+  /** Audience of the assertion. Default: see defaultAudience. */
   audience?: string;
+  /** The org's My Domain URL (salesforce.baseUrl). When set, a token for another org is refused. */
+  orgUrl?: string;
   /** The External Client App's consumer key. */
   clientId: string;
   /** The app's private key (PEM). */
@@ -32,12 +35,27 @@ export interface SalesforceAuthOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** What a sign-in gives: secret, never logged, stored or shown to a model. */
-export interface SalesforceSession {
-  /** My Domain URL of the org. */
-  instanceUrl: string;
-  /** Single-use URL that opens a signed-in browser session. Valid for about a minute. */
-  frontdoorUrl: string;
+const REDACTED = "[redacted]";
+
+/**
+ * What a sign-in gives: secret, never logged, stored or shown to a model. An
+ * MCP tool must never return it. JSON and console output show the URL redacted.
+ */
+export class SalesforceSession {
+  constructor(
+    /** My Domain URL of the org. */
+    readonly instanceUrl: string,
+    /** Single-use URL that opens a signed-in browser session. Valid for about a minute. */
+    readonly frontdoorUrl: string,
+  ) {}
+
+  toJSON() {
+    return { instanceUrl: this.instanceUrl, frontdoorUrl: REDACTED };
+  }
+
+  [inspect.custom]() {
+    return `SalesforceSession { instanceUrl: ${JSON.stringify(this.instanceUrl)}, frontdoorUrl: ${REDACTED} }`;
+  }
 }
 
 /** The fix for each OAuth error, as the reference repo's auth check explains them. */
@@ -78,6 +96,37 @@ const oauthCode = (body: string) => {
   }
 };
 
+/**
+ * The assertion's audience when none is given: Salesforce takes only
+ * https://login.salesforce.com or https://test.salesforce.com (or an
+ * Experience Cloud site), never a My Domain URL.
+ */
+export function defaultAudience(loginUrl: string): string {
+  const url = new URL(loginUrl);
+  const host = url.hostname.toLowerCase();
+  if (host === "test.salesforce.com" || host.endsWith(".sandbox.my.salesforce.com")) return "https://test.salesforce.com";
+  if (host === "login.salesforce.com" || host.endsWith(".my.salesforce.com")) return "https://login.salesforce.com";
+  return url.origin;
+}
+
+/** A key as the test repo's .env holds it: PEM, PEM with literal \n, or base64 of the PEM. */
+export function normalizePem(value: string): string {
+  const text = value.trim();
+  if (text.includes("-----BEGIN")) return text.replace(/(?:\\r)?\\n/g, "\n");
+  if (/^[A-Za-z0-9+/=\s]+$/.test(text)) {
+    const decoded = Buffer.from(text, "base64").toString("utf8");
+    if (decoded.includes("-----BEGIN")) return decoded;
+  }
+  return text;
+}
+
+/** The origin of an https URL, or undefined. Never throws: a bad URL can hold a secret, and Node's error keeps it. */
+function httpsOrigin(value: unknown): string | undefined {
+  if (typeof value !== "string" || !URL.canParse(value)) return undefined;
+  const url = new URL(value);
+  return url.protocol === "https:" && !url.username && !url.password ? url.origin : undefined;
+}
+
 /** The assertion for the JWT bearer flow. Salesforce refuses one valid for more than about five minutes. */
 export function signAssertion(options: { clientId: string; username: string; audience: string; key: KeyObject; now: number; lifetimeSeconds?: number }): string {
   const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
@@ -96,21 +145,22 @@ export class SalesforceAuth {
 
   constructor(private readonly options: SalesforceAuthOptions) {
     try {
-      this.key = createPrivateKey(options.privateKey);
+      this.key = createPrivateKey(normalizePem(options.privateKey));
     } catch {
       // Never the key's text, not even part of it.
       throw new SalesforceAuthError("the Salesforce private key can't be read: it must be an RSA private key in PEM form");
     }
     if (this.key.asymmetricKeyType !== "rsa") throw new SalesforceAuthError("the Salesforce private key must be an RSA key (RS256)");
     const login = new URL(options.loginUrl);
-    this.audience = options.audience ?? login.origin;
+    this.audience = options.audience ?? defaultAudience(options.loginUrl);
     this.now = options.now ?? Date.now;
     this.login = new HttpClient({ ...this.http(), service: "Salesforce", baseUrl: login.origin, readOnlyPosts: [(path) => path === TOKEN_PATH] });
   }
 
   private http(): Omit<HttpClientOptions, "service" | "baseUrl"> {
     const { fetch, timeoutMs, retries, sleep } = this.options;
-    return { ...(fetch ? { fetch } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(retries !== undefined ? { retries } : {}), ...(sleep ? { sleep } : {}), errorCode: oauthCode };
+    // The assertion lives three minutes and is signed once: retries must not wait past it.
+    return { ...(fetch ? { fetch } : {}), ...(timeoutMs ? { timeoutMs } : {}), ...(retries !== undefined ? { retries } : {}), ...(sleep ? { sleep } : {}), maxWaitMs: 20_000, errorCode: oauthCode };
   }
 
   /** An access token for `username`. The username and token are never put in an error. */
@@ -126,10 +176,14 @@ export class SalesforceAuth {
     } catch (error) {
       throw explain(error, "the token request");
     }
-    if (typeof payload.access_token !== "string" || typeof payload.instance_url !== "string" || !/^https:\/\//.test(payload.instance_url)) {
+    const instance = httpsOrigin(payload.instance_url);
+    if (typeof payload.access_token !== "string" || !instance) {
       throw new SalesforceAuthError("Salesforce answered the token request without an access token and an https instance URL");
     }
-    return { accessToken: payload.access_token, instanceUrl: payload.instance_url.replace(/\/+$/, "") };
+    if (this.options.orgUrl && instance !== new URL(this.options.orgUrl).origin) {
+      throw new SalesforceAuthError("the user signed in to a different org than salesforce.baseUrl: check baseUrl (the org's My Domain URL), loginUrl and the username");
+    }
+    return { accessToken: payload.access_token, instanceUrl: instance };
   }
 
   /** Signs in `username`: a fresh single-use frontdoor URL, nothing stored. */
@@ -148,12 +202,11 @@ export class SalesforceAuth {
     } catch (error) {
       throw explain(error, 'the frontdoor URL request (the app needs the "web" or "full" OAuth scope)');
     }
-    const url = typeof payload.frontdoor_uri === "string" ? payload.frontdoor_uri : "";
     // Only a URL on the org's own site is opened.
-    if (!url.startsWith("https://") || new URL(url).origin !== new URL(token.instanceUrl).origin) {
+    if (httpsOrigin(payload.frontdoor_uri) !== token.instanceUrl) {
       throw new SalesforceAuthError('Salesforce gave no frontdoor URL on the org\'s site: check that the app grants the "web" or "full" OAuth scope');
     }
-    return { instanceUrl: token.instanceUrl, frontdoorUrl: url };
+    return new SalesforceSession(token.instanceUrl, payload.frontdoor_uri as string);
   }
 }
 

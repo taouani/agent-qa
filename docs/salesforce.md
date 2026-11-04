@@ -8,7 +8,7 @@ In `agent-qa.yaml`:
 
 ```yaml
 salesforce:
-  baseUrl: https://acme--uat.sandbox.my.salesforce.com
+  baseUrl: https://acme--uat.sandbox.my.salesforce.com   # the org's My Domain URL
   loginUrl: https://test.salesforce.com   # sandboxes; production uses https://login.salesforce.com
   clientId: ${env:SF_CLIENT_ID}            # the app's consumer key
   privateKey: ${env:SF_JWT_KEY}            # the app's RSA private key (PEM)
@@ -18,10 +18,12 @@ salesforce:
     Approver-EUR: ${env:SF_USER_APPROVER_EUR}
 ```
 
-- **Key.** Give exactly one of `privateKey` (a secret reference) or `privateKeyFile` (a path to the PEM file). Keep the file out of git; `agent-qa doctor` warns when it is inside the project.
+- **Org.** `baseUrl` is the org's My Domain URL. A sign-in that lands in another org (a wrong login URL or username) is refused.
+- **Login URL and audience.** `loginUrl` is a host: any path is ignored. The assertion's audience defaults to `https://test.salesforce.com` for `test.salesforce.com` and sandbox My Domains, and to `https://login.salesforce.com` otherwise. Set `audience` only for an Experience Cloud site.
+- **Key.** Give exactly one of `privateKey` (a secret reference) or `privateKeyFile` (a path to the PEM file, or a secret reference that holds the path, such as `${env:SF_JWT_KEY_FILE}`). The key may be PEM, PEM flattened onto one line with `\n`, or base64 of the PEM. An encrypted (passphrase) key is not supported. Keep the file out of git: `agent-qa doctor` warns when it is inside the project and not gitignored.
 - **Users.** List one user per role. A role name is your own label, such as a function and a country. A username may be written out, but a reference keeps personal data out of git.
 - **Permission set.** Each user needs the permission set that carries the External Client App. Without it, sign-in fails with `invalid_app_access`.
-- **Reusing your repo's settings.** If your test repo already has `.env` with `SF_CLIENT_ID` and `SF_JWT_KEY`, the same variables work here.
+- **Reusing your repo's settings.** If your test repo's `.env` has `SF_CLIENT_ID` and `SF_JWT_KEY` (or `SF_JWT_KEY_FILE`), reference the same variables: `clientId: ${env:SF_CLIENT_ID}` and `privateKey: ${env:SF_JWT_KEY}` (or `privateKeyFile: ${env:SF_JWT_KEY_FILE}`).
 
 ## What happens at sign-in
 
@@ -29,7 +31,7 @@ salesforce:
 2. It exchanges the assertion at `{loginUrl}/services/oauth2/token` for an access token.
 3. It exchanges that token at `{instance}/services/oauth2/singleaccess` for a single-use frontdoor URL, which opens the browser session.
 
-Nothing is stored: no session file, no token on disk. The frontdoor URL works once, for about a minute, and only a URL on the org's own site is opened. Neither the URL nor the token is logged, saved in a run folder or shown to a model. Errors name the OAuth code and its usual fix (for example `invalid_grant`: the key doesn't match the app's certificate, or the audience is wrong), never the username or Salesforce's own text.
+Nothing is stored: no session file, no token on disk. The frontdoor URL works once, for about a minute, and only a URL on the org's own site is opened. Neither the URL nor the token is logged, saved in a run folder or shown to a model: printed or turned into JSON, a session shows the URL as `[redacted]`. Errors name the OAuth code and its usual fix (for example `invalid_grant`: the key doesn't match the app's certificate, or the audience is wrong), never the username or Salesforce's own text.
 
 ## Check it
 

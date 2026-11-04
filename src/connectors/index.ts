@@ -26,5 +26,5 @@ export type { XrayClientOptions, XrayJobIssue, XrayJobResult, XrayStep, XrayTest
 export { runHostCommand } from "./host.js";
 export type { HostCommandOptions, HostCommandResult } from "./host.js";
 export { writeRepoFile } from "./repo-files.js";
-export { OAUTH_HINTS, SalesforceAuth, SalesforceAuthError, signAssertion } from "./salesforce.js";
-export type { SalesforceAuthOptions, SalesforceSession } from "./salesforce.js";
+export { defaultAudience, normalizePem, OAUTH_HINTS, SalesforceAuth, SalesforceAuthError, SalesforceSession, signAssertion } from "./salesforce.js";
+export type { SalesforceAuthOptions } from "./salesforce.js";

@@ -1,9 +1,10 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { inspect } from "node:util";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SalesforceAuth, SalesforceAuthError, signAssertion } from "../src/connectors/index.js";
+import { defaultAudience, normalizePem, SalesforceAuth, SalesforceAuthError, signAssertion } from "../src/connectors/index.js";
 import { configSchema, MemoryAuditSink, RunStore } from "../src/core/index.js";
 import { DataAccess, runDoctor } from "../src/data/index.js";
 
@@ -86,6 +87,51 @@ describe("SalesforceAuth (S2-3)", () => {
   });
 });
 
+describe("SalesforceAuth review fixes", () => {
+  const make = (sf: ReturnType<typeof salesforce>, extra: Record<string, string> = {}) => new SalesforceAuth({ loginUrl: "https://test.salesforce.com", clientId: "k", privateKey: PEM, fetch: sf.fetch, ...extra });
+
+  it("refuses malformed, lookalike, userinfo and http frontdoor URLs without echoing them", async () => {
+    for (const uri of ["https://[bad/secur/frontdoor.jsp?otp=SECRET", `${INSTANCE}.evil.example/secur/frontdoor.jsp?otp=SECRET`, `https://x:y@${INSTANCE.slice(8)}/f?otp=SECRET`, `${INSTANCE.replace("https", "http")}/f?otp=SECRET`]) {
+      const error = await make(salesforce({ single: () => Response.json({ frontdoor_uri: uri }) })).session(USER).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(SalesforceAuthError);
+      expect(inspect(error)).not.toContain("SECRET");
+    }
+  });
+
+  it("refuses a token for another org than baseUrl", async () => {
+    const sf = salesforce({ token: () => Response.json({ access_token: "t", instance_url: "https://other.my.salesforce.com" }) });
+    await expect(make(sf, { orgUrl: INSTANCE }).session(USER)).rejects.toThrow(/different org than salesforce.baseUrl/);
+    expect(sf.calls).toHaveLength(1);
+    expect((await make(salesforce(), { orgUrl: `${INSTANCE}/` }).session(USER)).instanceUrl).toBe(INSTANCE);
+  });
+
+  it("redacts the frontdoor URL in JSON and console output", async () => {
+    const session = await make(salesforce()).session(USER);
+    expect(session.frontdoorUrl).toBe(FRONTDOOR);
+    expect(JSON.stringify(session)).not.toContain("otp");
+    expect(inspect(session)).not.toContain("otp");
+    expect(`${JSON.stringify({ session })}`).toContain("[redacted]");
+  });
+
+  it("picks the audience Salesforce accepts for each login host", () => {
+    expect(defaultAudience("https://test.salesforce.com")).toBe("https://test.salesforce.com");
+    expect(defaultAudience("https://acme--uat.sandbox.my.salesforce.com")).toBe("https://test.salesforce.com");
+    expect(defaultAudience("https://acme.my.salesforce.com")).toBe("https://login.salesforce.com");
+    expect(defaultAudience("https://login.salesforce.com/")).toBe("https://login.salesforce.com");
+    expect(defaultAudience("https://acme.my.site.com/partners")).toBe("https://acme.my.site.com");
+  });
+
+  it("reads a key as the test repo's .env holds it: flattened \\n or base64", async () => {
+    const flat = PEM.trim().replace(/\n/g, "\\n");
+    expect(flat).not.toContain("\n");
+    expect(normalizePem(flat)).toBe(PEM.trim());
+    expect(normalizePem(Buffer.from(PEM).toString("base64"))).toBe(PEM);
+    for (const key of [flat, Buffer.from(PEM).toString("base64")]) {
+      expect((await new SalesforceAuth({ loginUrl: "https://test.salesforce.com", clientId: "k", privateKey: key, fetch: salesforce().fetch }).session(USER)).instanceUrl).toBe(INSTANCE);
+    }
+  });
+});
+
 describe("salesforce config", () => {
   const base = { baseUrl: INSTANCE, clientId: "${env:SF_CLIENT_ID}", users: { "StoreManager-FRA": "${env:SF_USER_SM_FRA}" } };
   it("takes one key source, a secret reference or a file, and at least one user", () => {
@@ -95,6 +141,9 @@ describe("salesforce config", () => {
     expect(configSchema.safeParse({ version: 1, salesforce: { ...base, privateKey: "${env:K}", privateKeyFile: "k.pem" } }).success).toBe(false);
     expect(configSchema.safeParse({ version: 1, salesforce: { ...base, privateKeyFile: "../certs/server.key", users: {} } }).success).toBe(false);
     expect(configSchema.safeParse({ version: 1, salesforce: { ...base, privateKeyFile: "../certs/server.key", users: { "bad role": "x" } } }).success).toBe(false);
+    // A pasted key is refused in privateKeyFile; a reference to the path is taken.
+    expect(configSchema.safeParse({ version: 1, salesforce: { ...base, privateKeyFile: "-----BEGIN PRIVATE KEY-----\nabc" } }).success).toBe(false);
+    expect(configSchema.safeParse({ version: 1, salesforce: { ...base, privateKeyFile: "${env:SF_JWT_KEY_FILE}" } }).success).toBe(true);
   });
 });
 
@@ -131,5 +180,18 @@ describe("DataAccess.salesforceSession and doctor", () => {
     expect(online).toMatchObject({ status: "fail" });
     expect(online?.detail).toBe("Approver-EUR: Salesforce refused the token request (inactive_user): the Salesforce user is inactive");
     expect(JSON.stringify(online)).not.toContain("acme.com");
+  });
+
+  it("doctor warns for a key file in the project unless it is gitignored, and takes its path from a reference", async () => {
+    await writeFile(join(dir, "server.key"), PEM);
+    await writeFile(join(dir, "agent-qa.yaml"), `version: 1\nsalesforce:\n  baseUrl: ${INSTANCE}\n  clientId: k\n  privateKeyFile: \${env:SF_KEY_FILE}\n  users:\n    StoreManager-FRA: \${env:SF_USER}\n`);
+    const env = { SF_KEY_FILE: "server.key" };
+    const check = async () => (await runDoctor({ cwd: dir, env, online: false })).find((r) => r.id === "salesforce")!;
+    expect(await check()).toMatchObject({ status: "warn", detail: expect.stringContaining("not gitignored") });
+    await writeFile(join(dir, ".gitignore"), "*.key\n");
+    expect(await check()).toMatchObject({ status: "pass" });
+    // A user whose reference doesn't resolve is named by its variable.
+    const online = (await runDoctor({ cwd: dir, env, fetch: (async () => Response.json({})) as typeof globalThis.fetch })).find((r) => r.id === "salesforce")!;
+    expect(online.detail).toContain("SF_USER");
   });
 });

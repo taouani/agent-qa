@@ -120,14 +120,19 @@ export const configSchema = z
         auth: z.literal("jwt").default("jwt"),
         /** https://login.salesforce.com, or https://test.salesforce.com for a sandbox. */
         loginUrl: httpsUrl.default("https://login.salesforce.com"),
-        /** The assertion's audience. Default: the login URL's origin. */
+        /** The assertion's audience. Default: https://test.salesforce.com for test.salesforce.com and sandbox My Domains, else https://login.salesforce.com. */
         audience: httpsUrl.optional(),
         /** The app's consumer key, or a secret reference to it. */
         clientId: z.string().min(1),
         /** The app's private key (PEM), as a secret reference. Or give privateKeyFile. */
         privateKey: secretRef.optional(),
-        /** Path to the private key file (PEM), outside the repo. The file holds the secret, not this setting. */
-        privateKeyFile: z.string().min(1).max(1000).optional(),
+        /** Path to the private key file (PEM), outside the repo, or a secret reference holding the path. The file holds the secret, not this setting. */
+        privateKeyFile: z
+          .string()
+          .min(1)
+          .max(1000)
+          .refine((v) => !/-----BEGIN|[\r\n]/.test(v), "a path to the key file, not the key itself (use privateKey: ${env:NAME} for the key)")
+          .optional(),
         /** The Salesforce username for each role, e.g. StoreManager-FRA: user@acme.com.uat, or a secret reference. */
         users: z
           .record(z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,59}$/, "a role name: letters, digits, _ . -"), z.string().min(1).max(200))
