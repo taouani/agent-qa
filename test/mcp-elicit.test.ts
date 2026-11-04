@@ -61,7 +61,7 @@ const submit = (client: Client, approve: boolean) => call(client, "workflow_subm
 
 describe("MCP approval by elicitation (S1-13)", () => {
   it("asks the user directly and pushes on their yes", async () => {
-    const { client, pushed, asked } = await connect({ elicit: () => ({ action: "accept", content: { approve: true } }) });
+    const { client, pushed, asked } = await connect({ elicit: () => ({ action: "accept", content: { answer: "Yes, go ahead" } }) });
     const step = await start(client);
     expect(step.body).toMatchObject({ stepId: "push", kind: "confirm", approval: { yes: { approve: true } } });
     expect(step.body.instructions).toContain("Don't ask in chat");
@@ -71,7 +71,7 @@ describe("MCP approval by elicitation (S1-13)", () => {
     expect(pushed).toEqual([true]);
   });
 
-  it("asks with a yes/no form that defaults to no", async () => {
+  it("asks with a yes/no choice that defaults to no", async () => {
     let schema: unknown;
     const { client } = await connect({
       elicit: (_m, s) => {
@@ -81,13 +81,13 @@ describe("MCP approval by elicitation (S1-13)", () => {
     });
     await start(client);
     await submit(client, true);
-    expect(schema).toMatchObject({ type: "object", properties: { approve: { type: "boolean", default: false } }, required: ["approve"] });
+    expect(schema).toMatchObject({ type: "object", properties: { answer: { type: "string", enum: ["Yes, go ahead", "No"], default: "No" } }, required: ["answer"] });
   });
 
   it.each([
     ["declines", { action: "decline" } as ElicitResult],
     ["cancels", { action: "cancel" } as ElicitResult],
-    ["unticks the box", { action: "accept", content: { approve: false } } as ElicitResult],
+    ["answers no", { action: "accept", content: { answer: "No" } } as ElicitResult],
   ])("doesn't push when the user %s, whatever the model sent", async (_label, answer) => {
     const { client, pushed } = await connect({ elicit: () => answer });
     await start(client);
@@ -96,8 +96,16 @@ describe("MCP approval by elicitation (S1-13)", () => {
     expect(pushed).toEqual([false]);
   });
 
+  it("pushes nothing on an answer outside the choices, and the step stays open", async () => {
+    const { client, pushed } = await connect({ elicit: () => ({ action: "accept", content: { answer: "yes", approve: true } }) });
+    await start(client);
+    const result = await submit(client, true);
+    expect(result.isError).toBe(true);
+    expect(pushed).toEqual([]);
+  });
+
   it("keeps the model's no without asking", async () => {
-    const { client, pushed, asked } = await connect({ elicit: () => ({ action: "accept", content: { approve: true } }) });
+    const { client, pushed, asked } = await connect({ elicit: () => ({ action: "accept", content: { answer: "Yes, go ahead" } }) });
     await start(client);
     await submit(client, false);
     expect(asked).toEqual([]);
@@ -105,7 +113,7 @@ describe("MCP approval by elicitation (S1-13)", () => {
   });
 
   it("treats an empty elicitation capability as form mode", async () => {
-    const { client, asked } = await connect({ elicit: () => ({ action: "accept", content: { approve: true } }), capabilities: { elicitation: {} } });
+    const { client, asked } = await connect({ elicit: () => ({ action: "accept", content: { answer: "Yes, go ahead" } }), capabilities: { elicitation: {} } });
     await start(client);
     await submit(client, true);
     expect(asked).toHaveLength(1);
@@ -132,7 +140,7 @@ describe("MCP approval by elicitation (S1-13)", () => {
     const { client, pushed } = await connect({
       elicit: () => {
         if (fail) throw new Error("dialog closed");
-        return { action: "accept", content: { approve: true } };
+        return { action: "accept", content: { answer: "Yes, go ahead" } };
       },
     });
     await start(client);
@@ -149,7 +157,7 @@ describe("MCP approval by elicitation (S1-13)", () => {
 
   it("submits nothing when the question can't be prepared", async () => {
     const { client, pushed, asked } = await connect({
-      elicit: () => ({ action: "accept", content: { approve: true } }),
+      elicit: () => ({ action: "accept", content: { answer: "Yes, go ahead" } }),
       question: () => {
         throw new Error("Jira unreachable");
       },
@@ -192,7 +200,7 @@ describe("MCP approval by elicitation (S1-13)", () => {
   });
 
   it("doesn't ask for a step that isn't open", async () => {
-    const { client, asked } = await connect({ elicit: () => ({ action: "accept", content: { approve: true } }) });
+    const { client, asked } = await connect({ elicit: () => ({ action: "accept", content: { answer: "Yes, go ahead" } }) });
     await start(client);
     const wrong = await call(client, "workflow_submit", { runId: "run-1", stepId: "review", output: { approve: true } });
     expect(wrong.isError).toBe(true);

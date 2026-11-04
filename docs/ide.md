@@ -25,7 +25,7 @@ The model then follows the step loop on its own until the run is done, or a step
 
 Pushing test cases to Xray writes outside your machine, so it needs your own yes, never the model's.
 
-- **IDEs that can ask you directly** (MCP elicitation, form mode): Agent-QA shows its own prompt, for example "Push 12 reviewed test case(s) to Xray project QA? 9 new, 3 updated.", with a "Yes, go ahead" box that starts unticked. Only an accepted prompt with the box ticked pushes. Declining, cancelling or closing the prompt pushes nothing, whatever the model sent. If the model already answered no, you aren't asked.
+- **IDEs that can ask you directly** (MCP elicitation, form mode): Agent-QA shows its own prompt, for example "Push 12 reviewed test case(s) to Xray project QA? 9 new, 3 updated.", with a choice between "Yes, go ahead" and "No" that starts on "No". Only "Yes, go ahead", submitted, pushes. Declining, cancelling or closing the prompt pushes nothing, whatever the model sent. If the model already answered no, you aren't asked.
 - **Other IDEs:** the model asks you in chat and submits your answer. Check what it submitted in the run's `xray-push.md`.
 
 If the prompt can't be shown (it fails or is closed with an error), nothing is submitted and the step stays open: ask the model to submit the push step again.
