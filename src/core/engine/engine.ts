@@ -244,7 +244,7 @@ export class WorkflowEngine {
         output = await options.approve({ ...approval, output });
       } else if (def.approval?.personOnly && def.answers && !options.byPerson && JSON.stringify(output) !== JSON.stringify(def.answers.no)) {
         // Nothing is recorded: the step stays open for the person's answer.
-        throw new EngineError("NEEDS_PERSON", `Only the user can approve ${stepId}, and this host can't ask them directly. Nothing was saved. Ask the user to run it in a terminal instead, for example: agent-qa run ${workflow.id} --accept ${stepId}`, [], runId);
+        throw new EngineError("NEEDS_PERSON", `Only the user can approve ${stepId}, and this host can't ask them directly. Nothing was saved. Tell the user to run this themselves in their own terminal (don't run it for them): agent-qa run ${workflow.id} --accept ${stepId}`, [], runId);
       }
 
       const parsed = def.outputSchema.safeParse(output);

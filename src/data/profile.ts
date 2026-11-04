@@ -124,7 +124,7 @@ export const FRAMEWORK_PROFILE_SPEC: ArtifactSpec<FrameworkProfile> = {
 export const reviewedPart = (p: Pick<FrameworkProfile, "folder" | "kind" | "commands">) => JSON.stringify({ folder: p.folder, kind: p.kind, commands: p.commands ?? null });
 
 /** A version range as package.json writes one; anything else (text that could talk to a model) is dropped. */
-const VERSION = /^[\w.^~<>=*|+: -]{1,40}$/;
+const VERSION = /^(?:[~^<>=]{0,2}v?\d[\w.+-]{0,30}|\*|latest|next|workspace:[\w.^~*-]{1,20})(?:\s*(?:\|\||-|\s)\s*[~^<>=]{0,2}v?\d[\w.+-]{0,30}){0,3}$/;
 
 export class ProfileError extends Error {
   constructor(message: string) {

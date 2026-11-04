@@ -303,6 +303,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         return masked;
       })();
       this.profiles.set(runId, pending);
+      // The run folder keeps it too: only recent runs stay in memory.
+      if (this.profiles.size > 64) this.profiles.delete(this.profiles.keys().next().value!);
       pending.catch(() => this.profiles.delete(runId));
     }
     return pending;
@@ -321,8 +323,16 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [service.maskText(k, field), mask(v, field)])) as T;
       return value;
     };
-    const { kind, commands, ...rest } = profile;
-    const masked = { ...mask(rest, "profile"), kind, ...(commands ? { commands } : {}) } as FrameworkProfile;
+    // Names Agent-QA fixed itself (kind, commands, step keywords, locator forms) stay as they are.
+    const { kind, commands, locators, locatorRanking, steps, ...rest } = profile;
+    const masked = {
+      ...mask(rest, "profile"),
+      kind,
+      ...(commands ? { commands } : {}),
+      locators,
+      locatorRanking,
+      steps: steps.map(({ keyword, kind: k, line, ...s }) => ({ keyword, kind: k, line, ...mask(s, "profile.step") })),
+    } as FrameworkProfile;
     await service.saveVault();
     return masked;
   }
