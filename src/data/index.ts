@@ -2,7 +2,7 @@
 export const MODULE = "data";
 export { DataAccess, secretSources } from "./access.js";
 export type { DataAccessOptions, HostData, RequirementsData, XrayData } from "./access.js";
-export { ALLOWED_FLAGS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";
+export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";
 export type { HostCommandOutcome, HostCommandRequest } from "./host.js";
 export { caseLabel, toXrayTest } from "./xray.js";
 export type { ExistingTest, PushCase, XrayPlan, XrayPushResult } from "./xray.js";

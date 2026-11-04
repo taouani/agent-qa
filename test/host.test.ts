@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -58,6 +58,22 @@ describe("runHostCommand (S2-1)", () => {
     await expect(policy.guard({ target: "testCode", summary: "x" }, (g) => runHostCommand(g, { ...base, argv: [NODE, "-v"] }))).rejects.toBeInstanceOf(PolicyDenied);
   });
 
+  it("reports the real exit code and returns when a leftover process keeps the output open", async () => {
+    // The child exits at once; its own child, in a new session, holds stdout for 30 s.
+    const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] }).unref(); console.log("bye")`;
+    const r = await withGrant((g) => runHostCommand(g, { ...base, timeoutMs: 20_000, argv: [NODE, "-e", script] }));
+    expect(r).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(r.stdout).toContain("bye");
+    expect(r.durationMs).toBeLessThan(10_000);
+  });
+
+  it("keeps the time limit when a leftover process keeps the output open", async () => {
+    const script = `require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] }).unref(); setTimeout(() => {}, 60000)`;
+    const r = await withGrant((g) => runHostCommand(g, { ...base, timeoutMs: 500, argv: [NODE, "-e", script] }));
+    expect(r).toMatchObject({ exitCode: null, timedOut: true });
+    expect(r.durationMs).toBeLessThan(10_000);
+  });
+
   it("says when the program isn't installed", async () => {
     await expect(withGrant((g) => runHostCommand(g, { ...base, argv: ["agent-qa-no-such-program-x1"] }))).rejects.toThrow(/was not found/);
   });
@@ -75,7 +91,13 @@ describe("host command checks", () => {
   it("allows paths inside the project and known flags only", () => {
     const run = (args: string[]) => checkHostCommand({ command: ["npx", "playwright", "test"], args, purpose: "p" }, allowed);
     expect(run(["tests/features/Returns_Refund-above-store-limit.feature", "--reporter=json", "--retries=0", "--workers=1", "--grep=@P1 and @smoke"])).toHaveLength(8);
-    for (const bad of ["../secret.ts", "/etc/passwd", "C:\\Windows\\x", "a&b", "a|b", "%PATH%", "a b", "--config=evil.ts", "--grep=\"x\"", "-c", "x^y", "a\nb"]) {
+    expect(run(["--reporter=list,json"])).toHaveLength(4);
+    const badArgs = [
+      ...["../secret.ts", "/etc/passwd", "C:\\Windows\\x", "\\\\host\\share\\x", "a&b", "a|b", "%PATH%", "a b", "--config=evil.ts", "--grep=\"x\"", "-c", "x^y", "a\nb"],
+      // A flag value is a path too, and a reporter only a built-in one: a path would load code from anywhere.
+      ...["--reporter=./evil.js", "--reporter=/tmp/x.js", "--reporter=../../x.js", "--reporter=\\\\host@SSL\\share\\r.js", "--reporter=list,./x.js", "--project=../other", "--project=/etc", "--project=C:x"],
+    ];
+    for (const bad of badArgs) {
       expect(() => run([bad]), bad).toThrow(HostCommandRefused);
     }
   });
@@ -95,12 +117,24 @@ describe("host command checks", () => {
       expect(() => hostCwd(dir, "e2e/../../x")).toThrow(/outside the project/);
       expect(() => hostCwd(dir, "missing")).toThrow(/not a folder/);
     });
+
+    it("refuses a folder that links outside the project, and allows a name starting with ..", async () => {
+      const elsewhere = await mkdtemp(join(tmpdir(), "agent-qa-elsewhere-"));
+      try {
+        await symlink(elsewhere, join(dir, "linked"), "dir");
+        expect(() => hostCwd(dir, "linked")).toThrow(/links outside the project/);
+      } finally {
+        await rm(elsewhere, { recursive: true, force: true });
+      }
+      await mkdir(join(dir, "..e2e"));
+      expect(hostCwd(dir, "..e2e")).toBe(join(dir, "..e2e"));
+    });
   });
 
-  it("drops Agent-QA's own secrets from the environment and turns colour off", () => {
+  it("drops Agent-QA's own secrets, stops npx installing packages, and turns colour off", () => {
     const config = configSchema.parse({ version: 1, atlassian: { site: "https://acme.atlassian.net", email: "${env:ATL_EMAIL}", token: "${env:ATL_TOKEN}" } });
-    const env = hostEnv({ PATH: "/bin", ATL_TOKEN: "t", ATL_EMAIL: "e", ANTHROPIC_API_KEY: "k", SF_USERNAME: "u" }, config);
-    expect(env).toEqual({ PATH: "/bin", SF_USERNAME: "u", FORCE_COLOR: "0", NO_COLOR: "1" });
+    const env = hostEnv({ PATH: "/bin", ATL_TOKEN: "t", ATL_EMAIL: "e", ANTHROPIC_API_KEY: "k", SF_USERNAME: "u", AGENT_QA_VAULT_KEY: "v", AGENT_QA_OTHER: "o", NPM_CONFIG_YES: "true" }, config);
+    expect(env).toEqual({ PATH: "/bin", SF_USERNAME: "u", npm_config_yes: "false", FORCE_COLOR: "0", NO_COLOR: "1" });
   });
 });
 
@@ -149,6 +183,18 @@ describe("DataAccess.runCommand", () => {
     const audit = new MemoryAuditSink();
     await expect(data({ audit }).runCommand("run-1", { command: [NODE, "-v"], purpose: "p" }, allowed, true)).rejects.toBeInstanceOf(HostCommandRefused);
     expect(audit.entries).toEqual([]);
+  });
+
+  it("stops on a broken agent-qa.yaml instead of using the default rules", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\npolicy:\n  writes:\n    commands: Deny\n");
+    const loose = new DataAccess({
+      root: dir,
+      store: new RunStore(join(dir, "runs")),
+      vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }),
+      audit: new MemoryAuditSink(),
+      mode: "ci",
+    });
+    await expect(loose.runCommand("run-1", request, allowed, true)).rejects.toThrow(/Invalid config/);
   });
 
   it("obeys a deny rule, in CI too, and runs unasked in CI otherwise", async () => {

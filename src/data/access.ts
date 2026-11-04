@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
+import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
 import { ConnectorError, JiraClient, runHostCommand, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
@@ -227,8 +227,10 @@ export class DataAccess implements RequirementsData, XrayData, HostData {
     let config: Config | undefined;
     try {
       config = await this.loadConfig();
-    } catch {
-      // Without a config the default rules apply and no secrets are named.
+    } catch (error) {
+      // No config file: the default rules apply and no secrets are named. A broken one stops here,
+      // since its deny rule and secret names would be lost.
+      if (!(error instanceof ConfigError && error.code === "NOT_FOUND")) throw error;
     }
     const policy = this.policy(config ?? DEFAULT_RULES_CONFIG);
     const { service } = await this.run(runId);

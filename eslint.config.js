@@ -59,6 +59,8 @@ const restrictedImports = (blockFs, allowSpawn = false) => [
       ...(blockFs ? FS_MODULES.map((name) => ({ name, allowImportNames: FS_READS, allowTypeImports: true, message: FS_MESSAGE })) : []),
       ...ALWAYS_BLOCKED.filter((rule) => !(allowSpawn && rule.name === "cross-spawn")),
     ],
+    // Deep imports reach the same code: only the spawner's plain "cross-spawn" import is allowed.
+    patterns: [{ group: ["cross-spawn/*", "child_process/*", "node:child_process/*"], message: ALWAYS_BLOCKED[0].message }],
   },
 ];
 
@@ -70,7 +72,7 @@ const restrictedSyntax = (blockFs) => [
     message: "Dynamic import() needs a literal path so module boundaries can be checked.",
   },
   {
-    selector: `ImportExpression[source.value=/^(node:)?(${blockFs ? "fs(\\/promises)?|" : ""}child_process|module|worker_threads)$/]`,
+    selector: `ImportExpression[source.value=/^(node:)?(${blockFs ? "fs(\\/promises)?|" : ""}child_process|module|worker_threads)$|^cross-spawn(\\/.*)?$/]`,
     message: FS_MESSAGE,
   },
   // Loads fs without an import (Node 20.16+), or reaches native bindings: by name

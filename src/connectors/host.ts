@@ -66,21 +66,32 @@ class Tail {
   }
 }
 
+/** After a stop request, how long the tree has to clean up (Playwright closes browsers and its web server) before SIGKILL. */
+const KILL_GRACE_MS = 3_000;
+/** After the program exits, how long to wait for a process it left behind to let go of the output pipes. */
+const PIPE_GRACE_MS = 2_000;
+
 /** Ends the process and everything it started (a test runner starts browsers and workers). */
 function killTree(child: ReturnType<typeof spawn>): void {
-  if (child.pid === undefined || child.exitCode !== null) return;
+  if (child.pid === undefined) return;
   if (process.platform === "win32") {
-    // taskkill /T ends the whole tree; it is a system program, not a user command.
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    // taskkill /T ends the whole tree. By full path: a taskkill.cmd in the current folder must not run instead.
+    const taskkill = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`;
+    const killer = spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     killer.on("error", () => child.kill("SIGKILL"));
     return;
   }
-  try {
-    // The child leads its own process group (detached), so this reaches its children too.
-    process.kill(-child.pid, "SIGKILL");
-  } catch {
-    child.kill("SIGKILL");
-  }
+  // The child leads its own process group (detached), so this reaches its children too,
+  // even after the child itself has exited. SIGTERM first, so they can clean up.
+  const signal = (name: NodeJS.Signals) => {
+    try {
+      process.kill(-child.pid!, name);
+    } catch {
+      // The group is gone.
+    }
+  };
+  signal("SIGTERM");
+  setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS).unref();
 }
 
 export async function runHostCommand(grant: WriteGrant, options: HostCommandOptions): Promise<HostCommandResult> {
@@ -95,6 +106,9 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    /** Set when the program itself exits; undefined while it runs. */
+    let exited: { code: number | null } | undefined;
+    const timers: NodeJS.Timeout[] = [];
     const child = spawn(program, args, {
       cwd: options.cwd,
       env: options.env,
@@ -102,36 +116,17 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killTree(child);
-    }, options.timeoutMs);
-    const onAbort = () => {
-      aborted = true;
-      killTree(child);
-    };
-    if (options.signal?.aborted) onAbort();
-    else options.signal?.addEventListener("abort", onAbort, { once: true });
-    const done = () => {
-      clearTimeout(timer);
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
       options.signal?.removeEventListener("abort", onAbort);
-    };
-
-    child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
-    child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
-    child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      done();
-      const code = (error as NodeJS.ErrnoException).code;
-      reject(new Error(code === "ENOENT" ? `${program} was not found: is it installed in the repo?` : `${program} could not start (${code ?? error.name})`));
-    });
-    child.on("close", (exitCode) => {
-      if (settled) return;
-      settled = true;
-      done();
+      // A process left behind may still hold the pipes: stop reading so nothing waits on it.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       resolve({
-        exitCode: timedOut || aborted ? null : exitCode,
+        // Killed while running: no exit code. A program that finished on its own keeps its code.
+        exitCode: killedWhileRunning ? null : (exited?.code ?? null),
         timedOut,
         aborted,
         stdout: out.text(),
@@ -139,6 +134,47 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
         truncated: out.dropped || err.dropped,
         durationMs: Date.now() - started,
       });
+    };
+    let killedWhileRunning = false;
+    const stop = () => {
+      if (!exited) killedWhileRunning = true;
+      killTree(child);
+      // A hard limit: whatever the tree does, the call returns.
+      timers.push(setTimeout(finish, KILL_GRACE_MS + PIPE_GRACE_MS));
+    };
+    timers.push(
+      setTimeout(() => {
+        timedOut = true;
+        stop();
+      }, options.timeoutMs),
+    );
+    const onAbort = () => {
+      aborted = true;
+      stop();
+    };
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      options.signal?.removeEventListener("abort", onAbort);
+      const code = (error as NodeJS.ErrnoException).code;
+      reject(new Error(code === "ENOENT" ? `${program} was not found: is it installed in the repo?` : `${program} could not start (${code ?? error.name})`));
     });
+    child.on("exit", (code) => {
+      exited = { code };
+      // Wait briefly for the rest of the output, then return even if a leftover process keeps the pipes open.
+      timers.push(
+        setTimeout(() => {
+          killTree(child); // whatever is left in its process group
+          finish();
+        }, PIPE_GRACE_MS),
+      );
+    });
+    child.on("close", finish);
   });
 }

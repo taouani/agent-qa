@@ -45,6 +45,12 @@ describe("module boundaries", () => {
     expect(await lint("src/connectors/other.ts", 'import spawn from "cross-spawn";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
     expect(await lint("src/data/x.ts", 'import { spawn } from "node:child_process";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
     expect(await lint("src/connectors/host.ts", 'import { spawn } from "node:child_process";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
+    // Deep and dynamic imports reach the same code.
+    for (const path of ["cross-spawn/index.js", "cross-spawn/lib/parse.js"]) {
+      expect(await lint("src/data/x.ts", `import s from "${path}";\nexport { s };\n`), path).toContain("@typescript-eslint/no-restricted-imports");
+    }
+    expect(await lint("src/data/x.ts", 'export const s = import("cross-spawn");\n')).toContain("no-restricted-syntax");
+    expect(await lint("src/data/x.ts", 'export const s = import("cross-spawn/lib/parse.js");\n')).toContain("no-restricted-syntax");
   });
 
   it("forbids dynamic imports with computed paths", async () => {

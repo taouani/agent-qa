@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { PROVIDER_KEY_ENV, type Config } from "../core/index.js";
 
@@ -35,11 +35,17 @@ export const DEFAULT_TIMEOUT_MS = 15 * 60_000;
 export const MAX_TIMEOUT_MS = 60 * 60_000;
 export const MAX_OUTPUT_BYTES = 256 * 1024;
 
-/** Flags a workflow may add, by prefix: the ones the run-and-fix loop needs, nothing that loads other code. */
+/** Flags a workflow may add, by prefix: the ones the run-and-fix loop needs. Values are checked like paths, and reporters by name. */
 export const ALLOWED_FLAGS = ["--reporter=", "--retries=", "--workers=", "--grep=", "--grep-invert=", "--project=", "--repeat-each=", "--max-failures=", "--timeout=", "--tags="];
 /** Characters an argument may hold. No quotes, %, ^, !, &, |, <, > or spaces: nothing a shell or cmd.exe could read as syntax. */
 const SAFE_ARG = /^[\p{L}\p{N}_@+=:,./\\-]{1,300}$/u;
 const SAFE_FLAG_VALUE = /^[\p{L}\p{N}_@+=:,./\\ -]{0,300}$/u;
+/** Playwright's built-in reporters: a path here would load a module from anywhere. */
+export const BUILTIN_REPORTERS = ["list", "line", "dot", "json", "junit", "html", "blob", "github", "null"];
+
+/** Relative, on this drive, with no `..`: nothing that points outside the project. */
+const insideProject = (value: string) =>
+  !isAbsolute(value) && !/^[A-Za-z]:/.test(value) && !/^[\\/]/.test(value) && !value.split(/[\\/]/).includes("..");
 
 export class HostCommandRefused extends Error {
   constructor(message: string) {
@@ -52,9 +58,12 @@ const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, 
 
 /** The folder to run in, inside the root. */
 export function hostCwd(root: string, cwd = "."): string {
+  const outside = (from: string, to: string) => {
+    const rel = relative(from, to);
+    return isAbsolute(rel) || rel.split(sep).includes("..");
+  };
   const folder = resolve(root, cwd);
-  const rel = relative(resolve(root), folder);
-  if (rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("..")) throw new HostCommandRefused(`${cwd} is outside the project folder`);
+  if (outside(resolve(root), folder)) throw new HostCommandRefused(`${cwd} is outside the project folder`);
   let isDir = false;
   try {
     isDir = statSync(folder).isDirectory();
@@ -62,6 +71,8 @@ export function hostCwd(root: string, cwd = "."): string {
     // Reported below.
   }
   if (!isDir) throw new HostCommandRefused(`${cwd} is not a folder in the project`);
+  // A symlink inside the project can point elsewhere, and the config there would run.
+  if (outside(realpathSync(root), realpathSync(folder))) throw new HostCommandRefused(`${cwd} links outside the project folder`);
   return folder;
 }
 
@@ -77,11 +88,18 @@ export function checkHostCommand(request: HostCommandRequest, allowed: string[][
   for (const arg of args) {
     if (arg.startsWith("-")) {
       const flag = ALLOWED_FLAGS.find((f) => arg.startsWith(f));
-      if (!flag || !SAFE_FLAG_VALUE.test(arg.slice(flag.length)) || /["%^!&<>]/.test(arg)) throw new HostCommandRefused(`the argument ${JSON.stringify(arg.slice(0, 40))} isn't allowed`);
+      const value = flag ? arg.slice(flag.length) : "";
+      const ok =
+        flag !== undefined &&
+        SAFE_FLAG_VALUE.test(value) &&
+        !/["%^!&<>]/.test(arg) &&
+        insideProject(value) &&
+        (flag !== "--reporter=" || value.split(",").every((r) => BUILTIN_REPORTERS.includes(r)));
+      if (!ok) throw new HostCommandRefused(`the argument ${JSON.stringify(arg.slice(0, 40))} isn't allowed`);
       continue;
     }
     // A path: relative, inside the folder, with nothing a shell reads as syntax.
-    if (!SAFE_ARG.test(arg) || isAbsolute(arg) || /^[A-Za-z]:/.test(arg) || arg.split(/[\\/]/).includes("..")) {
+    if (!SAFE_ARG.test(arg) || !insideProject(arg)) {
       throw new HostCommandRefused(`the argument ${JSON.stringify(arg.slice(0, 40))} isn't a path inside the project`);
     }
   }
@@ -90,8 +108,10 @@ export function checkHostCommand(request: HostCommandRequest, allowed: string[][
 
 /**
  * The environment for a host command: this process's, without the secrets
- * Agent-QA itself uses (model keys and every `${env:NAME}` the config names),
- * which the tests don't need. Colour codes are turned off so output reads as text.
+ * Agent-QA itself uses (model keys, every `${env:NAME}` the config names, and
+ * every AGENT_QA_* variable, such as the vault key), which the tests don't need.
+ * `npx` may not install a missing package: with no terminal it would do so unasked.
+ * Colour codes are turned off so output reads as text.
  */
 export function hostEnv(env: NodeJS.ProcessEnv, config: Config | undefined): NodeJS.ProcessEnv {
   const drop = new Set<string>(Object.values(PROVIDER_KEY_ENV).filter((v): v is string => typeof v === "string"));
@@ -100,9 +120,10 @@ export function hostEnv(env: NodeJS.ProcessEnv, config: Config | undefined): Nod
   const upper = new Set([...drop].map((d) => d.toUpperCase()));
   for (const [name, value] of Object.entries(env)) {
     // Windows names are case-insensitive.
-    if (drop.has(name) || (process.platform === "win32" && upper.has(name.toUpperCase()))) continue;
+    if (drop.has(name) || /^AGENT_QA_/i.test(name) || /^npm_config_yes$/i.test(name) || (process.platform === "win32" && upper.has(name.toUpperCase()))) continue;
     out[name] = value;
   }
+  out.npm_config_yes = "false";
   out.FORCE_COLOR = "0";
   out.NO_COLOR = "1";
   return out;
