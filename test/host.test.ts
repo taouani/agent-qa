@@ -87,6 +87,26 @@ describe("runHostCommand (S2-1)", () => {
     expect(r.durationMs).toBeLessThan(10_000);
   });
 
+  it.skipIf(process.platform === "win32")("kills a process that ignores SIGTERM after the grace period", async () => {
+    // A member of the program's group that ignores SIGTERM and doesn't hold the output pipes.
+    const stubborn = `const c = require("child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000)"], { stdio: "ignore" }); console.error("leftover:" + c.pid); setTimeout(() => {}, 60000)`;
+    const r = await withGrant((g) => runHostCommand(g, { ...base, timeoutMs: 1_000, argv: [NODE, "-e", stubborn] }));
+    const pid = Number(/leftover:(\d+)/.exec(r.stderr)?.[1]);
+    expect(pid).toBeGreaterThan(0);
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await new Promise((done) => setTimeout(done, 4_500));
+    const survived = alive();
+    endLeftover(r.stderr);
+    expect(survived).toBe(false);
+  }, 15_000);
+
   it("says when the program isn't installed", async () => {
     await expect(withGrant((g) => runHostCommand(g, { ...base, argv: ["agent-qa-no-such-program-x1"] }))).rejects.toThrow(/was not found/);
   });

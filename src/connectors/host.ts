@@ -71,32 +71,32 @@ const KILL_GRACE_MS = 3_000;
 /** After the program exits, how long to wait for a process it left behind to let go of the output pipes. */
 const PIPE_GRACE_MS = 2_000;
 
-/**
- * Ends the process and everything it started (a test runner starts browsers and workers).
- * Returns the pending SIGKILL timer, if any, so it can be cancelled once the tree is gone.
- */
-function killTree(child: ReturnType<typeof spawn>): NodeJS.Timeout | undefined {
-  if (child.pid === undefined) return undefined;
+/** Ends the process and everything it started (a test runner starts browsers and workers). */
+function killTree(child: ReturnType<typeof spawn>): void {
+  if (child.pid === undefined) return;
   if (process.platform === "win32") {
     // taskkill /T ends the whole tree. By full path: a taskkill.cmd in the current folder must not run instead.
     const taskkill = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`;
     const killer = spawn(taskkill, ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     killer.on("error", () => child.kill("SIGKILL"));
-    return undefined;
+    return;
   }
   // The child leads its own process group (detached), so this reaches its children too,
   // even after the child itself has exited. SIGTERM first, so they can clean up.
-  const signal = (name: NodeJS.Signals) => {
+  const pid = child.pid;
+  const signal = (name: NodeJS.Signals | 0) => {
     try {
-      process.kill(-child.pid!, name);
+      process.kill(-pid, name);
+      return true;
     } catch {
-      // The group is gone.
+      return false; // the group is gone
     }
   };
   signal("SIGTERM");
-  const later = setTimeout(() => signal("SIGKILL"), KILL_GRACE_MS);
-  later.unref();
-  return later;
+  // Then SIGKILL for whatever ignored SIGTERM, only if the group still exists (its ID is not reused while it does).
+  setTimeout(() => {
+    if (signal(0)) signal("SIGKILL");
+  }, KILL_GRACE_MS).unref();
 }
 
 export async function runHostCommand(grant: WriteGrant, options: HostCommandOptions): Promise<HostCommandResult> {
@@ -114,8 +114,6 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     /** Set when the program itself exits; undefined while it runs. */
     let exited: { code: number | null } | undefined;
     const timers: NodeJS.Timeout[] = [];
-    /** SIGKILL timers: cleared when the pipes close, since the group may be gone and its ID reused. */
-    const kills: NodeJS.Timeout[] = [];
     const child = spawn(program, args, {
       cwd: options.cwd,
       env: options.env,
@@ -123,8 +121,7 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    const finish = (closed = false) => {
-      if (closed) for (const t of kills) clearTimeout(t);
+    const finish = () => {
       if (settled) return;
       settled = true;
       for (const t of timers) clearTimeout(t);
@@ -146,8 +143,7 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     let killedWhileRunning = false;
     const stop = () => {
       killedWhileRunning = true;
-      const kill = killTree(child);
-      if (kill) kills.push(kill);
+      killTree(child);
       // A hard limit: whatever the tree does, the call returns.
       timers.push(setTimeout(() => finish(), KILL_GRACE_MS + PIPE_GRACE_MS));
     };
@@ -184,14 +180,11 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
         setTimeout(() => {
           // What is left in its process group. Not on Windows: there the ID may already belong
           // to another program, and taskkill /T would end it and its children.
-          if (process.platform !== "win32") {
-            const kill = killTree(child);
-            if (kill) kills.push(kill);
-          }
+          if (process.platform !== "win32") killTree(child);
           finish();
         }, PIPE_GRACE_MS),
       );
     });
-    child.on("close", () => finish(true));
+    child.on("close", finish);
   });
 }
