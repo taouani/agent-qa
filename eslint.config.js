@@ -35,7 +35,7 @@ const FS_READS = [
 const FS_MODULES = ["fs", "node:fs", "fs/promises", "node:fs/promises"];
 const FS_MESSAGE = "Disk writes outside the run store, vault, engine state and audit log go through Policy.guard (src/core/policy).";
 /** Modules that can write files by other means. No source file needs them yet. */
-const ALWAYS_BLOCKED = ["child_process", "node:child_process", "module", "node:module", "worker_threads", "node:worker_threads"].map(
+const ALWAYS_BLOCKED = ["child_process", "node:child_process", "cross-spawn", "module", "node:module", "worker_threads", "node:worker_threads"].map(
   (name) => ({ name, message: "Shelling out or loading CommonJS can write files past the policy layer; use Policy.guard." }),
 );
 /**
@@ -45,12 +45,19 @@ const ALWAYS_BLOCKED = ["child_process", "node:child_process", "module", "node:m
  */
 const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts", "src/cli/setup-files.ts"];
 
-const restrictedImports = (blockFs) => [
+/**
+ * The only file that may start a process: the host command runner (S2-1),
+ * which runs nothing but the commands a reviewed framework profile lists, with
+ * a policy grant. It uses cross-spawn (Windows .cmd shims), never child_process.
+ */
+const SPAWNERS = ["src/connectors/host.ts"];
+
+const restrictedImports = (blockFs, allowSpawn = false) => [
   "error",
   {
     paths: [
       ...(blockFs ? FS_MODULES.map((name) => ({ name, allowImportNames: FS_READS, allowTypeImports: true, message: FS_MESSAGE })) : []),
-      ...ALWAYS_BLOCKED,
+      ...ALWAYS_BLOCKED.filter((rule) => !(allowSpawn && rule.name === "cross-spawn")),
     ],
   },
 ];
@@ -114,6 +121,10 @@ export default tseslint.config(
         },
       ],
     },
+  },
+  {
+    files: SPAWNERS,
+    rules: { "@typescript-eslint/no-restricted-imports": restrictedImports(true, true) },
   },
   {
     files: FS_WRITERS,

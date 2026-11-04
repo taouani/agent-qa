@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
-import { ConnectorError, JiraClient, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
+import { ConnectorError, JiraClient, runHostCommand, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
+import { checkHostCommand, DEFAULT_TIMEOUT_MS, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
 /**
@@ -51,6 +52,17 @@ export interface XrayData {
   pushToXray(runId: string, tokensRun: string, cases: PushCase[], approved: boolean): Promise<{ status: "done"; result: XrayPushResult } | { status: "declined" }>;
 }
 
+/** Running the host repo's own commands (S2-1): the test run in run-and-fix. */
+export interface HostData {
+  /**
+   * Runs one of `allowed` (the reviewed profile's commands) in the project,
+   * through `Policy.guard` (target commands). `approved` is the user's answer
+   * for this run, which an `ask` rule needs: the workflow asks once per run.
+   * Output comes back masked with the run's vault.
+   */
+  runCommand(runId: string, request: HostCommandRequest, allowed: string[][], approved: boolean): Promise<{ status: "done"; result: HostCommandOutcome } | { status: "declined" }>;
+}
+
 export interface DataAccessOptions {
   /** Project folder: `agent-qa.yaml` and `.agent-qa/vault/` live here. */
   root: string;
@@ -71,6 +83,8 @@ export interface DataAccessOptions {
   mode?: Mode;
   /** Where write decisions are recorded; default `.agent-qa/audit.jsonl`. */
   audit?: AuditSink;
+  /** Replace the command runner, for tests. */
+  host?: typeof runHostCommand;
 }
 
 /** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
@@ -78,12 +92,15 @@ export function secretSources(env: NodeJS.ProcessEnv = process.env): SecretSourc
   return { env, keychain: keychainLookup() };
 }
 
+/** The default write rules, for a command run in a project with no agent-qa.yaml. */
+const DEFAULT_RULES_CONFIG: Config = configSchema.parse({ version: 1 });
+
 /** A sealed JQL input: the vault token that stands for it. */
 const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData {
+export class DataAccess implements RequirementsData, XrayData, HostData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
@@ -198,6 +215,41 @@ export class DataAccess implements RequirementsData, XrayData {
       return result;
     });
     return outcome.status === "done" ? { status: "done" as const, result: outcome.value } : { status: "declined" as const };
+  }
+
+  async runCommand(runId: string, request: HostCommandRequest, allowed: string[][], approved: boolean) {
+    // "No" never reaches the policy: under an `allow` rule it would not ask again.
+    if (!approved) return { status: "declined" as const };
+    // Checked before anything is asked or logged: a refused command never reaches the audit log as approved.
+    const argv = checkHostCommand(request, allowed);
+    const cwd = hostCwd(this.options.root, request.cwd);
+    const timeoutMs = Math.min(Math.max(request.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000), MAX_TIMEOUT_MS);
+    let config: Config | undefined;
+    try {
+      config = await this.loadConfig();
+    } catch {
+      // Without a config the default rules apply and no secrets are named.
+    }
+    const policy = this.policy(config ?? DEFAULT_RULES_CONFIG);
+    const { service } = await this.run(runId);
+    // The profile's command, never the added arguments (a test name can be someone's text); masked all the same.
+    const summary = service.maskText(`Run ${request.command.join(" ")} in ${request.cwd ?? "."} (${request.purpose})`, "host.summary");
+    const run = this.options.host ?? runHostCommand;
+    const outcome = await policy.guard({ target: "commands", summary, runId }, (grant) =>
+      run(grant, { argv, cwd, env: hostEnv(this.options.env ?? process.env, config), timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES }),
+    );
+    if (outcome.status !== "done") return { status: "declined" as const };
+    const r = outcome.value;
+    const result: HostCommandOutcome = {
+      exitCode: r.exitCode,
+      timedOut: r.timedOut,
+      stdout: service.maskText(r.stdout, "host.stdout"),
+      stderr: service.maskText(r.stderr, "host.stderr"),
+      truncated: r.truncated,
+      durationMs: r.durationMs,
+    };
+    await service.saveVault();
+    return { status: "done" as const, result };
   }
 
   private async loadConfig(): Promise<Config> {

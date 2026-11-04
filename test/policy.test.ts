@@ -15,7 +15,7 @@ import {
 } from "../src/core/index.js";
 
 const defaults = () => parseConfig("version: 1\n").policy.writes;
-const allowAll = { xray: "allow", confluence: "allow", testCode: "allow", jira: "allow" } as const;
+const allowAll = { xray: "allow", confluence: "allow", testCode: "allow", jira: "allow", commands: "allow" } as const;
 
 function policy(mode: Mode, rules = defaults(), confirm?: () => Promise<boolean>) {
   const audit = new MemoryAuditSink();
@@ -40,6 +40,12 @@ describe("Policy.decide", () => {
     expect(open.decide("xray")).toEqual({ kind: "allow" });
     expect(open.decide("testCode")).toEqual({ kind: "pull-request" });
     expect(policy("ci", { ...allowAll, testCode: "deny" }).p.decide("testCode")).toMatchObject({ kind: "deny" });
+  });
+
+  it("asks before running the repo's commands in the IDE; in CI they run unless denied", () => {
+    expect(policy("ide").p.decide("commands")).toEqual({ kind: "ask" });
+    expect(policy("ci").p.decide("commands")).toEqual({ kind: "allow" });
+    expect(policy("ci", { ...allowAll, commands: "deny" }).p.decide("commands")).toMatchObject({ kind: "deny" });
   });
 });
 

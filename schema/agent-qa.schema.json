@@ -357,7 +357,8 @@
           "xray": "ask",
           "confluence": "ask",
           "testCode": "ask",
-          "jira": "deny"
+          "jira": "deny",
+          "commands": "ask"
         }
       },
       "type": "object",
@@ -367,7 +368,8 @@
             "xray": "ask",
             "confluence": "ask",
             "testCode": "ask",
-            "jira": "deny"
+            "jira": "deny",
+            "commands": "ask"
           },
           "type": "object",
           "properties": {
@@ -400,6 +402,15 @@
             },
             "jira": {
               "default": "deny",
+              "type": "string",
+              "enum": [
+                "allow",
+                "ask",
+                "deny"
+              ]
+            },
+            "commands": {
+              "default": "ask",
               "type": "string",
               "enum": [
                 "allow",

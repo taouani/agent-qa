@@ -40,6 +40,13 @@ describe("module boundaries", () => {
     expect(await lint("src/cli/x.mts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
   });
 
+  it("lets only the host command runner start processes", async () => {
+    expect(await lint("src/connectors/host.ts", 'import spawn from "cross-spawn";\nexport { spawn };\n')).toEqual([]);
+    expect(await lint("src/connectors/other.ts", 'import spawn from "cross-spawn";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
+    expect(await lint("src/data/x.ts", 'import { spawn } from "node:child_process";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
+    expect(await lint("src/connectors/host.ts", 'import { spawn } from "node:child_process";\nexport { spawn };\n')).toContain("@typescript-eslint/no-restricted-imports");
+  });
+
   it("forbids dynamic imports with computed paths", async () => {
     expect(await lint("src/cli/x.ts", "const p = 'x';\nexport const m = import(p);\n")).toContain("no-restricted-syntax");
   });
