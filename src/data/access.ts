@@ -1,9 +1,22 @@
 import { join } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
-import { ConnectorError, JiraClient, runHostCommand, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, JiraClient, runHostCommand, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
-import { checkHostCommand, DEFAULT_TIMEOUT_MS, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
+import { createHash } from "node:crypto";
+import {
+  commandList,
+  FRAMEWORK_PROFILE_SPEC,
+  FRAMEWORK_PROFILE_TEMPLATE_VERSION,
+  PROFILE_FILE,
+  ProfileError,
+  readSavedProfile,
+  reviewedPart,
+  scanFramework,
+  type FrameworkProfile,
+  type SavedProfile,
+} from "./profile.js";
+import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 
 /**
@@ -55,12 +68,28 @@ export interface XrayData {
 /** Running the host repo's own commands (S2-1): the test run in run-and-fix. */
 export interface HostData {
   /**
-   * Runs one of `allowed` (the reviewed profile's commands) in the project,
-   * through `Policy.guard` (target commands). `approved` is the user's answer
-   * for this run, which an `ask` rule needs: the workflow asks once per run.
-   * Output comes back masked with the run's vault.
+   * Runs one of the reviewed profile's commands (agent-qa.profile.json) in its
+   * folder, through `Policy.guard` (target commands). Nothing else can run: the
+   * list comes from the file a person accepted, never from the caller.
+   * `approved` is the user's answer for this run, which an `ask` rule needs:
+   * the workflow asks once per run. Output comes back masked with the run's vault.
    */
-  runCommand(runId: string, request: HostCommandRequest, allowed: string[][], approved: boolean): Promise<{ status: "done"; result: HostCommandOutcome } | { status: "declined" }>;
+  runCommand(runId: string, request: HostCommandRequest, approved: boolean): Promise<{ status: "done"; result: HostCommandOutcome } | { status: "declined" }>;
+}
+
+export interface ProfileData {
+  /** Scans the repo's Playwright project once per run (nothing in it runs) and keeps it as framework-profile@1. Every repo text comes back masked with the run's vault. */
+  frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile>;
+  /** The reviewed profile, or undefined. Throws ProfileError when the file is broken. */
+  savedProfile(): Promise<SavedProfile | undefined>;
+  /**
+   * Scans again and saves the reviewed part (folder, kind, commands) to
+   * agent-qa.profile.json through `Policy.guard` (target testCode). Call it
+   * only with the person's yes: it decides what Agent-QA may run. It saves what
+   * this run showed the person (framework-profile@1); if the repo's folder, kind
+   * or commands changed since, nothing is saved.
+   */
+  saveProfile(runId: string, folder?: string): Promise<{ status: "done"; profile: SavedProfile } | { status: "declined" }>;
 }
 
 export interface DataAccessOptions {
@@ -100,10 +129,11 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
+  private readonly profiles = new Map<string, Promise<FrameworkProfile>>();
 
   constructor(private readonly options: DataAccessOptions) {}
 
@@ -217,11 +247,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData {
     return outcome.status === "done" ? { status: "done" as const, result: outcome.value } : { status: "declined" as const };
   }
 
-  async runCommand(runId: string, request: HostCommandRequest, allowed: string[][], approved: boolean) {
+  async runCommand(runId: string, request: HostCommandRequest, approved: boolean) {
     // "No" never reaches the policy: under an `allow` rule it would not ask again.
     if (!approved) return { status: "declined" as const };
+    const saved = await this.savedProfile();
+    if (!saved) throw new HostCommandRefused(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     // Checked before anything is asked or logged: a refused command never reaches the audit log as approved.
-    const argv = checkHostCommand(request, allowed);
+    request = { ...request, cwd: request.cwd ?? saved.folder };
+    const argv = checkHostCommand(request, commandList(saved.commands));
     const cwd = hostCwd(this.options.root, request.cwd);
     const timeoutMs = Math.min(Math.max(request.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1_000), MAX_TIMEOUT_MS);
     let config: Config | undefined;
@@ -252,6 +285,87 @@ export class DataAccess implements RequirementsData, XrayData, HostData {
     };
     await service.saveVault();
     return { status: "done" as const, result };
+  }
+
+  async frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile> {
+    // Scanned once per run: the question, the review and the save all use what the person saw.
+    let pending = this.profiles.get(runId);
+    if (!pending) {
+      pending = (async () => {
+        const cached = await this.options.store.readArtifact(runId, FRAMEWORK_PROFILE_SPEC);
+        if (cached) return cached.data;
+        const masked = await this.maskProfile(runId, scanFramework(this.options.root, folder));
+        const hash = createHash("sha256").update(JSON.stringify(masked)).digest("hex");
+        await this.options.store.writeArtifact(runId, FRAMEWORK_PROFILE_SPEC, masked, {
+          inputs: [{ kind: "repo-folder", ref: masked.folder, hash }],
+          templateVersion: FRAMEWORK_PROFILE_TEMPLATE_VERSION,
+        });
+        return masked;
+      })();
+      this.profiles.set(runId, pending);
+      // The run folder keeps it too: only recent runs stay in memory.
+      if (this.profiles.size > 64) this.profiles.delete(this.profiles.keys().next().value!);
+      pending.catch(() => this.profiles.delete(runId));
+    }
+    return pending;
+  }
+
+  /**
+   * Every text the repo wrote, masked with the run's vault: the scan reaches the
+   * host model as the review's context. Only the kind and the commands, which
+   * the scan picks from fixed lists, stay as they are.
+   */
+  private async maskProfile(runId: string, profile: FrameworkProfile): Promise<FrameworkProfile> {
+    const { service } = await this.run(runId);
+    const mask = <T>(value: T, field: string): T => {
+      if (typeof value === "string") return service.maskText(value, field) as T;
+      if (Array.isArray(value)) return value.map((v) => mask(v, field)) as T;
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [service.maskText(k, field), mask(v, field)])) as T;
+      return value;
+    };
+    // Names Agent-QA fixed itself (kind, commands, step keywords, locator forms) stay as they are.
+    const { kind, commands, locators, locatorRanking, steps, ...rest } = profile;
+    const masked = {
+      ...mask(rest, "profile"),
+      kind,
+      ...(commands ? { commands } : {}),
+      locators,
+      locatorRanking,
+      steps: steps.map(({ keyword, kind: k, line, ...s }) => ({ keyword, kind: k, line, ...mask(s, "profile.step") })),
+    } as FrameworkProfile;
+    await service.saveVault();
+    return masked;
+  }
+
+  async savedProfile(): Promise<SavedProfile | undefined> {
+    return readSavedProfile(this.options.root);
+  }
+
+  async saveProfile(runId: string, folder?: string) {
+    // What the person saw, from the run folder; then the repo now, masked the same way.
+    const shown = await this.frameworkProfile(runId, folder);
+    const scanned = scanFramework(this.options.root, folder);
+    if (scanned.kind === "empty" || !scanned.commands) throw new ProfileError(`no Playwright project in ${scanned.folder}: nothing to save`);
+    if (reviewedPart(shown) !== reviewedPart(await this.maskProfile(runId, scanned))) {
+      throw new ProfileError("the project changed since the profile was shown (folder, kind or commands): run the profile workflow again");
+    }
+    const profile: SavedProfile = { version: 1, folder: scanned.folder, kind: scanned.kind, commands: scanned.commands, reviewedAt: new Date().toISOString() };
+    const config = await this.configOrDefault();
+    const outcome = await this.policy(config).guard(
+      { target: "testCode", summary: `Save ${PROFILE_FILE} (${scanned.kind} in ${scanned.folder}, ${commandList(scanned.commands).length} command(s))`, runId },
+      (grant) => writeRepoFile(grant, this.options.root, PROFILE_FILE, `${JSON.stringify(profile, null, 2)}\n`),
+    );
+    return outcome.status === "done" ? { status: "done" as const, profile } : { status: "declined" as const };
+  }
+
+  /** The config, or the default rules when there is no agent-qa.yaml at all. A broken one is an error. */
+  private async configOrDefault(): Promise<Config> {
+    try {
+      return await this.loadConfig();
+    } catch (error) {
+      if (error instanceof ConfigError && error.code === "NOT_FOUND") return DEFAULT_RULES_CONFIG;
+      throw error;
+    }
   }
 
   private async loadConfig(): Promise<Config> {

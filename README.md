@@ -40,6 +40,8 @@ npx -y sf-agent-qa@next run test-cases --jql "project = ABC AND fixVersion = 2.4
 
 `--yes` accepts the review as unattended and never pushes; `--accept push` pushes. In CI (`--ci`), a push also needs `policy.writes.xray: allow` in `agent-qa.yaml`, because `ask` is denied when nobody can be asked. Each run's files are in `.agent-qa/runs/`, with a cost report. To check that no personal data reaches a model, see [docs/harness.md](docs/harness.md).
 
+**Playwright (in progress, slice 2).** `agent-qa profile` reads your repo's Playwright project, including playwright-bdd steps and page objects, without running it. `agent-qa run profile --accept review` saves `agent-qa.profile.json`, the only commands Agent-QA may run in your repo. See [docs/profile.md](docs/profile.md).
+
 ## Development
 
 Requires Node.js 20 or later.

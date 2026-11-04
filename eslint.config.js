@@ -41,9 +41,10 @@ const ALWAYS_BLOCKED = ["child_process", "node:child_process", "cross-spawn", "m
 /**
  * The only files allowed to write to disk directly: engine state, run folders,
  * vault and audit log, and the setup-file writer of `agent-qa init`, limited
- * to agent-qa.yaml, .vscode/mcp.json and .gitignore (never run data or model output).
+ * to agent-qa.yaml, .vscode/mcp.json and .gitignore (never run data or model output),
+ * and the repo writer, which needs a `testCode` grant from Policy.guard.
  */
-const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts", "src/cli/setup-files.ts"];
+const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/core/policy/audit.ts", "src/masking/vault/vault.ts", "src/cli/setup-files.ts", "src/connectors/repo-files.ts"];
 
 /**
  * The only file that may start a process: the host command runner (S2-1),

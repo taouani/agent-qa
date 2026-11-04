@@ -51,6 +51,7 @@
     "schema": "npm run build && node scripts/write-schema.mjs"
   },
   "devDependencies": {
+    "@babel/types": "^7.29.8",
     "@changesets/cli": "^2.31.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^20.19.43",
@@ -69,6 +70,7 @@
     "@ai-sdk/openai": "^4.0.108",
     "@ai-sdk/openai-compatible": "^3.0.84",
     "@ai-sdk/xai": "^5.0.38",
+    "@babel/parser": "^7.29.9",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "ai": "^7.0.162",
     "commander": "^12.1.0",

@@ -19,7 +19,8 @@ export type EngineErrorCode =
   | "RUN_COLLISION"
   | "STEP_MISMATCH"
   | "RUN_CLOSED"
-  | "CONTEXT_FAILED";
+  | "CONTEXT_FAILED"
+  | "NEEDS_PERSON";
 
 export class EngineError extends Error {
   constructor(
@@ -83,6 +84,8 @@ export interface SubmitOptions {
    * calls that take it (submit, cancel) wait until the person answers or it times out.
    */
   approve?: (approval: Approval & { output: unknown }) => Promise<unknown>;
+  /** The output is the person's own answer (a terminal prompt or an --accept flag), not a model's. */
+  byPerson?: boolean;
 }
 
 /**
@@ -164,6 +167,13 @@ export class WorkflowEngine {
     return this.render(registered, state);
   }
 
+  /** Whether any step asks a model (a generate step). A workflow of confirm steps only needs none. */
+  usesModel(workflowId: string): boolean {
+    const registered = this.workflows.get(workflowId);
+    if (!registered) throw new EngineError("UNKNOWN_WORKFLOW", `Unknown workflow: ${workflowId}`);
+    return registered.workflow.steps.some((s) => s.kind === "generate");
+  }
+
   /** A workflow's confirm steps, and whether each has fixed answers (see `StepDefinition.answers`). */
   confirmSteps(workflowId: string): Array<{ id: string; answers: boolean }> {
     const registered = this.workflows.get(workflowId);
@@ -232,6 +242,9 @@ export class WorkflowEngine {
       if (options.approve && def.approval && def.answers) {
         const approval = await this.approvalOf(state, def);
         output = await options.approve({ ...approval, output });
+      } else if (def.approval?.personOnly && def.answers && !options.byPerson && JSON.stringify(output) !== JSON.stringify(def.answers.no)) {
+        // Nothing is recorded: the step stays open for the person's answer.
+        throw new EngineError("NEEDS_PERSON", `Only the user can approve ${stepId}, and this host can't ask them directly. Nothing was saved. Tell the user to run this themselves in their own terminal (don't run it for them): agent-qa run ${workflow.id} --accept ${stepId}`, [], runId);
       }
 
       const parsed = def.outputSchema.safeParse(output);

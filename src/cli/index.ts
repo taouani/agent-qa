@@ -3,7 +3,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, type KeptRate } from "../harness/index.js";
 import { ApiDriver, ModelConfigError, StaticDriver, type ModelDriver } from "../llm/index.js";
-import { DataAccess, formatDoctor, runDoctor, secretSources } from "../data/index.js";
+import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 import { initCommand } from "./init.js";
@@ -85,16 +85,15 @@ export function buildProgram(): Command {
       process.exitCode = await runCommand({ ...rest, ...(workflow ? { workflow } : {}), root, env });
     });
 
-  const planned: Array<[string, string]> = [["profile", "build or refresh the framework profile"]];
-  for (const [name, description] of planned) {
-    program
-      .command(name)
-      .description(`${description} (not implemented yet)`)
-      .action(() => {
-        process.stderr.write(`agent-qa ${name.split(" ")[0]}: not implemented yet\n`);
-        process.exitCode = 2;
-      });
-  }
+  program
+    .command("profile")
+    .description(`show what Agent-QA reads from the repo's Playwright project, and whether ${PROFILE_FILE} matches it (exit 0 matches, 1 not saved or differs, 2 error); save it with: agent-qa run profile --accept review`)
+    .option("--folder <dir>", "the Playwright project's folder (default: found automatically)")
+    .option("--json", "print the full scan as JSON")
+    .option("--cwd <dir>", "project folder (default: the current folder)")
+    .action((opts: { folder?: string; json?: boolean; cwd?: string }) => {
+      process.exitCode = profileCommand({ root: resolve(opts.cwd ?? process.cwd()), ...(opts.folder ? { folder: opts.folder } : {}), json: opts.json ?? false });
+    });
   program
     .command("doctor")
     .description("check config, credentials and environment")
@@ -189,6 +188,32 @@ export function buildProgram(): Command {
     });
 
   return program;
+}
+
+/**
+ * `agent-qa profile`: scans and prints, writes nothing. The scan is the repo's
+ * own code, printed in the user's terminal only; no model sees it here.
+ */
+export function profileCommand(opts: { root: string; folder?: string; json: boolean }, out: (s: string) => void = (s) => process.stdout.write(s), err: (s: string) => void = (s) => process.stderr.write(s)): number {
+  let scanned;
+  let saved;
+  try {
+    scanned = scanFramework(opts.root, opts.folder);
+    saved = readSavedProfile(opts.root);
+  } catch (error) {
+    if (!(error instanceof ProfileError || error instanceof HostCommandRefused)) throw error;
+    err(`agent-qa profile: ${error.message}\n`);
+    return 2;
+  }
+  const same =
+    saved !== undefined && scanned.commands !== undefined && saved.folder === scanned.folder && saved.kind === scanned.kind && JSON.stringify(commandList(saved.commands)) === JSON.stringify(commandList(scanned.commands));
+  const status = !saved ? `${PROFILE_FILE}: not saved yet` : same ? `${PROFILE_FILE}: matches (reviewed ${saved.reviewedAt})` : `${PROFILE_FILE}: differs from the repo now; review it again`;
+  if (opts.json) out(JSON.stringify({ profile: scanned, saved: saved ?? null, matches: same }, null, 2) + "\n");
+  else {
+    out(describeProfile(scanned) + "\n\n" + status + "\n");
+    if (!same && scanned.kind !== "empty") out(`Save it with: agent-qa run profile --accept review${opts.folder ? ` --input '{"folder":"${opts.folder}"}'` : ""}\n`);
+  }
+  return same ? 0 : 1;
 }
 
 /** One line on the kept rate of the project's reviewed runs. */
