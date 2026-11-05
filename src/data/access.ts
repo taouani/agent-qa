@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
 import {
   commandList,
+  findProjectFolder,
   FRAMEWORK_PROFILE_SPEC,
   FRAMEWORK_PROFILE_TEMPLATE_VERSION,
   PROFILE_FILE,
@@ -113,6 +114,17 @@ export interface ProfileData {
    * or commands changed since, nothing is saved.
    */
   saveProfile(runId: string, folder?: string): Promise<{ status: "done"; profile: SavedProfile } | { status: "declined" }>;
+  /**
+   * Starts a new Playwright repo (S2-12) in a folder with no Playwright
+   * project and no package.json: creates every file, never replacing one
+   * (all or none), then saves agent-qa.profile.json for it, marked reviewed,
+   * since the person's yes covered the commands it lists. Through
+   * `Policy.guard` (target testCode), never in CI. Call it only with the
+   * person's yes.
+   */
+  scaffoldRepo(runId: string, folder: string | undefined, kind: SavedProfile["kind"], files: (folder: string) => ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<{ status: "done"; written: string[]; profile: SavedProfile } | { status: "declined" }>;
+  /** Why a new repo can't be started in `folder`, or undefined when it can. Paths only. */
+  scaffoldBlocker(folder: string | undefined, files: ReadonlyArray<{ path: string }>): Promise<string | undefined>;
 }
 
 /** What script generation (S2-6) reads from the repo beyond the profile. */
@@ -881,6 +893,78 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       (grant) => writeRepoFile(grant, this.options.root, PROFILE_FILE, `${JSON.stringify(profile, null, 2)}\n`),
     );
     return outcome.status === "done" ? { status: "done" as const, profile } : { status: "declined" as const };
+  }
+
+  async scaffoldBlocker(folder: string | undefined, files: ReadonlyArray<{ path: string }>): Promise<string | undefined> {
+    return (await this.scaffoldTarget(folder, files)).blocked;
+  }
+
+  /**
+   * Where a new repo would go, and why it can't, if it can't. Reads no run:
+   * a workflow's first step asks this before its run exists. The reasons name
+   * no folder, since they reach the host model unmasked.
+   */
+  private async scaffoldTarget(folder: string | undefined, files: ReadonlyArray<{ path: string }>): Promise<{ folder: string; blocked?: string }> {
+    if ((this.options.mode ?? "ide") === "ci") return { folder: ".", blocked: "a new repo is started from the IDE or the terminal, never in CI" };
+    if (folder !== undefined && folder !== "." && !isPlainRelativePath(folder)) return { folder: ".", blocked: "the folder isn't a plain relative path" };
+    let rel: string;
+    try {
+      rel = findProjectFolder(this.options.root, folder);
+    } catch {
+      return { folder: ".", blocked: folder !== undefined ? "the folder doesn't exist inside the project" : "the project already holds more than one Playwright project" };
+    }
+    if (await this.savedProfile()) return { folder: rel, blocked: `${PROFILE_FILE} exists already: this project has a reviewed Playwright profile` };
+    const scanned = scanFramework(this.options.root, rel);
+    if (scanned.kind !== "empty") return { folder: rel, blocked: `the folder already holds a ${scanned.kind} project` };
+    const dir = hostCwd(this.options.root, rel);
+    const taken: string[] = [];
+    for (const f of [{ path: "package.json" }, ...files]) {
+      if (await lstat(join(dir, f.path)).then(() => true, () => false)) taken.push(f.path);
+    }
+    if (taken.length) return { folder: rel, blocked: `the folder already has ${[...new Set(taken)].slice(0, 10).join(", ")}: a new repo only goes into a folder without them` };
+    return { folder: rel };
+  }
+
+  async scaffoldRepo(runId: string, wanted: string | undefined, kind: SavedProfile["kind"], filesFor: (folder: string) => ReadonlyArray<{ path: string; content: string }>, approved: boolean) {
+    if (!approved) return { status: "declined" as const };
+    const { folder } = await this.scaffoldTarget(wanted, []);
+    const files = filesFor(folder);
+    const { blocked } = await this.scaffoldTarget(wanted, files);
+    if (blocked) throw new ProfileError(blocked);
+    if (files.length === 0) throw new ProfileError("there are no files to write");
+    const keys = new Set<string>();
+    for (const f of files) {
+      if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
+      if (/^(?:\.git|\.agent-qa|node_modules)(?:\/|$)/i.test(f.path) || f.path.toLowerCase() === PROFILE_FILE) throw new ProfileError(`${f.path} is never part of a new repo`);
+      if (hasToken(f.path) || hasToken(f.content)) throw new ProfileError(`${f.path} holds a masking token`);
+      const key = f.path.normalize("NFC").toLowerCase();
+      if (keys.has(key)) throw new ProfileError("a file is listed twice");
+      keys.add(key);
+    }
+    const config = await this.configOrDefault();
+    const outcome = await this.policy(config).guard({ target: "testCode", summary: `Start a new ${kind} repo in ${folder}: ${files.length} file(s) and ${PROFILE_FILE}`, runId }, async (grant) => {
+      // A new repo is the person's own act in their IDE: never from CI's checkout.
+      if (grant.via !== "direct") throw new PolicyDenied("testCode", "a new repo is never started from CI");
+      const created: CreatedRepoFile[] = [];
+      try {
+        for (const f of files) {
+          // The path is relative to the folder, which bounds the write.
+          const r = await createRepoFile(grant, this.options.root, f.path, f.content, folder);
+          if (r.status === "created") created.push(r.file);
+        }
+        const scanned = scanFramework(this.options.root, folder);
+        if (scanned.kind !== kind || !scanned.commands) throw new ProfileError(`the new repo reads as ${scanned.kind}, not ${kind}`);
+        const profile: SavedProfile = { version: 1, folder: scanned.folder, kind, commands: scanned.commands, reviewedAt: new Date().toISOString() };
+        await writeRepoFile(grant, this.options.root, PROFILE_FILE, `${JSON.stringify(profile, null, 2)}\n`);
+        return { written: files.map((f) => f.path), profile };
+      } catch (error) {
+        const left: string[] = [];
+        for (const c of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, c).catch(() => left.push(c.path));
+        const why = error instanceof Error ? error.message : String(error);
+        throw new ProfileError(local(`the new repo could not be written (${why}).${left.length ? ` Agent-QA could not remove: ${left.join(", ")}.` : " Nothing was left behind."}`, hostCwd(this.options.root)).slice(0, 800));
+      }
+    });
+    return outcome.status === "done" ? { status: "done" as const, ...outcome.value } : { status: "declined" as const };
   }
 
   /** The config, or the default rules when there is no agent-qa.yaml at all. A broken one is an error. */

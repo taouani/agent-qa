@@ -74,7 +74,7 @@ export function buildProgram(): Command {
     .option("--input <json>", "the workflow's inputs as JSON")
     .option("--resume <runId>", "continue a run that stopped")
     .option("--model <provider:model>", "the model for every step")
-    .option("--yes", "answer confirm steps without asking: a test-case review is accepted as unattended; the Xray push, exploring, and the scripts type check, write and test run are declined (accept them with --accept push, approve, typecheck, review or run); in CI the scripts pull request is opened")
+    .option("--yes", "answer confirm steps without asking: a test-case review is accepted as unattended; the Xray push, a new repo, exploring, and the scripts type check, write and test run are declined (accept them with --accept push, scaffold, approve, typecheck, review or run); in CI the scripts pull request is opened")
     .option("--accept <step>", "accept this confirm step, e.g. --accept push (repeatable)", collect, [])
     .option("--decline <step>", "decline this confirm step (repeatable)", collect, [])
     .option("--ci", "CI mode: nobody is asked, and ask write rules are denied (default when CI is set); generated tests go into the job's checkout and leave only as a pull request (git section)")
@@ -230,6 +230,7 @@ export function profileCommand(opts: { root: string; folder?: string; json: bool
   else {
     out(describeProfile(scanned) + "\n\n" + status + "\n");
     if (!same && scanned.kind !== "empty") out(`Save it with: agent-qa run profile --accept review${opts.folder ? ` --input '{"folder":"${opts.folder}"}'` : ""}\n`);
+    if (!saved && scanned.kind === "empty") out(`No Playwright project here. Start one with: agent-qa run profile --accept scaffold${opts.folder ? ` --input '{"folder":"${opts.folder}"}'` : ""} (Gherkin with playwright-bdd; add --input '{"style":"plain"}' for plain specs)\n`);
   }
   return same ? 0 : 1;
 }
