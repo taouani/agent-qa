@@ -272,7 +272,12 @@ describe("scripts workflow", () => {
     await runs.writeArtifact(run.runId, SCRIPTS_DRAFT_ARTIFACT, changed, { inputs: [], templateVersion: "t" });
     await expect(e.submit(run.runId, "review", { write: true }, { byPerson: true })).rejects.toThrow(/changed after the review showed it/);
     expect(data.writes).toEqual([]);
+    // The question doesn't take the changed draft as shown either (in MCP it comes inside the submit).
+    await expect(e.approval(run.runId, "review")).rejects.toThrow(/changed after the review showed it/);
+    await expect(e.submit(run.runId, "review", {}, { approve: async (a) => a.yes })).rejects.toThrow(/changed after the review showed it/);
+    expect(data.writes).toEqual([]);
     // Shown again, it can be written.
+    await e.next(run.runId);
     await e.approval(run.runId, "review");
     expect((await e.submit(run.runId, "review", { write: true }, { byPerson: true })).next.kind).toBe("done");
     expect(data.writes).toHaveLength(1);

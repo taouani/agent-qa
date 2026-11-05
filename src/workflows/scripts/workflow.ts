@@ -401,7 +401,11 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
           personOnly: true,
           question: async (ctx) => {
             const art = await draftOf(ctx);
-            show(ctx.runId, hash(art.data));
+            // The question comes after the context (in MCP, inside the submit): it never takes a changed draft as shown.
+            const h = hash(art.data);
+            const seen = shown.get(ctx.runId);
+            if (seen !== undefined && seen !== h) throw new Error("the draft changed after the review showed it: show the review again and ask the person");
+            show(ctx.runId, h);
             const paths = art.data.files.map((f) => f.path);
             const list = paths.slice(0, 10).join(", ") + (paths.length > 10 ? ` and ${paths.length - 10} more` : "");
             return `Write these ${paths.length} new file(s) to ${art.data.folder === "." ? "the repo root" : art.data.folder}: ${list}? Agent-QA only creates files: if one exists by then with other content, nothing is written.`;

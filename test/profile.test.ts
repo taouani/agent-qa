@@ -282,7 +282,7 @@ describe("agent-qa.profile.json", () => {
     // The folders a failed write made go again, and a raw error never shows the local path.
     await writeFile(join(dir, "tests/blocker"), "a file\n");
     const failed = d.writeGeneratedFiles(run, run, ".", [{ path: "tests/new/deep/a.ts", content: "a\n" }, { path: "tests/blocker/b.ts", content: "b\n" }], true);
-    await expect(failed).rejects.toThrow(/could not be written \((ENOTDIR|EEXIST)[^]*Nothing was written/);
+    await expect(failed).rejects.toThrow(/could not be written \((ENOTDIR|EEXIST)[^]*Nothing new was written/);
     await expect(failed).rejects.not.toThrow(dir);
     await expect(readFile(join(dir, "tests/new"))).rejects.toMatchObject({ code: "ENOENT" });
     // Project files and odd paths are refused before anything is asked.
@@ -378,6 +378,11 @@ describe("writeRepoFile", () => {
     await symlink(join(dir, "src"), join(dir, "e2e", "tests"), "dir");
     await expect(withGrant((g) => createRepoFile(g, dir, "tests/pages/new.ts", "x", "e2e"))).rejects.toThrow(/links outside e2e/);
     await expect(readFile(join(dir, "src/pages/new.ts"))).rejects.toThrow();
+    // The approved folder itself swapped for a link since: refused.
+    await mkdir(join(dir, "e2e-linked"));
+    await symlink(join(dir, "src"), join(dir, "e2e-linked", "inner"), "dir");
+    await expect(withGrant((g) => createRepoFile(g, dir, "new.ts", "x", "e2e-linked/inner"))).rejects.toThrow(/is a link/);
+    await expect(readFile(join(dir, "src/new.ts"))).rejects.toThrow();
     const made = await withGrant((g) => createRepoFile(g, dir, "steps/a/b.ts", "x\n", "e2e"));
     expect(made).toMatchObject({ status: "done", value: { status: "created", file: { path: join("e2e", "steps", "a", "b.ts"), firstDir: join(dir, "e2e", "steps") } } });
     expect(await withGrant((g) => createRepoFile(g, dir, "steps/a/b.ts", "x\n", "e2e"))).toMatchObject({ value: { status: "same" } });

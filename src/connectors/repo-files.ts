@@ -45,7 +45,7 @@ export async function createRepoFile(grant: WriteGrant, root: string, path: stri
   const { target, firstDir } = await prepare(grant, root, path, within);
   const current = await lstat(target).catch(() => undefined);
   if (current) {
-    if (current.isFile() && (await readFile(target, "utf8")) === text) return { status: "same" };
+    if (current.isFile() && current.size === Buffer.byteLength(text) && (await readFile(target, "utf8")) === text) return { status: "same" };
     throw new PolicyDenied("testCode", `${path} already exists: generated code only adds new files`);
   }
   // Created, never replaced: "wx" fails if the file appeared since the check above.
@@ -99,7 +99,9 @@ async function prepare(grant: WriteGrant, root: string, path: string, within: st
     const r = relative(from, to);
     return isAbsolute(r) || r.split(sep).includes("..");
   };
-  if (outside(realRoot, boundary)) throw new PolicyDenied("testCode", `${within} links outside the project folder`);
+  // The approved folder itself, never a link put in its place since: where it resolves is where it is.
+  const fold = (v: string) => (process.platform === "win32" || process.platform === "darwin" ? v.toLowerCase() : v);
+  if (outside(realRoot, boundary) || fold(boundary) !== fold(resolve(realRoot, within))) throw new PolicyDenied("testCode", `${within} is a link or links outside the project folder`);
   const inside = async (dir: string) => {
     if (outside(boundary, await realpath(dir))) throw new PolicyDenied("testCode", `${path} links outside ${within === "." ? "the project folder" : within}`);
   };

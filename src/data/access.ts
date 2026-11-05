@@ -570,9 +570,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     } catch (error) {
       if (!(error instanceof WriteFailed)) throw error;
       const cause = error.cause as NodeJS.ErrnoException | undefined;
-      const why = cause instanceof PolicyDenied ? cause.message : `${cause?.code ?? (cause instanceof Error ? cause.name : "Error")}: ${cause instanceof Error ? cause.message : String(cause)}`;
+      const said = cause instanceof Error ? cause.message : String(cause);
+      const label = cause?.code ?? (cause instanceof Error ? cause.name : "Error");
+      const why = cause instanceof PolicyDenied || said.startsWith(`${label}:`) ? said : `${label}: ${said}`;
       await service.saveVault();
-      const left = error.left.length ? ` Agent-QA could not remove what it had written: ${error.left.join(", ")}.` : " Nothing was written.";
+      const left = error.left.length ? ` Agent-QA could not remove what it had written: ${error.left.join(", ")}.` : " Nothing new was written.";
       throw new ProfileError(service.maskText(local(`the files could not be written (${why}).${left}`, root), "write.error").slice(0, 800));
     }
     if (outcome.status !== "done") return { status: "declined" };
