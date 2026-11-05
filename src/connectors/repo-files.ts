@@ -1,5 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
 
@@ -80,6 +81,55 @@ export async function removeCreatedRepoFile(grant: WriteGrant, root: string, fil
     // Not empty: something else is in it now, so it stays.
     if (!(await rmdir(dir).then(() => true, () => false))) return;
     if (up === "") return;
+  }
+}
+
+/**
+ * Replaces a file Agent-QA wrote itself (S2-8, a fix to generated code): only
+ * while it still holds exactly the bytes Agent-QA wrote (`expectedSha256`),
+ * so an edit the person made since is never overwritten. The new text is
+ * written to a temporary file first, the old bytes are checked, then the
+ * temporary file is renamed over it at once, keeping the file's mode. A file
+ * that already holds `text` is left as it is ("same"). Returns the bytes it
+ * replaced, for a rollback.
+ */
+export async function replaceCreatedRepoFile(grant: WriteGrant, root: string, path: string, text: string, expectedSha256: string, within: string): Promise<{ status: "same" } | { status: "replaced"; before: string }> {
+  const { target, folder } = await prepare(grant, root, path, within);
+  const current = await lstat(target).catch(() => undefined);
+  if (!current?.isFile()) throw new PolicyDenied("testCode", `${path} is gone or not a plain file: only files Agent-QA wrote are changed`);
+  const temp = join(folder, `.${randomBytes(6).toString("hex")}.agent-qa.tmp`);
+  try {
+    await writeFile(temp, text, { encoding: "utf8", flag: "wx", mode: current.mode & 0o777 });
+    const before = await readFile(target, "utf8");
+    if (before === text) {
+      await rm(temp, { force: true });
+      return { status: "same" };
+    }
+    if (createHash("sha256").update(before).digest("hex") !== expectedSha256) throw new PolicyDenied("testCode", `${path} changed since Agent-QA wrote it: it is never overwritten`);
+    await rename(temp, target);
+    return { status: "replaced", before };
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * A file path in a new folder of the system's temp folder, for a command
+ * Agent-QA runs to write its output to (Playwright's JSON report, S2-8): `run`
+ * gets the path; the text is read back and the folder removed, whatever
+ * happens. Needs the `commands` grant the command runs with.
+ */
+export async function withScratchFile<T>(grant: WriteGrant, run: (path: string) => Promise<T>): Promise<{ value: T; text: string | undefined }> {
+  assertGrant(grant, "commands");
+  const dir = await mkdtemp(join(tmpdir(), "agent-qa-"));
+  try {
+    const file = join(dir, "report.json");
+    const value = await run(file);
+    const text = await readFile(file, "utf8").catch(() => undefined);
+    return { value, text };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }
 

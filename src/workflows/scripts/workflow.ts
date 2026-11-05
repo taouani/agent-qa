@@ -2,19 +2,21 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { z } from "zod";
 import { EngineError, type Artifact, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
-import type { FrameworkProfile, ProfileData, RequirementsData, ScriptsData, TypeCheckOutcome } from "../../data/index.js";
+import { fixSkeleton, scanGeneratedCode, type FrameworkProfile, type ProfileData, type RequirementsData, type ScriptsData, type TypeCheckOutcome } from "../../data/index.js";
 import { describeAction, EXPLORATION_ARTIFACT, type Exploration } from "../explore/artifact.js";
 import { helpersPath, lightningHelpersSource, renderPack } from "../packs/salesforce.js";
 import { CASE_ID, TEST_CASES_ARTIFACT, type TestCases } from "../test-cases/artifact.js";
 import { SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, SCRIPTS_MAX_FILES, SCRIPTS_TEMPLATE_VERSION, scriptsDraftSchema, type ScriptsDraft, type ScriptsDraftArtifact } from "./artifact.js";
 import { checkDraft, pathKey } from "./checks.js";
+import { DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, MAX_FIX_ROUNDS, runSteps } from "./run.js";
 
 /**
- * The `scripts` workflow, part one (S2-6): the model writes the code for
+ * The `scripts` workflow (S2-6 to S2-8): the model writes the code for
  * reviewed test cases from the reviewed framework profile, the Salesforce
  * pack and, when given, an exploration of the same cases. The server checks
- * it (checks.ts) and keeps it as scripts-draft@1. Nothing is written to the
- * repo here: the person reviews the files first (S2-7).
+ * it (checks.ts) and keeps it as scripts-draft@1. The person reviews the
+ * files before any is written (S2-7), then may let Agent-QA run them and fix
+ * what fails (run.ts, S2-8).
  *
  * The model sees only masked text: the profile, the cases and the
  * exploration hold tokens such as <PERSON_1>, and the code may hold none.
@@ -36,6 +38,8 @@ export const scriptsInputSchema = z
       .optional()
       .describe("Only these case ids. Default: every reviewed case, up to 20"),
     explorationRun: z.string().regex(RUN_ID, "must be a run id").optional().describe("Id of an explore run of the same test cases: its exploration@1 gives the elements and waits found"),
+    fixRounds: z.number().int().min(0).max(MAX_FIX_ROUNDS).default(DEFAULT_FIX_ROUNDS).describe("How many times failing tests may be fixed and run again"),
+    stabilityRuns: z.number().int().min(1).max(10).default(DEFAULT_STABILITY_RUNS).describe("How many times passing tests run again to show they are stable"),
   })
   .strict();
 export type ScriptsInputs = z.infer<typeof scriptsInputSchema>;
@@ -234,6 +238,19 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
   };
   const isSalesforce = async (ctx: Ctx) => (await exploration(ctx))?.data.target.kind !== "web";
 
+  /** The type check's errors, on the model's own files where they are. */
+  const typeErrors = async (ctx: Ctx, draft: ScriptsDraft, own: ReadonlyArray<{ path: string }>): Promise<OutputError[]> => {
+    const typed = await typeChecked(ctx, draft);
+    if (typed.status !== "done") return [];
+    const index = new Map(own.map((f, i) => [f.path, i]));
+    return typed.diagnostics.map((d) => {
+      const i = index.get(d.file);
+      return i !== undefined
+        ? { path: `$.files[${i}].content`, message: `line ${d.line}: TS${d.code} ${d.message}` }
+        : { path: "$.files", message: `the pack's helper file doesn't type-check in this repo (line ${d.line}: TS${d.code} ${d.message}): don't import it` };
+    });
+  };
+
   const context = async (ctx: Ctx): Promise<string> => {
     const { profile: p, kind } = await profile(ctx);
     const cases = await casesOf(ctx);
@@ -277,7 +294,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
 
   return {
     id: "scripts",
-    description: "Write Playwright code (specs, or Gherkin scenarios and steps for playwright-bdd) for reviewed test cases (test-cases@1), from the reviewed framework profile, the Salesforce pack and an optional exploration; the server checks it and keeps it as scripts-draft@1 for review.",
+    description: "Write Playwright code (specs, or Gherkin scenarios and steps for playwright-bdd) for reviewed test cases (test-cases@1), from the reviewed framework profile, the Salesforce pack and an optional exploration; the server checks it, the person reviews it before it is written, then the tests run and failures are fixed within strict rules (scripts-run@1).",
     inputSchema: scriptsInputSchema,
     // Checked before the run is saved, so a typo leaves no run behind.
     prepareInputs: async (_runId, inputs) => {
@@ -345,15 +362,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
           const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files], links });
           // The type check is the slow part: only for code that passed everything else.
           if (found.length) return found;
-          const typed = await typeChecked(ctx, draft);
-          if (typed.status !== "done") return [];
-          const index = new Map(out.files.map((f, i) => [f.path, i]));
-          return typed.diagnostics.map((d) => {
-            const i = index.get(d.file);
-            return i !== undefined
-              ? { path: `$.files[${i}].content`, message: `line ${d.line}: TS${d.code} ${d.message}` }
-              : { path: "$.files", message: `the pack's helper file doesn't type-check in this repo (line ${d.line}: TS${d.code} ${d.message}): don't import it` };
-          });
+          return typeErrors(ctx, draft, out.files);
         },
         // The notes are the model's words about the user's cases: masked before the run keeps them.
         sanitize: async (ctx, out: ScriptsDraft): Promise<ScriptsDraft> => {
@@ -451,6 +460,28 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
           });
         },
       },
+      ...runSteps<ScriptsInputs>({
+        data: deps.data,
+        runs: deps.runs,
+        tokensRun: async (ctx) => (await testCases(ctx)).data.requirements.run,
+        draft: draftOf,
+        written: async (ctx) => (await deps.runs.readArtifact(ctx.runId, SCRIPTS_WRITTEN_ARTIFACT))?.data,
+        fixRounds: (ctx) => ctx.inputs.fixRounds ?? DEFAULT_FIX_ROUNDS,
+        stabilityRuns: (ctx) => ctx.inputs.stabilityRuns ?? DEFAULT_STABILITY_RUNS,
+        cases: casesOf,
+        scan: (content, path) => {
+          const c = scanGeneratedCode(content, path);
+          return { titles: c.tests.map((t) => t.title), checkedNames: c.checkedNames, skeleton: fixSkeleton(content, path) };
+        },
+        checkCode: async (ctx, draft) => {
+          const { profile: p } = await profile(ctx);
+          const { files, links } = await existing(ctx);
+          // The generated files are in the repo now: they don't count as someone else's.
+          const mine = new Set(draft.files.map((f) => pathKey(f.path)));
+          const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files].filter((f) => !mine.has(f)), links });
+          return found.length ? found : typeErrors(ctx, draft, draft.files);
+        },
+      }),
     ],
   };
 }

@@ -1,10 +1,10 @@
-import { isAbsolute, join, resolve as resolvePath } from "node:path";
+import { isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath as realpathAsync, stat } from "node:fs/promises";
 import {
   commandList,
   FRAMEWORK_PROFILE_SPEC,
@@ -18,9 +18,11 @@ import {
   type SavedProfile,
 } from "./profile.js";
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
-import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
+import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
+import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
+import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 
 /**
@@ -141,7 +143,43 @@ export interface ScriptsData {
   writeGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome>;
   /** Whether a type check could run at all (the policy, the repo's typescript, a tsconfig), checked without loading anything: no question is asked when it couldn't. */
   typeCheckReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }>;
+  /** Whether the generated tests could run at all (the policy, the profile's test command): no question is asked when they couldn't. */
+  testRunReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }>;
+  /**
+   * Runs generated tests (S2-8) with the reviewed profile's commands: its
+   * generate command first (playwright-bdd's bddgen), then its test command on
+   * these files only, with the JSON reporter, no retries and one worker.
+   * Through `Policy.guard` (target commands), with the person's yes for this
+   * run (`approved`). Everything that comes back (titles, errors, code
+   * around them, page snapshots) is masked with `tokensRun`'s vault, and paths
+   * are relative to the folder.
+   */
+  runGeneratedTests(runId: string, tokensRun: string, folder: string, request: { files: string[]; repeatEach?: number }, approved: boolean): Promise<TestRunOutcome>;
+  /**
+   * Replaces files this run wrote (a fix to generated code), through
+   * `Policy.guard` (target testCode): each only while it still holds the bytes
+   * Agent-QA wrote (`sha256`), so the person's own edits are never
+   * overwritten. All or none: a failure puts back the ones already replaced.
+   */
+  replaceGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<WriteFilesOutcome>;
 }
+
+/** A generated test as the run saw it, masked. */
+export interface MaskedTestResult {
+  title: string;
+  tags: string[];
+  file: string;
+  line: number;
+  outcome: TestOutcome;
+  runs: number;
+  failedRuns: number;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined } | undefined;
+}
+
+export type TestRunOutcome =
+  | { status: "done"; exitCode: number | null; timedOut: boolean; durationMs: number; tests: MaskedTestResult[]; errors: string[] }
+  | { status: "declined" }
+  | { status: "unavailable"; reason: string };
 
 export type WriteFilesOutcome = { status: "done"; written: string[] } | { status: "declined" } | { status: "pull-request" };
 
@@ -326,6 +364,12 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   async runCommand(runId: string, request: HostCommandRequest, approved: boolean) {
+    const r = await this.runProfileCommand(runId, runId, request, approved, false);
+    return r.status === "done" ? { status: "done" as const, result: r.result } : r;
+  }
+
+  /** A profile command, masked with `tokensRun`'s vault; with `report`, Playwright's JSON report too (raw: parsed and masked by the caller). */
+  private async runProfileCommand(runId: string, tokensRun: string, request: HostCommandRequest, approved: boolean, report: boolean): Promise<{ status: "done"; result: HostCommandOutcome; report: string | undefined } | { status: "declined" }> {
     // "No" never reaches the policy: under an `allow` rule it would not ask again.
     if (!approved) return { status: "declined" as const };
     const saved = await this.savedProfile();
@@ -344,25 +388,161 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (!(error instanceof ConfigError && error.code === "NOT_FOUND")) throw error;
     }
     const policy = this.policy(config ?? DEFAULT_RULES_CONFIG);
-    const { service } = await this.run(runId);
+    const { service } = await this.run(tokensRun);
     // The profile's command, never the added arguments (a test name can be someone's text); masked all the same.
     const summary = service.maskText(`Run ${request.command.join(" ")} in ${request.cwd ?? "."} (${request.purpose})`, "host.summary");
     const run = this.options.host ?? runHostCommand;
-    const outcome = await policy.guard({ target: "commands", summary, runId }, (grant) =>
-      run(grant, { argv, cwd, env: hostEnv(this.options.env ?? process.env, config), timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES }),
-    );
+    const env = hostEnv(this.options.env ?? process.env, config);
+    const outcome = await policy.guard({ target: "commands", summary, runId }, async (grant) => {
+      if (!report) return { value: await run(grant, { argv, cwd, env, timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES }), text: undefined };
+      // The report goes to a file of its own: stdout can be cut, and holds the tests' own logs.
+      return withScratchFile(grant, (file) => run(grant, { argv, cwd, env: { ...env, PLAYWRIGHT_JSON_OUTPUT_NAME: file, PLAYWRIGHT_JSON_OUTPUT_FILE: file }, timeoutMs, maxOutputBytes: MAX_OUTPUT_BYTES }));
+    });
     if (outcome.status !== "done") return { status: "declined" as const };
-    const r = outcome.value;
+    const r = outcome.value.value;
     const result: HostCommandOutcome = {
       exitCode: r.exitCode,
       timedOut: r.timedOut,
-      stdout: service.maskText(r.stdout, "host.stdout"),
-      stderr: service.maskText(r.stderr, "host.stderr"),
+      // Colour codes and local paths go first: either can hide a value from the detectors.
+      stdout: service.maskText(local(plain(r.stdout), cwd), "host.stdout"),
+      stderr: service.maskText(local(plain(r.stderr), cwd), "host.stderr"),
       truncated: r.truncated,
       durationMs: r.durationMs,
     };
     await service.saveVault();
-    return { status: "done" as const, result };
+    return { status: "done" as const, result, report: outcome.value.text };
+  }
+
+  async testRunReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }> {
+    const saved = await this.savedProfile();
+    if (!saved) return { ready: false, reason: "no reviewed framework profile" };
+    if (!saved.commands?.test) return { ready: false, reason: await this.maskReason(tokensRun, "the reviewed profile has no test command") };
+    const decision = this.policy(await this.configOrDefault()).decide("commands");
+    if (decision.kind === "deny") return { ready: false, reason: `the policy doesn't allow it (${decision.reason})` };
+    return { ready: true };
+  }
+
+  async runGeneratedTests(runId: string, tokensRun: string, folder: string, request: { files: string[]; repeatEach?: number }, approved: boolean): Promise<TestRunOutcome> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed since the draft (${folder} then, ${saved.folder} now): run scripts again`);
+    if (!saved.commands?.test) return { status: "unavailable", reason: "the reviewed profile has no test command" };
+    if (request.files.length === 0) throw new ProfileError("there are no tests to run");
+    for (const f of request.files) if (!isPlainRelativePath(f) || isProtectedPath(f)) throw new ProfileError(`${f} isn't a generated test file`);
+    const repeat = Math.min(Math.max(Math.trunc(request.repeatEach ?? 1), 1), 10);
+    const dir = hostCwd(this.options.root, saved.folder);
+    const { service, vault } = await this.run(tokensRun);
+    // What the app showed (an error's received text, a page snapshot): the vault's known values first, then the detectors, then cut.
+    const echo = vaultMasker(vault, service, "test.error");
+    const mask = (text: string, field: string, max: number) => echo.detect(local(plain(text), dir), field).slice(0, max);
+    const tail = (r: HostCommandOutcome) => (r.stderr.trim() || r.stdout.trim()).slice(-3000);
+    let durationMs = 0;
+    if (saved.commands.generate) {
+      const g = await this.runProfileCommand(runId, tokensRun, { command: saved.commands.generate, purpose: "turn the feature files into tests" }, true, false);
+      if (g.status !== "done") return { status: "declined" };
+      durationMs += g.result.durationMs;
+      // A feature bddgen can't match to steps stops here: there is nothing to run yet.
+      if (g.result.exitCode !== 0 || g.result.timedOut) {
+        return { status: "done", exitCode: g.result.exitCode, timedOut: g.result.timedOut, durationMs, tests: [], errors: [`${saved.commands.generate.join(" ")} failed: ${tail(g.result)}`] };
+      }
+    }
+    // playwright-bdd runs the specs it generated from the features: they are found by the feature's name.
+    // Playwright reads file arguments as patterns: the dots are escaped, so ABC-1.feature doesn't also match ABC-1xfeature.
+    const filters = saved.kind === "playwright-bdd" ? request.files.map((f) => (f.endsWith(".feature") ? posixBase(f).replace(/[.+]/g, "\\$&") : f)) : request.files;
+    const args = ["--reporter=json", "--retries=0", "--workers=1", ...(repeat > 1 ? [`--repeat-each=${repeat}`] : []), ...filters];
+    const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands.test, args, purpose: repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests" }, true, true);
+    if (t.status !== "done") return { status: "declined" };
+    durationMs += t.result.durationMs;
+    const base = { status: "done" as const, exitCode: t.result.exitCode, timedOut: t.result.timedOut, durationMs };
+    let parsed;
+    try {
+      parsed = parsePlaywrightReport(JSON.parse(t.report ?? "null"), dir);
+    } catch {
+      await service.saveVault();
+      return { ...base, tests: [], errors: [`no test report came back${t.result.timedOut ? " (the run timed out)" : ""}: ${tail(t.result) || "no output"}`] };
+    }
+    const tests: MaskedTestResult[] = [];
+    for (const x of parsed.tests) {
+      const raw = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
+      // A page snapshot is an ARIA snapshot: field values, record names and table cells become tokens, as the explorer's do.
+      // Playwright's error-context.md wraps it in a heading and a yaml fence: only the snapshot itself is masked.
+      const aria = raw?.replace(/^\s*#[^\n]*\n+/, "").replace(/^\s*```[a-z]*\n/, "").replace(/\n```\s*$/, "");
+      const snapshot = aria !== undefined ? maskAriaSnapshot(aria, echo, { recordPage: true }).text.slice(0, 6000) : undefined;
+      tests.push({
+        title: mask(x.title, "test.title", 2000),
+        tags: x.tags.map((g) => mask(g, "test.tag", 200)),
+        file: x.file,
+        line: x.line,
+        outcome: x.outcome,
+        runs: x.runs,
+        failedRuns: x.failedRuns,
+        ...(x.failure
+          ? {
+              failure: {
+                message: mask(x.failure.message, "test.error", 4000),
+                snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
+                at: x.failure.at,
+                snapshot,
+              },
+            }
+          : {}),
+      });
+    }
+    const errors = parsed.errors.map((e) => mask(e, "test.error", 4000));
+    await service.saveVault();
+    return { ...base, tests, errors };
+  }
+
+  async replaceGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<WriteFilesOutcome> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed since the draft (${folder} then, ${saved.folder} now): run scripts again`);
+    if (files.length === 0) throw new ProfileError("there are no files to change");
+    for (const f of files) {
+      if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
+      if (isProtectedPath(f.path)) throw new ProfileError(`${f.path} is a project file Agent-QA never writes`);
+      if (hasToken(f.path) || hasToken(f.content)) throw new ProfileError(`${f.path} holds a masking token: generated code never carries one`);
+      if (!/^[0-9a-f]{64}$/.test(f.sha256)) throw new ProfileError(`${f.path}: no record of what Agent-QA wrote`);
+    }
+    if (new Set(files.map((f) => f.path.normalize("NFC").toLowerCase())).size !== files.length) throw new ProfileError("a file is listed twice");
+    const { service } = await this.run(tokensRun);
+    const summary = service.maskText(`Fix ${files.length} generated file(s) in ${folder}: ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    await service.saveVault();
+    const root = hostCwd(this.options.root);
+    const sha = (t: string) => createHash("sha256").update(t).digest("hex");
+    let outcome;
+    try {
+      outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
+        if (grant.via !== "direct") return "pull-request" as const;
+        const done: Array<{ path: string; before: string; after: string }> = [];
+        try {
+          for (const f of files) {
+            // A file that already holds the fix (a retry after a stop halfway) is left as it is.
+            const r = await replaceCreatedRepoFile(grant, this.options.root, f.path, f.content, f.sha256, folder);
+            if (r.status === "replaced") done.push({ path: f.path, before: r.before, after: f.content });
+          }
+        } catch (error) {
+          // All or none: what this call replaced gets its earlier bytes back.
+          const left: string[] = [];
+          for (const d of done.reverse()) await replaceCreatedRepoFile(grant, this.options.root, d.path, d.before, sha(d.after), folder).catch(() => left.push(d.path));
+          throw new WriteFailed(error, left);
+        }
+        return files.map((f) => f.path);
+      });
+    } catch (error) {
+      if (!(error instanceof WriteFailed)) throw error;
+      await service.saveVault();
+      const cause = error.cause as NodeJS.ErrnoException | undefined;
+      const said = cause instanceof Error ? cause.message : String(cause);
+      const label = cause?.code ?? (cause instanceof Error ? cause.name : "Error");
+      const why = cause instanceof PolicyDenied || said.startsWith(`${label}:`) ? said : `${label}: ${said}`;
+      const left = error.left.length ? ` Agent-QA could not put back: ${error.left.join(", ")}.` : " Nothing was changed.";
+      throw new ProfileError(service.maskText(local(`the fix could not be written (${why}).${left}`, root), "write.error").slice(0, 800));
+    }
+    if (outcome.status !== "done") return { status: "declined" };
+    return outcome.value === "pull-request" ? { status: "pull-request" } : { status: "done", written: outcome.value };
   }
 
   async salesforceRoles(): Promise<string[]> {
@@ -745,5 +925,20 @@ class WriteFailed extends Error {
     readonly left: string[],
   ) {
     super("the write failed", { cause });
+  }
+}
+
+const posixBase = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+
+/** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
+async function readInside(folder: string, path: string): Promise<string | undefined> {
+  try {
+    const real = await realpathAsync(path);
+    const rel = relativePath(await realpathAsync(folder), real);
+    if (rel === "" || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) return undefined;
+    if ((await stat(real)).size > 200_000) return undefined;
+    return await readFile(real, "utf8");
+  } catch {
+    return undefined;
   }
 }

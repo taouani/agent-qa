@@ -209,22 +209,8 @@ export class Explorer {
     await Promise.all([...this.sessions.keys()].map((id) => this.close(id)));
   }
 
-  /**
-   * Masking for what the browser shows: every value the cases' vault knows
-   * (a value the explorer just typed, echoed in a toast) is put back as its
-   * token first, plain or URL-encoded, then the detectors run.
-   */
   private masker(vault: RunVault, service: MaskedDataService): Masker {
-    const known = vault
-      .entries()
-      .filter(([token, value]) => !token.startsWith("<INPUT_") && value.trim().length >= MIN_ECHO)
-      .flatMap(([token, value]) => [...new Set([value, encodeURIComponent(value)])].map((v) => [v, token] as const))
-      .sort((a, b) => b[0].length - a[0].length);
-    const echo = (text: string) => known.reduce((t, [value, token]) => (t.includes(value) ? t.split(value).join(token) : t), text);
-    return {
-      detect: (text: string, field = "browser.snapshot") => service.maskText(echo(text), field),
-      token: (value: string) => vault.tokenFor("VALUE", value),
-    };
+    return vaultMasker(vault, service);
   }
 
   private queued<T>(runId: string, fn: () => Promise<T>): Promise<T> {
@@ -363,4 +349,23 @@ export class Explorer {
       return false;
     }
   }
+}
+
+/**
+ * Masking for what a browser shows (the explorer's pages, a failed test's
+ * page snapshot): every value the cases' vault knows (a value typed, echoed
+ * in a toast) is put back as its token first, plain or URL-encoded, then the
+ * detectors run.
+ */
+export function vaultMasker(vault: RunVault, service: MaskedDataService, field = "browser.snapshot"): Masker {
+  const known = vault
+    .entries()
+    .filter(([token, value]) => !token.startsWith("<INPUT_") && value.trim().length >= MIN_ECHO)
+    .flatMap(([token, value]) => [...new Set([value, encodeURIComponent(value)])].map((v) => [v, token] as const))
+    .sort((a, b) => b[0].length - a[0].length);
+  const echo = (text: string) => known.reduce((t, [value, token]) => (t.includes(value) ? t.split(value).join(token) : t), text);
+  return {
+    detect: (text: string, f = field) => service.maskText(echo(text), f),
+    token: (value: string) => vault.tokenFor("VALUE", value),
+  };
 }

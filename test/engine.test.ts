@@ -366,6 +366,44 @@ describe("batched and optional steps", () => {
     expect(onAccept).toHaveBeenCalledTimes(1);
   });
 
+  it("decides the loop's end after onAccept when the step says so", async () => {
+    const done: number[] = [];
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() }).register({
+      id: "loop3",
+      description: "a loop",
+      inputSchema: z.object({}),
+      steps: [
+        {
+          id: "act",
+          kind: "generate",
+          outputSchema: z.object({ n: z.number() }),
+          batches: () => 3,
+          untilAfterAccept: true,
+          // Sees what onAccept did.
+          until: () => done.includes(2),
+          onAccept: (_ctx, out) => void done.push(out.n),
+          instructions: () => "act",
+        },
+      ],
+    });
+    const first = await engine.start("loop3", {});
+    expect((await engine.submit(first.runId, "act_1", { n: 1 })).next.stepId).toBe("act_2");
+    expect((await engine.submit(first.runId, "act_2", { n: 2 })).next.kind).toBe("done");
+    // An until that fails after onAccept says the answer was used: the same one again finishes the step.
+    let broken = true;
+    const late = new WorkflowEngine({ store: new MemoryStateStore() }).register({
+      id: "loop4",
+      description: "a loop",
+      inputSchema: z.object({}),
+      steps: [{ id: "act", kind: "generate", outputSchema: z.object({ n: z.number() }), batches: () => 2, untilAfterAccept: true, until: () => { if (broken) throw new Error("disk"); return true; }, instructions: () => "act" }],
+    });
+    const run = await late.start("loop4", {});
+    await expect(late.submit(run.runId, "act_1", { n: 1 })).rejects.toThrow(/The answer was used, but the step is still open/);
+    broken = false;
+    expect((await late.submit(run.runId, "act_1", { n: 1 })).next.kind).toBe("done");
+    expect(() => new WorkflowEngine({ store: new MemoryStateStore() }).register({ id: "bad2", description: "x", inputSchema: z.object({}), steps: [{ id: "a", kind: "generate", outputSchema: z.object({}), batches: () => 1, untilAfterAccept: true, instructions: () => "" }] })).toThrow(/untilAfterAccept needs until/);
+  });
+
   it("fixes the batch count when the step is entered", async () => {
     let count = 3;
     const wf = batched(3);
