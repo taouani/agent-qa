@@ -65,7 +65,7 @@ const TLS_CODES = /CERT|SELF_SIGNED|UNABLE_TO_(GET|VERIFY)|ERR_TLS|ERR_SSL/;
 export function networkMessage(where: string, cause: string | undefined): string {
   if (!cause) return `${where}: network error. If you are behind a proxy, set HTTPS_PROXY; for a corporate CA, set NODE_EXTRA_CA_CERTS.`;
   const hint = TLS_CODES.test(cause)
-    ? "The certificate isn't trusted: behind a proxy that re-signs TLS, start node with --use-system-ca (Node 22.15+), or set NODE_EXTRA_CA_CERTS to its CA certificate (.pem)."
+    ? "The certificate isn't trusted: behind a proxy that re-signs TLS, set NODE_OPTIONS=--use-system-ca (Node 22.15+; in PowerShell: $env:NODE_OPTIONS = \"--use-system-ca\"), or set NODE_EXTRA_CA_CERTS to its CA certificate (.pem)."
     : cause === "ENOTFOUND" || cause === "EAI_AGAIN"
       ? "The host name didn't resolve: check the site URL in agent-qa.yaml; on a network that only reaches out through a proxy, set HTTPS_PROXY."
       : "The connection failed: if you are behind a proxy, set HTTPS_PROXY (and NO_PROXY for hosts that skip it).";

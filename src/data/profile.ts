@@ -317,7 +317,7 @@ export function describeProfile(p: FrameworkProfile): string {
     ...(p.truncated ? [`The scan hit a limit (${p.files} files read); some steps or pages may be missing.`] : []),
     ...(p.unparsed.length ? [`Could not be parsed: ${p.unparsed.join(", ")}`] : []),
     "",
-    `Commands Agent-QA may run in ${p.folder} once you accept (no shell, nothing else):`,
+    `Commands Agent-QA may run in ${p.folder === "." ? "this folder" : p.folder} once you accept (no shell, nothing else):`,
     ...commandList(p.commands!).map((c) => `  ${c.join(" ")}`),
   ];
   return lines.join("\n");

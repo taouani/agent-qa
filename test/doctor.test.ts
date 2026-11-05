@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { formatDoctor, runDoctor, type CheckResult } from "../src/data/index.js";
 import { isIgnored, parseGitignore } from "../src/data/gitignore.js";
 import { keychainLookup, type KeyringEntry } from "../src/masking/index.js";
+import { VERSION } from "../src/core/index.js";
 
 const vaultKey = Buffer.alloc(32, 7).toString("base64");
 const keyring = (store: Record<string, string> = {}) => (service: string, account: string): KeyringEntry => ({
@@ -64,6 +65,17 @@ describe("agent-qa doctor", () => {
       ["network", "pass"],
     ]);
     expect(formatDoctor(results)).toMatch(/Ready\.\n$/);
+  });
+
+  it("warns when the editor schema line names another version, and not when it names this one", async () => {
+    const line = (v: string) => `# yaml-language-server: $schema=https://unpkg.com/sf-agent-qa@${v}/schema/agent-qa.schema.json\n`;
+    await writeFile(join(dir, ".gitignore"), ".agent-qa/\n");
+    await writeFile(join(dir, "agent-qa.yaml"), line("2.0.0-alpha.0-old") + CONFIG);
+    const stale = byId(await doctor(ENV));
+    expect(stale["config-schema"]?.status).toBe("warn");
+    expect(stale["config-schema"]?.fix).toContain(`sf-agent-qa@${VERSION}`);
+    await writeFile(join(dir, "agent-qa.yaml"), line(VERSION) + CONFIG);
+    expect(byId(await doctor(ENV))["config-schema"]).toBeUndefined();
   });
 
   it("takes the provider's own key variable as a key, as init's comment says", async () => {
