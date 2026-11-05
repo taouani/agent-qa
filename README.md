@@ -42,7 +42,7 @@ npx -y sf-agent-qa@next run test-cases --jql "project = ABC AND fixVersion = 2.4
 
 **Playwright.** Three workflows, each asking you before it writes or runs anything:
 
-1. `profile` reads your repo's Playwright project (playwright-bdd steps, page objects, fixtures) without running it. `agent-qa run profile --accept review` saves `agent-qa.profile.json`, the only commands Agent-QA may run in your repo. In an empty folder, `agent-qa run profile --accept scaffold` starts a new Salesforce Playwright repo instead. See [docs/profile.md](docs/profile.md).
+1. `profile` reads your repo's Playwright project (playwright-bdd steps, page objects, fixtures) without running it. `agent-qa run profile --accept review` saves `agent-qa.profile.json`, the only commands Agent-QA may run in your repo. In a folder with no Playwright project and no `package.json`, `agent-qa run profile --accept scaffold` starts a new Salesforce Playwright repo instead. See [docs/profile.md](docs/profile.md).
 2. `explore` (optional) walks reviewed test cases in a browser on your sandbox, from masked pages, into `exploration@1`. See [docs/explore.md](docs/explore.md) and, for sign-in, [docs/salesforce.md](docs/salesforce.md).
 3. `scripts` writes the code for reviewed cases, checks it, writes it to your repo on your yes, runs it, and fixes only selectors, waits and test data. A real defect is reported, never fixed in the test. In CI, the code leaves as a pull request. See [docs/scripts.md](docs/scripts.md).
 
