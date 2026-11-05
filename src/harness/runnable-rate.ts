@@ -2,60 +2,74 @@ import type { RunStore } from "../core/index.js";
 import { SCRIPTS_RUN_ARTIFACT, type ScriptsRun } from "../workflows/index.js";
 
 /**
- * The runnable rate (S2-10): of the test cases whose generated tests ran on
- * the project's own app, the share whose tests pass, again and again, as
- * Agent-QA left them. From every run's `scripts-run@1`.
+ * The runnable rate (S2-10): how the project's generated tests stand now. For
+ * each test case, the latest finished run of its generated tests (from every
+ * run's `scripts-run@1`, latest by when the record was saved) says what it
+ * came to:
  *
- * A case counts as runnable when every test of it passed in the last run and
- * that run was a stability run (the tests had already passed once and passed
- * again), or the run passed with no stability runs asked for. A case's tests
- * are those tagged with its id (@TC-…) or carrying it in their title.
+ * - runnable: every test of the case passed in a stability run (it passed,
+ *   then passed again each time), or in a run that passed with no stability
+ *   runs asked for;
+ * - unproven: it passed, but the run ended before running it again (another
+ *   case failed, so no stability run happened);
+ * - defect: the model stopped on a real defect in one of its tests;
+ * - environment: sign-in, the network or the app failed, so nothing could be
+ *   judged;
+ * - unstable: a test of it passed only some of the time;
+ * - failing: still failing, or no test of it ran.
  *
- * A case whose run stopped on a real defect, or on the environment
- * (sign-in, network, the app down), is counted apart and left out of the
- * rate: the generated test isn't what failed. Runs where the person said no
- * to running the tests don't count at all.
+ * The rate is runnable over the cases judged on their tests: defect,
+ * environment and unproven cases are shown apart and left out, since the
+ * generated test isn't what they say failed. A case's tests are those tagged
+ * with its id (@TC-…) or carrying it in their title. Runs still in their fix
+ * loop, and runs whose tests never ran, don't count.
  */
 export interface RunnableRate {
-  /** Runs whose tests ran. */
+  /** Finished runs whose tests ran. */
   runs: number;
-  /** Runs left out: the person said no to running, or the record couldn't be read. */
-  declinedRuns: number;
+  /** Runs whose tests never ran (the person said no, or nobody was asked). */
+  notRunRuns: number;
+  /** Runs still in their fix loop (or stopped halfway): they can go on. */
+  inProgressRuns: number;
+  /** Records that couldn't be read. */
   unreadableRuns: number;
-  /** Cases whose tests ran. */
+  /** Cases, each once, by its latest finished run. */
   cases: number;
   runnable: number;
-  /** Stopped on a real defect in the app (reported, never fixed in the test). */
+  unproven: number;
   defects: number;
-  /** Stopped on the environment. */
   environment: number;
-  /** Tests that pass only some of the time. */
   unstable: number;
-  /** Still failing, or never run (a case with no test that ran). */
   failing: number;
-  /** Fix rounds over the counted runs. */
+  /** Fix rounds over every finished run. */
   fixRounds: number;
-  /** runnable / (cases - defects - environment); absent when nothing counts. */
+  /** runnable / (cases - defects - environment - unproven); absent when nothing counts. */
   rate?: number;
 }
 
-type Outcome = "runnable" | "defects" | "environment" | "unstable" | "failing";
+export type CaseOutcome = "runnable" | "unproven" | "defects" | "environment" | "unstable" | "failing";
 
-/** What one case came to in one run. */
-export function caseOutcomes(run: ScriptsRun): Map<string, Outcome> {
+/** Matches a case's id in a title: TC-ABC-1-001, not inside TC-ABC-1-0010 or TC-ABC-1-001-B. */
+const named = (id: string) => new RegExp(`(^|[^A-Za-z0-9_-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`);
+
+/** What each case came to in one finished run. */
+export function caseOutcomes(run: ScriptsRun): Map<string, CaseOutcome> {
   const last = run.attempts.at(-1);
-  const out = new Map<string, Outcome>();
-  const stopped = new Map((run.stoppedOn ?? []).map((s) => [s.test, s.kind]));
+  const out = new Map<string, CaseOutcome>();
   for (const c of run.cases) {
-    // TC-ABC-1-001 in a title, not inside TC-ABC-1-0010.
-    const named = new RegExp(`(^|[^A-Za-z0-9-])${c.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`);
-    const rows = (last?.tests ?? []).filter((t) => t.tags.includes(`@${c.id}`) || named.test(t.title));
+    const isMine = named(c.id);
+    const rows = (last?.tests ?? []).filter((t) => t.tags.includes(`@${c.id}`) || isMine.test(t.title));
     const passed = rows.length > 0 && rows.every((t) => t.outcome === "passed");
-    let o: Outcome;
+    // The model's words name the test: matched by the case's id, as the rows are.
+    const defect = (run.stoppedOn ?? []).some((s) => s.kind === "defect" && (isMine.test(s.test) || rows.some((t) => t.title === s.test)));
+    const unreachable = last !== undefined && last.tests.length === 0 && last.errors.length > 0;
+    let o: CaseOutcome;
     if (passed && (last?.kind === "stability" || run.status === "passed")) o = "runnable";
-    else if (rows.some((t) => stopped.get(t.title) === "defect")) o = "defects";
-    else if (run.status === "environment" && !passed) o = "environment";
-    else if (rows.some((t) => t.outcome === "flaky") || run.status === "unstable") o = "unstable";
+    else if (defect) o = "defects";
+    else if (run.status === "environment" || unreachable) o = "environment";
+    else if (passed) o = "unproven";
+    // As the run loop judges it: flaky, or failed in a stability run after passing.
+    else if (rows.some((t) => t.outcome === "flaky") || (last?.kind === "stability" && rows.some((t) => t.outcome === "failed"))) o = "unstable";
     else o = "failing";
     out.set(c.id, o);
   }
@@ -63,7 +77,8 @@ export function caseOutcomes(run: ScriptsRun): Map<string, Outcome> {
 }
 
 export async function runnableRate(runs: Pick<RunStore, "list" | "readArtifact">): Promise<RunnableRate> {
-  const out: RunnableRate = { runs: 0, declinedRuns: 0, unreadableRuns: 0, cases: 0, runnable: 0, defects: 0, environment: 0, unstable: 0, failing: 0, fixRounds: 0 };
+  const out: RunnableRate = { runs: 0, notRunRuns: 0, inProgressRuns: 0, unreadableRuns: 0, cases: 0, runnable: 0, unproven: 0, defects: 0, environment: 0, unstable: 0, failing: 0, fixRounds: 0 };
+  const latest = new Map<string, { at: string; outcome: CaseOutcome }>();
   for (const id of await runs.list()) {
     let art;
     try {
@@ -73,18 +88,28 @@ export async function runnableRate(runs: Pick<RunStore, "list" | "readArtifact">
       continue;
     }
     if (!art) continue;
-    if (art.data.status === "declined" || art.data.attempts.length === 0) {
-      out.declinedRuns += 1;
+    const r = art.data;
+    if (r.attempts.length === 0) {
+      out.notRunRuns += 1;
       continue;
     }
+    if (r.status === "failing") {
+      out.inProgressRuns += 1;
+      continue;
+    }
+    // A declined stability run or fix write still ran the tests: judged by what ran.
     out.runs += 1;
-    out.fixRounds += art.data.rounds;
-    for (const o of caseOutcomes(art.data).values()) {
-      out.cases += 1;
-      out[o] += 1;
+    out.fixRounds += r.rounds;
+    for (const [caseId, outcome] of caseOutcomes(r)) {
+      const seen = latest.get(caseId);
+      if (!seen || seen.at < art.createdAt) latest.set(caseId, { at: art.createdAt, outcome });
     }
   }
-  const counted = out.cases - out.defects - out.environment;
+  for (const { outcome } of latest.values()) {
+    out.cases += 1;
+    out[outcome] += 1;
+  }
+  const counted = out.cases - out.defects - out.environment - out.unproven;
   if (counted > 0) out.rate = Math.round((out.runnable / counted) * 1000) / 1000;
   return out;
 }

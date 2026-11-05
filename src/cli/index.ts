@@ -225,14 +225,16 @@ export function profileCommand(opts: { root: string; folder?: string; json: bool
   return same ? 0 : 1;
 }
 
-/** One line on the kept rate of the project's reviewed runs. */
+/** One line on the runnable rate: each case by its latest finished run. */
 export function runnableLine(r: RunnableRate): string {
-  if (r.rate === undefined) return `runnable rate: no generated tests have run yet${r.declinedRuns ? ` (${r.declinedRuns} run(s) not run)` : ""}`;
-  const apart = [r.defects ? `${r.defects} stopped on a real defect` : "", r.environment ? `${r.environment} on the environment` : ""].filter(Boolean).join(", ");
+  const waiting = [r.notRunRuns ? `${r.notRunRuns} run(s) never ran their tests` : "", r.inProgressRuns ? `${r.inProgressRuns} still in their fix loop` : "", r.unreadableRuns ? `${r.unreadableRuns} unreadable` : ""].filter(Boolean).join(", ");
+  if (r.rate === undefined) return `runnable rate: no case to judge yet${r.cases ? ` (${r.cases} case(s), none judged on their tests)` : ""}${waiting ? `; ${waiting}` : ""}`;
+  const apart = [r.unproven ? `${r.unproven} passed once but weren't run again` : "", r.defects ? `${r.defects} stopped on a real defect` : "", r.environment ? `${r.environment} on the environment` : ""].filter(Boolean).join(", ");
   const rest = [r.unstable ? `${r.unstable} unstable` : "", r.failing ? `${r.failing} failing` : ""].filter(Boolean).join(", ");
-  return `runnable rate: ${(r.rate * 100).toFixed(1)}% (${r.runnable} of ${r.cases - r.defects - r.environment} case(s) pass again and again${rest ? `; ${rest}` : ""}) over ${r.runs} run(s), ${r.fixRounds} fix round(s)${apart ? `; left out: ${apart}` : ""}`;
+  return `runnable rate: ${(r.rate * 100).toFixed(1)}% (${r.runnable} of ${r.cases - r.defects - r.environment - r.unproven} case(s) pass again and again${rest ? `; ${rest}` : ""}), each case by its latest of ${r.runs} run(s)${apart ? `; left out: ${apart}` : ""}${waiting ? `; not counted: ${waiting}` : ""}`;
 }
 
+/** One line on the kept rate of the project's reviewed runs. */
 export function keptLine(k: KeptRate): string {
   const left = [k.unattendedRuns ? `${k.unattendedRuns} --yes run(s) left out` : "", k.unreadableRuns ? `${k.unreadableRuns} unreadable` : ""].filter(Boolean).join(", ");
   const tail = left ? ` (${left})` : "";
