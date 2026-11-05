@@ -245,7 +245,11 @@ describe("DataAccess explorer", () => {
     const first = data(fake.open);
     expect((await first.explorerSync("run-4", setup, "TC-A-1-001", [], true)).page.replayed).toBeUndefined();
     expect((await first.explorerSync("run-4", setup, "TC-A-1-001", actions, true)).page.replayed).toBeUndefined();
-    expect((await data(fake.open).explorerSync("run-4", setup, "TC-A-1-001", actions, true)).page.replayed).toBe(true);
+    const restarted = data(fake.open);
+    expect((await restarted.explorerSync("run-4", setup, "TC-A-1-001", actions, true)).page.replayed).toBe(true);
+    // Said on every later sync of that case, and not on the next case.
+    expect((await restarted.explorerSync("run-4", setup, "TC-A-1-001", [...actions, ...actions], true)).page.replayed).toBe(true);
+    expect((await restarted.explorerSync("run-4", setup, "TC-A-1-002", [], true)).page.replayed).toBeUndefined();
     // A failed sign-in for the next case: the old case's actions no longer count.
     const flaky = data(fake.open);
     await flaky.explorerSync("run-5", setup, "TC-A-1-001", actions, true);

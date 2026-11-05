@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ArtifactSpec } from "../../core/index.js";
+import { PRESS_KEY } from "../../data/index.js";
 
 /**
  * `exploration@1` (S2-4): what the explorer found for each test case, the
@@ -37,7 +38,7 @@ export const exploreActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("uncheck"), target: targetSchema }).strict(),
   z.object({ type: z.literal("press"), key: z
       .string()
-      .regex(/^(?:(?:Control|Shift|Alt|Meta)\+)*(?:[A-Z][A-Za-z0-9]{1,19}|[A-Za-z0-9])$/, "a key name such as Enter, Tab, Escape, ArrowDown or Control+A")
+      .regex(PRESS_KEY, "a key name such as Enter, Tab, Escape, ArrowDown or Control+A")
       .describe("A key such as Enter, Tab, Escape, ArrowDown"), target: targetSchema.optional() }).strict(),
   z.object({ type: z.literal("goto"), path: z.string().regex(/^\/(?!\/)/, "a path on the same site, such as /lightning/o/Account/list").max(1000) }).strict(),
   z.object({ type: z.literal("verify"), target: targetSchema, text: z.string().min(1).max(1000).optional().describe("Text the element must hold, exactly as the app shows it") }).strict(),

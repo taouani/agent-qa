@@ -148,7 +148,7 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
     [
       `Page: ${page.path}${page.title ? ` (${page.title})` : ""}${page.busy ? ", waited for a spinner" : ""}`,
       ...(page.signedOut ? ["The browser shows a sign-in page: the session ended. Finish the case."] : []),
-      ...(page.replayed ? ["The browser was started again and this case's actions replayed, so records may have been created twice: check the page before going on."] : []),
+      ...(page.replayed ? ["The browser was started again during this case and its actions replayed, so records may have been created twice: check the page before going on."] : []),
       "",
       "```yaml",
       page.aria || "(the page has no accessible content)",

@@ -201,6 +201,23 @@ describe("explore workflow", () => {
     expect((await runs.readArtifact(first.runId, EXPLORATION_ARTIFACT))!.data.cases).toHaveLength(1);
   });
 
+  it("flags a case the browser replayed", async () => {
+    const fake = fakeExplorer();
+    const sync = fake.data.explorerSync;
+    // The data layer says replayed on every sync of a case once it replayed it.
+    fake.data.explorerSync = async (...args) => {
+      const r = await sync(...args);
+      return { ...r, page: { ...r.page, replayed: args[3].length > 0 } };
+    };
+    const e = engine(fake);
+    const first = await e.start("explore", { ...inputs, cases: ["TC-ABC-1-002"] });
+    await e.submit(first.runId, "approve", { approve: true }, { byPerson: true });
+    const next = (await e.submit(first.runId, "act_1", { step: 1, action: { type: "click", target: { role: "button", name: "Cancel" } } })).next;
+    expect(next.context).toContain("started again during this case");
+    await e.submit(first.runId, "act_2", { step: 1, action: { type: "finish" } });
+    expect((await runs.readArtifact(first.runId, EXPLORATION_ARTIFACT))!.data.cases[0]).toMatchObject({ replayed: true });
+  });
+
   it("counts progress from the accepted actions alone", () => {
     const a = (type: string) => ({ step: 1, action: (type === "finish" ? { type } : type === "unverifiable" ? { type, reason: "x" } : { type, target: { role: "button" } }) as never });
     expect(progressOf([a("click"), a("finish"), a("click")], 2, 10)).toMatchObject({ index: 1, startAt: 2, done: false });
