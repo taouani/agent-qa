@@ -53,6 +53,8 @@ const attemptSchema = z
     durationMs: z.number(),
     tests: z.array(testRowSchema),
     errors: z.array(z.string()),
+    /** The tests couldn't run at all: the profile's command, the policy or the host said so (errors say why). */
+    unavailable: z.literal(true).optional(),
   })
   .strict();
 export type RunAttempt = z.infer<typeof attemptSchema>;
@@ -258,7 +260,7 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
   };
   const attemptOf = (r: Exclude<TestRunOutcome, { status: "declined" }>, kind: RunAttempt["kind"], changed: string[], classified: RunAttempt["classified"]): RunAttempt =>
     r.status === "unavailable"
-      ? { kind, changed, classified, exitCode: null, timedOut: false, durationMs: 0, tests: [], errors: [r.reason] }
+      ? { kind, changed, classified, exitCode: null, timedOut: false, durationMs: 0, tests: [], errors: [r.reason], unavailable: true }
       : { kind, changed, classified, exitCode: r.exitCode, timedOut: r.timedOut, durationMs: r.durationMs, tests: r.tests.map(row), errors: r.errors };
   const row = (t: MaskedTestResult): RunAttempt["tests"][number] => ({
     title: t.title,
@@ -298,7 +300,7 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
       last = attempts.at(-1)!;
     }
     if (passedAll(last)) return { ...state, attempts, status: "passed", reason: last.kind === "stability" ? `every test passed, then ${state.stabilityRuns} more time(s) in a row` : "every test passed" };
-    if (r.status === "unavailable") return { ...state, attempts, status: "environment", reason: r.reason };
+    if (last.unavailable) return { ...state, attempts, status: "environment", reason: last.errors[0] ?? "the tests couldn't run" };
     if (round < state.fixRounds) return { ...state, attempts, status: "failing" };
     const flaky = last.tests.some((t) => t.outcome === "flaky") || (last.kind === "stability" && last.tests.some((t) => t.outcome === "failed"));
     return flaky
