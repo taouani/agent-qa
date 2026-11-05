@@ -140,6 +140,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
   const ask = opts.ask === false ? undefined : (opts.ask ?? (process.stdin.isTTY && process.stderr.isTTY && !ci ? terminalAsk : undefined));
   let runId: string | undefined;
   let engine: WorkflowEngine | undefined;
+  let data: DataAccess | undefined;
   const saved = async (id: string) => engine!.status(id).then((s) => s, () => undefined);
   const resumeHint = async () => {
     if (runId && engine && (await saved(runId))?.status === "running") log(`The run is kept: fix the cause, then run agent-qa run --resume ${runId}`);
@@ -160,7 +161,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
     const runs = new RunStore(opts.env.AGENT_QA_RUNS_DIR || join(opts.root, ".agent-qa", "runs"));
     engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api", ...(opts.model ? { model: opts.model } : {}) }), newRunId: runs.newRunId });
     const base = { root: opts.root, store: runs, env: opts.env, config, mode };
-    const data = opts.data ? opts.data(base) : new DataAccess(base);
+    data = opts.data ? opts.data(base) : new DataAccess(base);
     for (const workflow of builtinWorkflows({ data, runs })) engine.register(workflow);
 
     let workflowId: string;
@@ -279,5 +280,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
     log(`agent-qa run: ${text}`);
     await resumeHint();
     return EXIT.failed;
+  } finally {
+    // An explorer's browser would keep the process alive.
+    await data?.close();
   }
 }

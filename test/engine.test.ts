@@ -288,6 +288,65 @@ describe("batched and optional steps", () => {
     expect((await none.status(step.runId)).outputs).toEqual({ parts: [] });
   });
 
+  it("ends a looping step early when until says so, with batches as the cap", async () => {
+    const loop: WorkflowDefinition<{ n: number }> = {
+      id: "loop",
+      description: "a loop",
+      inputSchema: z.object({ n: z.number() }),
+      steps: [
+        {
+          id: "act",
+          kind: "generate",
+          outputSchema: z.object({ done: z.boolean() }),
+          batches: () => 5,
+          until: (ctx, out) => out.done || (ctx.outputs.act as unknown[]).length >= 3,
+          instructions: () => "act",
+        },
+        { id: "last", kind: "confirm", outputSchema: z.object({ ok: z.boolean() }), instructions: () => "ok?" },
+      ],
+    };
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() }).register(loop);
+    const first = await engine.start("loop", { n: 1 });
+    expect(first.stepId).toBe("act_1");
+    await engine.submit(first.runId, "act_1", { done: false });
+    expect((await engine.submit(first.runId, "act_2", { done: true })).next.stepId).toBe("last");
+    expect((await engine.status(first.runId)).outputs.act).toEqual([{ done: false }, { done: true }]);
+    const capped = await engine.start("loop", { n: 2 });
+    for (const id of ["act_1", "act_2"]) await engine.submit(capped.runId, id, { done: false });
+    expect((await engine.submit(capped.runId, "act_3", { done: false })).next.stepId).toBe("last");
+    expect(() => new WorkflowEngine({ store: new MemoryStateStore() }).register({ ...loop, id: "bad", steps: [{ ...loop.steps[0]!, batches: () => 0, until: () => true }].map(({ id, kind, outputSchema, instructions, until }) => ({ id, kind, outputSchema, instructions, until })) })).toThrow(/until needs batches/);
+  });
+
+  it("decides the loop's end before onAccept, so a failing check leaves nothing done", async () => {
+    const onAccept = vi.fn();
+    let fail = true;
+    const engine = new WorkflowEngine({ store: new MemoryStateStore() }).register({
+      id: "loop2",
+      description: "a loop",
+      inputSchema: z.object({}),
+      steps: [
+        {
+          id: "act",
+          kind: "generate",
+          outputSchema: z.object({ n: z.number() }),
+          batches: () => 3,
+          until: () => {
+            if (fail) throw new Error("unreachable");
+            return true;
+          },
+          onAccept,
+          instructions: () => "act",
+        },
+      ],
+    });
+    const first = await engine.start("loop2", {});
+    await expect(engine.submit(first.runId, "act_1", { n: 1 })).rejects.toMatchObject({ code: "CONTEXT_FAILED" });
+    expect(onAccept).not.toHaveBeenCalled();
+    fail = false;
+    expect((await engine.submit(first.runId, "act_1", { n: 1 })).next.kind).toBe("done");
+    expect(onAccept).toHaveBeenCalledTimes(1);
+  });
+
   it("fixes the batch count when the step is entered", async () => {
     let count = 3;
     const wf = batched(3);

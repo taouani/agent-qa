@@ -118,6 +118,7 @@ export class WorkflowEngine {
     for (const id of ids) if (/_\d+$/.test(id)) throw invalid(`step id "${id}" can't end in _<number>`);
     for (const s of workflow.steps) {
       if (s.approval && (s.kind !== "confirm" || !s.answers || s.batches)) throw invalid(`step "${s.id}": approval needs an unbatched confirm step with answers`);
+      if (s.until && !s.batches) throw invalid(`step "${s.id}": until needs batches (the cap)`);
     }
     // Convert every schema now, so a schema that can't be shown to a model fails at startup, not mid-run.
     const outputSchemas = new Map(workflow.steps.map((s) => [s.id, jsonSchemaOf(s.outputSchema, `${workflow.id}.${s.id}`)]));
@@ -266,16 +267,17 @@ export class WorkflowEngine {
 
       const stepCtx = def.batches ? this.ctx(state, batch, batches) : this.ctx(state);
       const kept = def.sanitize ? await this.guarded(state, def, "the answer couldn't be prepared", () => def.sanitize!(stepCtx, parsed.data)) : parsed.data;
-      await def.onAccept?.(stepCtx, kept);
+      let parts: unknown[] | undefined;
       if (def.batches) {
-        const parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
+        parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
         parts[batch] = kept;
-        state.outputs[def.id] = parts;
-      } else {
-        state.outputs[def.id] = kept;
       }
+      // Decided before onAccept, so a loop check that fails leaves nothing done.
+      const stop = def.until ? (await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!({ ...this.ctx(state, batch, batches), outputs: { ...state.outputs, [def.id]: parts } }, kept))) === true : false;
+      await def.onAccept?.(stepCtx, kept);
+      state.outputs[def.id] = def.batches ? parts : kept;
       state.attempt = 1;
-      if (batch + 1 < batches) {
+      if (!stop && batch + 1 < batches) {
         state.batch = batch + 1;
       } else {
         delete state.batch;

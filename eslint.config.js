@@ -53,12 +53,19 @@ const FS_WRITERS = ["src/core/engine/stores.ts", "src/core/runs/store.ts", "src/
  */
 const SPAWNERS = ["src/connectors/host.ts"];
 
-const restrictedImports = (blockFs, allowSpawn = false) => [
+/**
+ * The only file that may load CommonJS from outside the package: the browser
+ * connector (S2-4) loads Playwright from the user's own repo (createRequire),
+ * so its version matches their tests, and only with a policy grant.
+ */
+const LOADERS = ["src/connectors/browser.ts"];
+
+const restrictedImports = (blockFs, allow = []) => [
   "error",
   {
     paths: [
       ...(blockFs ? FS_MODULES.map((name) => ({ name, allowImportNames: FS_READS, allowTypeImports: true, message: FS_MESSAGE })) : []),
-      ...ALWAYS_BLOCKED.filter((rule) => !(allowSpawn && rule.name === "cross-spawn")),
+      ...ALWAYS_BLOCKED.filter((rule) => !allow.includes(rule.name)),
     ],
     // Deep imports reach the same code: only the spawner's plain "cross-spawn" import is allowed.
     patterns: [{ group: ["cross-spawn/*", "child_process/*", "node:child_process/*"], message: ALWAYS_BLOCKED[0].message }],
@@ -127,7 +134,11 @@ export default tseslint.config(
   },
   {
     files: SPAWNERS,
-    rules: { "@typescript-eslint/no-restricted-imports": restrictedImports(true, true) },
+    rules: { "@typescript-eslint/no-restricted-imports": restrictedImports(true, ["cross-spawn"]) },
+  },
+  {
+    files: LOADERS,
+    rules: { "@typescript-eslint/no-restricted-imports": restrictedImports(true, ["node:module"]) },
   },
   {
     files: FS_WRITERS,
