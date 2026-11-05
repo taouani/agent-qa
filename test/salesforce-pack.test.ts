@@ -227,7 +227,7 @@ describe.skipIf(!playwrightFolder)("Salesforce pack helpers (real Chromium)", ()
     expect(await page.locator(".forceToastMessage:visible").count()).toBe(0);
     await expect(h.expectToast!(page, "never", { timeout: 300 })).rejects.toThrow();
     // A toast without Lightning's message markup: the close button's label is left out.
-    await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", '<div class="slds-notify_toast">Saved <button>x</button></div>'));
+    await page.evaluate(() => (globalThis as unknown as { document: { body: { insertAdjacentHTML(p: string, h: string): void } } }).document.body.insertAdjacentHTML("beforeend", '<div class="slds-notify_toast">Saved <button>x</button></div>'));
     expect(await h.expectToast!(page, "Saved")).toBe("Saved");
   }, 30_000);
 });
