@@ -55,6 +55,11 @@ describe("type check with the repo's TypeScript", () => {
     expect(out).not.toContain(dir);
     expect(out).toContain("'./node_modules/x/index.js'");
     expect(out).toContain("~/notes");
+    // A root home (a container with no user) and a home that prefixes another folder change nothing else.
+    const imp = "Module '\"@pages/approval-app-main-page\"' has no exported member 'X'.";
+    expect(local(imp, dir, "/")).toBe(imp);
+    expect(local("see /home/abc/x and /home/a/y and /home/a", dir, "/home/a")).toBe("see /home/abc/x and ~/y and ~");
+    expect(local(`at ${dir}x/y`, dir)).toBe(`at ${dir}x/y`);
     // Through the compiler: an untyped package under strict.
     await mkdir(join(dir, "node_modules", "untyped"), { recursive: true });
     await writeFile(join(dir, "node_modules", "untyped", "package.json"), JSON.stringify({ name: "untyped", main: "index.js" }));

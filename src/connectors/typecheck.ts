@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, parse, relative, resolve } from "node:path";
 import type * as TS from "typescript";
 import { assertGrant, type WriteGrant } from "../core/index.js";
 
@@ -129,14 +129,17 @@ export function typeCheckFiles(ts: TypeScriptModule, folder: string, files: Read
 }
 
 /** A message with the folder's path made relative and the home folder as ~: no local layout or user name leaves. */
-export function local(message: string, folder: string): string {
+export function local(message: string, folder: string, home: string = homedir()): string {
+  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Whole path parts only: /home/a never matches inside /home/abc.
+  const swap = (text: string, from: string, to: string) => text.replace(new RegExp(`${escape(from)}(?=[\\\\/'"\\s:),]|$)`, "g"), to);
   const roots = new Set<string>();
-  for (const f of [folder, safeRealpath(folder)]) if (f) for (const v of [resolve(f), resolve(f).replace(/\\/g, "/")]) roots.add(v);
+  for (const f of [folder, safeRealpath(folder)]) if (f) for (const v of [resolve(f), resolve(f).replace(/\\/g, "/")]) if (v !== parse(v).root) roots.add(v);
   let out = message;
   // Longest first: the folder before its parents.
-  for (const r of [...roots].sort((a, b) => b.length - a.length)) out = out.split(`${r}/`).join("./").split(`${r}\\`).join(".\\").split(r).join(".");
-  const home = homedir();
-  if (home) for (const h of [home, home.replace(/\\/g, "/")]) out = out.split(h).join("~");
+  for (const r of [...roots].sort((a, b) => b.length - a.length)) out = swap(out, r, ".");
+  // A home that is the file system root (a container with no user) would turn every slash into ~.
+  if (home && resolve(home) !== parse(resolve(home)).root) for (const h of new Set([home, home.replace(/\\/g, "/")])) out = swap(out, h, "~");
   return out;
 }
 
