@@ -1,4 +1,5 @@
 import { basename, dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, type KeptRate, type RunnableRate } from "../harness/index.js";
@@ -230,7 +231,10 @@ export function profileCommand(opts: { root: string; folder?: string; json: bool
   else {
     out(describeProfile(scanned) + "\n\n" + status + "\n");
     if (!same && scanned.kind !== "empty") out(`Save it with: agent-qa run profile --accept review${opts.folder ? ` --input '{"folder":"${opts.folder}"}'` : ""}\n`);
-    if (!saved && scanned.kind === "empty") out(`No Playwright project here. Start one with: agent-qa run profile --accept scaffold${opts.folder ? ` --input '{"folder":"${opts.folder}"}'` : ""} (Gherkin with playwright-bdd; add --input '{"style":"plain"}' for plain specs)\n`);
+    if (!saved && scanned.kind === "empty" && !existsSync(join(opts.root, scanned.folder, "package.json"))) {
+      const input = (style?: string) => JSON.stringify({ ...(opts.folder ? { folder: opts.folder } : {}), ...(style ? { style } : {}) });
+      out(`No Playwright project here. Start one with: agent-qa run profile --accept scaffold${opts.folder ? ` --input '${input()}'` : ""} (Gherkin with playwright-bdd; for plain specs, --input '${input("plain")}')\n`);
+    }
   }
   return same ? 0 : 1;
 }

@@ -46,6 +46,8 @@ export function profileWorkflow(deps: ProfileDeps): WorkflowDefinition<ProfileIn
   // Why no new repo can start here, if none can. It reads no run, so a first step's `when` may ask it.
   // Both styles' files: whichever the person picks must fit.
   const blocker = (ctx: Ctx) => deps.data.scaffoldBlocker(ctx.inputs.folder, [...scaffoldFiles("bdd"), ...scaffoldFiles("plain")]);
+  // What the new repo's profile allows: shown in the question, and checked against the scan before it is saved.
+  const commandsOf = (style: ScaffoldStyle): string[][] => [...(style === "bdd" ? [["npx", "bddgen"]] : []), ["npx", "playwright", "test"], ["npx", "tsc", "--noEmit"]];
   const canStart = async (ctx: Ctx) => (await blocker(ctx)) === undefined;
   return {
     id: "profile",
@@ -78,8 +80,7 @@ export function profileWorkflow(deps: ProfileDeps): WorkflowDefinition<ProfileIn
           question: async (ctx) => {
             const p = await scan(ctx);
             const files = await filesOf(ctx);
-            const commands = [...(styleOf(ctx) === "bdd" ? ["npx bddgen"] : []), "npx playwright test", "npx tsc --noEmit"];
-            return `Start a new Playwright repo (${STYLE_LABEL[styleOf(ctx)]}) in ${p.folder === "." ? "the project root" : p.folder}? Agent-QA creates ${files.length} new files, replacing none, and saves ${PROFILE_FILE}, so it may then run: ${commands.join("; ")}.`;
+            return `Start a new Playwright repo (${STYLE_LABEL[styleOf(ctx)]}) in ${p.folder === "." ? "the project root" : p.folder}? Agent-QA creates up to ${files.length} files and replaces none (an existing README.md is kept, an existing .gitignore only gains lines), then saves ${PROFILE_FILE}, so it may then run: ${commandsOf(styleOf(ctx)).map((c) => c.join(" ")).join("; ")}.`;
           },
         },
         instructions: () =>
@@ -90,12 +91,12 @@ export function profileWorkflow(deps: ProfileDeps): WorkflowDefinition<ProfileIn
         context: async (ctx) => {
           const p = await scan(ctx);
           const files = await filesOf(ctx);
-          return [`Folder: ${p.folder}. Style: ${STYLE_LABEL[styleOf(ctx)]}.`, "", "New files:", ...files.map((f) => `- ${f.path} (${f.content.split("\n").length} lines)`), "", "Then: npm install, npx playwright install chromium, and fill in .env from .env.example."].join("\n");
+          return [`Folder: ${p.folder}. Style: ${STYLE_LABEL[styleOf(ctx)]}.`, "", "New files:", ...files.map((f) => `- ${f.path} (${f.content.split("\n").length} lines)${f.existing === "keep" ? ", kept if it exists" : f.existing === "add-lines" ? ", or only its missing lines if it exists" : ""}`), "", "Then: npm install, npx playwright install chromium, commit package-lock.json (CI installs from it), and fill in .env from .env.example. CI runs the tests once SF_BASE_URL is set as a repository variable."].join("\n");
         },
         onAccept: async (ctx, output) => {
           if (!output.create) return;
           const style = styleOf(ctx);
-          await deps.data.scaffoldRepo(ctx.runId, ctx.inputs.folder, style === "bdd" ? "playwright-bdd" : "playwright", (folder) => scaffoldFiles(style, folder), true);
+          await deps.data.scaffoldRepo(ctx.runId, ctx.inputs.folder, style === "bdd" ? "playwright-bdd" : "playwright", (folder) => scaffoldFiles(style, folder), commandsOf(style), true);
         },
       },
       {
@@ -110,7 +111,10 @@ export function profileWorkflow(deps: ProfileDeps): WorkflowDefinition<ProfileIn
           personOnly: true,
           question: async (ctx) => {
             const p = await scan(ctx);
-            if (p.kind === "empty" || !p.commands) return `There is no Playwright project in ${p.folder}, so there is nothing to save${(await blocker(ctx)) ? `, and no new one can start there (${await blocker(ctx)})` : ""}. Close this run?`;
+            if (p.kind === "empty" || !p.commands) {
+              const why = await blocker(ctx);
+              return `There is no Playwright project in ${p.folder}, so there is nothing to save${why ? `, and no new one can start there (${why})` : ""}. Close this run?`;
+            }
             return `Save ${PROFILE_FILE} for ${p.kind} in ${p.folder}? Agent-QA may then run only: ${commandList(p.commands).map((c) => c.join(" ")).join("; ")}.`;
           },
         },

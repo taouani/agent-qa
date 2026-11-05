@@ -96,6 +96,15 @@ export interface SalesforceData {
   salesforceSession(role: string): Promise<SalesforceSession>;
 }
 
+/** A file of a new repo (workflows/scaffold): `existing` says what happens when the folder has it already. */
+export interface ScaffoldInput {
+  path: string;
+  content: string;
+  existing?: "keep" | "add-lines" | undefined;
+}
+
+const sha256 = (t: string) => createHash("sha256").update(t).digest("hex");
+
 export interface ProfileData {
   /**
    * Scans the repo's Playwright project once per run (nothing in it runs) and
@@ -122,9 +131,9 @@ export interface ProfileData {
    * `Policy.guard` (target testCode), never in CI. Call it only with the
    * person's yes.
    */
-  scaffoldRepo(runId: string, folder: string | undefined, kind: SavedProfile["kind"], files: (folder: string) => ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<{ status: "done"; written: string[]; profile: SavedProfile } | { status: "declined" }>;
+  scaffoldRepo(runId: string, folder: string | undefined, kind: SavedProfile["kind"], files: (folder: string) => ReadonlyArray<ScaffoldInput>, commands: string[][], approved: boolean): Promise<{ status: "done"; written: string[]; profile: SavedProfile } | { status: "declined" }>;
   /** Why a new repo can't be started in `folder`, or undefined when it can. Paths only. */
-  scaffoldBlocker(folder: string | undefined, files: ReadonlyArray<{ path: string }>): Promise<string | undefined>;
+  scaffoldBlocker(folder: string | undefined, files: ReadonlyArray<ScaffoldInput>): Promise<string | undefined>;
 }
 
 /** What script generation (S2-6) reads from the repo beyond the profile. */
@@ -895,42 +904,58 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return outcome.status === "done" ? { status: "done" as const, profile } : { status: "declined" as const };
   }
 
-  async scaffoldBlocker(folder: string | undefined, files: ReadonlyArray<{ path: string }>): Promise<string | undefined> {
+  async scaffoldBlocker(folder: string | undefined, files: ReadonlyArray<ScaffoldInput>): Promise<string | undefined> {
     return (await this.scaffoldTarget(folder, files)).blocked;
+  }
+
+  /** The folder a new repo would go in, or why none can. */
+  private scaffoldFolder(folder: string | undefined): { folder: string; blocked?: string } {
+    if ((this.options.mode ?? "ide") === "ci") return { folder: ".", blocked: "a new repo is started from the IDE or the terminal, never in CI" };
+    if (folder !== undefined && folder !== "." && !isPlainRelativePath(folder)) return { folder: ".", blocked: "the folder isn't a plain relative path" };
+    try {
+      return { folder: findProjectFolder(this.options.root, folder) };
+    } catch {
+      return { folder: ".", blocked: folder !== undefined ? "the folder doesn't exist inside the project" : "the project already holds more than one Playwright project" };
+    }
   }
 
   /**
    * Where a new repo would go, and why it can't, if it can't. Reads no run:
    * a workflow's first step asks this before its run exists. The reasons name
-   * no folder, since they reach the host model unmasked.
+   * no folder, since they reach the host model unmasked. Only files the repo
+   * would create count: one it keeps or adds lines to may exist.
    */
-  private async scaffoldTarget(folder: string | undefined, files: ReadonlyArray<{ path: string }>): Promise<{ folder: string; blocked?: string }> {
-    if ((this.options.mode ?? "ide") === "ci") return { folder: ".", blocked: "a new repo is started from the IDE or the terminal, never in CI" };
-    if (folder !== undefined && folder !== "." && !isPlainRelativePath(folder)) return { folder: ".", blocked: "the folder isn't a plain relative path" };
-    let rel: string;
-    try {
-      rel = findProjectFolder(this.options.root, folder);
-    } catch {
-      return { folder: ".", blocked: folder !== undefined ? "the folder doesn't exist inside the project" : "the project already holds more than one Playwright project" };
-    }
-    if (await this.savedProfile()) return { folder: rel, blocked: `${PROFILE_FILE} exists already: this project has a reviewed Playwright profile` };
+  private async scaffoldTarget(folder: string | undefined, files: ReadonlyArray<ScaffoldInput>): Promise<{ folder: string; blocked?: string }> {
+    const target = this.scaffoldFolder(folder);
+    if (target.blocked) return target;
+    const rel = target.folder;
+    // Whether it exists, not whether it parses: a broken one is repaired by the review, not by a new repo.
+    if (await lstat(join(hostCwd(this.options.root), PROFILE_FILE)).then(() => true, () => false)) return { folder: rel, blocked: `${PROFILE_FILE} exists already: this project has a reviewed Playwright profile` };
     const scanned = scanFramework(this.options.root, rel);
     if (scanned.kind !== "empty") return { folder: rel, blocked: `the folder already holds a ${scanned.kind} project` };
     const dir = hostCwd(this.options.root, rel);
     const taken: string[] = [];
-    for (const f of [{ path: "package.json" }, ...files]) {
+    for (const f of [{ path: "package.json" }, ...files.filter((f) => !f.existing)]) {
       if (await lstat(join(dir, f.path)).then(() => true, () => false)) taken.push(f.path);
     }
     if (taken.length) return { folder: rel, blocked: `the folder already has ${[...new Set(taken)].slice(0, 10).join(", ")}: a new repo only goes into a folder without them` };
     return { folder: rel };
   }
 
-  async scaffoldRepo(runId: string, wanted: string | undefined, kind: SavedProfile["kind"], filesFor: (folder: string) => ReadonlyArray<{ path: string; content: string }>, approved: boolean) {
+  /**
+   * Creates a new repo's files and saves its profile, after the person's yes
+   * (S2-12). New files only, except a `.gitignore` that gains its missing
+   * lines. A yes given again after a crash finishes the job: files that hold
+   * the template's bytes, and a profile equal to the one it would save, are
+   * left as they are. On a failure, what this call wrote is undone.
+   * `commands` are the ones the person was shown: anything else is refused.
+   */
+  async scaffoldRepo(runId: string, wanted: string | undefined, kind: SavedProfile["kind"], filesFor: (folder: string) => ReadonlyArray<ScaffoldInput>, commands: string[][], approved: boolean) {
     if (!approved) return { status: "declined" as const };
-    const { folder } = await this.scaffoldTarget(wanted, []);
+    const target = this.scaffoldFolder(wanted);
+    if (target.blocked) throw new ProfileError(target.blocked);
+    const folder = target.folder;
     const files = filesFor(folder);
-    const { blocked } = await this.scaffoldTarget(wanted, files);
-    if (blocked) throw new ProfileError(blocked);
     if (files.length === 0) throw new ProfileError("there are no files to write");
     const keys = new Set<string>();
     for (const f of files) {
@@ -941,27 +966,74 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (keys.has(key)) throw new ProfileError("a file is listed twice");
       keys.add(key);
     }
+    const dir = hostCwd(this.options.root, folder);
+    const read = (path: string) => readFile(path, "utf8").then((t) => t, () => undefined);
+    // Files of an earlier, interrupted yes hold the template's bytes; anything else stops it.
+    const differ: string[] = [];
+    for (const f of [...files.filter((f) => !f.existing)]) {
+      const now = await read(join(dir, f.path));
+      if (now !== undefined && now !== f.content) differ.push(f.path);
+      else if (now === undefined && (await lstat(join(dir, f.path)).then(() => true, () => false))) differ.push(f.path);
+    }
+    if (differ.length) throw new ProfileError(`the folder already has ${differ.slice(0, 10).join(", ")}: a new repo only goes into a folder without them`);
+    const pkg = files.find((f) => f.path === "package.json");
+    if (!pkg) throw new ProfileError("a new repo needs a package.json");
+    const ours = (await read(join(dir, "package.json"))) === pkg.content;
+    if (!ours && scanFramework(this.options.root, folder).kind !== "empty") throw new ProfileError("the folder already holds a Playwright project");
+    const profilePath = join(hostCwd(this.options.root), PROFILE_FILE);
+    const savedText = await read(profilePath);
+    const same = (p: SavedProfile | undefined) => p !== undefined && p.folder === folder && p.kind === kind && JSON.stringify(commandList(p.commands)) === JSON.stringify(commands);
+    let saved: SavedProfile | undefined;
+    if (savedText !== undefined || (await lstat(profilePath).then(() => true, () => false))) {
+      saved = await this.savedProfile().catch(() => undefined);
+      // Only the profile this very repo would get, left by an interrupted yes.
+      if (!ours || !same(saved)) throw new ProfileError(`${PROFILE_FILE} exists already: this project has a reviewed Playwright profile`);
+    }
     const config = await this.configOrDefault();
     const outcome = await this.policy(config).guard({ target: "testCode", summary: `Start a new ${kind} repo in ${folder}: ${files.length} file(s) and ${PROFILE_FILE}`, runId }, async (grant) => {
       // A new repo is the person's own act in their IDE: never from CI's checkout.
       if (grant.via !== "direct") throw new PolicyDenied("testCode", "a new repo is never started from CI");
       const created: CreatedRepoFile[] = [];
+      const changed: Array<{ path: string; before: string; after: string }> = [];
+      const written: string[] = [];
       try {
         for (const f of files) {
-          // The path is relative to the folder, which bounds the write.
+          // Paths are relative to the folder, which bounds every write.
+          const now = f.existing ? await read(join(dir, f.path)) : undefined;
+          if (now !== undefined && f.existing === "keep") continue;
+          if (now !== undefined && f.existing === "add-lines") {
+            const have = new Set(now.split(/\r?\n/).map((l) => l.trim()));
+            const missing = f.content.split("\n").filter((l) => l.trim() && !have.has(l.trim()));
+            if (!missing.length) continue;
+            const after = `${now}${now.endsWith("\n") || now === "" ? "" : "\n"}${missing.join("\n")}\n`;
+            const r = await replaceCreatedRepoFile(grant, this.options.root, f.path, after, sha256(now), folder);
+            if (r.status === "replaced") changed.push({ path: f.path, before: r.before, after });
+            written.push(f.path);
+            continue;
+          }
           const r = await createRepoFile(grant, this.options.root, f.path, f.content, folder);
           if (r.status === "created") created.push(r.file);
+          written.push(f.path);
         }
         const scanned = scanFramework(this.options.root, folder);
         if (scanned.kind !== kind || !scanned.commands) throw new ProfileError(`the new repo reads as ${scanned.kind}, not ${kind}`);
-        const profile: SavedProfile = { version: 1, folder: scanned.folder, kind, commands: scanned.commands, reviewedAt: new Date().toISOString() };
-        await writeRepoFile(grant, this.options.root, PROFILE_FILE, `${JSON.stringify(profile, null, 2)}\n`);
-        return { written: files.map((f) => f.path), profile };
+        if (JSON.stringify(commandList(scanned.commands)) !== JSON.stringify(commands)) throw new ProfileError("the new repo's commands are not the ones you were shown");
+        let profile: SavedProfile = { version: 1, folder: scanned.folder, kind, commands: scanned.commands, reviewedAt: new Date().toISOString() };
+        if (saved) profile = saved;
+        else {
+          // Created, never replaced: a profile saved meanwhile (another window's review) stops this.
+          const r = await createRepoFile(grant, this.options.root, PROFILE_FILE, `${JSON.stringify(profile, null, 2)}\n`, ".");
+          if (r.status === "created") created.push(r.file);
+        }
+        return { written, profile };
       } catch (error) {
         const left: string[] = [];
         for (const c of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, c).catch(() => left.push(c.path));
+        for (const c of changed.reverse()) await replaceCreatedRepoFile(grant, this.options.root, c.path, c.before, sha256(c.after), folder).catch(() => left.push(c.path));
         const why = error instanceof Error ? error.message : String(error);
-        throw new ProfileError(local(`the new repo could not be written (${why}).${left.length ? ` Agent-QA could not remove: ${left.join(", ")}.` : " Nothing was left behind."}`, hostCwd(this.options.root)).slice(0, 800));
+        const text = local(`the new repo could not be written (${why}).${left.length ? ` Agent-QA could not undo: ${left.join(", ")}.` : " Nothing was left behind."}`, hostCwd(this.options.root));
+        const masked = await this.run(runId).then(({ service }) => service.maskText(text, "scaffold.error"), () => text);
+        throw new ProfileError(masked.slice(0, 800));
       }
     });
     return outcome.status === "done" ? { status: "done" as const, ...outcome.value } : { status: "declined" as const };

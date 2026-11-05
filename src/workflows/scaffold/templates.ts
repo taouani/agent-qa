@@ -15,6 +15,12 @@ export type ScaffoldStyle = (typeof SCAFFOLD_STYLES)[number];
 export interface ScaffoldFile {
   path: string;
   content: string;
+  /**
+   * When the folder has the file already (a repo made on GitHub, or after
+   * `agent-qa init`): keep it as it is, or add only the lines it lacks.
+   * Without it, an existing file stops the new repo.
+   */
+  existing?: "keep" | "add-lines";
 }
 
 /** Versions known to work together (Playwright 1.49 is the explorer's minimum). */
@@ -22,11 +28,12 @@ const VERSIONS = {
   playwright: "^1.58.0",
   playwrightBdd: "^9.2.1",
   faker: "^10.0.0",
-  typescript: "^5.6.0",
-  eslint: "^9.15.0",
-  typescriptEslint: "^8.15.0",
-  typesNode: "^20.0.0",
-  dotenv: "^16.4.0",
+  // typescript-eslint 8 supports TypeScript below 6.1.
+  typescript: "^5.9.0",
+  eslint: "^10.0.0",
+  typescriptEslint: "^8.72.0",
+  typesNode: "^22.0.0",
+  dotenv: "^17.0.0",
 };
 
 const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
@@ -36,6 +43,8 @@ function packageJson(name: string, style: ScaffoldStyle): string {
     name,
     private: true,
     description: "Playwright tests for Salesforce, started by Agent-QA",
+    // faker 10 is ESM only: a CommonJS repo loads it with require(esm), from Node 20.19.
+    engines: { node: ">=20.19" },
     scripts: {
       test: style === "bdd" ? "bddgen && playwright test" : "playwright test",
       "test:headed": style === "bdd" ? "bddgen && playwright test --headed" : "playwright test --headed",
@@ -188,7 +197,7 @@ function privateKey(): string {
 /** Salesforce takes only login.salesforce.com or test.salesforce.com as the audience. */
 function audience(loginUrl: string): string {
   const host = new URL(loginUrl).hostname.toLowerCase();
-  return host === 'test.salesforce.com' || host.endsWith('.sandbox.my.salesforce.com') ? 'https://test.salesforce.com' : 'https://login.salesforce.com';
+  return host === 'test.salesforce.com' || host.endsWith('.sandbox.my.salesforce.com') || host.endsWith('.scratch.my.salesforce.com') ? 'https://test.salesforce.com' : 'https://login.salesforce.com';
 }
 
 async function post(url: string, body: URLSearchParams, bearer?: string): Promise<Record<string, string>> {
@@ -209,7 +218,7 @@ async function post(url: string, body: URLSearchParams, bearer?: string): Promis
 export async function frontdoorUrl(username: string): Promise<string> {
   const loginUrl = process.env.SF_LOGIN_URL || 'https://test.salesforce.com';
   const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const claims = b64url(JSON.stringify({ iss: required('SF_CLIENT_ID'), sub: username, aud: audience(loginUrl), exp: Math.floor(Date.now() / 1000) + 180 }));
+  const claims = b64url(JSON.stringify({ iss: required('SF_CLIENT_ID'), sub: username, aud: audience(loginUrl), exp: Math.floor(Date.now() / 1000) + 120 }));
   const signer = createSign('RSA-SHA256');
   signer.update(\`\${header}.\${claims}\`);
   const assertion = \`\${header}.\${claims}.\${b64url(signer.sign(createPrivateKey(privateKey())))}\`;
@@ -344,12 +353,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-          cache: npm
+      # Installs from the committed package-lock.json.
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm run lint
-      - run: ${style === "bdd" ? "npx bddgen && npx playwright test" : "npx playwright test"}
+      # Skipped until the org is set up: SF_BASE_URL is a repository variable.
+      - if: \${{ vars.SF_BASE_URL != '' }}
+        run: ${style === "bdd" ? "npx bddgen && npx playwright test" : "npx playwright test"}
         env:
           SF_BASE_URL: \${{ vars.SF_BASE_URL }}
           SF_LOGIN_URL: \${{ vars.SF_LOGIN_URL }}
@@ -357,7 +368,7 @@ jobs:
           SF_JWT_KEY: \${{ secrets.SF_JWT_KEY }}
           SF_USER_STANDARD: \${{ vars.SF_USER_STANDARD }}
       - uses: actions/upload-artifact@v4
-        if: \${{ !cancelled() }}
+        if: \${{ !cancelled() && vars.SF_BASE_URL != '' }}
         with:
           name: playwright-report
           path: playwright-report/
@@ -387,7 +398,7 @@ Started by Agent-QA: ${style === "bdd" ? "Gherkin features (playwright-bdd) with
 ${
   atRoot
     ? "In CI (\`.github/workflows/playwright.yml\`), set \`SF_CLIENT_ID\` and \`SF_JWT_KEY\` as secrets, and \`SF_BASE_URL\`, \`SF_LOGIN_URL\` and \`SF_USER_STANDARD\` as variables."
-    : "This folder isn't the repository root, so no CI workflow was added: GitHub runs workflows only from the root's \`.github/workflows\`."
+    : "This folder isn't the project root, so no CI workflow was added: GitHub runs workflows only from the repository root's \`.github/workflows\`."
 }
 `;
 
@@ -407,9 +418,9 @@ export function scaffoldFiles(style: ScaffoldStyle, folder = "."): ScaffoldFile[
     { path: "playwright.config.ts", content: playwrightConfig(style) },
     { path: "tsconfig.json", content: TSCONFIG },
     { path: "eslint.config.mjs", content: ESLINT },
-    { path: ".gitignore", content: GITIGNORE },
+    { path: ".gitignore", content: GITIGNORE, existing: "add-lines" },
     { path: ".env.example", content: ENV_EXAMPLE },
-    { path: "README.md", content: README(style, atRoot(folder)) },
+    { path: "README.md", content: README(style, atRoot(folder)), existing: "keep" },
     { path: "src/auth/salesforce.ts", content: AUTH },
     { path: "src/fixtures.ts", content: FIXTURES(style) },
     { path: "src/pages/base-page.ts", content: BASE_PAGE },

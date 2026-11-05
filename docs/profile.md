@@ -35,7 +35,7 @@ agent-qa run profile --input '{"folder":"e2e"}' --accept review   # when the pro
 When the folder has no Playwright project and no `package.json`, the same workflow offers to start one instead of reviewing a scan:
 
 1. **Style.** Gherkin features with playwright-bdd (the default, and what nobody answering gets), or plain Playwright specs. Set it up front with `--input '{"style":"plain"}'`.
-2. **Your yes.** Agent-QA lists the files and creates them, replacing none, then saves `agent-qa.profile.json` for the new repo. Like the review, this takes your own yes: the model's yes is refused, and `--yes` declines it.
+2. **Your yes.** Agent-QA lists the files and creates them, replacing none (an existing `README.md` is kept, and an existing `.gitignore`, such as the one `agent-qa init` writes, only gains its missing lines), then saves `agent-qa.profile.json` for the new repo. Like the review, this takes your own yes: the model's yes is refused, and `--yes` declines it.
 
 ```bash
 agent-qa run profile --accept scaffold                              # asks the style, then creates the repo
@@ -50,7 +50,9 @@ The new repo holds:
 - one smoke scenario (`tests/features/smoke.feature` and its steps, or `tests/smoke.spec.ts`);
 - `.env.example` with names only, and `.github/workflows/playwright.yml` when the folder is the repository root.
 
-No secret is written. Then run `npm install`, `npx playwright install chromium`, and fill in `.env`. Nothing starts in CI, in a folder that already has any of these files, or when `agent-qa.profile.json` exists. If a file appears between the question and your yes, nothing is written; if a write fails midway, the files already created are removed.
+No secret is written. Then run `npm install` and `npx playwright install chromium`, commit the `package-lock.json` (CI installs from it with `npm ci`), and fill in `.env`. The CI workflow type checks and lints every pull request, and runs the tests once `SF_BASE_URL` is set as a repository variable. The repo needs Node 20.19 or later.
+
+Nothing starts in CI, in a folder that already has any of the other files, or when `agent-qa.profile.json` exists. If a file appears between the question and your yes, nothing is written; if a write fails midway, what was written is undone. If Agent-QA stopped after writing but before recording your yes, answering yes again finishes the run: files that still hold the template's bytes, and the same profile, are left as they are.
 
 ## agent-qa.profile.json
 

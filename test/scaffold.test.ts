@@ -13,6 +13,8 @@ beforeEach(async () => {
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
+const PLAIN_COMMANDS = [["npx", "playwright", "test"], ["npx", "tsc", "--noEmit"]];
+const BDD_COMMANDS = [["npx", "bddgen"], ...PLAIN_COMMANDS];
 const exists = (p: string) => lstat(p).then(() => true, () => false);
 
 function setup(mode?: Mode) {
@@ -70,7 +72,7 @@ describe("scaffold templates", () => {
     expect(scaffoldFiles("plain").map((f) => f.path)).toContain(".github/workflows/playwright.yml");
     const nested = scaffoldFiles("plain", "e2e");
     expect(nested.map((f) => f.path)).not.toContain(".github/workflows/playwright.yml");
-    expect(nested.find((f) => f.path === "README.md")!.content).toContain("isn't the repository root");
+    expect(nested.find((f) => f.path === "README.md")!.content).toContain("isn't the project root");
   });
 });
 
@@ -82,7 +84,7 @@ describe("profile workflow in an empty folder", () => {
     const scaffold = (await engine.submit(style.runId, "style", { bdd: true })).next;
     expect(scaffold).toMatchObject({ stepId: "scaffold", kind: "confirm" });
     expect(scaffold.kind === "confirm" && scaffold.context).toContain("tests/features/smoke.feature");
-    expect((await engine.approval(style.runId, "scaffold"))?.question).toMatch(/^Start a new Playwright repo \(Gherkin features with playwright-bdd\) in the project root\? Agent-QA creates \d+ new files, replacing none, and saves agent-qa\.profile\.json, so it may then run: npx bddgen; npx playwright test; npx tsc --noEmit\.$/);
+    expect((await engine.approval(style.runId, "scaffold"))?.question).toMatch(/^Start a new Playwright repo \(Gherkin features with playwright-bdd\) in the project root\? Agent-QA creates up to \d+ files and replaces none \(an existing README\.md is kept, an existing \.gitignore only gains lines\), then saves agent-qa\.profile\.json, so it may then run: npx bddgen; npx playwright test; npx tsc --noEmit\.$/);
 
     // The host model's yes alone is refused.
     await expect(engine.submit(style.runId, "scaffold", { create: true })).rejects.toThrow(/Only the user can approve scaffold/);
@@ -134,9 +136,9 @@ describe("profile workflow in an empty folder", () => {
     await rm(join(dir, "package.json"));
 
     // Any file the repo would replace.
-    await writeFile(join(dir, "README.md"), "mine");
+    await writeFile(join(dir, "tsconfig.json"), "{}");
     expect((await setup().engine.start("profile", {})).stepId).toBe("review");
-    await rm(join(dir, "README.md"));
+    await rm(join(dir, "tsconfig.json"));
 
     // CI never starts one.
     const ci = setup("ci");
@@ -144,6 +146,47 @@ describe("profile workflow in an empty folder", () => {
     expect(inCi.stepId).toBe("review");
     expect((await ci.engine.approval(inCi.runId, "review"))?.question).toContain("never in CI");
     expect(await filesUnder(dir)).toEqual([]);
+  });
+
+  it("starts one after agent-qa init: an existing README.md is kept and .gitignore gains only its missing lines", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\n");
+    await writeFile(join(dir, ".gitignore"), "# Agent-QA\n.agent-qa/\nnode_modules/\n");
+    await writeFile(join(dir, "README.md"), "# Ours\n");
+    await mkdir(join(dir, ".vscode"));
+    await writeFile(join(dir, ".vscode/mcp.json"), "{}");
+    const { engine } = setup();
+    const step = await engine.start("profile", {});
+    expect(step.stepId).toBe("style");
+    const scaffold = (await engine.submit(step.runId, "style", { bdd: false })).next;
+    expect(scaffold.kind === "confirm" && scaffold.context).toContain("README.md (");
+    expect(scaffold.kind === "confirm" && scaffold.context).toMatch(/README\.md \(\d+ lines\), kept if it exists/);
+    await engine.submit(step.runId, "scaffold", { create: true }, { byPerson: true });
+    expect(await readFile(join(dir, "README.md"), "utf8")).toBe("# Ours\n");
+    const ignore = await readFile(join(dir, ".gitignore"), "utf8");
+    expect(ignore.startsWith("# Agent-QA\n.agent-qa/\nnode_modules/\n")).toBe(true);
+    expect(ignore).toContain(".env\n");
+    expect(ignore.match(/^node_modules\/$/gm)).toHaveLength(1);
+    expect(readSavedProfile(dir)?.kind).toBe("playwright");
+  });
+
+  it("finishes a yes given again after a crash that left the files and the profile", async () => {
+    const { engine, data } = setup();
+    const step = await engine.start("profile", { style: "plain" });
+    // The files and the profile were written, then the process died before the step was saved.
+    await data.scaffoldRepo(step.runId, undefined, "playwright", (f) => scaffoldFiles("plain", f), PLAIN_COMMANDS, true);
+    const before = await readFile(join(dir, PROFILE_FILE), "utf8");
+    expect((await engine.submit(step.runId, "scaffold", { create: true }, { byPerson: true })).next.kind).toBe("done");
+    expect(await readFile(join(dir, PROFILE_FILE), "utf8")).toBe(before);
+  });
+
+  it("still opens the review over a broken saved profile, and saving repairs it", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ devDependencies: { "@playwright/test": "^1.58.0" } }));
+    await writeFile(join(dir, PROFILE_FILE), "{ broken");
+    const { engine } = setup();
+    const step = await engine.start("profile", {});
+    expect(step.stepId).toBe("review");
+    await engine.submit(step.runId, "review", { approve: true }, { byPerson: true });
+    expect(readSavedProfile(dir)?.kind).toBe("playwright");
   });
 
   it("refuses a file that appeared after the question, before writing anything", async () => {
@@ -162,18 +205,63 @@ describe("data.scaffoldRepo", () => {
     const { data, runs } = setup();
     const runId = runs.newRunId("profile", {});
     await runs.stateStore({ host: "other", driver: "host-model" }).save({ runId, workflowId: "profile", status: "running", inputs: {}, stepIndex: 0, attempt: 1, outputs: {}, accepted: {}, createdAt: "", updatedAt: "" });
-    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), true)).rejects.toThrow(ProfileError);
-    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), true)).rejects.toThrow(/reads as playwright-bdd, not playwright\)\. Nothing was left behind/);
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(ProfileError);
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(/reads as playwright-bdd, not playwright\)\. Nothing was left behind/);
     expect(await filesUnder(dir)).toEqual([]);
+  });
+
+  it("puts back a .gitignore it added lines to when the write fails", async () => {
+    const { data, runs } = setup();
+    const runId = runs.newRunId("profile", {});
+    await runs.stateStore({ host: "other", driver: "host-model" }).save({ runId, workflowId: "profile", status: "running", inputs: {}, stepIndex: 0, attempt: 1, outputs: {}, accepted: {}, createdAt: "", updatedAt: "" });
+    await writeFile(join(dir, ".gitignore"), "dist/");
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(/Nothing was left behind/);
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe("dist/");
+    expect(await filesUnder(dir)).toEqual([".gitignore"]);
+  });
+
+  it("refuses commands other than the ones the person was shown", async () => {
+    const { data, runs } = setup();
+    const runId = runs.newRunId("profile", {});
+    await runs.stateStore({ host: "other", driver: "host-model" }).save({ runId, workflowId: "profile", status: "running", inputs: {}, stepIndex: 0, attempt: 1, outputs: {}, accepted: {}, createdAt: "", updatedAt: "" });
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("plain", f), BDD_COMMANDS, true)).rejects.toThrow(/not the ones you were shown/);
+    expect(await filesUnder(dir)).toEqual([]);
+  });
+
+  it("never replaces a profile saved meanwhile", async () => {
+    const { data, runs } = setup();
+    const runId = runs.newRunId("profile", {});
+    await runs.stateStore({ host: "other", driver: "host-model" }).save({ runId, workflowId: "profile", status: "running", inputs: {}, stepIndex: 0, attempt: 1, outputs: {}, accepted: {}, createdAt: "", updatedAt: "" });
+    const other = JSON.stringify({ version: 1, folder: ".", kind: "playwright", commands: { test: ["npx", "playwright", "test"] }, reviewedAt: "2026-11-01T00:00:00.000Z" });
+    await writeFile(join(dir, PROFILE_FILE), other);
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("plain", f), PLAIN_COMMANDS, true)).rejects.toThrow(/exists already/);
+    expect(await readFile(join(dir, PROFILE_FILE), "utf8")).toBe(other);
+    expect(await filesUnder(dir)).toEqual([PROFILE_FILE]);
   });
 
   it("refuses paths outside a new repo, and masking tokens", async () => {
     const { data } = setup();
     const one = (path: string, content = "x") => () => [{ path: "package.json", content: "{}" }, { path, content }];
-    for (const bad of ["../out.txt", ".git/config", "node_modules/x.js", PROFILE_FILE, ".agent-qa/x"]) await expect(data.scaffoldRepo("r", undefined, "playwright", one(bad), true)).rejects.toThrow(ProfileError);
-    await expect(data.scaffoldRepo("r", undefined, "playwright", one("a.ts", "hi <PERSON_1>"), true)).rejects.toThrow(/masking token/);
-    expect(await data.scaffoldRepo("r", undefined, "playwright", one("a.ts"), false)).toEqual({ status: "declined" });
+    for (const bad of ["../out.txt", ".git/config", "node_modules/x.js", PROFILE_FILE, ".agent-qa/x"]) await expect(data.scaffoldRepo("r", undefined, "playwright", one(bad), PLAIN_COMMANDS, true)).rejects.toThrow(ProfileError);
+    await expect(data.scaffoldRepo("r", undefined, "playwright", one("a.ts", "hi <PERSON_1>"), PLAIN_COMMANDS, true)).rejects.toThrow(/masking token/);
+    expect(await data.scaffoldRepo("r", undefined, "playwright", one("a.ts"), PLAIN_COMMANDS, false)).toEqual({ status: "declined" });
     expect(await filesUnder(dir)).toEqual([]);
+  });
+});
+
+describe("agent-qa profile in an empty folder", () => {
+  it("says how to start a repo, with the folder and the style in one --input", async () => {
+    const { profileCommand } = await import("../src/cli/index.js");
+    await mkdir(join(dir, "e2e"));
+    let out = "";
+    profileCommand({ root: dir, folder: "e2e", json: false }, (s) => (out += s), () => {});
+    expect(out).toContain(`agent-qa run profile --accept scaffold --input '{"folder":"e2e"}'`);
+    expect(out).toContain(`--input '{"folder":"e2e","style":"plain"}'`);
+    // Not where one can't start.
+    await writeFile(join(dir, "e2e/package.json"), "{}");
+    out = "";
+    profileCommand({ root: dir, folder: "e2e", json: false }, (s) => (out += s), () => {});
+    expect(out).not.toContain("--accept scaffold");
   });
 });
 
