@@ -32,7 +32,11 @@ export class ConfigError extends Error {
 export interface LoadedConfig {
   file: string;
   config: Config;
+  /** The sf-agent-qa version in the file's `yaml-language-server` schema line, when it points at the published schema. */
+  schemaVersion?: string;
 }
+
+const SCHEMA_LINE = /^#\s*yaml-language-server:\s*\$schema=https:\/\/unpkg\.com\/sf-agent-qa@([^/\s]+)\/schema\/agent-qa\.schema\.json\s*$/m;
 
 /**
  * Common token shapes. A match anywhere in the file is an error, even in a
@@ -148,7 +152,9 @@ export async function loadConfig(dirOrFile: string, options: { isFile?: boolean 
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    return { file, config: parseConfig(text, file) };
+    const config = parseConfig(text, file);
+    const schemaVersion = SCHEMA_LINE.exec(text.replace(/^\uFEFF/, ""))?.[1];
+    return { file, config, ...(schemaVersion ? { schemaVersion } : {}) };
   }
   throw new ConfigError(candidates[0] ?? dirOrFile, [
     { path: "$", message: `no config found; looked for ${candidates.join(", ")}. Run \`agent-qa init\`.` },

@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { VERSION, CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { ConnectorError, networkCause, SalesforceAuth, SalesforceAuthError, selectFetch } from "../connectors/index.js";
 import { salesforceKey, salesforceKeyPath } from "./access.js";
 import { loadIgnoreRules, isIgnored } from "./gitignore.js";
@@ -250,7 +250,7 @@ async function reachabilityCheck(config: Config, fetcher: typeof fetch, timeoutM
         detail: down.map(([name, url, error]) => `${name} at ${new URL(url).host}: ${error}`).join("\n"),
         fix:
           "Check the URL and your network. Behind a proxy, set HTTPS_PROXY (and NO_PROXY for hosts that skip it); " +
-          "for a proxy that re-signs TLS (a CERT or SELF_SIGNED code), run node with --use-system-ca (Node 22.15+) or set NODE_EXTRA_CA_CERTS to its CA certificate (.pem). " +
+          "for a proxy that re-signs TLS (a CERT or SELF_SIGNED code), set NODE_OPTIONS=--use-system-ca (Node 22.15+; in PowerShell: $env:NODE_OPTIONS = \"--use-system-ca\") or NODE_EXTRA_CA_CERTS to its CA certificate (.pem). " +
           "ENOTFOUND means the host name didn't resolve.",
       };
 }
@@ -268,6 +268,15 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
     const loaded = await loadConfig(root);
     config = loaded.config;
     results.push({ id: "config", title: "agent-qa.yaml", status: "pass", detail: relative(root, loaded.file) || loaded.file });
+    if (loaded.schemaVersion && loaded.schemaVersion !== VERSION) {
+      results.push({
+        id: "config-schema",
+        title: "Editor schema",
+        status: "warn",
+        detail: `the schema line points at sf-agent-qa@${loaded.schemaVersion}, but ${VERSION} is running, so your editor may flag settings this version supports`,
+        fix: `In the schema line, change sf-agent-qa@${loaded.schemaVersion} to sf-agent-qa@${VERSION}.`,
+      });
+    }
     if (!SECRET_REF.test(config.atlassian?.email ?? "${env:x}")) {
       results.push({
         id: "config-email",
