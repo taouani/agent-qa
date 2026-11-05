@@ -96,7 +96,7 @@ export const frameworkProfileSchema = z
     aliases: z.record(z.string(), z.array(z.string())),
     commands: profileCommandsSchema.optional(),
     steps: z.array(stepSchema),
-    pages: z.array(z.object({ name: z.string(), file: z.string(), extends: z.string().optional(), methods: z.array(z.string()) }).strict()),
+    pages: z.array(z.object({ name: z.string(), file: z.string(), extends: z.string().optional(), methods: z.array(z.string()), signatures: z.record(z.string(), z.string()).optional() }).strict()),
     fixtures: z.array(z.object({ name: z.string(), file: z.string() }).strict()),
     features: z.array(z.object({ file: z.string(), scenarios: z.number().int(), tags: z.array(z.string()) }).strict()),
     locators: z.record(z.enum(LOCATOR_FORMS), z.number().int()),

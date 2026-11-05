@@ -43,6 +43,8 @@ export interface ScannedPage {
   file: string;
   extends?: string;
   methods: string[];
+  /** Each method's parameters and return type as written, e.g. "(label: string, value?: string): Promise<void>". Defaults are left out. */
+  signatures?: Record<string, string>;
 }
 
 export interface ScannedFeature {
@@ -160,7 +162,24 @@ function fixtureNames(fn: Node | undefined): string[] {
   return first.properties.flatMap((p) => (p.type === "ObjectProperty" && p.key.type === "Identifier" ? [p.key.name] : []));
 }
 
-function scanCode(ast: Node, file: string, scan: RepoScan): void {
+const MAX_SIGNATURE = 200;
+
+/** A method's parameters and return type, from the source: names and type annotations only, never default values. */
+function signatureOf(m: Node, text: string): string | undefined {
+  if (m.type !== "ClassMethod") return undefined;
+  const typeText = (t: Node | null | undefined) => (t && t.start != null && t.end != null ? text.slice(t.start, t.end).replace(/^:\s*/, "").replace(/\s+/g, " ") : undefined);
+  const params = m.params.map((p) => {
+    if (p.type === "Identifier") return `${p.name}${p.optional ? "?" : ""}${typeText(p.typeAnnotation) ? `: ${typeText(p.typeAnnotation)}` : ""}`;
+    if (p.type === "AssignmentPattern" && p.left.type === "Identifier") return `${p.left.name}?${typeText(p.left.typeAnnotation) ? `: ${typeText(p.left.typeAnnotation)}` : ""}`;
+    if (p.type === "RestElement" && p.argument.type === "Identifier") return `...${p.argument.name}${typeText(p.typeAnnotation) ? `: ${typeText(p.typeAnnotation)}` : ""}`;
+    return "options";
+  });
+  const returns = typeText(m.returnType);
+  const sig = `(${params.join(", ")})${returns ? `: ${returns}` : ""}`;
+  return sig.length > MAX_SIGNATURE ? undefined : sig;
+}
+
+function scanCode(ast: Node, file: string, scan: RepoScan, text = ""): void {
   // `const { Given, When: W } = createBdd(test)`: the local names this file defines steps with.
   const keywordOf = new Map<string, ScannedStep["keyword"]>();
   walkAst(ast, (n) => {
@@ -210,15 +229,30 @@ function scanCode(ast: Node, file: string, scan: RepoScan): void {
     if ((n.type === "ClassDeclaration" || n.type === "ClassExpression") && n.id) {
       const isPage = /(^|\/)(pages?|page-objects|pom)\//i.test(file) || /(Page|Screen|Component)$/.test(n.id.name);
       if (isPage) {
-        const methods = n.body.body.flatMap((m) =>
-          m.type === "ClassMethod" && m.kind === "method" && !m.static && m.key.type === "Identifier" && m.accessibility !== "private" && m.accessibility !== "protected" && !m.key.name.startsWith("_")
-            ? [m.key.name]
-            : [],
-        );
-        scan.pages.push({ name: n.id.name, file, ...(n.superClass?.type === "Identifier" ? { extends: n.superClass.name } : {}), methods });
+        const signatures: Record<string, string> = {};
+        const methods = n.body.body.flatMap((m) => {
+          if (!(m.type === "ClassMethod" && m.kind === "method" && !m.static && m.key.type === "Identifier" && m.accessibility !== "private" && m.accessibility !== "protected" && !m.key.name.startsWith("_"))) return [];
+          const sig = signatureOf(m, text);
+          if (sig && m.key.type === "Identifier") signatures[m.key.name] = sig;
+          return [m.key.name];
+        });
+        scan.pages.push({ name: n.id.name, file, ...(n.superClass?.type === "Identifier" ? { extends: n.superClass.name } : {}), methods, ...(Object.keys(signatures).length ? { signatures } : {}) });
       }
     }
   });
+}
+
+/**
+ * The step definitions and page objects in one file's text, as the profile
+ * scan reads them: for checking generated code against the same rules. Not
+ * code that parses gives undefined.
+ */
+export function scanSource(text: string, file: string): Pick<RepoScan, "steps" | "pages"> | undefined {
+  const ast = parseCode(text, file);
+  if (!ast) return undefined;
+  const scan = { steps: [], pages: [], fixtures: [], locators: Object.fromEntries(LOCATOR_FORMS.map((f) => [f, 0])) } as unknown as RepoScan;
+  scanCode(ast, file, scan, text);
+  return { steps: scan.steps, pages: scan.pages };
 }
 
 /** Scenario count and tags of a Gherkin file. Scenario titles and examples are not kept: they can hold names. */
@@ -272,7 +306,7 @@ export function scanRepo(root: string): RepoScan {
       scan.unparsed.push(file);
       continue;
     }
-    scanCode(ast, file, scan);
+    scanCode(ast, file, scan, text);
   }
   for (const key of ["steps", "pages", "fixtures", "features", "authFiles", "unparsed"] as const) {
     if (scan[key].length > MAX_ENTRIES) {

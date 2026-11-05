@@ -120,8 +120,8 @@ describe("scanFramework (S2-2)", () => {
     ]);
     expect(p.steps[0]).toMatchObject({ file: "tests/steps/approval-steps.ts", line: 5 });
     expect(p.pages).toEqual([
-      { name: "ApprovalPage", file: "src/pages/approval-page.ts", extends: "BasePage", methods: ["approve", "reject", "byXpath", "label", "more"] },
-      { name: "BasePage", file: "src/pages/base/base-page.ts", methods: ["goto"] },
+      { name: "ApprovalPage", file: "src/pages/approval-page.ts", extends: "BasePage", methods: ["approve", "reject", "byXpath", "label", "more"], signatures: { approve: "()", reject: "()", byXpath: "()", label: "()", more: "()" } },
+      { name: "BasePage", file: "src/pages/base/base-page.ts", methods: ["goto"], signatures: { goto: "(path: string)" } },
     ]);
     expect(p.fixtures.map((f) => f.name)).toEqual(["pages", "testData"]);
     expect(p.locators).toMatchObject({ getByRole: 2, getByLabel: 1, css: 1, xpath: 1 });
