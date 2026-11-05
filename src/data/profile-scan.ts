@@ -99,6 +99,39 @@ function walk(root: string, dir: string, out: string[], limit: number): boolean 
   return false;
 }
 
+/** Folders whose contents generated code never touches, and that are too big to list. */
+const UNLISTED = new Set(["node_modules", ".git"]);
+export const MAX_LISTED_FILES = 200_000;
+
+/**
+ * Every file under `root`, relative with forward slashes, for the new-files
+ * rule (S2-6): unlike the profile scan's walk nothing is skipped but
+ * node_modules and .git, and symbolic links are listed, not followed. Throws
+ * past MAX_LISTED_FILES rather than return a partial list.
+ */
+export function listFolderFiles(root: string): string[] {
+  const out: string[] = [];
+  const visit = (dir: string) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const path = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!UNLISTED.has(e.name)) visit(path);
+      } else {
+        out.push(posix(relative(root, path)));
+        if (out.length > MAX_LISTED_FILES) throw new Error(`more than ${MAX_LISTED_FILES} files under the Playwright folder`);
+      }
+    }
+  };
+  visit(root);
+  return out.sort();
+}
+
 function read(root: string, file: string, budget: { left: number }): string | undefined {
   try {
     const path = join(root, file);

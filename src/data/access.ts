@@ -20,6 +20,7 @@ import {
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
+import { listFolderFiles } from "./profile-scan.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -106,6 +107,12 @@ export interface ProfileData {
   saveProfile(runId: string, folder?: string): Promise<{ status: "done"; profile: SavedProfile } | { status: "declined" }>;
 }
 
+/** What script generation (S2-6) reads from the repo beyond the profile. */
+export interface ScriptsData {
+  /** Every file in the reviewed profile's folder (relative to it), so generated code never replaces one. Paths only, never contents, and never shown to a model. */
+  frameworkFiles(): Promise<string[]>;
+}
+
 /** The explorer's browser (S2-4): masked pages in, masked actions out. */
 export interface ExplorerData {
   /** Where exploring goes, for the person's approval. Throws for a production org or an unknown role. */
@@ -162,7 +169,7 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, SalesforceData, ExplorerData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SalesforceData, ExplorerData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
@@ -437,6 +444,12 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     } as FrameworkProfile;
     await service.saveVault();
     return masked;
+  }
+
+  async frameworkFiles(): Promise<string[]> {
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    return listFolderFiles(hostCwd(this.options.root, saved.folder));
   }
 
   async savedProfile(): Promise<SavedProfile | undefined> {

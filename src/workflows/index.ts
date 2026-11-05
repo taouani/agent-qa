@@ -4,6 +4,7 @@ import { requirementsWorkflow } from "./requirements/workflow.js";
 import { testCasesWorkflow, type TestCasesDeps } from "./test-cases/workflow.js";
 import { profileWorkflow, type ProfileDeps } from "./profile/workflow.js";
 import { exploreWorkflow, type ExploreDeps } from "./explore/workflow.js";
+import { scriptsWorkflow, type ScriptsDeps } from "./scripts/workflow.js";
 
 export const MODULE = "workflows";
 export { spikeWorkflow } from "./spike/workflow.js";
@@ -25,9 +26,9 @@ export type { Exploration, ExploreAction } from "./explore/artifact.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps): ReadonlyArray<WorkflowDefinition<any>> {
+export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps): ReadonlyArray<WorkflowDefinition<any>> {
   // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
-  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps)];
+  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps), scriptsWorkflow(deps)];
 }
 export { helperPlan, helpersPath, LIGHTNING_HELPERS, LIGHTNING_LOCATOR_ORDER, LIGHTNING_RULES, lightningHelpersSource, renderPack, SALESFORCE_PACK_VERSION } from "./packs/salesforce.js";
 export type { HelperChoice, PackHelper, PackRule } from "./packs/salesforce.js";
@@ -35,3 +36,5 @@ export { FILE_ROLES, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_TEMPLATE_VERSION, scriptsDr
 export type { FileRole, GeneratedFile, ScriptsDraft, ScriptsDraftArtifact } from "./scripts/artifact.js";
 export { checkDraft, pathKey, TOKEN } from "./scripts/checks.js";
 export type { CheckContext } from "./scripts/checks.js";
+export { MAX_SCRIPT_CASES, scriptsInputSchema, scriptsWorkflow, withHelper } from "./scripts/workflow.js";
+export type { ScriptsDeps, ScriptsInputs } from "./scripts/workflow.js";

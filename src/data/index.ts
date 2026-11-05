@@ -1,7 +1,7 @@
 /** `data` module. See eslint.config.js for what it may import. */
 export const MODULE = "data";
 export { DataAccess, salesforceKey, salesforceKeyPath, secretSources } from "./access.js";
-export type { DataAccessOptions, ExplorerData, HostData, ProfileData, RequirementsData, SalesforceData, XrayData } from "./access.js";
+export type { DataAccessOptions, ExplorerData, HostData, ProfileData, RequirementsData, SalesforceData, ScriptsData, XrayData } from "./access.js";
 export { isSalesforceSandbox } from "./explorer.js";
 export type { BrowserLike, ExplorerTarget, ExploreSetup, MaskedAction, MaskedPage, MaskedResult, OpenBrowser } from "./explorer.js";
 export { MAX_SNAPSHOT_CHARS, maskAriaSnapshot, maskTitle } from "./snapshot.js";
@@ -29,7 +29,7 @@ export {
   scanFramework,
 } from "./profile.js";
 export type { FrameworkProfile, ProfileCommands, SavedProfile } from "./profile.js";
-export { AUTH_PATH, LOCATOR_FORMS, scanFeature, scanRepo, scanSource } from "./profile-scan.js";
+export { AUTH_PATH, listFolderFiles, LOCATOR_FORMS, MAX_LISTED_FILES, scanFeature, scanRepo, scanSource } from "./profile-scan.js";
 export { scanGeneratedCode } from "./code-scan.js";
 export type { CodeFinding, CodeScan } from "./code-scan.js";
 export type { LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
