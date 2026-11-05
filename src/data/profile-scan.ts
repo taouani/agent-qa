@@ -99,6 +99,51 @@ function walk(root: string, dir: string, out: string[], limit: number): boolean 
   return false;
 }
 
+/** Folders whose contents generated code never touches, and that are too big to list. */
+const UNLISTED = new Set(["node_modules", ".git"]);
+export const MAX_LISTED_FILES = 200_000;
+
+export interface FolderListing {
+  /** Every file, links included, relative with forward slashes, sorted. */
+  files: string[];
+  /** The symbolic links among them: a path under one reaches a file this listing doesn't show. */
+  links: string[];
+}
+
+/**
+ * Every file under `root`, for the new-files rule (S2-6): unlike the profile
+ * scan's walk nothing is skipped but node_modules and .git. Symbolic links
+ * are listed, not followed. Throws past MAX_LISTED_FILES or on a folder it
+ * can't read, rather than return a partial list.
+ */
+export function listFolderFiles(root: string): FolderListing {
+  const files: string[] = [];
+  const links: string[] = [];
+  const visit = (dir: string) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      // Removed while listing: nothing there to replace.
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error(`can't list ${posix(relative(root, dir)) || "."}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
+    }
+    for (const e of entries) {
+      const path = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!UNLISTED.has(e.name)) visit(path);
+        continue;
+      }
+      const rel = posix(relative(root, path));
+      files.push(rel);
+      if (e.isSymbolicLink()) links.push(rel);
+      if (files.length > MAX_LISTED_FILES) throw new Error(`more than ${MAX_LISTED_FILES} files under the Playwright folder`);
+    }
+  };
+  visit(root);
+  return { files: files.sort(), links: links.sort() };
+}
+
 function read(root: string, file: string, budget: { left: number }): string | undefined {
   try {
     const path = join(root, file);

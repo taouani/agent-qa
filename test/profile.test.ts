@@ -206,6 +206,23 @@ describe("agent-qa.profile.json", () => {
     runs = undefined as unknown as RunStore;
   });
 
+  it("lists the reviewed folder's files for script generation, and masks with another run's vault", async () => {
+    await writeRepo(dir, REPO);
+    const { d, run } = await data();
+    await expect(d.frameworkFiles()).rejects.toBeInstanceOf(ProfileError);
+    await d.saveProfile(run);
+    const listing = await d.frameworkFiles();
+    expect(listing.files).toEqual(expect.arrayContaining(["package.json", "playwright.config.ts", PROFILE_FILE]));
+    expect(listing.links).toEqual([]);
+    // The scan is kept in the scripts run, masked with the vault of the cases' run.
+    const other = await data();
+    const tokens = `2026-11-04-p-${runN + 1}`;
+    await runs.create({ workflow: "requirements", context: "r", host: "cli", driver: "api", id: tokens });
+    const masked = await other.d.frameworkProfile(other.run, undefined, tokens);
+    expect(masked.kind).toBe("playwright-bdd");
+    expect(await runs.readArtifact(other.run, FRAMEWORK_PROFILE_SPEC)).toBeDefined();
+  });
+
   it("is saved through the policy layer and read back", async () => {
     await writeRepo(dir, REPO);
     const audit = new MemoryAuditSink();
