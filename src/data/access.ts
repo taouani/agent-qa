@@ -938,6 +938,10 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     for (const f of [{ path: "package.json" }, ...files.filter((f) => !f.existing)]) {
       if (await lstat(join(dir, f.path)).then(() => true, () => false)) taken.push(f.path);
     }
+    for (const f of files.filter((f) => f.existing)) {
+      const info = await lstat(join(dir, f.path)).catch(() => undefined);
+      if (info && !info.isFile()) taken.push(f.path);
+    }
     if (taken.length) return { folder: rel, blocked: `the folder already has ${[...new Set(taken)].slice(0, 10).join(", ")}: a new repo only goes into a folder without them` };
     return { folder: rel };
   }
@@ -1031,8 +1035,15 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         for (const c of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, c).catch(() => left.push(c.path));
         for (const c of changed.reverse()) await replaceCreatedRepoFile(grant, this.options.root, c.path, c.before, sha256(c.after), folder).catch(() => left.push(c.path));
         const why = error instanceof Error ? error.message : String(error);
-        const text = local(`the new repo could not be written (${why}).${left.length ? ` Agent-QA could not undo: ${left.join(", ")}.` : " Nothing was left behind."}`, hostCwd(this.options.root));
-        const masked = await this.run(runId).then(({ service }) => service.maskText(text, "scaffold.error"), () => text);
+        const text = local(`the new repo could not be written (${why}).${left.length ? ` Agent-QA could not undo: ${left.join(", ")}.` : " What this attempt wrote was undone."}`, hostCwd(this.options.root));
+        const masked = await this.run(runId).then(
+          async ({ service }) => {
+            const m = service.maskText(text, "scaffold.error");
+            await service.saveVault();
+            return m;
+          },
+          () => text,
+        );
         throw new ProfileError(masked.slice(0, 800));
       }
     });

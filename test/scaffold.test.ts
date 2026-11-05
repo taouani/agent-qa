@@ -206,7 +206,7 @@ describe("data.scaffoldRepo", () => {
     const runId = runs.newRunId("profile", {});
     await runs.stateStore({ host: "other", driver: "host-model" }).save({ runId, workflowId: "profile", status: "running", inputs: {}, stepIndex: 0, attempt: 1, outputs: {}, accepted: {}, createdAt: "", updatedAt: "" });
     await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(ProfileError);
-    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(/reads as playwright-bdd, not playwright\)\. Nothing was left behind/);
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(/reads as playwright-bdd, not playwright\)\. What this attempt wrote was undone/);
     expect(await filesUnder(dir)).toEqual([]);
   });
 
@@ -215,7 +215,7 @@ describe("data.scaffoldRepo", () => {
     const runId = runs.newRunId("profile", {});
     await runs.stateStore({ host: "other", driver: "host-model" }).save({ runId, workflowId: "profile", status: "running", inputs: {}, stepIndex: 0, attempt: 1, outputs: {}, accepted: {}, createdAt: "", updatedAt: "" });
     await writeFile(join(dir, ".gitignore"), "dist/");
-    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(/Nothing was left behind/);
+    await expect(data.scaffoldRepo(runId, undefined, "playwright", (f) => scaffoldFiles("bdd", f), PLAIN_COMMANDS, true)).rejects.toThrow(/What this attempt wrote was undone/);
     expect(await readFile(join(dir, ".gitignore"), "utf8")).toBe("dist/");
     expect(await filesUnder(dir)).toEqual([".gitignore"]);
   });
