@@ -54,6 +54,7 @@
   "devDependencies": {
     "@babel/types": "^7.29.8",
     "@changesets/cli": "^2.31.1",
+    "@playwright/test": "1.49.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^20.19.43",
     "eslint": "^9.39.5",
