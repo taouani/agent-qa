@@ -428,7 +428,7 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
             const tokensRun = await h.tokensRun(ctx);
             const change = out.files.map((f) => ({ path: f.path, content: f.content, sha256: state.files.find((x) => x.path === f.path)!.sha256 }));
             const w = await h.data.replaceGeneratedFiles(ctx.runId, tokensRun, state.folder, change, true);
-            if (w.status !== "done") return save(ctx, { ...state, rounds: round, status: "declined", reason: w.status === "pull-request" ? "in CI the fix leaves only as a pull request" : "the policy said no to changing the files" });
+            if (w.status !== "done") return save(ctx, { ...state, rounds: round, status: "declined", reason: "the policy said no to changing the files" });
             const fixed = new Map(out.files.map((f) => [f.path, f.content]));
             files = state.files.map((f) => (fixed.has(f.path) ? { ...f, content: fixed.get(f.path)!, sha256: sha(fixed.get(f.path)!) } : f));
           }

@@ -12,6 +12,9 @@ import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
  * rename, so a reader never sees half of it.
  */
 export async function writeRepoFile(grant: WriteGrant, root: string, path: string, text: string): Promise<void> {
+  // The profile and other project files are written by the person's IDE only, never from CI's checkout.
+  assertGrant(grant, "testCode");
+  if (grant.via !== "direct") throw new PolicyDenied("testCode", "this write may only leave as a pull request");
   const { target, folder } = await prepare(grant, root, path, ".");
   const current = await lstat(target).catch(() => undefined);
   if (current && !current.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file`);
@@ -136,7 +139,7 @@ export async function withScratchFile<T>(grant: WriteGrant, run: (path: string) 
 /** Checks the path, then makes its folders: every one, links resolved, inside `within` (relative to root). */
 async function prepare(grant: WriteGrant, root: string, path: string, within: string): Promise<{ target: string; folder: string; firstDir: string | undefined }> {
   assertGrant(grant, "testCode");
-  if (grant.via !== "direct") throw new PolicyDenied("testCode", "this write may only leave as a pull request");
+  // A pull-request grant (CI) writes the job's own checkout: what leaves it goes as a pull request (connectors/github.ts).
   const target = resolve(root, within, path);
   const rel = relative(resolve(root, within), target);
   if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${path} is outside the project folder`);

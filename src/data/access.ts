@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -137,8 +137,9 @@ export interface ScriptsData {
    * Writes the reviewed generated files into the profile's folder through
    * `Policy.guard` (target testCode), all or none: each is created, never
    * replaced, and a failure removes the ones already created. Call it only
-   * with the person's yes. In CI test code leaves only as a pull request,
-   * which this never opens: it says so instead.
+   * with the person's yes. In CI they go into the job's own checkout and
+   * the outcome says `pullRequest`: they leave it only through
+   * `openPullRequest`.
    */
   writeGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome>;
   /** Whether a type check could run at all (the policy, the repo's typescript, a tsconfig), checked without loading anything: no question is asked when it couldn't. */
@@ -162,7 +163,19 @@ export interface ScriptsData {
    * overwritten. All or none: a failure puts back the ones already replaced.
    */
   replaceGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<WriteFilesOutcome>;
+  /** Whether a pull request could be opened (CI, a git section for GitHub): no question is asked when it couldn't. */
+  pullRequestReadiness(): Promise<{ ready: true; repo: string } | { ready: false; reason: string }>;
+  /**
+   * Opens a pull request (S2-9) with files this run wrote in CI's checkout,
+   * each read back and checked against what Agent-QA wrote (`sha256`): one
+   * commit of new files on a new branch `agent-qa/<run>`, through
+   * `Policy.guard` (target testCode, which in CI only ever leaves as a pull
+   * request). The title and body are masked again before they leave.
+   */
+  openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome>;
 }
+
+export type PullRequestOutcome = { status: "done"; number: number; url: string; base: string; branch: string; draft: boolean; created: boolean } | { status: "declined" };
 
 /** A generated test as the run saw it, masked. */
 export interface MaskedTestResult {
@@ -181,7 +194,11 @@ export type TestRunOutcome =
   | { status: "declined" }
   | { status: "unavailable"; reason: string };
 
-export type WriteFilesOutcome = { status: "done"; written: string[] } | { status: "declined" } | { status: "pull-request" };
+/**
+ * done: the files are in the working copy. In CI that is the job's own
+ * checkout, and they leave only as a pull request (`pullRequest`, S2-9).
+ */
+export type WriteFilesOutcome = { status: "done"; written: string[]; pullRequest?: true } | { status: "declined" };
 
 export type TypeCheckOutcome = { status: "done"; diagnostics: TypeDiagnostic[] } | { status: "declined" } | { status: "unavailable"; reason: string };
 
@@ -228,6 +245,8 @@ export interface DataAccessOptions {
   typeCheck?: (grant: WriteGrant, files: ReadonlyArray<{ path: string; content: string }>) => TypeDiagnostic[] | Promise<TypeDiagnostic[]>;
   /** Replace the explorer's browser, for tests. */
   browser?: OpenBrowser;
+  /** Replace the GitHub client, for tests. */
+  github?: (repo: string) => Pick<GitHubClient, "openPullRequest">;
 }
 
 /** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
@@ -515,7 +534,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     let outcome;
     try {
       outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
-        if (grant.via !== "direct") return "pull-request" as const;
+        // In CI the grant is for the job's own checkout: the files leave it only as a pull request.
         const done: Array<{ path: string; before: string; after: string }> = [];
         try {
           for (const f of files) {
@@ -529,7 +548,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           for (const d of done.reverse()) await replaceCreatedRepoFile(grant, this.options.root, d.path, d.before, sha(d.after), folder).catch(() => left.push(d.path));
           throw new WriteFailed(error, left);
         }
-        return files.map((f) => f.path);
+        return { paths: files.map((f) => f.path), via: grant.via };
       });
     } catch (error) {
       if (!(error instanceof WriteFailed)) throw error;
@@ -542,7 +561,68 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       throw new ProfileError(service.maskText(local(`the fix could not be written (${why}).${left}`, root), "write.error").slice(0, 800));
     }
     if (outcome.status !== "done") return { status: "declined" };
-    return outcome.value === "pull-request" ? { status: "pull-request" } : { status: "done", written: outcome.value };
+    return { status: "done", written: outcome.value.paths, ...(outcome.value.via === "pull-request" ? { pullRequest: true as const } : {}) };
+  }
+
+  async pullRequestReadiness(): Promise<{ ready: true; repo: string } | { ready: false; reason: string }> {
+    if ((this.options.mode ?? "ide") !== "ci") return { ready: false, reason: "pull requests are opened from CI only (agent-qa run --ci)" };
+    const git = (await this.configOrDefault()).git;
+    if (!git) return { ready: false, reason: "agent-qa.yaml has no git section (platform: github, repo: owner/name, token)" };
+    if (git.platform !== "github") return { ready: false, reason: `pull requests on ${git.platform} aren't supported yet: GitHub only` };
+    if (this.policy(await this.configOrDefault()).decide("testCode").kind !== "pull-request") return { ready: false, reason: "the policy doesn't allow test code to leave (policy.writes.testCode)" };
+    return { ready: true, repo: git.repo };
+  }
+
+  async openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome> {
+    const ready = await this.pullRequestReadiness();
+    if (!ready.ready) throw new ProfileError(ready.reason);
+    const config = await this.configOrDefault();
+    const git = config.git!;
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed since the files were written (${folder} then, ${saved.folder} now): run scripts again`);
+    if (pr.files.length === 0) throw new ProfileError("there are no files for a pull request");
+    const repoRoot = await gitRoot(this.options.root);
+    if (!repoRoot) throw new ProfileError("the project folder isn't in a git checkout");
+    // What leaves is what Agent-QA wrote and the run tested: each file read back and checked.
+    const files: Array<{ path: string; content: string }> = [];
+    for (const f of pr.files) {
+      if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
+      if (isProtectedPath(f.path)) throw new ProfileError(`${f.path} is a project file Agent-QA never writes`);
+      const full = resolvePath(this.options.root, folder, f.path);
+      const content = await readInside(this.options.root, full);
+      if (content === undefined) throw new ProfileError(`${f.path} can't be read back from the checkout`);
+      if (createHash("sha256").update(content).digest("hex") !== f.sha256) throw new ProfileError(`${f.path} changed since Agent-QA wrote it: only what Agent-QA wrote and tested leaves`);
+      if (hasToken(content)) throw new ProfileError(`${f.path} holds a masking token: generated code never carries one`);
+      const inRepo = relativePath(repoRoot, await realpathAsync(full)).split(/[\\/]/).join("/");
+      if (!inRepo || inRepo.startsWith("../") || isAbsolute(inRepo)) throw new ProfileError(`${f.path} is outside the git checkout`);
+      files.push({ path: inRepo, content });
+    }
+    const { service } = await this.run(tokensRun);
+    const title = service.maskText(pr.title, "pr.title").replace(/\s+/g, " ").slice(0, 200);
+    const body = service.maskText(pr.body, "pr.body").slice(0, 60_000);
+    const summary = service.maskText(`Open a pull request on ${git.repo} with ${files.length} file(s): ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    await service.saveVault();
+    const env = this.options.env ?? process.env;
+    // The branch the job checked out: a pull request's base, else the pushed branch; else the repo's default.
+    const base = env.GITHUB_BASE_REF || (env.GITHUB_REF?.startsWith("refs/heads/") ? env.GITHUB_REF.slice("refs/heads/".length) : undefined) || undefined;
+    const branch = `agent-qa/${runId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+|[.-]+$/g, "")}`.slice(0, 200);
+    if (!BRANCH.test(branch)) throw new ProfileError("the run's id doesn't make a branch name");
+    const client = this.options.github
+      ? this.options.github(git.repo)
+      : new GitHubClient({ repo: git.repo, token: await resolveSecret(git.token, this.secrets()), ...(git.baseUrl ? { baseUrl: git.baseUrl } : {}), ...(this.options.fetch ? { fetch: this.options.fetch } : {}) });
+    let outcome;
+    try {
+      outcome = await this.policy(config).guard({ target: "testCode", summary, runId }, async (grant) => {
+        if (grant.via !== "pull-request") throw new PolicyDenied("testCode", "pull requests are opened from CI only");
+        return client.openPullRequest(grant, { base, branch, files, message: title, title, body, draft: pr.draft });
+      });
+    } catch (error) {
+      if (error instanceof ConnectorError || error instanceof PolicyDenied) throw error;
+      throw new ProfileError(service.maskText(local(`the pull request could not be opened (${error instanceof Error ? error.message : String(error)})`, hostCwd(this.options.root)), "write.error").slice(0, 800));
+    }
+    if (outcome.status !== "done") return { status: "declined" };
+    return { status: "done", ...outcome.value };
   }
 
   async salesforceRoles(): Promise<string[]> {
@@ -731,7 +811,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     let outcome;
     try {
       outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
-        if (grant.via !== "direct") return "pull-request" as const;
+        // In CI the grant is for the job's own checkout: the files leave it only as a pull request.
         const created: CreatedRepoFile[] = [];
         try {
           // A file that already holds the same bytes counts as written: a write that stopped halfway can run again.
@@ -745,7 +825,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           for (const c of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, c).catch(() => left.push(c.path));
           throw new WriteFailed(error, left);
         }
-        return files.map((f) => f.path);
+        return { paths: files.map((f) => f.path), via: grant.via };
       });
     } catch (error) {
       if (!(error instanceof WriteFailed)) throw error;
@@ -758,7 +838,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       throw new ProfileError(service.maskText(local(`the files could not be written (${why}).${left}`, root), "write.error").slice(0, 800));
     }
     if (outcome.status !== "done") return { status: "declined" };
-    return outcome.value === "pull-request" ? { status: "pull-request" } : { status: "done", written: outcome.value };
+    return { status: "done", written: outcome.value.paths, ...(outcome.value.via === "pull-request" ? { pullRequest: true as const } : {}) };
   }
 
   async frameworkFiles(): Promise<FolderListing> {
@@ -931,6 +1011,18 @@ class WriteFailed extends Error {
 const posixBase = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
+/** The git checkout holding `dir`: the nearest folder up with a .git (a folder, or a file in a worktree). */
+async function gitRoot(dir: string): Promise<string | undefined> {
+  let at = await realpathAsync(dir).catch(() => undefined);
+  while (at) {
+    if (await stat(join(at, ".git")).then(() => true, () => false)) return at;
+    const up = resolvePath(at, "..");
+    if (up === at) return undefined;
+    at = up;
+  }
+  return undefined;
+}
+
 async function readInside(folder: string, path: string): Promise<string | undefined> {
   try {
     const real = await realpathAsync(path);

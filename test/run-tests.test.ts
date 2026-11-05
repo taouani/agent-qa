@@ -168,7 +168,9 @@ describe("DataAccess: running and fixing generated tests", () => {
     expect(await readFile(join(dir, "tests/b.spec.ts"), "utf8")).toBe("theirs\n");
     await expect(d.replaceGeneratedFiles("run-3", "run-3", ".", [{ path: "tests/a.spec.ts", content: "<PERSON_1>", sha256: sha("a2\n") }], true)).rejects.toThrow(/masking token/);
     expect(await d.replaceGeneratedFiles("run-3", "run-3", ".", both, false)).toEqual({ status: "declined" });
-    expect(await data({ mode: "ci" }).replaceGeneratedFiles("run-3", "run-3", ".", [both[0]!], true)).toEqual({ status: "pull-request" });
+    // In CI the fix goes into the job's own checkout.
+    expect(await data({ mode: "ci" }).replaceGeneratedFiles("run-3", "run-3", ".", [both[0]!], true)).toEqual({ status: "done", written: ["tests/a.spec.ts"], pullRequest: true });
+    expect(await readFile(join(dir, "tests/a.spec.ts"), "utf8")).toBe("a3\n");
   });
 });
 

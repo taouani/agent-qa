@@ -82,12 +82,13 @@ export const SCRIPTS_DRAFT_ARTIFACT: ArtifactSpec<ScriptsDraftArtifact> = {
 /**
  * `scripts-written@1` (S2-7): what the person's review did with the draft.
  * written: every file was created in the repo (none replaced); declined:
- * nothing was written; pull-request: in CI the files leave only as a pull
- * request (S2-9), so nothing was written here.
+ * nothing was written. pullRequest: written in CI's own checkout, so they
+ * leave only as a pull request (S2-9).
  */
 export const scriptsWrittenSchema = z
   .object({
-    status: z.enum(["written", "declined", "pull-request"]),
+    status: z.enum(["written", "declined"]),
+    pullRequest: z.literal(true).optional(),
     folder: z.string(),
     files: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict()),
   })

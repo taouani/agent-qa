@@ -289,10 +289,10 @@ describe("agent-qa.profile.json", () => {
     for (const path of ["package.json", "Playwright.config.ts", ".github/workflows/x.ts", "../x.ts", "/abs.ts", "tests\\w.ts", "tests/a.ts:b.feature", "tests/CON.ts", "tests/aux.json", "tests/a.ts.", "tests/x /y.ts", "tests/<PERSON_1>.ts", "eslint.config.js", ".pnpmfile.cjs"]) {
       await expect(d.writeGeneratedFiles(run, run, ".", [{ path, content: "" }], true), path).rejects.toBeInstanceOf(ProfileError);
     }
-    // In CI test code leaves only as a pull request: nothing is written here.
+    // In CI the files go into the job's own checkout, and leave it only as a pull request.
     const ci = await data({ mode: "ci", testCode: "allow" });
-    expect(await ci.d.writeGeneratedFiles(ci.run, ci.run, ".", [{ path: "tests/c.ts", content: "" }], true)).toEqual({ status: "pull-request" });
-    await expect(readFile(join(dir, "tests/c.ts"))).rejects.toThrow();
+    expect(await ci.d.writeGeneratedFiles(ci.run, ci.run, ".", [{ path: "tests/c.ts", content: "" }], true)).toEqual({ status: "done", written: ["tests/c.ts"], pullRequest: true });
+    expect(await readFile(join(dir, "tests/c.ts"), "utf8")).toBe("");
   });
 
   it("is saved through the policy layer and read back", async () => {
