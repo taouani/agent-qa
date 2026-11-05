@@ -103,7 +103,8 @@ export const configSchema = z
         platform: z.enum(["github", "gitlab", "azure-devops"]),
         repo: z.string().min(1),
         token: secretRef,
-        baseUrl: anyUrl.optional(),
+        /** The REST API root, https only: https://HOST/api/v3 on GitHub Enterprise Server. */
+        baseUrl: httpsUrl.optional(),
       })
       .strict()
       .optional(),

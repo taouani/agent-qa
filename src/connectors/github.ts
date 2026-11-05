@@ -1,4 +1,4 @@
-import type { WriteGrant } from "../core/index.js";
+import { assertGrant, type WriteGrant } from "../core/index.js";
 import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 
 /**
@@ -106,9 +106,41 @@ export class GitHubClient {
     }
   }
 
-  private async treeOf(commit: string): Promise<string> {
-    const tree = str(obj(obj(await this.http.get(this.path(`/git/commits/${commit}`))).tree).sha);
+  private async commit(sha: string): Promise<{ tree: string; parents: string[] }> {
+    const c = obj(await this.http.get(this.path(`/git/commits/${sha}`)));
+    const tree = str(obj(c.tree).sha);
     if (!tree) throw this.bad("GET", "/git/commits", "a commit without a tree");
+    const parents = (Array.isArray(c.parents) ? c.parents : []).map((p) => str(obj(p).sha)).filter((x): x is string => !!x);
+    return { tree, parents };
+  }
+
+  /**
+   * Refuses a path that is taken on the base, in any case (a Windows or macOS
+   * checkout can't hold both), or that runs through a file there. From the
+   * whole tree when GitHub sends it whole, else one path at a time.
+   */
+  private async assertNew(files: ReadonlyArray<{ path: string }>, tree: string, baseHead: string, base: string): Promise<void> {
+    const answer = obj(await this.http.get(this.path(`/git/trees/${tree}`), { query: { recursive: 1 } }));
+    const entries = Array.isArray(answer.tree) ? answer.tree.map(obj) : [];
+    if (answer.truncated !== true) {
+      const taken = new Map(entries.map((e) => [String(e.path).toLowerCase(), e.type]));
+      for (const f of files) {
+        const parts = f.path.toLowerCase().split("/");
+        if (taken.has(parts.join("/"))) throw new Error(`${f.path} exists on ${base}: Agent-QA only adds new files`);
+        for (let i = 1; i < parts.length; i++) {
+          const t = taken.get(parts.slice(0, i).join("/"));
+          if (t !== undefined && t !== "tree") throw new Error(`${f.path} runs through a file on ${base}`);
+        }
+      }
+      return;
+    }
+    for (const f of files) if (await this.exists(f.path, baseHead)) throw new Error(`${f.path} exists on ${base}: Agent-QA only adds new files`);
+  }
+
+  private async tree(grant: WriteGrant, baseTree: string, files: ReadonlyArray<{ path: string; content: string }>): Promise<string> {
+    const body = { base_tree: baseTree, tree: files.map((f) => ({ path: f.path, mode: "100644", type: "blob", content: f.content })) };
+    const tree = str(obj(await this.http.request(this.path("/git/trees"), { method: "POST", grant, body })).sha);
+    if (!tree) throw this.bad("POST", "/git/trees", "no tree");
     return tree;
   }
 
@@ -126,48 +158,53 @@ export class GitHubClient {
 
   /**
    * One commit of new files on a new branch, and a pull request from it. Run
-   * again for the same branch, it takes the branch when it holds the same
-   * files, and the pull request already open from it.
+   * again for the same branch (a stop halfway), it takes the branch when its
+   * one commit adds exactly these files to a commit of the base, and the pull
+   * request already open from it into the same base.
    */
   async openPullRequest(grant: WriteGrant, pr: PullRequestFiles): Promise<OpenedPullRequest> {
+    assertGrant(grant, "testCode");
     if (!BRANCH.test(pr.branch)) throw new Error(`${pr.branch} isn't a branch name Agent-QA uses`);
     if (pr.files.length === 0) throw new Error("a pull request needs at least one file");
     const base = pr.base ?? (await this.defaultBranch());
     if (base === pr.branch) throw new Error("the pull request's branch is its base");
     const baseHead = await this.branchHead(base);
     if (!baseHead) throw new Error(`the base branch ${base} isn't on GitHub`);
-    for (const f of pr.files) {
-      if (await this.exists(f.path, baseHead)) throw new Error(`${f.path} exists on ${base}: Agent-QA only adds new files`);
-    }
-    const baseTree = await this.treeOf(baseHead);
-    const tree = str(
-      obj(
-        await this.http.request(this.path("/git/trees"), {
-          method: "POST",
-          grant,
-          body: { base_tree: baseTree, tree: pr.files.map((f) => ({ path: f.path, mode: "100644", type: "blob", content: f.content })) },
-        }),
-      ).sha,
-    );
-    if (!tree) throw this.bad("POST", "/git/trees", "no tree");
 
-    let created = false;
     const existing = await this.branchHead(pr.branch);
     if (existing) {
-      // An earlier try of the same run: the branch is taken only when it holds this very tree.
-      if ((await this.treeOf(existing)) !== tree) throw new Error(`the branch ${pr.branch} exists with other files: delete it, or run again`);
+      // An earlier try of the same run: its one commit sits on a commit of the base and adds these very files.
+      const tip = await this.commit(existing);
+      const parent = tip.parents.length === 1 ? tip.parents[0]! : undefined;
+      const onBase = parent !== undefined && ["ahead", "identical"].includes(String(obj(await this.http.get(this.path(`/compare/${parent}...${baseHead}`))).status));
+      if (!onBase || (await this.tree(grant, (await this.commit(parent)).tree, pr.files)) !== tip.tree) {
+        throw new Error(`the branch ${pr.branch} exists with other commits or files: delete it on GitHub, then run again`);
+      }
     } else {
+      const baseTree = (await this.commit(baseHead)).tree;
+      await this.assertNew(pr.files, baseTree, baseHead, base);
+      const tree = await this.tree(grant, baseTree, pr.files);
       const commit = str(obj(await this.http.request(this.path("/git/commits"), { method: "POST", grant, body: { message: pr.message, tree, parents: [baseHead] } })).sha);
       if (!commit) throw this.bad("POST", "/git/commits", "no commit");
       await this.http.request(this.path("/git/refs"), { method: "POST", grant, body: { ref: `refs/heads/${pr.branch}`, sha: commit } });
     }
     const open = await this.openPullRequestFrom(pr.branch);
-    if (open) return { ...open, branch: pr.branch, created };
-    const made = obj(await this.http.request(this.path("/pulls"), { method: "POST", grant, body: { title: pr.title, head: pr.branch, base, body: pr.body, draft: pr.draft } }));
+    if (open) {
+      if (open.base !== base) throw new Error(`a pull request from ${pr.branch} is open into ${open.base}, not ${base}`);
+      return { ...open, branch: pr.branch, created: false };
+    }
+    const send = (draft: boolean, title: string) => this.http.request(this.path("/pulls"), { method: "POST", grant, body: { title, head: pr.branch, base, body: pr.body, draft } });
+    let made: Raw;
+    try {
+      made = obj(await send(pr.draft, pr.title));
+    } catch (error) {
+      // Draft pull requests aren't on every plan (private repos on GitHub Free): a plain one, marked in its title.
+      if (!(pr.draft && error instanceof ConnectorError && error.status === 422)) throw error;
+      made = obj(await send(false, `[draft] ${pr.title}`.slice(0, 200)));
+    }
     const number = made.number;
     const url = str(made.html_url);
     if (typeof number !== "number" || !url) throw this.bad("POST", "/pulls", "no pull request number");
-    created = true;
-    return { number, url, base, branch: pr.branch, draft: made.draft === true, created };
+    return { number, url, base, branch: pr.branch, draft: made.draft === true, created: true };
   }
 }

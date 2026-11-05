@@ -1,10 +1,10 @@
-import { isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
-import { readFile, realpath as realpathAsync, stat } from "node:fs/promises";
+import { lstat, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
 import {
   commandList,
   FRAMEWORK_PROFILE_SPEC,
@@ -584,28 +584,40 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (pr.files.length === 0) throw new ProfileError("there are no files for a pull request");
     const repoRoot = await gitRoot(this.options.root);
     if (!repoRoot) throw new ProfileError("the project folder isn't in a git checkout");
-    // What leaves is what Agent-QA wrote and the run tested: each file read back and checked.
+    // What leaves is what Agent-QA wrote: each file read back and checked, as a plain file where the person approved it.
+    const boundary = await realpathAsync(resolvePath(this.options.root, folder));
     const files: Array<{ path: string; content: string }> = [];
     for (const f of pr.files) {
       if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
       if (isProtectedPath(f.path)) throw new ProfileError(`${f.path} is a project file Agent-QA never writes`);
       const full = resolvePath(this.options.root, folder, f.path);
-      const content = await readInside(this.options.root, full);
+      // A link in its place (the tests ran repo code since) would send another file, under another path.
+      const info = await lstat(full).catch(() => undefined);
+      if (!info?.isFile()) throw new ProfileError(`${f.path} isn't a plain file in the checkout any more`);
+      const real = join(await realpathAsync(dirname(full)), basename(full));
+      const inFolder = relativePath(boundary, real);
+      if (!inFolder || isAbsolute(inFolder) || inFolder.split(/[\\/]/).includes("..")) throw new ProfileError(`${f.path} is outside the approved folder`);
+      const content = await readInside(boundary, real);
       if (content === undefined) throw new ProfileError(`${f.path} can't be read back from the checkout`);
-      if (createHash("sha256").update(content).digest("hex") !== f.sha256) throw new ProfileError(`${f.path} changed since Agent-QA wrote it: only what Agent-QA wrote and tested leaves`);
+      if (createHash("sha256").update(content).digest("hex") !== f.sha256) throw new ProfileError(`${f.path} changed since Agent-QA wrote it: only what Agent-QA wrote leaves`);
       if (hasToken(content)) throw new ProfileError(`${f.path} holds a masking token: generated code never carries one`);
-      const inRepo = relativePath(repoRoot, await realpathAsync(full)).split(/[\\/]/).join("/");
+      const inRepo = relativePath(repoRoot, real).split(/[\\/]/).join("/");
       if (!inRepo || inRepo.startsWith("../") || isAbsolute(inRepo)) throw new ProfileError(`${f.path} is outside the git checkout`);
+      if (isProtectedPath(inRepo) || hasToken(inRepo)) throw new ProfileError(`${inRepo} is a project file Agent-QA never writes`);
       files.push({ path: inRepo, content });
     }
     const { service } = await this.run(tokensRun);
     const title = service.maskText(pr.title, "pr.title").replace(/\s+/g, " ").slice(0, 200);
-    const body = service.maskText(pr.body, "pr.body").slice(0, 60_000);
+    // Text from the model and the run: no mentions, links, images or tags (a token like <PERSON_1> would vanish as one).
+    const body = mdSafe(service.maskText(pr.body, "pr.body")).slice(0, 60_000);
     const summary = service.maskText(`Open a pull request on ${git.repo} with ${files.length} file(s): ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
     await service.saveVault();
     const env = this.options.env ?? process.env;
     // The branch the job checked out: a pull request's base, else the pushed branch; else the repo's default.
-    const base = env.GITHUB_BASE_REF || (env.GITHUB_REF?.startsWith("refs/heads/") ? env.GITHUB_REF.slice("refs/heads/".length) : undefined) || undefined;
+    const base = prBase(env);
+    // The token goes only to the API this job runs against.
+    const api = git.baseUrl ?? GITHUB_API;
+    if (env.GITHUB_API_URL && new URL(env.GITHUB_API_URL).origin !== new URL(api).origin) throw new ProfileError(`git.baseUrl (${new URL(api).origin}) isn't the API this job runs against (${new URL(env.GITHUB_API_URL).origin})`);
     const branch = `agent-qa/${runId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+|[.-]+$/g, "")}`.slice(0, 200);
     if (!BRANCH.test(branch)) throw new ProfileError("the run's id doesn't make a branch name");
     const client = this.options.github
@@ -618,6 +630,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         return client.openPullRequest(grant, { base, branch, files, message: title, title, body, draft: pr.draft });
       });
     } catch (error) {
+      if (error instanceof ConnectorError && (error.code === "FORBIDDEN" || error.code === "AUTH")) {
+        throw new ProfileError(`GitHub refused the token (${error.status ?? error.code}): give the job permissions contents: write and pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General)`);
+      }
       if (error instanceof ConnectorError || error instanceof PolicyDenied) throw error;
       throw new ProfileError(service.maskText(local(`the pull request could not be opened (${error instanceof Error ? error.message : String(error)})`, hostCwd(this.options.root)), "write.error").slice(0, 800));
     }
@@ -1010,7 +1025,23 @@ class WriteFailed extends Error {
 
 const posixBase = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
-/** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
+/**
+ * The branch a CI pull request goes into: the branch the job's code came
+ * from. On a pull_request event that is the PR's own branch (the tests ran
+ * on its code); else the pushed branch. A tag, a merge queue's temporary
+ * branch, or nothing: the repo's default branch (undefined).
+ */
+export function prBase(env: NodeJS.ProcessEnv): string | undefined {
+  const branch = env.GITHUB_HEAD_REF || (env.GITHUB_REF?.startsWith("refs/heads/") ? env.GITHUB_REF.slice("refs/heads/".length) : "");
+  if (!branch || branch.startsWith("gh-readonly-queue/")) return undefined;
+  return branch;
+}
+
+/** Markdown that GitHub shows as written: no @mentions, links, images or HTML tags. */
+export function mdSafe(text: string): string {
+  return text.replace(/[<>[\]]/g, (c) => `\\${c}`).replace(/@(?=[A-Za-z0-9])/g, "@\u200b");
+}
+
 /** The git checkout holding `dir`: the nearest folder up with a .git (a folder, or a file in a worktree). */
 async function gitRoot(dir: string): Promise<string | undefined> {
   let at = await realpathAsync(dir).catch(() => undefined);
@@ -1023,6 +1054,7 @@ async function gitRoot(dir: string): Promise<string | undefined> {
   return undefined;
 }
 
+/** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
 async function readInside(folder: string, path: string): Promise<string | undefined> {
   try {
     const real = await realpathAsync(path);

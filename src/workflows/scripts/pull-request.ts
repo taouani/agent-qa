@@ -60,18 +60,18 @@ export function prBody(runId: string, draft: ScriptsDraftArtifact, files: Readon
     "",
     "## Run",
     "",
-    run
+    run && run.status !== "declined"
       ? `**${run.status}**${run.reason ? `: ${one(run.reason)}` : ""}${run.rounds ? ` (${run.rounds} fix round(s))` : ""}.`
-      : "The tests were not run in CI.",
+      : `**Not run**: these tests have not been run${run?.reason ? ` (${one(run.reason)})` : ""}. Run them before merging; in CI, add --accept run.`,
     ...(run?.stoppedOn ?? []).map((c) => `- ${cell(c.test)}: **${c.kind}** (${cell(c.reason)})`),
     ...(tests.length ? ["", "| Test | Outcome |", "|---|---|", ...tests.map((t) => `| ${cell(t.title)} | ${t.outcome}${t.runs > 1 ? ` (${t.runs - t.failedRuns}/${t.runs} passed)` : ""} |`)] : []),
     ...(run && run.attempts.some((a) => a.classified.length)
       ? ["", "### Fixes", "", ...run.attempts.flatMap((a, i) => a.classified.map((c) => `- Before run ${i + 1}: ${cell(c.test)}: ${c.kind} (${cell(c.reason)})`))]
       : []),
     "",
-    "## Files",
+    `## Files (in ${draft.folder === "." ? "the project folder" : draft.folder})`,
     "",
-    ...files.map((f) => `- \`${draft.folder === "." ? "" : `${draft.folder}/`}${f.path}\``),
+    ...files.map((f) => `- \`${f.path}\``),
     "",
     "Every file is new: Agent-QA never changes existing files. Fixes were limited to locators, waits and test data. Review the tests, and that each check still checks what its test case says, before merging.",
   ];
@@ -88,7 +88,8 @@ export function prStep<I>(h: PrHelpers<I>): StepDefinition<I, unknown> {
     id: "pr",
     kind: "confirm",
     outputSchema: prSchema,
-    when: async (ctx) => (await h.written(ctx))?.pullRequest === true && (await h.data.pullRequestReadiness()).ready,
+    // Files in CI's checkout always come here: when no pull request can be opened, the record says why, and nothing leaves.
+    when: async (ctx) => (await h.written(ctx))?.pullRequest === true,
     // In CI the policy sends test code out as a pull request without asking, and the person's yes was the review (--accept review).
     answers: { yes: { open: true }, no: { open: false }, unattended: { open: true } },
     approval: {
@@ -96,7 +97,8 @@ export function prStep<I>(h: PrHelpers<I>): StepDefinition<I, unknown> {
         const ready = await h.data.pullRequestReadiness();
         const files = leaving((await h.written(ctx))!, await h.run(ctx));
         const run = await h.run(ctx);
-        return `Open a pull request on ${ready.ready ? ready.repo : "GitHub"} with ${files.length} new file(s)${run ? ` (tests ${run.status})` : ""}? It is a draft unless every test passed and stayed stable.`;
+        if (!ready.ready) return `No pull request can be opened (${ready.reason}): the files stay in this checkout only. Submit any answer to finish.`;
+        return `Open a pull request on ${ready.repo} with ${files.length} new file(s)${run ? ` (tests ${run.status})` : " (tests not run)"}? It is a draft unless every test passed and stayed stable.`;
       },
     },
     instructions: () => "Ask whether to open a pull request with the generated files. Submit open: true only if the user said yes.",
@@ -109,6 +111,8 @@ export function prStep<I>(h: PrHelpers<I>): StepDefinition<I, unknown> {
       const written = (await h.written(ctx))!;
       const run = await h.run(ctx);
       const files = leaving(written, run);
+      const ready = await h.data.pullRequestReadiness();
+      if (!ready.ready) return save(ctx, { status: "declined", reason: `no pull request could be opened: ${ready.reason}`, files });
       if (!(out as z.infer<typeof prSchema>).open) return save(ctx, { status: "declined", reason: "the pull request was declined", files });
       const d = (await h.draft(ctx)).data;
       const title = `Agent-QA: tests for ${d.cases.map((c) => c.id).join(", ")}`.slice(0, 200);

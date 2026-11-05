@@ -572,14 +572,20 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     await notRun.e.submit(notRun.runId, "run", { run: false }, { byPerson: true });
     await notRun.e.submit(notRun.runId, "pr", { open: true });
     expect(notRun.data.prs[0]).toMatchObject({ draft: true });
+    expect(notRun.data.prs[0]!.body).toContain("**Not run**: these tests have not been run");
     expect(notRun.data.prs[0]!.files.map((f) => f.path)).toEqual(DRAFT.files.map((f) => f.path).concat("src/support/lightning.ts"));
 
     // Outside CI (no pullRequest) or without a git section, nobody is asked.
     const ide = await written();
     await ide.e.submit(ide.runId, "run", { run: false }, { byPerson: true });
     expect((await ide.e.status(ide.runId)).status).toBe("done");
+    // Files in CI's checkout with no way out: the step says why, and the record keeps it.
     const noGit = await written(inCi({ pullRequestReadiness: async () => ({ ready: false, reason: "no git section" }) }));
-    expect((await noGit.e.submit(noGit.runId, "run", { run: false }, { byPerson: true })).next.kind).toBe("done");
+    const asked = (await noGit.e.submit(noGit.runId, "run", { run: false }, { byPerson: true })).next;
+    expect(asked.stepId).toBe("pr");
+    expect(await noGit.e.approval(noGit.runId, "pr")).toMatchObject({ question: expect.stringContaining("No pull request can be opened (no git section)") });
+    expect((await noGit.e.submit(noGit.runId, "pr", { open: true })).next.kind).toBe("done");
+    expect((await runs.readArtifact(noGit.runId, SCRIPTS_PR_ARTIFACT))!.data).toMatchObject({ status: "declined", reason: "no pull request could be opened: no git section" });
     expect(noGit.data.prs).toEqual([]);
   });
 
