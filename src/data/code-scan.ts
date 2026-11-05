@@ -43,7 +43,7 @@ const MESSAGES: Record<CodeFinding["rule"], string> = {
   "generated-id": "selects by a generated Lightning id (data-aura-rendered-by, input-123, globalId), which changes on every load",
   "record-id": "hard-codes a record id: create the record in the test or take it from the test data",
   "org-url": "hard-codes an org URL: use the baseURL from the Playwright config",
-  "system-access": "reads files, the environment or other programs (fs, process, require, eval, attach): test code uses the repo's fixtures and config only",
+  "system-access": "reads files, the environment, the sign-in or other programs (fs, process, require, module, eval, attach, cookies, storageState, file: URLs): test code uses the repo's fixtures and config only",
   "hidden-check": "changes how checks work (expect.extend, expect.configure, a local expect, a .catch or .then on a check, Promise.allSettled): a failed check must fail the test",
 };
 
@@ -124,6 +124,13 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
       if (!isKey) add(n, "system-access");
     }
     if (n.type === "Import") add(n, "system-access");
+    if (n.type === "Identifier" && n.name === "module") {
+      const parent = parents.get(n);
+      const isKey = parent && (((parent.type === "MemberExpression" || parent.type === "OptionalMemberExpression") && parent.property === n && !parent.computed) || (parent.type === "ObjectProperty" && parent.key === n && !parent.computed));
+      if (!isKey) add(n, "system-access");
+    }
+    // A file: URL opens a local file in the browser.
+    if ((n.type === "StringLiteral" && /^\s*file:/i.test(n.value)) || (n.type === "TemplateElement" && /^\s*file:/i.test(n.value.cooked ?? n.value.raw))) add(n, "system-access");
     if ((n.type === "MemberExpression" || n.type === "OptionalMemberExpression") && n.object.type === "MetaProperty") add(n, "system-access");
     // Checks that can't fail: a local expect, a changed expect.
     if ((n.type === "VariableDeclarator" || n.type === "FunctionDeclaration" || n.type === "ClassDeclaration") && n.id?.type === "Identifier" && n.id.name === "expect") add(n, "hidden-check");
@@ -132,7 +139,9 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
       const name = memberName(n);
       if (n.object.type === "Identifier" && n.object.name === "expect" && (name === "extend" || name === "configure")) add(n, "hidden-check");
       if (n.object.type === "Identifier" && n.object.name === "Promise" && (name === "allSettled" || name === "any" || name === "race")) add(n, "hidden-check");
-      if (name === "attach") add(n, "system-access");
+      // Attachments name files to read; cookies and the saved session hold the sign-in; globalThis.process and module reach the system.
+      if (name === "attach" || name === "attachments" || name === "cookies" || name === "storageState" || name === "addCookies") add(n, "system-access");
+      if ((name === "process" || name === "require" || name === "module" || name === "eval" || name === "Function") && n.object.type === "Identifier" && GLOBALS.has(n.object.name)) add(n, "system-access");
       // page.waitForTimeout(...), page['waitForTimeout'], page.waitForTimeout.bind(page)
       if (name === "waitForTimeout") add(n, "fixed-wait");
       // globalThis.setTimeout, not test.setTimeout (Playwright's per-test timeout)
@@ -204,4 +213,148 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
   });
   const errors = (ast as unknown as { errors?: unknown[] }).errors ?? [];
   return { parsed: true, syntaxErrors: errors.length, findings: findings.sort((a, b) => a.line - b.line), tests, stepLines, checks: checks.sort(), checkedNames: [...checkedNames].sort(), branches };
+}
+
+/** Calls that pick an element: their arguments are what a selector fix changes. */
+const LOCATOR_METHODS = new Set(["getByRole", "getByLabel", "getByText", "getByTestId", "getByPlaceholder", "getByTitle", "getByAltText", "locator", "frameLocator", "filter", "nth", "first", "last", "and", "or", "contentFrame"]);
+/** Waits a timing fix may add: they check that an element or the page is ready, never what it says. */
+const WAIT_MATCHERS = new Set(["toBeVisible", "toBeHidden", "toBeEnabled", "toBeAttached", "toBeEditable", "toBeDisabled"]);
+const SKIP_KEYS = new Set(["loc", "start", "end", "leadingComments", "trailingComments", "innerComments", "extra", "range", "errors", "comments", "tokens"]);
+
+export interface FixSkeleton {
+  /** The code as a token list, with every element picked (a locator chain) as LOC and timeout options left out. */
+  tokens: Array<{ t: string; wait: boolean }>;
+  /** The variables the locators read (not property names or object keys). */
+  locatorNames: string[];
+  /** Every variable the file reads anywhere: a locator may read only these. */
+  names: string[];
+  /** Code inside a locator that isn't a plain value or another locator: a call, a function, an assignment (its source text). */
+  locatorCode: string[];
+}
+
+/** Inside a locator only values and locators: anything that runs code is listed. */
+const RUNS_CODE = new Set(["FunctionExpression", "ArrowFunctionExpression", "AssignmentExpression", "UpdateExpression", "AwaitExpression", "NewExpression", "SequenceExpression", "YieldExpression", "ClassExpression", "TaggedTemplateExpression", "ImportExpression", "ConditionalExpression", "LogicalExpression"]);
+
+/** The variables an expression reads: member property names and object keys are not variables. */
+function readNames(n: Node, into: Set<string>): void {
+  if (n.type === "Identifier") {
+    into.add(n.name);
+    return;
+  }
+  if ((n.type === "MemberExpression" || n.type === "OptionalMemberExpression") && !n.computed) return readNames(n.object as Node, into);
+  if ((n.type === "ObjectProperty" || n.type === "ObjectMethod") && !n.computed && n.type === "ObjectProperty") return readNames(n.value as Node, into);
+  const rec = n as unknown as Record<string, unknown>;
+  for (const k of Object.keys(rec)) {
+    if (SKIP_KEYS.has(k)) continue;
+    const v = rec[k];
+    if (Array.isArray(v)) for (const c of v) if (c && typeof c === "object" && typeof (c as Node).type === "string") readNames(c as Node, into);
+    if (v && typeof v === "object" && !Array.isArray(v) && typeof (v as Node).type === "string") readNames(v as Node, into);
+  }
+}
+
+/**
+ * The shape of a file for comparing a fix with the code before it (S2-8): a
+ * fix may change which element is picked (LOC) and add waits, and nothing
+ * else. Every other value, call, branch and check stays as it was, so an
+ * expected value passed to a page object, a removed check or a new return is
+ * a different skeleton.
+ */
+export function fixSkeleton(text: string, file: string): FixSkeleton | undefined {
+  const ast = parseCode(text, file);
+  if (!ast || ((ast as unknown as { errors?: unknown[] }).errors ?? []).length) return undefined;
+  const tokens: FixSkeleton["tokens"] = [];
+  const locatorNames = new Set<string>();
+  const locatorCode = new Set<string>();
+  const isLocatorCall = (n: Node) => (n.type === "CallExpression" || n.type === "OptionalCallExpression") && LOCATOR_METHODS.has(memberName(n.callee as Node) ?? (n.callee.type === "Identifier" ? n.callee.name : ""));
+  const isTimeoutOption = (n: Node) => n.type === "ObjectExpression" && n.properties.length > 0 && n.properties.every((p) => p.type === "ObjectProperty" && ["timeout", "intervals"].includes(p.key.type === "Identifier" ? p.key.name : (literalString(p.key as Node) ?? "")));
+  const flat = (n: Node): string => {
+    const out: string[] = [];
+    emit(n, (t) => out.push(t.t));
+    return out.join(" ");
+  };
+  /** An added statement that only waits: await expect(LOC).toBeVisible(), await LOC.waitFor(), await page.waitForLoadState(), await waitForX(page). */
+  const isWait = (s: Node): boolean => {
+    if (s.type !== "ExpressionStatement" || s.expression.type !== "AwaitExpression") return false;
+    const c = s.expression.argument as Node;
+    if (c.type !== "CallExpression") return false;
+    const name = memberName(c.callee as Node) ?? (c.callee.type === "Identifier" ? c.callee.name : undefined);
+    if (!name) return false;
+    if (c.callee.type === "Identifier") return /^waitFor[A-Z]/.test(name);
+    const obj = (c.callee as { object: Node }).object;
+    if (name === "waitFor") return isLocatorCall(obj);
+    if (name === "waitForLoadState" || name === "waitForURL") return true;
+    if (WAIT_MATCHERS.has(name)) {
+      let base = obj;
+      if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
+      return base.type === "CallExpression" && base.callee.type === "Identifier" && base.callee.name === "expect" && base.arguments.length === 1 && isLocatorCall(base.arguments[0] as Node);
+    }
+    return false;
+  };
+  const src = (x: Node) => (typeof x.start === "number" && typeof x.end === "number" ? text.slice(x.start, x.end) : "");
+  /** expect(locator).toHaveText(value) with the locator picking by that same value checks nothing. */
+  const checksItself = (n: Node) => {
+    if (n.type !== "CallExpression" || (n.callee.type !== "MemberExpression" && n.callee.type !== "OptionalMemberExpression")) return;
+    let base = n.callee.object as Node;
+    if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
+    if (base.type !== "CallExpression" || base.callee.type !== "Identifier" || base.callee.name !== "expect" || !base.arguments[0] || !isLocatorCall(base.arguments[0] as Node)) return;
+    const picked = src(base.arguments[0] as Node);
+    for (const a of n.arguments as Node[]) {
+      if (isTimeoutOption(a)) continue;
+      const v = literalString(a) ?? src(a);
+      if (v.length > 1 && picked.includes(v)) locatorCode.add(`${src(n)} (the element is picked by the value it is checked against)`);
+    }
+  };
+  function emit(n: Node, push: (t: { t: string; wait: boolean }) => void): void {
+    checksItself(n);
+    if (isLocatorCall(n)) {
+      readNames(n, locatorNames);
+      walkAst(n, (x) => {
+        const call = (x.type === "CallExpression" || x.type === "OptionalCallExpression") && !isLocatorCall(x);
+        if (call || RUNS_CODE.has(x.type)) locatorCode.add(src(x));
+      });
+      push({ t: "LOC", wait: false });
+      return;
+    }
+    const rec = n as unknown as Record<string, unknown>;
+    const scalars = Object.keys(rec)
+      // Scalars, and plain values such as a template's text ({ raw, cooked }).
+      .filter((k) => !SKIP_KEYS.has(k) && k !== "type" && (rec[k] === null || typeof rec[k] !== "object" || (!Array.isArray(rec[k]) && typeof (rec[k] as { type?: unknown }).type !== "string")))
+      .sort()
+      .map((k) => `${k}=${JSON.stringify(rec[k])}`);
+    push({ t: `(${n.type}${scalars.length ? ` ${scalars.join(",")}` : ""}`, wait: false });
+    for (const k of Object.keys(rec).sort()) {
+      if (SKIP_KEYS.has(k)) continue;
+      const v = rec[k];
+      if (Array.isArray(v)) {
+        push({ t: `[${k}`, wait: false });
+        for (const c of v) {
+          if (!c || typeof c !== "object" || typeof (c as Node).type !== "string") continue;
+          const child = c as Node;
+          if ((n.type === "CallExpression" || n.type === "OptionalCallExpression") && k === "arguments" && isTimeoutOption(child)) continue;
+          // A statement that only waits is one token, which a fix may add.
+          if ((k === "body" || k === "consequent") && isWait(child)) push({ t: `WAIT ${flat(child)}`, wait: true });
+          else emit(child, push);
+        }
+        push({ t: "]", wait: false });
+      } else if (v && typeof v === "object" && typeof (v as Node).type === "string") {
+        push({ t: `<${k}`, wait: false });
+        emit(v as Node, push);
+      }
+    }
+    push({ t: ")", wait: false });
+  }
+  emit(ast, (t) => tokens.push(t));
+  const names = new Set<string>();
+  readNames(ast, names);
+  return { tokens, locatorNames: [...locatorNames].sort(), names: [...names].sort(), locatorCode: [...locatorCode].sort() };
+}
+
+/** Whether `after` is `before` with only waits added (and locators changed: LOC is LOC). */
+export function onlyWaitsAdded(before: FixSkeleton, after: FixSkeleton): boolean {
+  let j = 0;
+  for (const t of after.tokens) {
+    if (j < before.tokens.length && before.tokens[j]!.t === t.t) j++;
+    else if (!t.wait) return false;
+  }
+  return j === before.tokens.length;
 }

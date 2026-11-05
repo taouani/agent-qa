@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
-import { listFolderFiles, scanGeneratedCode, type FrameworkProfile, type SavedProfile, type TestRunOutcome, type TypeDiagnostic } from "../src/data/index.js";
+import { fixSkeleton, listFolderFiles, scanGeneratedCode, type FrameworkProfile, type SavedProfile, type TestRunOutcome, type TypeDiagnostic } from "../src/data/index.js";
 import { checkFix, EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_RUN_ARTIFACT, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 
@@ -547,7 +547,7 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     ];
     const scan = (c: string, p: string) => {
       const x = scanGeneratedCode(c, p);
-      return { titles: x.tests.map((t) => t.title), checks: x.checks, checkedNames: x.checkedNames, branches: x.branches };
+      return { titles: x.tests.map((t) => t.title), checkedNames: x.checkedNames, skeleton: fixSkeleton(c, p) };
     };
     const check = (content: string, kind = "selector", path = "a.spec.ts") => checkFix({ failures: [{ test: "TC-1 t", kind: kind as never, reason: "r" }], files: [{ path, content }] }, last, files, scan).map((x) => x.message);
     const CHECK = "await expect(page.getByRole('status')).toHaveText(data.expectedStatus);";
@@ -573,15 +573,33 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
       `try { ${CHECK} } catch {}`,
       `const { readFileSync } = require('fs');\n  throw new Error(readFileSync('.env', 'utf8'));`,
       `await test.info().attach('error-context', { path: '.env' });\n  ${CHECK}`,
+      `throw new Error(String(globalThis.process.env.SF_JWT_KEY));`,
+      `throw new Error(String(module.constructor));`,
+      `await page.goto('file:///home/me/.env');\n  ${CHECK}`,
+      `throw new Error(JSON.stringify(await page.context().cookies()));`,
+      `throw new Error(JSON.stringify(await page.context().storageState()));`,
+      `throw new Error(String(test.info().attachments.length));`,
     ];
     for (const d of dodges) {
       const changed = spec.replace(CHECK, d);
       const messages = [...check(changed), ...scanGeneratedCode(changed, "a.spec.ts").findings.map((f) => f.message)];
       expect(messages.length, d).toBeGreaterThan(0);
     }
-    expect(check(spec.replace("TC-1 t", "TC-1 u"))).toEqual(expect.arrayContaining([expect.stringContaining("changes a test's title")]));
+    // Refused without touching an expect: a changed value elsewhere, a branch, dead code, a check's subject swapped, code in a locator.
+    const quiet = [
+      spec.replace("TC-1 t", "TC-1 u"),
+      spec.replace(".click();", ".click({ force: true });"),
+      spec.replace(CHECK, `if (!data.expectedStatus) return;\n  ${CHECK}`),
+      spec.replace(CHECK, `${CHECK}\n  return;\n  await page.goto('/x');`),
+      spec.replace("getByRole('status')", "getByText(data.expectedStatus)"),
+      spec.replace("getByRole('status')", "getByText('Approved')").replace("data.expectedStatus)", "'Approved')"),
+      spec.replace("getByRole('status')", "getByRole((() => { data.expectedStatus = 'x'; return 'status'; })())"),
+      spec.replace("getByRole('status')", "getByRole(String(process.env.X))"),
+      spec.replace("{ name: 'Approve' }", "{ name: secret }"),
+    ];
+    for (const q of quiet) expect(check(q).length, q).toBeGreaterThan(0);
     // A spec with no failing test of its own stays as it is.
-    expect(check(other.replace("'/'", "'/home'"), "selector", "b.spec.ts")).toEqual([expect.stringContaining("no selector or timing failure is in b.spec.ts")]);
+    expect(check(other.replace("'/'", "'/home'"), "selector", "b.spec.ts")).toEqual(expect.arrayContaining([expect.stringContaining("no selector or timing failure is in b.spec.ts")]));
     // Data: only for a data failure, and never a value a check compares against.
     expect(check('{"expectedStatus":"Approved","reason":"Restock now"}', "selector", "d.json")).toEqual(["test data changes only for a data failure"]);
     expect(check('{"expectedStatus":"Approved","reason":"Restock now"}', "data", "d.json")).toEqual([]);

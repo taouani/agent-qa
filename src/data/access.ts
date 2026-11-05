@@ -466,7 +466,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     for (const x of parsed.tests) {
       const raw = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
       // A page snapshot is an ARIA snapshot: field values, record names and table cells become tokens, as the explorer's do.
-      const snapshot = raw !== undefined ? maskAriaSnapshot(raw, echo).text.slice(0, 6000) : undefined;
+      // Playwright's error-context.md wraps it in a heading and a yaml fence: only the snapshot itself is masked.
+      const aria = raw?.replace(/^\s*#[^\n]*\n+/, "").replace(/^\s*```[a-z]*\n/, "").replace(/\n```\s*$/, "");
+      const snapshot = aria !== undefined ? maskAriaSnapshot(aria, echo, { recordPage: true }).text.slice(0, 6000) : undefined;
       tests.push({
         title: mask(x.title, "test.title", 2000),
         tags: x.tags.map((g) => mask(g, "test.tag", 200)),

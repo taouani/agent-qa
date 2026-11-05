@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { z } from "zod";
 import { EngineError, type Artifact, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
-import { scanGeneratedCode, type FrameworkProfile, type ProfileData, type RequirementsData, type ScriptsData, type TypeCheckOutcome } from "../../data/index.js";
+import { fixSkeleton, scanGeneratedCode, type FrameworkProfile, type ProfileData, type RequirementsData, type ScriptsData, type TypeCheckOutcome } from "../../data/index.js";
 import { describeAction, EXPLORATION_ARTIFACT, type Exploration } from "../explore/artifact.js";
 import { helpersPath, lightningHelpersSource, renderPack } from "../packs/salesforce.js";
 import { CASE_ID, TEST_CASES_ARTIFACT, type TestCases } from "../test-cases/artifact.js";
@@ -471,7 +471,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
         cases: casesOf,
         scan: (content, path) => {
           const c = scanGeneratedCode(content, path);
-          return { titles: c.tests.map((t) => t.title), checks: c.checks, checkedNames: c.checkedNames, branches: c.branches };
+          return { titles: c.tests.map((t) => t.title), checkedNames: c.checkedNames, skeleton: fixSkeleton(content, path) };
         },
         checkCode: async (ctx, draft) => {
           const { profile: p } = await profile(ctx);
