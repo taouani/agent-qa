@@ -106,7 +106,9 @@ async function prepare(grant: WriteGrant, root: string, path: string, within: st
   let existing = folder;
   while (!(await lstat(existing).catch(() => undefined)) && dirname(existing) !== existing) existing = dirname(existing);
   await inside(existing);
-  const firstDir = await mkdir(folder, { recursive: true });
+  // The first folder made, from the path itself (mkdir's own answer is \\?\-prefixed on Windows).
+  const firstDir = existing === folder ? undefined : join(existing, relative(existing, folder).split(sep)[0]!);
+  await mkdir(folder, { recursive: true });
   await inside(folder);
   return { target, folder, firstDir };
 }
