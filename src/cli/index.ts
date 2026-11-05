@@ -40,10 +40,11 @@ export function createMcpContext(cwd = process.cwd(), env: NodeJS.ProcessEnv = p
   return { engine, runs };
 }
 
-/** Commander collector for a repeatable option. */
+/** Commander collector for a repeatable option: --accept review --accept run, or --accept review,run. */
 function collect(value: string, previous: string[]): string[] {
-  if (value.startsWith("-")) throw new InvalidArgumentError("expected a step id");
-  return [...previous, value];
+  const ids = value.split(",").map((v) => v.trim());
+  if (ids.some((id) => !id || id.startsWith("-"))) throw new InvalidArgumentError("expected a step id");
+  return [...previous, ...ids];
 }
 
 export function buildProgram(): Command {
