@@ -73,7 +73,7 @@ export function buildProgram(): Command {
     .option("--input <json>", "the workflow's inputs as JSON")
     .option("--resume <runId>", "continue a run that stopped")
     .option("--model <provider:model>", "the model for every step")
-    .option("--yes", "answer confirm steps without asking: the review is accepted as unattended, the Xray push is declined")
+    .option("--yes", "answer confirm steps without asking: the review is accepted as unattended; the Xray push, exploring and the scripts type check are declined (accept them with --accept push, approve or typecheck)")
     .option("--accept <step>", "accept this confirm step, e.g. --accept push (repeatable)", collect, [])
     .option("--decline <step>", "decline this confirm step (repeatable)", collect, [])
     .option("--ci", "CI mode: nobody is asked, and ask write rules are denied (default when CI is set)")

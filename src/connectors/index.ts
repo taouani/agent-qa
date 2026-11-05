@@ -30,3 +30,5 @@ export { defaultAudience, normalizePem, OAUTH_HINTS, SalesforceAuth, SalesforceA
 export type { SalesforceAuthOptions } from "./salesforce.js";
 export { BrowserError, ExplorerBrowser, KEY, loadPlaywright, MIN_PLAYWRIGHT } from "./browser.js";
 export type { ActionOutcome, ActionResult, BrowserAction, BrowserTarget, LoadedPlaywright, OpenBrowserOptions, PageSnapshot } from "./browser.js";
+export { findTypeScript, loadTypeScript, local, MAX_DIAGNOSTICS, TypeCheckError, typeCheckFiles } from "./typecheck.js";
+export type { TypeDiagnostic, TypeScriptModule } from "./typecheck.js";

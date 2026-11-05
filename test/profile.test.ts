@@ -223,6 +223,37 @@ describe("agent-qa.profile.json", () => {
     expect(await runs.readArtifact(other.run, FRAMEWORK_PROFILE_SPEC)).toBeDefined();
   });
 
+  it("type-checks through the policy layer, masks the messages, and says when it can't", async () => {
+    await writeRepo(dir, REPO);
+    const audit = new MemoryAuditSink();
+    const seen: string[][] = [];
+    const typeCheck = async (_grant: unknown, files: ReadonlyArray<{ path: string }>) => {
+      seen.push(files.map((f) => f.path));
+      return [{ file: "tests/a.steps.ts", line: 2, code: 2345, message: "Argument of type '\"jane.doe@acme.com\"' is not assignable" }];
+    };
+    const { d, run } = await data({ audit });
+    await d.saveProfile(run);
+    const typed = new DataAccess({ root: dir, store: runs, config: configSchema.parse({ version: 1 }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit, typeCheck });
+    const files = [{ path: "tests/a.steps.ts", content: "x" }];
+    expect(await typed.typeCheck(run, run, files, false)).toEqual({ status: "declined" });
+    expect(seen).toEqual([]);
+    const done = await typed.typeCheck(run, run, files, true);
+    expect(done.status === "done" && done.diagnostics[0]!.message).toMatch(/^Argument of type '"<EMAIL_\d+>"' is not assignable$/);
+    expect(audit.entries.filter((e) => e.target === "commands").map((e) => e.outcome)).toEqual(["approved", "done"]);
+    const none = new DataAccess({ root: dir, store: runs, config: configSchema.parse({ version: 1 }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink() });
+    // This test repo has no typescript of its own (one above it may resolve, and isn't used).
+    expect(await none.typeCheck(run, run, files, true)).toMatchObject({ status: "unavailable", reason: expect.stringMatching(/isn't installed in the repo|outside the project/) });
+    expect(await none.typeCheckReadiness(run)).toMatchObject({ ready: false, reason: expect.stringMatching(/isn't installed in the repo|outside the project/) });
+    // A deny rule: nobody is asked, and a check that runs anyway keeps the code unchecked instead of failing the step.
+    const denyConfig = configSchema.parse({ version: 1, policy: { writes: { commands: "deny" } } });
+    const denied = new DataAccess({ root: dir, store: runs, config: denyConfig, vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink(), typeCheck });
+    expect(await denied.typeCheckReadiness(run)).toMatchObject({ ready: false, reason: expect.stringContaining("policy") });
+    expect(await denied.typeCheck(run, run, files, true)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("policy.writes.commands") });
+    const crashing = new DataAccess({ root: dir, store: runs, config: configSchema.parse({ version: 1 }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink(), typeCheck: () => { throw new RangeError(`stack overflow in ${dir}`); } });
+    const crashed = await crashing.typeCheck(run, run, files, true);
+    expect(crashed).toEqual({ status: "unavailable", reason: "the repo's TypeScript failed (RangeError)" });
+  });
+
   it("is saved through the policy layer and read back", async () => {
     await writeRepo(dir, REPO);
     const audit = new MemoryAuditSink();

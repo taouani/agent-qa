@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { z } from "zod";
 import { EngineError, type Artifact, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
-import type { FrameworkProfile, ProfileData, RequirementsData, ScriptsData } from "../../data/index.js";
+import type { FrameworkProfile, ProfileData, RequirementsData, ScriptsData, TypeCheckOutcome } from "../../data/index.js";
 import { describeAction, EXPLORATION_ARTIFACT, type Exploration } from "../explore/artifact.js";
 import { helpersPath, lightningHelpersSource, renderPack } from "../packs/salesforce.js";
 import { CASE_ID, TEST_CASES_ARTIFACT, type TestCases } from "../test-cases/artifact.js";
@@ -39,6 +39,8 @@ export const scriptsInputSchema = z
   })
   .strict();
 export type ScriptsInputs = z.infer<typeof scriptsInputSchema>;
+
+const approveSchema = z.object({ approve: z.boolean().describe("true only if the user agreed to the type check with their repo's TypeScript") }).strict();
 
 export interface ScriptsDeps {
   data: Pick<ProfileData, "frameworkProfile" | "savedProfile"> & ScriptsData & Pick<RequirementsData, "maskTexts">;
@@ -147,6 +149,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
   };
   const testCasesMemo = new Map<string, Promise<Artifact<TestCases>>>();
   const explorationMemo = new Map<string, Promise<Artifact<Exploration> | undefined>>();
+  const typeCheckMemo = new Map<string, Promise<TypeCheckOutcome>>();
   const filesMemo = new Map<string, Promise<{ files: ReadonlySet<string>; links: string[] }>>();
 
   const loadTestCases = async (run: string) => {
@@ -193,6 +196,21 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
       const listing = await deps.data.frameworkFiles();
       return { files: new Set(listing.files.map(pathKey)), links: listing.links };
     });
+  const approved = (ctx: Ctx) => (ctx.outputs.typecheck as { approve?: boolean } | undefined)?.approve === true;
+  const readinessMemo = new Map<string, Promise<{ ready: true } | { ready: false; reason: string }>>();
+  /** Whether a type check could run at all: when it couldn't, nobody is asked. */
+  const readiness = async (ctx: Ctx) => {
+    const tokensRun = (await testCases(ctx)).data.requirements.run;
+    return once(readinessMemo, ctx.runId, () => deps.data.typeCheckReadiness(tokensRun));
+  };
+  /** The draft's type check, once per run and draft: the check and the save see the same result. */
+  const typeChecked = async (ctx: Ctx, draft: ScriptsDraft) => {
+    const tokensRun = (await testCases(ctx)).data.requirements.run;
+    const files = draft.files.filter((f) => f.role !== "feature");
+    const ready = await readiness(ctx);
+    if (!ready.ready) return { status: "unavailable" as const, reason: ready.reason };
+    return once(typeCheckMemo, `${ctx.runId}:${hash(files)}`, () => deps.data.typeCheck(ctx.runId, tokensRun, files, approved(ctx)));
+  };
   const isSalesforce = async (ctx: Ctx) => (await exploration(ctx))?.data.target.kind !== "web";
 
   const context = async (ctx: Ctx): Promise<string> => {
@@ -257,6 +275,31 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
     },
     steps: [
       {
+        id: "typecheck",
+        kind: "confirm",
+        outputSchema: approveSchema,
+        when: async (ctx) => (await readiness(ctx)).ready,
+        // The person's yes, once per run (decision 5); unattended, the code is kept unchecked and says so.
+        answers: { yes: { approve: true }, no: { approve: false }, unattended: { approve: false } },
+        approval: {
+          personOnly: true,
+          question: async () => {
+            const s = await saved();
+            return `Type-check the generated code with your repo's TypeScript (in ${s.folder === "." ? "the repo root" : s.folder})? Agent-QA runs the typescript package from your node_modules, inside Agent-QA, and reads tsconfig.json. Nothing is written to the repo.`;
+          },
+        },
+        instructions: () =>
+          [
+            "Ask the user whether Agent-QA may type-check the code it generates with their repo's TypeScript. It runs the typescript package from their node_modules inside Agent-QA and reads tsconfig.json; it writes nothing. Wait for their answer.",
+            "Submit approve: true only if they said yes. With no, the code is generated and checked without the type check.",
+          ].join("\n"),
+        context: async (ctx) => {
+          const s = await saved();
+          const cases = await casesOf(ctx);
+          return [`Repo: ${s.kind} in ${s.folder}`, `Cases to automate (${cases.length}): ${cases.map((c) => c.id).join(", ")}`].join("\n");
+        },
+      },
+      {
         id: "draft",
         kind: "generate",
         outputSchema: scriptsDraftSchema,
@@ -275,9 +318,21 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
             }
           });
           if (errors.length) return errors;
+          if (!(await isSalesforce(ctx)) && importsHelpers(out, helpersPath(p))) return [{ path: "$.files", message: "this is a web app, not Salesforce: there is no helper file to import" }];
           const { draft, files, links } = await prepared(ctx, out);
           if (draft.files.length > SCRIPTS_MAX_FILES) return [{ path: "$.files", message: `at most ${SCRIPTS_MAX_FILES - 1} files when the code imports the helper file, which the server adds` }];
-          return checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files], links });
+          const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files], links });
+          // The type check is the slow part: only for code that passed everything else.
+          if (found.length) return found;
+          const typed = await typeChecked(ctx, draft);
+          if (typed.status !== "done") return [];
+          const index = new Map(out.files.map((f, i) => [f.path, i]));
+          return typed.diagnostics.map((d) => {
+            const i = index.get(d.file);
+            return i !== undefined
+              ? { path: `$.files[${i}].content`, message: `line ${d.line}: TS${d.code} ${d.message}` }
+              : { path: "$.files", message: `the pack's helper file doesn't type-check in this repo (line ${d.line}: TS${d.code} ${d.message}): don't import it` };
+          });
         },
         // The notes are the model's words about the user's cases: masked before the run keeps them.
         sanitize: async (ctx, out: ScriptsDraft): Promise<ScriptsDraft> => {
@@ -288,6 +343,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
         onAccept: async (ctx, out: ScriptsDraft) => {
           const { draft } = await prepared(ctx, out);
           const { kind, folder } = await profile(ctx);
+          const typed = await typeChecked(ctx, draft);
           const tc = await testCases(ctx);
           const ex = await exploration(ctx);
           const data: ScriptsDraftArtifact = {
@@ -296,6 +352,14 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
             ...(ex && ctx.inputs.explorationRun ? { exploration: { run: ctx.inputs.explorationRun, sourceHash: ex.sourceHash } } : {}),
             folder,
             kind,
+            typeCheck:
+              typed.status === "done"
+                ? typed.diagnostics.length === 0
+                  ? { status: "passed" }
+                  : { status: "unavailable", reason: "the type check's result changed after the code was accepted" }
+                : typed.status === "declined"
+                  ? { status: "skipped", reason: "not approved: the person said no, or nobody was asked (an unattended run)" }
+                  : { status: "unavailable", reason: typed.reason },
           };
           await deps.runs.writeArtifact(ctx.runId, SCRIPTS_DRAFT_ARTIFACT, data, {
             inputs: [
