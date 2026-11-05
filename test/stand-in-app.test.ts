@@ -36,6 +36,15 @@ describe("stand-in app", () => {
   });
 });
 
+describe("scripts cases", () => {
+  it("run only with the fixture model, since the harness says yes to running the code the model wrote", async () => {
+    const c = DEFAULT_BROWSER_CASES.find((x) => x.workflow === "scripts")!;
+    const real = { name: "recording(api(anthropic:x))", complete: async () => ({ text: "{}", model: "x" }) };
+    const pipeline = maskedPipeline({ runsDir: join(tmpdir(), "agent-qa-never-used"), playwrightFolder: "/nowhere" });
+    await expect(pipeline({ case: c, tickets: c.tickets, driver: real, seeds: DEFAULT_SEEDS, observe: () => {} })).rejects.toThrow(/only with the offline fixture model/);
+  });
+});
+
 // The real browser: Playwright from a folder's node_modules, as in explorer.test.ts.
 const playwrightFolder = (() => {
   for (const from of [process.env.AGENT_QA_PLAYWRIGHT_DIR, "/opt/node-tools"].filter((x): x is string => !!x)) {
@@ -74,11 +83,14 @@ describe.skipIf(!playwrightFolder)("browser leak gate (real Chromium on the stan
   }, 120_000);
 
   // A scripts case runs its test with @playwright/test: CI's folder has it; a local Playwright alone may not.
+  // With AGENT_QA_PLAYWRIGHT_DIR set (CI's browser job), a missing package must fail, not skip.
   const hasTestPackage = !!playwrightFolder && existsSync(join(playwrightFolder, "@playwright", "test", "package.json"));
   it.skipIf(!hasTestPackage && !process.env.AGENT_QA_PLAYWRIGHT_DIR)("reports the seeded product bug as a defect, leaves the test as written, and keeps the run's output masked", async () => {
     const c = DEFAULT_BROWSER_CASES.find((x) => x.workflow === "scripts")!;
     const report = await runHarness({ cases: [c], seeds: DEFAULT_SEEDS, pipeline: maskedPipeline({ runsDir: join(dir, "runs"), playwrightFolder: playwrightFolder! }), pipelineName: "masked", driver: new FixtureDriver() });
     expect(report.cases[0], JSON.stringify(report.cases[0])).toMatchObject({ status: "pass", seededLeaks: [] });
+    // analyze, cases, draft, the tempting fix (refused), the defect.
+    expect(report.cases[0]!.modelCalls).toBe(5);
     const runsWith = async (name: string) => {
       const out = [];
       for (const r of await readdir(join(dir, "runs"))) if ((await readdir(join(dir, "runs", r))).includes(name)) out.push(r);
@@ -94,6 +106,9 @@ describe.skipIf(!playwrightFolder)("browser leak gate (real Chromium on the stan
     // The error shows the record's details as masked tokens, never the seeded values.
     const failure = art.data.attempts[0].tests[0].failure;
     expect(failure.message).toContain("Rejected");
+    // The record's details did reach the error, as tokens: the leak check saw them.
+    expect(failure.message).toMatch(/<EMAIL_\d+>/);
+    expect(failure.message).toMatch(/<IBAN_\d+>/);
     expect(JSON.stringify(art)).not.toMatch(/Quillfeather|m\.quillfeather@example\.com|DE89 3704/);
   }, 180_000);
 

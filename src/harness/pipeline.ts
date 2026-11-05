@@ -63,8 +63,10 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   const config = harnessConfig(options.config);
   return async (context) => {
     if (!BROWSER_WORKFLOWS.has(context.case.workflow)) return runCase(options, runs, config, context);
-    if (!options.playwrightFolder) throw new Error(`a ${context.case.workflow} case needs a browser: run the harness with --browser`);
     const scripts = context.case.workflow === "scripts";
+    // The harness says yes as the person to writing and running the code: only the fixture model's fixed code, never a real model's.
+    if (scripts && context.driver.name !== "fixture" && context.driver.name !== "recording(fixture)") throw new Error("a scripts case runs the code its model writes: only with the offline fixture model");
+    if (!options.playwrightFolder) throw new Error(`a ${context.case.workflow} case needs a browser: run the harness with --browser`);
     const app = await startStandInApp(context.seeds, { defect: scripts });
     try {
       if (!scripts) return await runCase(options, runs, config, context, app);
@@ -73,7 +75,7 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
       if (!existsSync(join(modules, "@playwright", "test", "package.json"))) throw new Error(`a scripts case runs its test with @playwright/test: ${modules} has none (npm install @playwright/test there)`);
       // A bootstrap DataAccess only makes the scratch folder (through the policy layer); the case runs in it.
       const boot = new DataAccess({ root: options.runsDir, store: runs, config, mode: "ide", audit: new MemoryAuditSink() });
-      return await boot.withScratchRepo("harness", (repo) => runCase(options, runs, config, context, app, repo), modules);
+      return await boot.withScratchRepo(SCRATCH_AUDIT_ID, (repo) => runCase(options, runs, config, context, app, repo), modules);
     } finally {
       await app.close();
     }
@@ -145,6 +147,9 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   }
 }
 
+/** The audit record's run for the scratch repo: no run of the store owns it. */
+const SCRATCH_AUDIT_ID = "harness-scratch-repo";
+
 /** The --browser folder's packages: the folder may be a project or its node_modules. */
 const nodeModulesOf = (folder: string) => (basename(folder) === "node_modules" ? folder : join(folder, "node_modules"));
 
@@ -195,6 +200,7 @@ async function scriptsCase(data: DataAccess, runs: RunStore, app: StandInApp, re
   if (result.data.status !== "defect") throw new Error(`Run ${runId} ended ${result.data.status}${result.data.reason ? ` (${result.data.reason})` : ""}, not as a reported defect`);
   if (!tests.length || tests.some((t) => t.outcome !== "failed")) throw new Error(`Run ${runId}: the generated tests didn't all fail on the seeded bug${result.data.attempts[0]?.errors[0] ? ` (${result.data.attempts[0].errors[0].slice(0, 400)})` : ""}`);
   // The test as written: a defect is reported, never "fixed" by changing what the test expects.
+  // (Byte for byte: the fixture's spec holds no masked tokens, so writing it unmasks nothing.)
   const written = drafted.data.files.find((f) => f.path === FIXTURE_SPEC)?.content;
   const onDisk = await readFile(join(repo, FIXTURE_SPEC), "utf8").catch(() => undefined);
   if (written === undefined || onDisk !== written || !onDisk.includes("toContainText('Submitted')")) throw new Error(`Run ${runId} changed the generated test instead of reporting the defect`);

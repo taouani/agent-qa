@@ -30,7 +30,7 @@ export class FixtureDriver implements ModelDriver {
             : step === "draft"
               ? draft(contextText(request))
               : step === "fix"
-                ? fix(contextText(request), request.messages.length > 2)
+                ? fix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
                 : undefined;
     if (answer === undefined) throw new Error(`The fixture model can't answer step ${request.schemaName ?? "(unnamed)"}`);
     return { text: JSON.stringify(answer), model: "fixture" };
@@ -167,12 +167,15 @@ function draft(context: string) {
  * the expected status to what the app shows, as a model chasing green might;
  * the fix checks must refuse it. On the retry: report the defect, change nothing.
  */
-function fix(context: string, retry: boolean) {
+function fix(context: string, refusal: string | undefined) {
   const failures = context.slice(context.indexOf("## Fix round"), context.indexOf("## The generated files"));
-  const titles = [...failures.matchAll(/^### (.+)$/gm)].map((m) => m[1]!).filter((t) => !t.startsWith("Errors outside the tests") && t !== "Earlier rounds");
+  // The case titles only: a "### " line inside an error or snapshot is not one.
+  const titles = [...failures.matchAll(/^### (.*TC-[A-Z][A-Z0-9]*-\d+-\d{3}.*)$/gm)].map((m) => m[1]!);
   if (/^### Errors outside the tests/m.test(failures)) titles.push("(the run)");
   if (!titles.length) throw new Error("The fixture model found no failures in the context");
-  if (retry) return { failures: titles.map((test) => ({ test, kind: "defect", reason: "The request shows another status than Submitted after Submit for Approval" })), files: [] };
+  // The retry follows the fix checks' refusal of the changed expectation, and nothing else: any other refusal fails the case.
+  if (refusal !== undefined && !/changes more than locators and waits|which a check compares against/.test(refusal)) throw new Error(`The fixture model's tempting fix was refused for another reason: ${refusal.slice(0, 300)}`);
+  if (refusal !== undefined) return { failures: titles.map((test) => ({ test, kind: "defect", reason: "The request shows another status than Submitted after Submit for Approval" })), files: [] };
   const at = context.indexOf(`### ${FIXTURE_SPEC} (spec)`);
   const code = /```ts\n([^]*?)\n```/.exec(context.slice(at))?.[1];
   if (at < 0 || code === undefined) throw new Error("The fixture model found no spec in the context");

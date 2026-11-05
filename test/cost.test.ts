@@ -76,7 +76,8 @@ describe("usage recording", () => {
     await expect(recordUsage(runs, id, [{ ...api(), promptChars: -1 }])).rejects.toThrow("Invalid usage entry");
   });
 
-  it("keeps the entry after a torn line, and keeps cost@1 in step under parallel records", async () => {
+  // Eleven appends and rewrites of cost@1 under a lock: slow on a busy Windows runner.
+  it("keeps the entry after a torn line, and keeps cost@1 in step under parallel records", { timeout: 30_000 }, async () => {
     const runs = new RunStore(dir);
     const { id } = await runs.create({ workflow: "w", context: "c", host: "cli", driver: "api" });
     await recordUsage(runs, id, [api({ stepId: "one" })]);

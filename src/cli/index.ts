@@ -156,6 +156,11 @@ export function buildProgram(): Command {
         if (browserCases.length && !opts.browser) {
           sources = { ...sources, cases: sources.cases.filter((c) => !BROWSER_WORKFLOWS.has(c.workflow)), notes: [...sources.notes, `${browserCases.length} browser case(s) skipped: run with --browser to explore the stand-in app`] };
         }
+        // A scripts case writes and runs the code its model wrote, with the harness saying yes as the person: the fixture model's fixed code only.
+        const scriptCases = sources.cases.filter((c) => c.workflow === "scripts");
+        if (scriptCases.length && opts.model) {
+          sources = { ...sources, cases: sources.cases.filter((c) => c.workflow !== "scripts"), notes: [...sources.notes, `${scriptCases.length} scripts case(s) skipped: they run generated code, so only with the offline fixture model`] };
+        }
         const playwrightFolder = opts.browser === undefined ? undefined : resolve(root, opts.browser === true ? "." : opts.browser);
         const pipeline =
           opts.pipeline === "empty"

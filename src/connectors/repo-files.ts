@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
 
@@ -154,6 +154,8 @@ export async function withScratchFolder<T>(grant: WriteGrant, run: (dir: string)
     if (nodeModules !== undefined) await symlink(resolve(nodeModules), join(dir, "node_modules"), "junction");
     return await run(dir);
   } finally {
+    // The link itself first, so the removal below never walks into what it points to.
+    if (nodeModules !== undefined) await unlink(join(dir, "node_modules")).catch(() => rmdir(join(dir, "node_modules")).catch(() => undefined));
     await rm(dir, { recursive: true, force: true });
   }
 }
