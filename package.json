@@ -48,11 +48,13 @@
     "changeset": "changeset",
     "release": "npm run check && changeset publish",
     "prepublishOnly": "npm run build",
-    "schema": "npm run build && node scripts/write-schema.mjs"
+    "schema": "npm run build && node scripts/write-schema.mjs",
+    "packs": "node scripts/write-packs.mjs"
   },
   "devDependencies": {
     "@babel/types": "^7.29.8",
     "@changesets/cli": "^2.31.1",
+    "@playwright/test": "1.49.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^20.19.43",
     "eslint": "^9.39.5",
