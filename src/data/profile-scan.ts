@@ -25,13 +25,15 @@ export const LOCATOR_FORMS = ["getByRole", "getByLabel", "getByText", "getByTest
 export type LocatorForm = (typeof LOCATOR_FORMS)[number];
 const STEP_KEYWORDS = new Set(["Given", "When", "Then", "Step"]);
 /** A path that likely holds sign-in code or credentials: listed, never read. */
-const AUTH_PATH = /(^|[\\/._-])(auth|login|session|jwt|credentials?|users?|secrets?|storage-?state)([\\/._-]|$)|(^|[\\/])\.env(\.|$)/i;
+export const AUTH_PATH = /(^|[\\/._-])(auth|login|session|jwt|credentials?|users?|secrets?|storage-?state)([\\/._-]|$)|(^|[\\/])\.env(\.|$)/i;
 
 export interface ScannedStep {
   keyword: "Given" | "When" | "Then" | "Step";
   /** The step text: a Cucumber expression, or a regular expression's source. */
   pattern: string;
   kind: "expression" | "regex";
+  /** A regex step's flags, e.g. "i". */
+  flags?: string;
   file: string;
   line: number;
   /** Fixtures the step takes from its first argument, e.g. ["pages", "testData"]. */
@@ -43,6 +45,8 @@ export interface ScannedPage {
   file: string;
   extends?: string;
   methods: string[];
+  /** Each method's parameters and return type as written, e.g. "(label: string, value?: string): Promise<void>". Defaults are left out. */
+  signatures?: Record<string, string>;
 }
 
 export interface ScannedFeature {
@@ -160,7 +164,28 @@ function fixtureNames(fn: Node | undefined): string[] {
   return first.properties.flatMap((p) => (p.type === "ObjectProperty" && p.key.type === "Identifier" ? [p.key.name] : []));
 }
 
-function scanCode(ast: Node, file: string, scan: RepoScan): void {
+const MAX_SIGNATURE = 200;
+
+/** A method's parameters and return type, from the source: names and type annotations only, never default values. */
+function signatureOf(m: Node, text: string): string | undefined {
+  if (m.type !== "ClassMethod" && m.type !== "TSDeclareMethod") return undefined;
+  const typeText = (t: Node | null | undefined) => (t && t.start != null && t.end != null ? text.slice(t.start, t.end).replace(/^:\s*/, "").replace(/\s+/g, " ") : undefined);
+  const params = m.params.map((p) => {
+    if (p.type === "Identifier") return `${p.name}${p.optional ? "?" : ""}${typeText(p.typeAnnotation) ? `: ${typeText(p.typeAnnotation)}` : ""}`;
+    if (p.type === "AssignmentPattern" && p.left.type === "Identifier") return `${p.left.name}?${typeText(p.left.typeAnnotation) ? `: ${typeText(p.left.typeAnnotation)}` : ""}`;
+    if (p.type === "RestElement" && p.argument.type === "Identifier") return `...${p.argument.name}${typeText(p.typeAnnotation) ? `: ${typeText(p.typeAnnotation)}` : ""}`;
+    // A destructured parameter: its type, under a plain name.
+    const pattern = p.type === "AssignmentPattern" ? p.left : p;
+    const type = "typeAnnotation" in pattern ? typeText(pattern.typeAnnotation as Node | null) : undefined;
+    return `options${p.type === "AssignmentPattern" ? "?" : ""}${type ? `: ${type}` : ""}`;
+  });
+  const returns = typeText(m.returnType);
+  const generics = m.typeParameters && m.typeParameters.start != null && m.typeParameters.end != null ? text.slice(m.typeParameters.start, m.typeParameters.end).replace(/\s+/g, " ") : "";
+  const sig = `${generics}(${params.join(", ")})${returns ? `: ${returns}` : ""}`;
+  return sig.length > MAX_SIGNATURE ? undefined : sig;
+}
+
+function scanCode(ast: Node, file: string, scan: RepoScan, text = ""): void {
   // `const { Given, When: W } = createBdd(test)`: the local names this file defines steps with.
   const keywordOf = new Map<string, ScannedStep["keyword"]>();
   walkAst(ast, (n) => {
@@ -180,11 +205,13 @@ function scanCode(ast: Node, file: string, scan: RepoScan): void {
         const [first, fn] = n.arguments;
         const text = literalString(first as Node);
         const regex = first?.type === "RegExpLiteral" ? first.pattern : undefined;
+        const flags = first?.type === "RegExpLiteral" && first.flags ? first.flags : undefined;
         if (text !== undefined || regex !== undefined) {
           scan.steps.push({
             keyword: keywordOf.get(name)!,
             pattern: text ?? regex!,
             kind: text !== undefined ? "expression" : "regex",
+            ...(flags ? { flags } : {}),
             file,
             line: n.loc?.start.line ?? 0,
             fixtures: fixtureNames(fn as Node | undefined),
@@ -210,15 +237,38 @@ function scanCode(ast: Node, file: string, scan: RepoScan): void {
     if ((n.type === "ClassDeclaration" || n.type === "ClassExpression") && n.id) {
       const isPage = /(^|\/)(pages?|page-objects|pom)\//i.test(file) || /(Page|Screen|Component)$/.test(n.id.name);
       if (isPage) {
-        const methods = n.body.body.flatMap((m) =>
-          m.type === "ClassMethod" && m.kind === "method" && !m.static && m.key.type === "Identifier" && m.accessibility !== "private" && m.accessibility !== "protected" && !m.key.name.startsWith("_")
-            ? [m.key.name]
-            : [],
-        );
-        scan.pages.push({ name: n.id.name, file, ...(n.superClass?.type === "Identifier" ? { extends: n.superClass.name } : {}), methods });
+        const signatures: Record<string, string> = {};
+        // Overloads (declared without a body) are what callers see; the implementation's signature only when there are none.
+        const overloads = new Map<string, string[]>();
+        for (const m of n.body.body) {
+          if (m.type === "TSDeclareMethod" && m.key.type === "Identifier" && !m.static && m.accessibility !== "private" && m.accessibility !== "protected") {
+            const sig = signatureOf(m, text);
+            if (sig) overloads.set(m.key.name, [...(overloads.get(m.key.name) ?? []), sig]);
+          }
+        }
+        const methods = n.body.body.flatMap((m) => {
+          if (!(m.type === "ClassMethod" && m.kind === "method" && !m.static && m.key.type === "Identifier" && m.accessibility !== "private" && m.accessibility !== "protected" && !m.key.name.startsWith("_"))) return [];
+          const sig = overloads.get(m.key.name)?.join("; ") ?? signatureOf(m, text);
+          if (sig && sig.length <= MAX_SIGNATURE && m.key.type === "Identifier") signatures[m.key.name] = sig;
+          return [m.key.name];
+        });
+        scan.pages.push({ name: n.id.name, file, ...(n.superClass?.type === "Identifier" ? { extends: n.superClass.name } : {}), methods, ...(Object.keys(signatures).length ? { signatures } : {}) });
       }
     }
   });
+}
+
+/**
+ * The step definitions and page objects in one file's text, as the profile
+ * scan reads them: for checking generated code against the same rules. Not
+ * code that parses gives undefined.
+ */
+export function scanSource(text: string, file: string): Pick<RepoScan, "steps" | "pages"> | undefined {
+  const ast = parseCode(text, file);
+  if (!ast) return undefined;
+  const scan = { steps: [], pages: [], fixtures: [], locators: Object.fromEntries(LOCATOR_FORMS.map((f) => [f, 0])) } as unknown as RepoScan;
+  scanCode(ast, file, scan, text);
+  return { steps: scan.steps, pages: scan.pages };
 }
 
 /** Scenario count and tags of a Gherkin file. Scenario titles and examples are not kept: they can hold names. */
@@ -272,7 +322,7 @@ export function scanRepo(root: string): RepoScan {
       scan.unparsed.push(file);
       continue;
     }
-    scanCode(ast, file, scan);
+    scanCode(ast, file, scan, text);
   }
   for (const key of ["steps", "pages", "fixtures", "features", "authFiles", "unparsed"] as const) {
     if (scan[key].length > MAX_ENTRIES) {

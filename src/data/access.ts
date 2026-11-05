@@ -433,7 +433,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       ...(commands ? { commands } : {}),
       locators,
       locatorRanking,
-      steps: steps.map(({ keyword, kind: k, line, ...s }) => ({ keyword, kind: k, line, ...mask(s, "profile.step") })),
+      steps: steps.map(({ keyword, kind: k, line, flags, ...s }) => ({ keyword, kind: k, line, ...(flags ? { flags } : {}), ...mask(s, "profile.step") })),
     } as FrameworkProfile;
     await service.saveVault();
     return masked;
