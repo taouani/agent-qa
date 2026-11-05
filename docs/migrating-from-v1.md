@@ -12,7 +12,10 @@ v1 stays available and unchanged at tag `v1.0.0` on the [`v1` branch](https://gi
 | `generate-test-cases` | `test-cases` workflow | At least one case per acceptance criterion, at most 30 per issue, `TC-{KEY}-{NNN}`, P1 to P4. You review the cases before they're kept. They're then pushed straight to Xray Cloud (create or update), not exported as CSV. |
 | `health-check` | `agent-qa doctor` | Checks config, credentials and the environment. |
 | `validate-outputs` | built in | Every step's answer is checked against a schema before it's accepted. A wrong answer is sent back to the model with the errors. |
-| everything else | not yet | Commit analysis, test strategy, plan, charter and data, risk register, traceability, release notes, Gherkin, Playwright and API tests, accessibility, Confluence publishing, UI exploration and the framework commands are planned for later v2 releases. Keep using v1 for these. |
+| `common/discover-framework-profile` | `profile` workflow | Reads the repo's Playwright project without running it. You review it, and it is saved as `agent-qa.profile.json`: the only commands Agent-QA may run. In an empty folder it starts a new repo instead. See [profile.md](profile.md). |
+| `explore-ui` | `explore` workflow | Walks reviewed cases in a real browser on a sandbox, from masked pages. See [explore.md](explore.md). |
+| `generate-gherkin`, `generate-playwright-tests`, `debug-tests` | `scripts` workflow | One workflow: Gherkin scenarios and steps for a playwright-bdd repo, specs otherwise, then a run with strictly limited fixes. A real defect is reported, never fixed in the test. See [scripts.md](scripts.md). |
+| everything else | not yet | Commit analysis, test strategy, plan, charter and data, risk register, traceability, release notes, API tests, accessibility, Confluence publishing, and the framework audit and refactor commands are planned for later v2 releases. Keep using v1 for these. |
 
 ## What changes
 
