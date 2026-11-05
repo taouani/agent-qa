@@ -10,7 +10,7 @@ import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
  * never does. The file is written whole, through a temporary file and a
  * rename, so a reader never sees half of it.
  */
-export async function writeRepoFile(grant: WriteGrant, root: string, path: string, text: string): Promise<void> {
+export async function writeRepoFile(grant: WriteGrant, root: string, path: string, text: string, options: { exclusive?: boolean } = {}): Promise<void> {
   assertGrant(grant, "testCode");
   if (grant.via !== "direct") throw new PolicyDenied("testCode", "this write may only leave as a pull request");
   const target = resolve(root, path);
@@ -30,7 +30,13 @@ export async function writeRepoFile(grant: WriteGrant, root: string, path: strin
   await mkdir(folder, { recursive: true });
   await inside(folder);
   const current = await lstat(target).catch(() => undefined);
+  if (current && options.exclusive) throw new PolicyDenied("testCode", `${path} already exists: generated code only adds new files`);
   if (current && !current.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file`);
+  if (options.exclusive) {
+    // Created, never replaced: "wx" fails if the file appeared since the check above.
+    await writeFile(target, text, { encoding: "utf8", flag: "wx" });
+    return;
+  }
   const temp = join(folder, `.${randomBytes(6).toString("hex")}.agent-qa.tmp`);
   try {
     await writeFile(temp, text, { encoding: "utf8", flag: "wx" });
@@ -39,4 +45,19 @@ export async function writeRepoFile(grant: WriteGrant, root: string, path: strin
     await rm(temp, { force: true });
     throw error;
   }
+}
+
+/**
+ * Removes a file this run created a moment ago with writeRepoFile, when a
+ * later file of the same write failed: generated files are written all or
+ * none. Only a plain file inside the project is removed.
+ */
+export async function removeCreatedRepoFile(grant: WriteGrant, root: string, path: string): Promise<void> {
+  assertGrant(grant, "testCode");
+  const target = resolve(root, path);
+  const rel = relative(await realpath(root), await realpath(target));
+  if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${path} is outside the project folder`);
+  const current = await lstat(target);
+  if (!current.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file`);
+  await rm(target);
 }

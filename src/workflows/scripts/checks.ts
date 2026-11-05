@@ -2,7 +2,7 @@ import { CucumberExpression, ParameterType, ParameterTypeRegistry } from "@cucum
 import { AstBuilder, GherkinClassicTokenMatcher, Parser } from "@cucumber/gherkin";
 import { IdGenerator, type GherkinDocument, type Scenario, type Step, type Tag } from "@cucumber/messages";
 import type { OutputError } from "../../core/index.js";
-import { scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
+import { isProtectedPath, scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
 import { lightningHelpersSource } from "../packs/salesforce.js";
 import type { TestCases } from "../test-cases/artifact.js";
 import type { ScriptsDraft } from "./artifact.js";
@@ -19,9 +19,6 @@ import type { ScriptsDraft } from "./artifact.js";
 
 export const TOKEN = /<[A-Z][A-Z0-9_]*_\d+>/;
 
-/** Files generated code must never create or replace. */
-const PROTECTED = /(^|\/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig[^/]*\.json|playwright\.config\.[cm]?[jt]s|agent-qa\.ya?ml|agent-qa\.profile\.json|\.env[^/]*|\.gitignore|\.npmrc)$/i;
-const PROTECTED_DIR = /(^|\/)(node_modules|\.git|\.agent-qa|\.github|\.vscode)(\/|$)/i;
 /** playwright-bdd's tags that run some scenarios and not others. */
 const FOCUS_TAGS = /^@(?:only|skip|fixme)$/i;
 const CODE_ROLES = new Set(["spec", "steps", "page"]);
@@ -131,7 +128,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
     const at = `$.files[${i}]`;
     const key = pathKey(f.path);
     if (/\\|^\/|^[A-Za-z]:|(^|\/)\.\.?(\/|$)|\/\/|[\u0000-\u001f]/.test(f.path)) err(`${at}.path`, "must be a relative path with forward slashes, inside the framework folder");
-    else if (PROTECTED.test(f.path) || PROTECTED_DIR.test(f.path)) err(`${at}.path`, `${f.path} is a project file Agent-QA never writes`);
+    else if (isProtectedPath(f.path)) err(`${at}.path`, `${f.path} is a project file Agent-QA never writes`);
     else if (auth.has(key) || (CODE_ROLES.has(f.role) && SIGN_IN_CODE.test(f.path))) err(`${at}.path`, `${f.path} looks like sign-in code: generated code uses the repo's own sign-in steps`);
     else if (links.some((l) => key.startsWith(`${l}/`))) err(`${at}.path`, `${f.path} is under a symbolic link: write it where the link points, or elsewhere`);
     else if (existing.has(key)) err(`${at}.path`, `${f.path} already exists: generated code only adds new files. Call its methods or steps instead`);

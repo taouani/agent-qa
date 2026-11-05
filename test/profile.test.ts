@@ -254,6 +254,34 @@ describe("agent-qa.profile.json", () => {
     expect(crashed).toEqual({ status: "unavailable", reason: "the repo's TypeScript failed (RangeError)" });
   });
 
+  it("writes generated files all or none, creating and never replacing, through the policy layer", async () => {
+    await writeRepo(dir, REPO);
+    const audit = new MemoryAuditSink();
+    const { d, run } = await data({ audit });
+    await d.saveProfile(run);
+    const files = [
+      { path: "tests/features/ABC-1.feature", content: "Feature: x\n" },
+      { path: "tests/step-definitions/abc-1.steps.ts", content: "export {};\n" },
+    ];
+    expect(await d.writeGeneratedFiles(run, run, files, false)).toEqual({ status: "declined" });
+    expect(await d.writeGeneratedFiles(run, run, files, true)).toEqual({ status: "done", written: files.map((f) => f.path) });
+    expect(await readFile(join(dir, "tests/step-definitions/abc-1.steps.ts"), "utf8")).toBe("export {};\n");
+    expect(audit.entries.filter((e) => e.target === "testCode").map((e) => e.outcome)).toEqual(["approved", "done", "approved", "done"]);
+    // A file that exists by then: nothing is replaced, and the files created before it go again.
+    await writeFile(join(dir, "tests/b.ts"), "mine\n");
+    await expect(d.writeGeneratedFiles(run, run, [{ path: "tests/a.ts", content: "new\n" }, { path: "tests/b.ts", content: "theirs\n" }], true)).rejects.toThrow(/already exists/);
+    expect(await readFile(join(dir, "tests/b.ts"), "utf8")).toBe("mine\n");
+    await expect(readFile(join(dir, "tests/a.ts"))).rejects.toThrow();
+    // Project files and odd paths are refused before anything is asked.
+    for (const path of ["package.json", "Playwright.config.ts", ".github/workflows/x.ts", "../x.ts", "/abs.ts", "tests\\w.ts"]) {
+      await expect(d.writeGeneratedFiles(run, run, [{ path, content: "" }], true), path).rejects.toBeInstanceOf(ProfileError);
+    }
+    // In CI test code leaves only as a pull request: nothing is written here.
+    const ci = await data({ mode: "ci", testCode: "allow" });
+    expect(await ci.d.writeGeneratedFiles(ci.run, ci.run, [{ path: "tests/c.ts", content: "" }], true)).toEqual({ status: "pull-request" });
+    await expect(readFile(join(dir, "tests/c.ts"))).rejects.toThrow();
+  });
+
   it("is saved through the policy layer and read back", async () => {
     await writeRepo(dir, REPO);
     const audit = new MemoryAuditSink();

@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, loadTypeScript, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, removeCreatedRepoFile, loadTypeScript, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -21,6 +21,7 @@ import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, host
 import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
+import { isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -130,9 +131,19 @@ export interface ScriptsData {
    * why it couldn't run (no typescript or tsconfig in the repo).
    */
   typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome>;
+  /**
+   * Writes the reviewed generated files into the profile's folder through
+   * `Policy.guard` (target testCode), all or none: each is created, never
+   * replaced, and a failure removes the ones already created. Call it only
+   * with the person's yes. In CI test code leaves only as a pull request,
+   * which this never opens: it says so instead.
+   */
+  writeGeneratedFiles(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome>;
   /** Whether a type check could run at all (the policy, the repo's typescript, a tsconfig), checked without loading anything: no question is asked when it couldn't. */
   typeCheckReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }>;
 }
+
+export type WriteFilesOutcome = { status: "done"; written: string[] } | { status: "declined" } | { status: "pull-request" };
 
 export type TypeCheckOutcome = { status: "done"; diagnostics: TypeDiagnostic[] } | { status: "declined" } | { status: "unavailable"; reason: string };
 
@@ -516,6 +527,40 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const diagnostics = outcome.value.map((d) => ({ ...d, message: service.maskText(local(d.message, folder), "typecheck.message") }));
     await service.saveVault();
     return { status: "done", diagnostics };
+  }
+
+  async writeGeneratedFiles(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    // Checked again here, whatever the workflow checked: the data layer is the last word on what reaches the repo.
+    for (const f of files) {
+      if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
+      if (isProtectedPath(f.path)) throw new ProfileError(`${f.path} is a project file Agent-QA never writes`);
+    }
+    const keys = new Set(files.map((f) => f.path.normalize("NFC").toLowerCase()));
+    if (keys.size !== files.length) throw new ProfileError("a file is listed twice");
+    const rel = (p: string) => (saved.folder === "." ? p : `${saved.folder.replace(/\\/g, "/").replace(/\/$/, "")}/${p}`);
+    const { service } = await this.run(tokensRun);
+    const summary = service.maskText(`Write ${files.length} new file(s) to ${saved.folder}: ${files.map((f) => f.path).join(", ")}`.slice(0, 500), "write.summary");
+    await service.saveVault();
+    const outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
+      if (grant.via !== "direct") return "pull-request" as const;
+      const created: string[] = [];
+      try {
+        for (const f of files) {
+          await writeRepoFile(grant, this.options.root, rel(f.path), f.content, { exclusive: true });
+          created.push(f.path);
+        }
+      } catch (error) {
+        // All or none: what this write created goes again.
+        for (const p of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, rel(p)).catch(() => undefined);
+        throw error;
+      }
+      return created;
+    });
+    if (outcome.status !== "done") return { status: "declined" };
+    return outcome.value === "pull-request" ? { status: "pull-request" } : { status: "done", written: outcome.value };
   }
 
   async frameworkFiles(): Promise<FolderListing> {

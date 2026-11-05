@@ -78,3 +78,25 @@ export const SCRIPTS_DRAFT_ARTIFACT: ArtifactSpec<ScriptsDraftArtifact> = {
   data: scriptsDraftArtifactSchema,
   render: renderDraft,
 };
+
+/**
+ * `scripts-written@1` (S2-7): what the person's review did with the draft.
+ * written: every file was created in the repo (none replaced); declined:
+ * nothing was written; pull-request: in CI the files leave only as a pull
+ * request (S2-9), so nothing was written here.
+ */
+export const scriptsWrittenSchema = z
+  .object({
+    status: z.enum(["written", "declined", "pull-request"]),
+    folder: z.string(),
+    files: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict()),
+  })
+  .strict();
+export type ScriptsWritten = z.infer<typeof scriptsWrittenSchema>;
+
+export const SCRIPTS_WRITTEN_ARTIFACT: ArtifactSpec<ScriptsWritten> = {
+  name: "scripts-written",
+  schema: "scripts-written@1",
+  data: scriptsWrittenSchema,
+  render: (w) => `# Generated scripts: ${w.status}\n\n${w.files.map((f) => `- ${w.folder === "." ? "" : `${w.folder}/`}${f.path}`).join("\n")}\n`,
+};
