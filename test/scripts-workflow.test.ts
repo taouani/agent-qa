@@ -1,10 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
-import { listFolderFiles, type FrameworkProfile, type SavedProfile, type TypeDiagnostic } from "../src/data/index.js";
-import { EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
+import { listFolderFiles, type FrameworkProfile, type SavedProfile, type TestRunOutcome, type TypeDiagnostic } from "../src/data/index.js";
+import { checkFix, EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_RUN_ARTIFACT, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 
 const HASH = "a".repeat(64);
@@ -92,11 +93,25 @@ const DRAFT = {
 const SAVED = { version: 1, folder: ".", kind: "playwright-bdd", commands: {}, reviewedAt: "2026-11-04T10:00:00.000Z" } as unknown as SavedProfile;
 
 /** The data layer, faked: records which vault each mask call used. */
+const TITLE = "Approval requests › Create an approval request";
+const pass = (runs = 1): TestRunOutcome => ({ status: "done", exitCode: 0, timedOut: false, durationMs: 10, errors: [], tests: [{ title: TITLE, tags: ["@TC-ABC-1-001"], file: ".features-gen/ABC-1.feature.spec.js", line: 6, outcome: "passed", runs, failedRuns: 0 }] });
+const fail = (message = "TimeoutError: locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'Save' })"): TestRunOutcome => ({
+  status: "done",
+  exitCode: 1,
+  timedOut: false,
+  durationMs: 10,
+  errors: [],
+  tests: [{ title: TITLE, tags: [], file: ".features-gen/ABC-1.feature.spec.js", line: 6, outcome: "failed", runs: 1, failedRuns: 1, failure: { message, snippet: "> 8 | await pages.approvalAppMainPage.navigateToNewForm();", snapshot: "- button \"Save draft\"" } }],
+});
+
 function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkProfile = PROFILE, typeErrors: (files: ReadonlyArray<{ path: string; content: string }>) => TypeDiagnostic[] = () => []) {
   const vaults: string[] = [];
   const checked: string[][] = [];
   const writes: string[][] = [];
   const folders: string[] = [];
+  const testRuns: Array<{ files: string[]; repeatEach?: number }> = [];
+  const replaced: Array<Array<{ path: string; sha256: string }>> = [];
+  const results: TestRunOutcome[] = [];
   const data: ScriptsDeps["data"] = {
     frameworkProfile: async (_run, _folder, tokensRun) => {
       vaults.push(`profile:${tokensRun}`);
@@ -104,6 +119,17 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
     },
     savedProfile: async () => SAVED,
     typeCheckReadiness: async () => ({ ready: true }),
+    testRunReadiness: async () => ({ ready: false, reason: "not in this test" }),
+    runGeneratedTests: async (_run, _tokens, _folder, request, approved) => {
+      if (!approved) return { status: "declined" };
+      testRuns.push(request);
+      return results.shift() ?? pass();
+    },
+    replaceGeneratedFiles: async (_run, _tokens, _folder, files, approved) => {
+      if (!approved) return { status: "declined" };
+      replaced.push(files.map((f) => ({ path: f.path, sha256: f.sha256 })));
+      return { status: "done", written: files.map((f) => f.path) };
+    },
     writeGeneratedFiles: async (_run, tokensRun, folder, files, approved) => {
       vaults.push(`write:${tokensRun}`);
       folders.push(folder);
@@ -124,7 +150,7 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
     },
     ...over,
   };
-  return Object.assign(data, { vaults, checked, writes, folders });
+  return Object.assign(data, { vaults, checked, writes, folders, testRuns, replaced, results });
 }
 
 describe("scripts workflow", () => {
@@ -368,6 +394,122 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect((await begin(e, { testCasesRun: "tc-run", explorationRun: "ex-run" })).context).toContain("Not explored.");
     await runs.writeArtifact("ex-run", EXPLORATION_ARTIFACT, EXPLORED, { inputs: [], templateVersion: "exploration-1" });
     expect((await begin(e, { testCasesRun: "tc-run", explorationRun: "ex-run" })).context).not.toContain("Not explored.");
+  });
+
+  /** A run written to the repo, at the run step; `ready` says whether the tests can run. */
+  const written = async (data = fakeData({ testRunReadiness: async () => ({ ready: true }) }), inputs: Record<string, unknown> = {}) => {
+    const e = engine(data);
+    const run = await begin(e, { testCasesRun: "tc-run", ...inputs });
+    await e.submit(run.runId, "draft", DRAFT);
+    const next = (await e.submit(run.runId, "review", { write: true }, { byPerson: true })).next;
+    return { e, data, runId: run.runId, next };
+  };
+  const steps = "tests/step-definitions/approval-request/abc-1.steps.ts";
+  const fixedSteps = STEPS.replace("await pages.approvalAppMainPage.navigateToNewForm();", "await pages.approvalAppMainPage.navigateToNewForm();\n  await expect(pages.page.getByRole('button', { name: 'Save draft' })).toBeVisible();");
+
+  it("asks before running the tests, runs the features, then again to see they are stable", async () => {
+    const { e, data, runId, next } = await written();
+    expect(next.stepId).toBe("run");
+    expect(await e.approval(runId, "run")).toMatchObject({ question: expect.stringContaining("Run the generated tests with your repo's Playwright in the repo root?") });
+    await expect(e.submit(runId, "run", { run: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
+    expect((await e.submit(runId, "run", { run: true }, { byPerson: true })).next.kind).toBe("done");
+    expect(data.testRuns).toEqual([{ files: ["tests/features/ABC-1.feature"] }, { files: ["tests/features/ABC-1.feature"], repeatEach: 3 }]);
+    const r = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(r).toMatchObject({ status: "passed", reason: "every test passed 3 times in a row", rounds: 0 });
+    expect(r.attempts.map((a) => a.kind)).toEqual(["run", "stability"]);
+
+    // No: nothing runs; and with no way to run, nobody is asked.
+    const no = await written();
+    expect((await no.e.submit(no.runId, "run", { run: false })).next.kind).toBe("done");
+    expect(no.data.testRuns).toEqual([]);
+    expect((await runs.readArtifact(no.runId, SCRIPTS_RUN_ARTIFACT))!.data.status).toBe("declined");
+    const none = await written(fakeData());
+    expect(none.next.kind).toBe("done");
+  });
+
+  it("fixes a selector in the files it wrote, runs again, and stops once they pass", async () => {
+    const { e, data, runId } = await written();
+    data.results.push(fail());
+    const fix = (await e.submit(runId, "run", { run: true }, { byPerson: true })).next;
+    expect(fix).toMatchObject({ stepId: "fix_1", kind: "generate" });
+    expect(fix.context).toContain("## Fix round 1 of 3");
+    expect(fix.context).toContain(`### ${TITLE}`);
+    expect(fix.context).toContain("waiting for getByRole('button', { name: 'Save' })");
+    expect(fix.context).toContain('- button "Save draft"');
+    expect(fix.context).toContain("### tests/features/ABC-1.feature (feature, never changed)");
+    const changed = { failures: [{ test: TITLE, kind: "selector", reason: "the button is Save draft" }], files: [{ path: steps, content: fixedSteps }] };
+    const done = await e.submit(runId, "fix_1", changed);
+    expect(done.status, JSON.stringify(done)).toBe("accepted");
+    expect(done.next.kind).toBe("done");
+    expect(data.replaced).toEqual([[{ path: steps, sha256: createHash("sha256").update(STEPS).digest("hex") }]]);
+    const r = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(r).toMatchObject({ status: "passed", rounds: 1 });
+    expect(r.attempts.map((a) => [a.kind, a.changed])).toEqual([["run", []], ["run", [steps]], ["stability", []]]);
+    expect(r.files.find((f) => f.path === steps)).toMatchObject({ content: fixedSteps, sha256: createHash("sha256").update(fixedSteps).digest("hex") });
+  });
+
+  it("refuses fixes that change the scenarios, weaken a check or hide a failure", async () => {
+    const { e, data, runId } = await written();
+    data.results.push(fail());
+    await e.submit(runId, "run", { run: true }, { byPerson: true });
+    const r = await e.submit(runId, "fix_1", {
+      failures: [{ test: "Something else", kind: "selector", reason: "x" }],
+      files: [{ path: "tests/features/ABC-1.feature", content: FEATURE.replace("was created", "was saved") }, { path: "src/pages/approval-app-main-page.ts", content: "x" }],
+    });
+    expect(r.status).toBe("rejected");
+    const messages = (r as { errors: { message: string }[] }).errors.map((x) => x.message).join("\n");
+    expect(messages).toContain("isn't a failure of the last run");
+    expect(messages).toContain(`say what kind of failure ${JSON.stringify(TITLE)} is`);
+    expect(messages).toContain("a fix never changes a feature file");
+    expect(messages).toContain("isn't a file Agent-QA wrote");
+    expect(data.replaced).toEqual([]);
+  });
+
+  it("stops on a real defect and changes nothing", async () => {
+    const { e, data, runId } = await written();
+    data.results.push(fail("Error: expect(locator).toHaveText(expected)\nExpected: was created\nReceived: Something went wrong"));
+    await e.submit(runId, "run", { run: true }, { byPerson: true });
+    const withFiles = await e.submit(runId, "fix_1", { failures: [{ test: TITLE, kind: "defect", reason: "the app shows an error" }], files: [{ path: steps, content: fixedSteps }] });
+    expect(withFiles.status).toBe("rejected");
+    const done = await e.submit(runId, "fix_1", { failures: [{ test: TITLE, kind: "defect", reason: "the app shows an error instead of the toast" }] });
+    expect(done.next.kind).toBe("done");
+    expect(data.replaced).toEqual([]);
+    expect(data.testRuns).toHaveLength(1);
+    expect((await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "defect", reason: `a real defect: ${TITLE}: the app shows an error instead of the toast`, stoppedOn: [{ kind: "defect" }] });
+  });
+
+  it("gives up after the last fix round, and says when tests pass only some of the time", async () => {
+    const { e, data, runId } = await written(undefined, { fixRounds: 1 });
+    data.results.push(fail(), fail());
+    const fix = (await e.submit(runId, "run", { run: true }, { byPerson: true })).next;
+    expect(fix.stepId).toBe("fix");
+    expect((await e.submit(runId, "fix", { failures: [{ test: TITLE, kind: "flake", reason: "the toast came late once" }] })).next.kind).toBe("done");
+    expect((await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "gave-up", reason: "still failing after 1 fix round(s)" });
+
+    const flaky = await written(undefined, { fixRounds: 0 });
+    const three = pass(3) as Extract<TestRunOutcome, { status: "done" }>;
+    flaky.data.results.push(pass(), { ...three, exitCode: 1, tests: [{ ...three.tests[0]!, outcome: "flaky", failedRuns: 1 }] });
+    expect((await flaky.e.submit(flaky.runId, "run", { run: true }, { byPerson: true })).next.kind).toBe("done");
+    expect((await runs.readArtifact(flaky.runId, SCRIPTS_RUN_ARTIFACT))!.data.status).toBe("unstable");
+  });
+
+  it("checks a fix keeps every check, title and test", () => {
+    const last = { kind: "run" as const, changed: [], classified: [], exitCode: 1, timedOut: false, durationMs: 1, errors: [], tests: [{ title: "t", file: "a.spec.ts", line: 3, outcome: "failed" as const, runs: 1, failedRuns: 1 }] };
+    const spec = "test('TC-1 t', async ({ page }) => {\n  await expect(page.getByRole('button')).toBeVisible();\n});\n";
+    const files = [{ path: "a.spec.ts", role: "spec" as const, content: spec, sha256: "0".repeat(64) }, { path: "d.json", role: "data" as const, content: "{}", sha256: "0".repeat(64) }];
+    const titles = (c: string) => [...c.matchAll(/test\('([^']+)'/g)].map((m) => m[1]!);
+    const check = (content: string, kind = "selector", path = "a.spec.ts") => checkFix({ failures: [{ test: "t", kind: kind as never, reason: "r" }], files: [{ path, content }] }, last, files, titles).map((x) => x.message);
+    expect(check(spec.replace("button'", "link'"))).toEqual([]);
+    expect(check(spec.replace("await expect(page.getByRole('button')).toBeVisible();", "await page.getByRole('button').click();"))).toEqual([expect.stringContaining("fewer expect")]);
+    expect(check(spec.replace("await expect(", "await expect.soft("))).toEqual(expect.arrayContaining([expect.stringContaining("expect.soft")]));
+    expect(check(spec.replace("test('TC-1 t',", "test.fail('TC-1 t',"))).toEqual(expect.arrayContaining([expect.stringContaining("never hides a failure")]));
+    expect(check(spec.replace("TC-1 t", "TC-1 u"))).toEqual([expect.stringContaining("changes a test's title")]);
+    expect(check('{"a":1}', "selector", "d.json")).toEqual(["test data changes only for a data failure"]);
+    expect(check('{"a":1}', "data", "d.json")).toEqual([]);
+    expect(check(spec.replace("button'", "link'"), "data")).toEqual(["code changes only for a selector or timing failure"]);
+    expect(check(spec, "selector")).toEqual(["is unchanged: leave it out"]);
+    // A run that broke before any test: classified as the run itself.
+    expect(checkFix({ failures: [{ test: "(the run)", kind: "environment", reason: "no browser" }], files: [] }, { ...last, tests: [], errors: ["bddgen failed"] }, files, titles)).toEqual([]);
   });
 
   it("adds the helper file only when the code imports it and the repo lacks it", () => {

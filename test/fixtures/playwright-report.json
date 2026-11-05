@@ -1,0 +1,250 @@
+{
+ "config": {
+  "configFile": "/PROJECT/playwright.config.ts",
+  "rootDir": "/PROJECT/tests",
+  "forbidOnly": false,
+  "fullyParallel": false,
+  "globalSetup": null,
+  "globalTeardown": null,
+  "globalTimeout": 0,
+  "grep": {},
+  "grepInvert": null,
+  "maxFailures": 0,
+  "metadata": {
+   "actualWorkers": 1
+  },
+  "preserveOutput": "always",
+  "reporter": [
+   [
+    "json"
+   ]
+  ],
+  "reportSlowTests": {
+   "max": 5,
+   "threshold": 15000
+  },
+  "quiet": false,
+  "projects": [
+   {
+    "outputDir": "/PROJECT/test-results",
+    "repeatEach": 1,
+    "retries": 0,
+    "metadata": {},
+    "id": "",
+    "name": "",
+    "testDir": "/PROJECT/tests",
+    "testIgnore": [],
+    "testMatch": [
+     "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+    ],
+    "timeout": 4000
+   }
+  ],
+  "shard": null,
+  "updateSnapshots": "missing",
+  "version": "1.49.1",
+  "workers": 1,
+  "webServer": null
+ },
+ "suites": [
+  {
+   "title": "a.spec.ts",
+   "file": "a.spec.ts",
+   "column": 0,
+   "line": 0,
+   "specs": [
+    {
+     "title": "TC-ABC-1-001 passes",
+     "ok": true,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 4000,
+       "annotations": [],
+       "expectedStatus": "passed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 0,
+         "status": "passed",
+         "duration": 654,
+         "errors": [],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "steps": [
+          {
+           "title": "1 open",
+           "duration": 59
+          }
+         ],
+         "startTime": "2026-11-05T05:43:43.097Z",
+         "attachments": []
+        }
+       ],
+       "status": "expected"
+      }
+     ],
+     "id": "4bb17c2992a2b9ccc470-9e4e525b2ec58296035e",
+     "file": "a.spec.ts",
+     "line": 2,
+     "column": 5
+    },
+    {
+     "title": "TC-ABC-1-002 missing button for jane.doe@example.com",
+     "ok": false,
+     "tags": [
+      "example.com"
+     ],
+     "tests": [
+      {
+       "timeout": 4000,
+       "annotations": [],
+       "expectedStatus": "passed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 0,
+         "status": "failed",
+         "duration": 650,
+         "error": {
+          "message": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Submit' })\u001b[22m\n",
+          "stack": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Submit' })\u001b[22m\n\n    at /PROJECT/tests/a.spec.ts:8:95\n    at /PROJECT/tests/a.spec.ts:8:14",
+          "location": {
+           "file": "/PROJECT/tests/a.spec.ts",
+           "column": 95,
+           "line": 8
+          },
+          "snippet": "   6 | test('TC-ABC-1-002 missing button for jane.doe@example.com', async ({ page }) => {\n   7 |   await page.setContent('<button>Save</button>');\n>  8 |   await test.step('2 click', async () => { await page.getByRole('button', { name: 'Submit' }).click({ timeout: 500 }); });\n     |                                                                                               ^\n   9 | });\n  10 | test('TC-ABC-1-003 wrong text', async ({ page }) => {\n  11 |   await page.setContent('<p>Hello</p>');"
+         },
+         "errors": [
+          {
+           "location": {
+            "file": "/PROJECT/tests/a.spec.ts",
+            "column": 95,
+            "line": 8
+           },
+           "message": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Submit' })\u001b[22m\n\n\n   6 | test('TC-ABC-1-002 missing button for jane.doe@example.com', async ({ page }) => {\n   7 |   await page.setContent('<button>Save</button>');\n>  8 |   await test.step('2 click', async () => { await page.getByRole('button', { name: 'Submit' }).click({ timeout: 500 }); });\n     |                                                                                               ^\n   9 | });\n  10 | test('TC-ABC-1-003 wrong text', async ({ page }) => {\n  11 |   await page.setContent('<p>Hello</p>');\n    at /PROJECT/tests/a.spec.ts:8:95\n    at /PROJECT/tests/a.spec.ts:8:14"
+          }
+         ],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "steps": [
+          {
+           "title": "2 click",
+           "duration": 503,
+           "error": {
+            "message": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Submit' })\u001b[22m\n",
+            "stack": "TimeoutError: locator.click: Timeout 500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Submit' })\u001b[22m\n\n    at /PROJECT/tests/a.spec.ts:8:95\n    at /PROJECT/tests/a.spec.ts:8:14",
+            "location": {
+             "file": "/PROJECT/tests/a.spec.ts",
+             "column": 95,
+             "line": 8
+            },
+            "snippet": "   6 | test('TC-ABC-1-002 missing button for jane.doe@example.com', async ({ page }) => {\n   7 |   await page.setContent('<button>Save</button>');\n>  8 |   await test.step('2 click', async () => { await page.getByRole('button', { name: 'Submit' }).click({ timeout: 500 }); });\n     |                                                                                               ^\n   9 | });\n  10 | test('TC-ABC-1-003 wrong text', async ({ page }) => {\n  11 |   await page.setContent('<p>Hello</p>');"
+           }
+          }
+         ],
+         "startTime": "2026-11-05T05:43:44.669Z",
+         "attachments": [],
+         "errorLocation": {
+          "file": "/PROJECT/tests/a.spec.ts",
+          "column": 95,
+          "line": 8
+         }
+        }
+       ],
+       "status": "unexpected"
+      }
+     ],
+     "id": "4bb17c2992a2b9ccc470-5761952629a553031310",
+     "file": "a.spec.ts",
+     "line": 6,
+     "column": 5
+    },
+    {
+     "title": "TC-ABC-1-003 wrong text",
+     "ok": false,
+     "tags": [],
+     "tests": [
+      {
+       "timeout": 4000,
+       "annotations": [],
+       "expectedStatus": "passed",
+       "projectId": "",
+       "projectName": "",
+       "results": [
+        {
+         "workerIndex": 1,
+         "status": "failed",
+         "duration": 1183,
+         "error": {
+          "message": "Error: \u001b[31mTimed out 1000ms waiting for \u001b[39m\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nLocator: getByText('Hello')\nExpected string: \u001b[32m\"Bye\"\u001b[39m\nReceived string: \u001b[31m\"Hello\"\u001b[39m\nCall log:\n\u001b[2m  - expect.toHaveText with timeout 1000ms\u001b[22m\n\u001b[2m  - waiting for getByText('Hello')\u001b[22m\n\u001b[2m    5 \u00d7 locator resolved to <p>Hello</p>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n",
+          "stack": "Error: \u001b[31mTimed out 1000ms waiting for \u001b[39m\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nLocator: getByText('Hello')\nExpected string: \u001b[32m\"Bye\"\u001b[39m\nReceived string: \u001b[31m\"Hello\"\u001b[39m\nCall log:\n\u001b[2m  - expect.toHaveText with timeout 1000ms\u001b[22m\n\u001b[2m  - waiting for getByText('Hello')\u001b[22m\n\u001b[2m    5 \u00d7 locator resolved to <p>Hello</p>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n\n    at /PROJECT/tests/a.spec.ts:12:41",
+          "matcherResult": {
+           "name": "toHaveText",
+           "expected": "Bye",
+           "message": "\u001b[31mTimed out 1000ms waiting for \u001b[39m\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nLocator: getByText('Hello')\nExpected string: \u001b[32m\"Bye\"\u001b[39m\nReceived string: \u001b[31m\"Hello\"\u001b[39m\nCall log:\n\u001b[2m  - expect.toHaveText with timeout 1000ms\u001b[22m\n\u001b[2m  - waiting for getByText('Hello')\u001b[22m\n\u001b[2m    5 \u00d7 locator resolved to <p>Hello</p>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n",
+           "pass": false,
+           "actual": "Hello",
+           "log": [
+            "  - expect.toHaveText with timeout 1000ms",
+            "  - waiting for getByText('Hello')",
+            "    5 \u00d7 locator resolved to <p>Hello</p>",
+            "      - unexpected value \"Hello\""
+           ],
+           "timeout": 1000
+          },
+          "location": {
+           "file": "/PROJECT/tests/a.spec.ts",
+           "column": 41,
+           "line": 12
+          },
+          "snippet": "  10 | test('TC-ABC-1-003 wrong text', async ({ page }) => {\n  11 |   await page.setContent('<p>Hello</p>');\n> 12 |   await expect(page.getByText('Hello')).toHaveText('Bye');\n     |                                         ^\n  13 | });\n  14 |"
+         },
+         "errors": [
+          {
+           "location": {
+            "file": "/PROJECT/tests/a.spec.ts",
+            "column": 41,
+            "line": 12
+           },
+           "message": "Error: \u001b[31mTimed out 1000ms waiting for \u001b[39m\u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveText\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nLocator: getByText('Hello')\nExpected string: \u001b[32m\"Bye\"\u001b[39m\nReceived string: \u001b[31m\"Hello\"\u001b[39m\nCall log:\n\u001b[2m  - expect.toHaveText with timeout 1000ms\u001b[22m\n\u001b[2m  - waiting for getByText('Hello')\u001b[22m\n\u001b[2m    5 \u00d7 locator resolved to <p>Hello</p>\u001b[22m\n\u001b[2m      - unexpected value \"Hello\"\u001b[22m\n\n\n  10 | test('TC-ABC-1-003 wrong text', async ({ page }) => {\n  11 |   await page.setContent('<p>Hello</p>');\n> 12 |   await expect(page.getByText('Hello')).toHaveText('Bye');\n     |                                         ^\n  13 | });\n  14 |\n    at /PROJECT/tests/a.spec.ts:12:41"
+          }
+         ],
+         "stdout": [],
+         "stderr": [],
+         "retry": 0,
+         "startTime": "2026-11-05T05:43:45.958Z",
+         "attachments": [],
+         "errorLocation": {
+          "file": "/PROJECT/tests/a.spec.ts",
+          "column": 41,
+          "line": 12
+         }
+        }
+       ],
+       "status": "unexpected"
+      }
+     ],
+     "id": "4bb17c2992a2b9ccc470-a0c96b0af4a215717ef3",
+     "file": "a.spec.ts",
+     "line": 10,
+     "column": 5
+    }
+   ]
+  }
+ ],
+ "errors": [],
+ "stats": {
+  "startTime": "2026-11-05T05:43:42.471Z",
+  "duration": 4946.197,
+  "expected": 1,
+  "skipped": 0,
+  "unexpected": 2,
+  "flaky": 0
+ }
+}

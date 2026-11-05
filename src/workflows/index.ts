@@ -32,6 +32,7 @@ export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps
 }
 export { helperPlan, helpersPath, LIGHTNING_HELPERS, LIGHTNING_LOCATOR_ORDER, LIGHTNING_RULES, lightningHelpersSource, renderPack, SALESFORCE_PACK_VERSION } from "./packs/salesforce.js";
 export type { HelperChoice, PackHelper, PackRule } from "./packs/salesforce.js";
+export { checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, fixSchema, MAX_FIX_ROUNDS, SCRIPTS_RUN_ARTIFACT, scriptsRunSchema, type FailureKind, type FixOutput, type RunAttempt, type ScriptsRun } from "./scripts/run.js";
 export { FILE_ROLES, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_TEMPLATE_VERSION, SCRIPTS_WRITTEN_ARTIFACT, scriptsDraftArtifactSchema, scriptsDraftSchema, scriptsWrittenSchema } from "./scripts/artifact.js";
 export type { FileRole, GeneratedFile, ScriptsDraft, ScriptsDraftArtifact, ScriptsWritten } from "./scripts/artifact.js";
 export { checkDraft, pathKey, TOKEN } from "./scripts/checks.js";

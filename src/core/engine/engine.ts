@@ -119,6 +119,7 @@ export class WorkflowEngine {
     for (const s of workflow.steps) {
       if (s.approval && (s.kind !== "confirm" || !s.answers || s.batches)) throw invalid(`step "${s.id}": approval needs an unbatched confirm step with answers`);
       if (s.until && !s.batches) throw invalid(`step "${s.id}": until needs batches (the cap)`);
+      if (s.untilAfterAccept && !s.until) throw invalid(`step "${s.id}": untilAfterAccept needs until`);
     }
     // Convert every schema now, so a schema that can't be shown to a model fails at startup, not mid-run.
     const outputSchemas = new Map(workflow.steps.map((s) => [s.id, jsonSchemaOf(s.outputSchema, `${workflow.id}.${s.id}`)]));
@@ -274,9 +275,11 @@ export class WorkflowEngine {
         parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
         parts[batch] = kept;
       }
-      // Decided before onAccept, so a loop check that fails leaves nothing done.
-      const stop = def.until ? (await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!({ ...this.ctx(state, batch, batches), outputs: { ...state.outputs, [def.id]: parts } }, kept))) === true : false;
+      const ended = async () => (def.until ? (await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!({ ...this.ctx(state, batch, batches), outputs: { ...state.outputs, [def.id]: parts } }, kept))) === true : false);
+      // Decided before onAccept, so a loop check that fails leaves nothing done; or after it, when the step says so.
+      const early = def.untilAfterAccept ? false : await ended();
       await def.onAccept?.(stepCtx, kept);
+      const stop = def.untilAfterAccept ? await ended() : early;
       state.outputs[def.id] = def.batches ? parts : kept;
       state.attempt = 1;
       if (!stop && batch + 1 < batches) {

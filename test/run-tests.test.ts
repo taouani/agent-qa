@@ -1,0 +1,168 @@
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { runHostCommand } from "../src/connectors/host.js";
+import { assertGrant, configSchema, MemoryAuditSink, RunStore } from "../src/core/index.js";
+import { DataAccess, parsePlaywrightReport, ProfileError } from "../src/data/index.js";
+import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
+
+// A real report from Playwright 1.49 (three tests: one passes, two fail), its folder written as /PROJECT.
+const FIXTURE = readFileSync(join(import.meta.dirname, "fixtures", "playwright-report.json"), "utf8");
+const sha = (t: string) => createHash("sha256").update(t).digest("hex");
+
+describe("Playwright's JSON report", () => {
+  it("gives one row per test, with the first failure, its code and where, from the folder", () => {
+    const r = parsePlaywrightReport(JSON.parse(FIXTURE.replaceAll("/PROJECT", "/repo")), "/repo");
+    expect(r.errors).toEqual([]);
+    expect(r.tests.map((t) => [t.title, t.file, t.line, t.outcome])).toEqual([
+      ["TC-ABC-1-001 passes", "tests/a.spec.ts", 2, "passed"],
+      ["TC-ABC-1-002 missing button for jane.doe@example.com", "tests/a.spec.ts", 6, "failed"],
+      ["TC-ABC-1-003 wrong text", "tests/a.spec.ts", 10, "failed"],
+    ]);
+    const click = r.tests[1]!.failure!;
+    expect(click.message).toContain("locator.click: Timeout 500ms exceeded.");
+    expect(click.message).not.toMatch(/\u001b/);
+    expect(click.at).toEqual({ file: "tests/a.spec.ts", line: 8 });
+    expect(click.snippet).toContain(">  8 |");
+    expect(r.tests[2]!.failure!.message).toContain('Received string: "Hello"');
+  });
+
+  it("counts repeated runs of a test once, flaky when only some failed", () => {
+    const run = (status: string) => ({ status, results: [{ status: status === "expected" ? "passed" : "failed", error: { message: "boom" } }] });
+    const json = { suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [{ title: "t", file: "a.spec.ts", line: 1, tests: [run("expected"), run("unexpected"), run("expected")] }] }], stats: { expected: 2, unexpected: 1, flaky: 0, skipped: 0 } };
+    expect(parsePlaywrightReport(json, "/repo").tests).toEqual([expect.objectContaining({ title: "t", outcome: "flaky", runs: 3, failedRuns: 1, failure: expect.objectContaining({ message: "boom" }) })]);
+    expect(() => parsePlaywrightReport({ nope: 1 }, "/repo")).toThrow(/unexpected shape/);
+  });
+});
+
+describe("DataAccess: running and fixing generated tests", () => {
+  let dir: string;
+  const vaults = new MemoryVaultStorage();
+  const key = Buffer.alloc(32, 9);
+  const ran: Array<{ argv: string[]; report?: string | undefined }> = [];
+  let reply: (argv: string[], reportFile: string | undefined) => Promise<{ exitCode: number; stdout?: string; stderr?: string }>;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agent-qa-runtests-"));
+    ran.length = 0;
+    reply = async (_argv, file) => {
+      if (file) await writeFile(file, FIXTURE.replaceAll("/PROJECT", dir.replace(/\\/g, "\\\\")));
+      return { exitCode: 1 };
+    };
+  });
+  afterEach(() => rm(dir, { recursive: true, force: true }));
+
+  const profile = (kind: "playwright" | "playwright-bdd") =>
+    writeFile(join(dir, "agent-qa.profile.json"), JSON.stringify({ version: 1, folder: ".", kind, commands: { ...(kind === "playwright-bdd" ? { generate: ["npx", "bddgen"] } : {}), test: ["npx", "playwright", "test"] }, reviewedAt: "2026-11-05T00:00:00.000Z" }));
+  const host: typeof runHostCommand = async (grant, options) => {
+    assertGrant(grant, "commands");
+    const file = options.env?.PLAYWRIGHT_JSON_OUTPUT_NAME;
+    ran.push({ argv: options.argv, report: file });
+    const r = await reply(options.argv, file);
+    return { exitCode: r.exitCode, timedOut: false, aborted: false, stdout: r.stdout ?? "", stderr: r.stderr ?? "", truncated: false, durationMs: 5 };
+  };
+  const data = (over: { mode?: "ci"; commands?: "allow" | "deny"; audit?: MemoryAuditSink } = {}) =>
+    new DataAccess({
+      host,
+      root: dir,
+      store: new RunStore(join(dir, ".agent-qa", "runs")),
+      config: configSchema.parse({ version: 1, policy: { writes: { commands: over.commands ?? "ask", testCode: "ask" } } }),
+      vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }),
+      audit: over.audit ?? new MemoryAuditSink(),
+      ...(over.mode ? { mode: over.mode } : {}),
+    });
+
+  it("runs only the generated specs, with the JSON reporter, no retries and one worker, and masks what comes back", async () => {
+    await profile("playwright");
+    const d = data();
+    expect(await d.testRunReadiness("run-1")).toEqual({ ready: true });
+    const r = await d.runGeneratedTests("run-1", "run-1", ".", { files: ["tests/a.spec.ts"] }, true);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "tests/a.spec.ts"]]);
+    // The report went to a temporary file, removed after.
+    expect(ran[0]!.report).toBeDefined();
+    expect(existsSync(ran[0]!.report!)).toBe(false);
+    expect(r.status).toBe("done");
+    if (r.status !== "done") return;
+    expect(r.tests.map((t) => t.outcome)).toEqual(["passed", "failed", "failed"]);
+    expect(r.tests[1]!.title).toMatch(/^TC-ABC-1-002 missing button for <EMAIL_\d+>$/);
+    expect(JSON.stringify(r)).not.toContain(dir);
+    expect(JSON.stringify(r)).not.toContain("jane.doe");
+    // Stability runs repeat each test.
+    await d.runGeneratedTests("run-1", "run-1", ".", { files: ["tests/a.spec.ts"], repeatEach: 3 }, true);
+    expect(ran[1]!.argv).toContain("--repeat-each=3");
+    expect(await d.runGeneratedTests("run-1", "run-1", ".", { files: ["tests/a.spec.ts"] }, false)).toEqual({ status: "declined" });
+    await expect(d.runGeneratedTests("run-1", "run-1", "e2e", { files: ["tests/a.spec.ts"] }, true)).rejects.toThrow(/profile changed/);
+    await expect(d.runGeneratedTests("run-1", "run-1", ".", { files: ["package.json"] }, true)).rejects.toBeInstanceOf(ProfileError);
+    expect(await data({ commands: "deny" }).testRunReadiness("run-1")).toMatchObject({ ready: false, reason: expect.stringContaining("policy") });
+  });
+
+  it("generates playwright-bdd's specs first, runs them by feature, and stops when that fails", async () => {
+    await profile("playwright-bdd");
+    const d = data();
+    const write = reply;
+    reply = async (argv, file) => (argv.includes("bddgen") ? { exitCode: 0 } : write(argv, file));
+    await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "ABC-1.feature"]]);
+    ran.length = 0;
+    reply = async () => ({ exitCode: 1, stderr: `Missing step definitions: When I pay jane.doe@example.com in ${dir}/tests/features/ABC-1.feature` });
+    const r = await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
+    expect(ran).toHaveLength(1);
+    expect(r).toMatchObject({ status: "done", tests: [], errors: [expect.stringMatching(/^npx bddgen failed: Missing step definitions: When I pay <EMAIL_\d+> in \.\/tests\/features\/ABC-1\.feature$/)] });
+    // No report: what the command said, masked.
+    reply = async (argv) => ({ exitCode: argv.includes("bddgen") ? 0 : 1, stderr: "Error: No tests found" });
+    expect(await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true)).toMatchObject({ status: "done", errors: ["no test report came back: Error: No tests found"] });
+  });
+
+  it("changes only files that still hold what Agent-QA wrote, all or none", async () => {
+    await profile("playwright");
+    await mkdir(join(dir, "tests"), { recursive: true });
+    await writeFile(join(dir, "tests/a.spec.ts"), "a1\n");
+    await writeFile(join(dir, "tests/b.spec.ts"), "theirs\n");
+    const audit = new MemoryAuditSink();
+    const d = data({ audit });
+    expect(await d.replaceGeneratedFiles("run-3", "run-3", ".", [{ path: "tests/a.spec.ts", content: "a2\n", sha256: sha("a1\n") }], true)).toEqual({ status: "done", written: ["tests/a.spec.ts"] });
+    expect(await readFile(join(dir, "tests/a.spec.ts"), "utf8")).toBe("a2\n");
+    expect(audit.entries.map((e) => [e.target, e.outcome])).toEqual([["testCode", "approved"], ["testCode", "done"]]);
+    // Run again with the same change: nothing to do.
+    expect(await d.replaceGeneratedFiles("run-3", "run-3", ".", [{ path: "tests/a.spec.ts", content: "a2\n", sha256: sha("a1\n") }], true)).toMatchObject({ status: "done" });
+    // b changed since Agent-QA wrote it: refused, and a gets its bytes back.
+    const both = [{ path: "tests/a.spec.ts", content: "a3\n", sha256: sha("a2\n") }, { path: "tests/b.spec.ts", content: "b2\n", sha256: sha("b1\n") }];
+    await expect(d.replaceGeneratedFiles("run-3", "run-3", ".", both, true)).rejects.toThrow(/tests\/b\.spec\.ts changed since Agent-QA wrote it[^]*Nothing was changed/);
+    expect(await readFile(join(dir, "tests/a.spec.ts"), "utf8")).toBe("a2\n");
+    expect(await readFile(join(dir, "tests/b.spec.ts"), "utf8")).toBe("theirs\n");
+    await expect(d.replaceGeneratedFiles("run-3", "run-3", ".", [{ path: "tests/a.spec.ts", content: "<PERSON_1>", sha256: sha("a2\n") }], true)).rejects.toThrow(/masking token/);
+    expect(await d.replaceGeneratedFiles("run-3", "run-3", ".", both, false)).toEqual({ status: "declined" });
+    expect(await data({ mode: "ci" }).replaceGeneratedFiles("run-3", "run-3", ".", [both[0]!], true)).toEqual({ status: "pull-request" });
+  });
+});
+
+// The real thing, where a Chromium is installed (this sandbox): the repo's own npx playwright, its JSON report through the env var.
+const CHROMIUM = "/opt/pw-browsers/chromium";
+describe.skipIf(!existsSync(CHROMIUM) || process.platform === "win32")("running generated tests with real Playwright", () => {
+  it("reads the report of a real run, the failing test's error included", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-qa-realrun-"));
+    try {
+      const { symlink } = await import("node:fs/promises");
+      await symlink(join(import.meta.dirname, "..", "node_modules"), join(dir, "node_modules"), "dir");
+      await mkdir(join(dir, "tests"));
+      await writeFile(join(dir, "playwright.config.ts"), `import { defineConfig } from '@playwright/test';\nexport default defineConfig({ testDir: 'tests', timeout: 5000, use: { launchOptions: { executablePath: '${CHROMIUM}' } } });\n`);
+      await writeFile(
+        join(dir, "tests", "gen.spec.ts"),
+        "import { test, expect } from '@playwright/test';\ntest('TC-X-1-001 ok', async ({ page }) => { await page.setContent('<button>Save</button>'); await expect(page.getByRole('button', { name: 'Save' })).toBeVisible(); });\ntest('TC-X-1-002 bad', async ({ page }) => { await page.setContent('<button>Save</button>'); await page.getByRole('button', { name: 'Submit' }).click({ timeout: 300 }); });\n",
+      );
+      await writeFile(join(dir, "tests", "other.spec.ts"), "import { test } from '@playwright/test';\ntest('not mine', async () => {});\n");
+      await writeFile(join(dir, "agent-qa.profile.json"), JSON.stringify({ version: 1, folder: ".", kind: "playwright", commands: { test: ["npx", "playwright", "test"] }, reviewedAt: "2026-11-05T00:00:00.000Z" }));
+      const d = new DataAccess({ root: dir, store: new RunStore(join(dir, ".agent-qa", "runs")), config: configSchema.parse({ version: 1, policy: { writes: { commands: "allow" } } }), vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => Buffer.alloc(32, 3) } }), audit: new MemoryAuditSink() });
+      const r = await d.runGeneratedTests("run-r", "run-r", ".", { files: ["tests/gen.spec.ts"] }, true);
+      expect(r.status).toBe("done");
+      if (r.status !== "done") return;
+      expect(r.errors).toEqual([]);
+      expect(r.tests.map((t) => [t.title, t.outcome])).toEqual([["TC-X-1-001 ok", "passed"], ["TC-X-1-002 bad", "failed"]]);
+      expect(r.tests[1]!.failure).toMatchObject({ message: expect.stringContaining("getByRole('button', { name: 'Submit' })"), at: { file: "tests/gen.spec.ts", line: 3 } });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});

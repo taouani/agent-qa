@@ -74,6 +74,12 @@ export interface StepDefinition<I = unknown, O = unknown> {
    */
   until?: (ctx: StepContext<I>, output: O) => boolean | Promise<boolean>;
   /**
+   * Decide `until` after `onAccept` instead of before, for a loop whose end
+   * depends on what onAccept did (tests run again after a fix). onAccept must
+   * then be safe to run twice: if `until` fails, the step stays open.
+   */
+  untilAfterAccept?: boolean;
+  /**
    * Checks the schema can't express, run after the output parses: for example
    * that every issue is answered once. Errors reject the answer like schema
    * errors do, and count as an attempt.
