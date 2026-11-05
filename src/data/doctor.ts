@@ -274,7 +274,7 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
         title: "Editor schema",
         status: "warn",
         detail: `the schema line points at sf-agent-qa@${loaded.schemaVersion}, but ${VERSION} is running, so your editor may flag settings this version supports`,
-        fix: `In the file's first line, change sf-agent-qa@${loaded.schemaVersion} to sf-agent-qa@${VERSION}.`,
+        fix: `In the schema line, change sf-agent-qa@${loaded.schemaVersion} to sf-agent-qa@${VERSION}.`,
       });
     }
     if (!SECRET_REF.test(config.atlassian?.email ?? "${env:x}")) {

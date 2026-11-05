@@ -153,7 +153,7 @@ export async function loadConfig(dirOrFile: string, options: { isFile?: boolean 
       throw error;
     }
     const config = parseConfig(text, file);
-    const schemaVersion = SCHEMA_LINE.exec(text)?.[1];
+    const schemaVersion = SCHEMA_LINE.exec(text.replace(/^\uFEFF/, ""))?.[1];
     return { file, config, ...(schemaVersion ? { schemaVersion } : {}) };
   }
   throw new ConfigError(candidates[0] ?? dirOrFile, [
