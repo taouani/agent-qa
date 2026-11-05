@@ -25,7 +25,7 @@ export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient } from "./xray.js";
 export type { XrayClientOptions, XrayJobIssue, XrayJobResult, XrayStep, XrayTest } from "./xray.js";
 export { runHostCommand } from "./host.js";
 export type { HostCommandOptions, HostCommandResult } from "./host.js";
-export { removeCreatedRepoFile, writeRepoFile } from "./repo-files.js";
+export { createRepoFile, removeCreatedRepoFile, writeRepoFile, type CreatedRepoFile } from "./repo-files.js";
 export { defaultAudience, normalizePem, OAUTH_HINTS, SalesforceAuth, SalesforceAuthError, SalesforceSession, signAssertion } from "./salesforce.js";
 export type { SalesforceAuthOptions } from "./salesforce.js";
 export { BrowserError, ExplorerBrowser, KEY, loadPlaywright, MIN_PLAYWRIGHT } from "./browser.js";

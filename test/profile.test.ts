@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeRepoFile } from "../src/connectors/index.js";
+import { createRepoFile, removeCreatedRepoFile, writeRepoFile, type CreatedRepoFile } from "../src/connectors/index.js";
 import { configSchema, MemoryAuditSink, Policy, PolicyDenied, RunStore, WorkflowEngine, type WriteGrant } from "../src/core/index.js";
 import { DataAccess, findProjectFolder, FRAMEWORK_PROFILE_SPEC, PROFILE_FILE, ProfileError, readPlaywrightConfig, readSavedProfile, scanFeature, scanFramework } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
@@ -263,22 +263,35 @@ describe("agent-qa.profile.json", () => {
       { path: "tests/features/ABC-1.feature", content: "Feature: x\n" },
       { path: "tests/step-definitions/abc-1.steps.ts", content: "export {};\n" },
     ];
-    expect(await d.writeGeneratedFiles(run, run, files, false)).toEqual({ status: "declined" });
-    expect(await d.writeGeneratedFiles(run, run, files, true)).toEqual({ status: "done", written: files.map((f) => f.path) });
+    expect(await d.writeGeneratedFiles(run, run, ".", files, false)).toEqual({ status: "declined" });
+    expect(await d.writeGeneratedFiles(run, run, ".", files, true)).toEqual({ status: "done", written: files.map((f) => f.path) });
     expect(await readFile(join(dir, "tests/step-definitions/abc-1.steps.ts"), "utf8")).toBe("export {};\n");
     expect(audit.entries.filter((e) => e.target === "testCode").map((e) => e.outcome)).toEqual(["approved", "done", "approved", "done"]);
+    // Run again after a write that stopped halfway: the same bytes count as written, other bytes never.
+    expect(await d.writeGeneratedFiles(run, run, ".", files, true)).toEqual({ status: "done", written: files.map((f) => f.path) });
+    await expect(d.writeGeneratedFiles(run, run, ".", [{ ...files[0]!, content: "Feature: y\n" }], true)).rejects.toThrow(/already exists/);
+    // Only to the folder the person approved, never with a token, never nothing.
+    await expect(d.writeGeneratedFiles(run, run, "e2e", files, true)).rejects.toThrow(/profile changed since the draft/);
+    await expect(d.writeGeneratedFiles(run, run, ".", [{ path: "tests/t.ts", content: "const who = '<PERSON_1>';\n" }], true)).rejects.toThrow(/masking token/);
+    await expect(d.writeGeneratedFiles(run, run, ".", [], true)).rejects.toThrow(/no files/);
     // A file that exists by then: nothing is replaced, and the files created before it go again.
     await writeFile(join(dir, "tests/b.ts"), "mine\n");
-    await expect(d.writeGeneratedFiles(run, run, [{ path: "tests/a.ts", content: "new\n" }, { path: "tests/b.ts", content: "theirs\n" }], true)).rejects.toThrow(/already exists/);
+    await expect(d.writeGeneratedFiles(run, run, ".", [{ path: "tests/a.ts", content: "new\n" }, { path: "tests/b.ts", content: "theirs\n" }], true)).rejects.toThrow(/already exists/);
     expect(await readFile(join(dir, "tests/b.ts"), "utf8")).toBe("mine\n");
     await expect(readFile(join(dir, "tests/a.ts"))).rejects.toThrow();
+    // The folders a failed write made go again, and a raw error never shows the local path.
+    await writeFile(join(dir, "tests/blocker"), "a file\n");
+    const failed = d.writeGeneratedFiles(run, run, ".", [{ path: "tests/new/deep/a.ts", content: "a\n" }, { path: "tests/blocker/b.ts", content: "b\n" }], true);
+    await expect(failed).rejects.toThrow(/could not be written \((ENOTDIR|EEXIST)[^]*Nothing was written/);
+    await expect(failed).rejects.not.toThrow(dir);
+    await expect(readFile(join(dir, "tests/new"))).rejects.toMatchObject({ code: "ENOENT" });
     // Project files and odd paths are refused before anything is asked.
-    for (const path of ["package.json", "Playwright.config.ts", ".github/workflows/x.ts", "../x.ts", "/abs.ts", "tests\\w.ts"]) {
-      await expect(d.writeGeneratedFiles(run, run, [{ path, content: "" }], true), path).rejects.toBeInstanceOf(ProfileError);
+    for (const path of ["package.json", "Playwright.config.ts", ".github/workflows/x.ts", "../x.ts", "/abs.ts", "tests\\w.ts", "tests/a.ts:b.feature", "tests/CON.ts", "tests/aux.json", "tests/a.ts.", "tests/x /y.ts", "tests/<PERSON_1>.ts", "eslint.config.js", ".pnpmfile.cjs"]) {
+      await expect(d.writeGeneratedFiles(run, run, ".", [{ path, content: "" }], true), path).rejects.toBeInstanceOf(ProfileError);
     }
     // In CI test code leaves only as a pull request: nothing is written here.
     const ci = await data({ mode: "ci", testCode: "allow" });
-    expect(await ci.d.writeGeneratedFiles(ci.run, ci.run, [{ path: "tests/c.ts", content: "" }], true)).toEqual({ status: "pull-request" });
+    expect(await ci.d.writeGeneratedFiles(ci.run, ci.run, ".", [{ path: "tests/c.ts", content: "" }], true)).toEqual({ status: "pull-request" });
     await expect(readFile(join(dir, "tests/c.ts"))).rejects.toThrow();
   });
 
@@ -356,6 +369,28 @@ describe("writeRepoFile", () => {
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+
+  it("creates generated files inside the approved folder only, and removes only the file it created", async () => {
+    await mkdir(join(dir, "e2e"), { recursive: true });
+    await mkdir(join(dir, "src"), { recursive: true });
+    // A link inside the repo but out of the approved folder.
+    await symlink(join(dir, "src"), join(dir, "e2e", "tests"), "dir");
+    await expect(withGrant((g) => createRepoFile(g, dir, "tests/pages/new.ts", "x", "e2e"))).rejects.toThrow(/links outside e2e/);
+    await expect(readFile(join(dir, "src/pages/new.ts"))).rejects.toThrow();
+    const made = await withGrant((g) => createRepoFile(g, dir, "steps/a/b.ts", "x\n", "e2e"));
+    expect(made).toMatchObject({ status: "done", value: { status: "created", file: { path: join("e2e", "steps", "a", "b.ts"), firstDir: join(dir, "e2e", "steps") } } });
+    expect(await withGrant((g) => createRepoFile(g, dir, "steps/a/b.ts", "x\n", "e2e"))).toMatchObject({ value: { status: "same" } });
+    const file = (made as { value: { file: CreatedRepoFile } }).value.file;
+    // Replaced since (another inode): it isn't the file Agent-QA made, so it stays.
+    await writeFile(join(dir, "e2e/theirs.ts"), "theirs\n");
+    await rename(join(dir, "e2e/theirs.ts"), join(dir, "e2e/steps/a/b.ts"));
+    await expect(withGrant((g) => removeCreatedRepoFile(g, dir, file))).rejects.toThrow(/no longer the file/);
+    await rm(join(dir, "e2e/steps/a/b.ts"));
+    const again = (await withGrant((g) => createRepoFile(g, dir, "steps/a/b.ts", "x\n", "e2e"))) as { value: { file: CreatedRepoFile } };
+    await withGrant((g) => removeCreatedRepoFile(g, dir, { ...again.value.file, firstDir: join(dir, "e2e", "steps") }));
+    await expect(readFile(join(dir, "e2e/steps"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(dir, "e2e"), "utf8").catch((e: NodeJS.ErrnoException) => e.code)).toBe("EISDIR");
   });
 });
 

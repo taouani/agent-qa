@@ -96,6 +96,7 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
   const vaults: string[] = [];
   const checked: string[][] = [];
   const writes: string[][] = [];
+  const folders: string[] = [];
   const data: ScriptsDeps["data"] = {
     frameworkProfile: async (_run, _folder, tokensRun) => {
       vaults.push(`profile:${tokensRun}`);
@@ -103,8 +104,9 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
     },
     savedProfile: async () => SAVED,
     typeCheckReadiness: async () => ({ ready: true }),
-    writeGeneratedFiles: async (_run, tokensRun, files, approved) => {
+    writeGeneratedFiles: async (_run, tokensRun, folder, files, approved) => {
       vaults.push(`write:${tokensRun}`);
+      folders.push(folder);
       if (!approved) return { status: "declined" };
       writes.push(files.map((f) => f.path));
       return { status: "done", written: files.map((f) => f.path) };
@@ -122,7 +124,7 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
     },
     ...over,
   };
-  return Object.assign(data, { vaults, checked, writes });
+  return Object.assign(data, { vaults, checked, writes, folders });
 }
 
 describe("scripts workflow", () => {
@@ -230,7 +232,7 @@ describe("scripts workflow", () => {
     expect(review.context).toContain("### src/support/lightning.ts (helper, the Salesforce pack's helpers, unchanged)");
     expect(review.context).toContain("Type check: passed.");
     expect(review.context).toContain("- Step 2: ask <PERSON_1> which Region to pick");
-    expect(await e.approval(run.runId, "review")).toMatchObject({ question: "Write these 4 new file(s) to the repo root? Agent-QA only creates files: if one exists by then, nothing is written." });
+    expect(await e.approval(run.runId, "review")).toMatchObject({ question: `Write these 4 new file(s) to the repo root: ${[...DRAFT.files.map((f) => f.path), "src/support/lightning.ts"].join(", ")}? Agent-QA only creates files: if one exists by then with other content, nothing is written.` });
     await expect(e.submit(run.runId, "review", { write: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
     expect((await e.submit(run.runId, "review", { write: true }, { byPerson: true })).next.kind).toBe("done");
     expect(data.writes).toEqual([[...DRAFT.files.map((f) => f.path), "src/support/lightning.ts"]]);
@@ -243,6 +245,38 @@ describe("scripts workflow", () => {
     await e.submit(no.runId, "review", { write: false });
     expect(data.writes).toHaveLength(1);
     expect((await runs.readArtifact(no.runId, SCRIPTS_WRITTEN_ARTIFACT))!.data).toEqual({ status: "declined", folder: ".", files: [] });
+  });
+
+  it("writes only the draft the review showed, and keeps the step open when the write fails", async () => {
+    let fail = true;
+    const data = fakeData({});
+    const write = data.writeGeneratedFiles;
+    data.writeGeneratedFiles = async (...args) => {
+      if (fail && args[4]) {
+        fail = false;
+        throw new Error("disk full");
+      }
+      return write(...args);
+    };
+    const e = engine(data);
+    const run = await begin(e, { testCasesRun: "tc-run" });
+    await e.submit(run.runId, "draft", DRAFT);
+    await e.approval(run.runId, "review");
+    // The folder the person was told is the folder passed to the write.
+    await expect(e.submit(run.runId, "review", { write: true }, { byPerson: true })).rejects.toThrow(/disk full/);
+    expect((await e.next(run.runId)).stepId).toBe("review");
+    expect(await runs.readArtifact(run.runId, SCRIPTS_WRITTEN_ARTIFACT)).toBeUndefined();
+    // The draft changed in the run folder after the review showed it: nothing is written.
+    const art = (await runs.readArtifact(run.runId, SCRIPTS_DRAFT_ARTIFACT))!;
+    const changed = { ...art.data, files: art.data.files.map((f, i) => (i === 0 ? { ...f, content: `${f.content}// changed\n` } : f)) };
+    await runs.writeArtifact(run.runId, SCRIPTS_DRAFT_ARTIFACT, changed, { inputs: [], templateVersion: "t" });
+    await expect(e.submit(run.runId, "review", { write: true }, { byPerson: true })).rejects.toThrow(/changed after the review showed it/);
+    expect(data.writes).toEqual([]);
+    // Shown again, it can be written.
+    await e.approval(run.runId, "review");
+    expect((await e.submit(run.runId, "review", { write: true }, { byPerson: true })).next.kind).toBe("done");
+    expect(data.writes).toHaveLength(1);
+    expect(data.folders).toEqual(["."]);
   });
 
   it("masks the profile and the notes with the cases' vault", async () => {

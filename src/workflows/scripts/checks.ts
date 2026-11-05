@@ -2,7 +2,7 @@ import { CucumberExpression, ParameterType, ParameterTypeRegistry } from "@cucum
 import { AstBuilder, GherkinClassicTokenMatcher, Parser } from "@cucumber/gherkin";
 import { IdGenerator, type GherkinDocument, type Scenario, type Step, type Tag } from "@cucumber/messages";
 import type { OutputError } from "../../core/index.js";
-import { isProtectedPath, scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
+import { isPlainRelativePath, isProtectedPath, scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
 import { lightningHelpersSource } from "../packs/salesforce.js";
 import type { TestCases } from "../test-cases/artifact.js";
 import type { ScriptsDraft } from "./artifact.js";
@@ -127,7 +127,8 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
   draft.files.forEach((f, i) => {
     const at = `$.files[${i}]`;
     const key = pathKey(f.path);
-    if (/\\|^\/|^[A-Za-z]:|(^|\/)\.\.?(\/|$)|\/\/|[\u0000-\u001f]/.test(f.path)) err(`${at}.path`, "must be a relative path with forward slashes, inside the framework folder");
+    if (!isPlainRelativePath(f.path)) err(`${at}.path`, 'must be a relative path with forward slashes, inside the framework folder, with no <>:"|?* and no Windows device name (CON, AUX...)');
+    else if (TOKEN.test(f.path)) err(`${at}.path`, `holds a token: name files after the feature, never after data`);
     else if (isProtectedPath(f.path)) err(`${at}.path`, `${f.path} is a project file Agent-QA never writes`);
     else if (auth.has(key) || (CODE_ROLES.has(f.role) && SIGN_IN_CODE.test(f.path))) err(`${at}.path`, `${f.path} looks like sign-in code: generated code uses the repo's own sign-in steps`);
     else if (links.some((l) => key.startsWith(`${l}/`))) err(`${at}.path`, `${f.path} is under a symbolic link: write it where the link points, or elsewhere`);

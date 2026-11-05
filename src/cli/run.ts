@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -244,7 +245,8 @@ export async function runCommand(opts: RunOptions): Promise<number> {
         return EXIT.waiting;
       }
       const answer = await engine.fixedAnswer(step.runId, choice);
-      const unattendedNo = choice === "unattended" && (answer as { approve?: unknown } | undefined)?.approve === false;
+      // Unattended, a step whose fixed answer is its "no" (approve: false, write: false...) is declined, whatever its fields.
+      const unattendedNo = choice === "unattended" && answer !== undefined && isDeepStrictEqual(answer, await engine.fixedAnswer(step.runId, "no"));
       log(`- ${step.stepId}: ${choice === "no" ? "declined" : choice === "yes" ? "accepted" : unattendedNo ? `declined (--yes never accepts this step; use --accept ${step.stepId})` : "answered unattended (--yes)"}`);
       // A fixed answer chosen by the person's flag or terminal answer; --yes never says yes to a person-only step.
       const result = await engine.submit(step.runId, step.stepId, answer, { byPerson: choice !== "unattended" });

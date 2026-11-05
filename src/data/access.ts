@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, removeCreatedRepoFile, loadTypeScript, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -21,7 +21,7 @@ import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, host
 import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
-import { isPlainRelativePath, isProtectedPath } from "./generated-files.js";
+import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -138,7 +138,7 @@ export interface ScriptsData {
    * with the person's yes. In CI test code leaves only as a pull request,
    * which this never opens: it says so instead.
    */
-  writeGeneratedFiles(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome>;
+  writeGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome>;
   /** Whether a type check could run at all (the policy, the repo's typescript, a tsconfig), checked without loading anything: no question is asked when it couldn't. */
   typeCheckReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }>;
 }
@@ -529,36 +529,52 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return { status: "done", diagnostics };
   }
 
-  async writeGeneratedFiles(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome> {
+  async writeGeneratedFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<WriteFilesOutcome> {
     if (!approved) return { status: "declined" };
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    // The files go where the person was told, or nowhere: a profile saved since the draft points elsewhere.
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed since the draft (${folder} then, ${saved.folder} now): run scripts again`);
+    if (files.length === 0) throw new ProfileError("there are no files to write");
     // Checked again here, whatever the workflow checked: the data layer is the last word on what reaches the repo.
     for (const f of files) {
       if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
       if (isProtectedPath(f.path)) throw new ProfileError(`${f.path} is a project file Agent-QA never writes`);
+      if (hasToken(f.path) || hasToken(f.content)) throw new ProfileError(`${f.path} holds a masking token: generated code never carries one`);
     }
     const keys = new Set(files.map((f) => f.path.normalize("NFC").toLowerCase()));
     if (keys.size !== files.length) throw new ProfileError("a file is listed twice");
-    const rel = (p: string) => (saved.folder === "." ? p : `${saved.folder.replace(/\\/g, "/").replace(/\/$/, "")}/${p}`);
     const { service } = await this.run(tokensRun);
-    const summary = service.maskText(`Write ${files.length} new file(s) to ${saved.folder}: ${files.map((f) => f.path).join(", ")}`.slice(0, 500), "write.summary");
+    const summary = service.maskText(`Write ${files.length} new file(s) to ${folder}: ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
     await service.saveVault();
-    const outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
-      if (grant.via !== "direct") return "pull-request" as const;
-      const created: string[] = [];
-      try {
-        for (const f of files) {
-          await writeRepoFile(grant, this.options.root, rel(f.path), f.content, { exclusive: true });
-          created.push(f.path);
+    const root = hostCwd(this.options.root);
+    let outcome;
+    try {
+      outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
+        if (grant.via !== "direct") return "pull-request" as const;
+        const created: CreatedRepoFile[] = [];
+        try {
+          // A file that already holds the same bytes counts as written: a write that stopped halfway can run again.
+          for (const f of files) {
+            const r = await createRepoFile(grant, this.options.root, f.path, f.content, folder);
+            if (r.status === "created") created.push(r.file);
+          }
+        } catch (error) {
+          // All or none: what this write created goes again, and anything that can't go is named.
+          const left: string[] = [];
+          for (const c of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, c).catch(() => left.push(c.path));
+          throw new WriteFailed(error, left);
         }
-      } catch (error) {
-        // All or none: what this write created goes again.
-        for (const p of created.reverse()) await removeCreatedRepoFile(grant, this.options.root, rel(p)).catch(() => undefined);
-        throw error;
-      }
-      return created;
-    });
+        return files.map((f) => f.path);
+      });
+    } catch (error) {
+      if (!(error instanceof WriteFailed)) throw error;
+      const cause = error.cause as NodeJS.ErrnoException | undefined;
+      const why = cause instanceof PolicyDenied ? cause.message : `${cause?.code ?? (cause instanceof Error ? cause.name : "Error")}: ${cause instanceof Error ? cause.message : String(cause)}`;
+      await service.saveVault();
+      const left = error.left.length ? ` Agent-QA could not remove what it had written: ${error.left.join(", ")}.` : " Nothing was written.";
+      throw new ProfileError(service.maskText(local(`the files could not be written (${why}).${left}`, root), "write.error").slice(0, 800));
+    }
     if (outcome.status !== "done") return { status: "declined" };
     return outcome.value === "pull-request" ? { status: "pull-request" } : { status: "done", written: outcome.value };
   }
@@ -717,5 +733,15 @@ export async function salesforceKey(sf: NonNullable<Config["salesforce"]>, root:
   } catch (error) {
     if (!(error as NodeJS.ErrnoException).code) throw error;
     throw new Error(`salesforce.privateKeyFile can't be read (${(error as NodeJS.ErrnoException).code})`);
+  }
+}
+
+/** A write of generated files that stopped, with what its rollback couldn't remove. */
+class WriteFailed extends Error {
+  constructor(
+    cause: unknown,
+    readonly left: string[],
+  ) {
+    super("the write failed", { cause });
   }
 }
