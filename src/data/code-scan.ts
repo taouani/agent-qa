@@ -228,7 +228,7 @@ export interface FixSkeleton {
   locatorNames: string[];
   /** Every variable the file reads anywhere: a locator may read only these. */
   names: string[];
-  /** Code inside a locator that isn't a plain value or another locator: a call, a function, an assignment (its source text). */
+  /** Code inside a locator or a wait that isn't a plain value or a locator (a call, a function, an assignment), and checks that check nothing: their source text. */
   locatorCode: string[];
 }
 
@@ -291,27 +291,78 @@ export function fixSkeleton(text: string, file: string): FixSkeleton | undefined
     return false;
   };
   const src = (x: Node) => (typeof x.start === "number" && typeof x.end === "number" ? text.slice(x.start, x.end) : "");
+  /** Code in a locator's or a wait's arguments: anything but plain values and locators runs code. */
+  const plainOnly = (n: Node) => {
+    readNames(n, locatorNames);
+    walkAst(n, (x) => {
+      const call = (x.type === "CallExpression" || x.type === "OptionalCallExpression") && !isLocatorCall(x);
+      if (call || RUNS_CODE.has(x.type)) locatorCode.add(src(x));
+    });
+  };
+  /** A wait's own arguments (and a waiting matcher's): they are plain values too. */
+  const waitArgs = (s: Node) => {
+    const c = (s as { expression: { argument: Node } }).expression.argument as Node & { arguments: Node[] };
+    for (const a of c.arguments) plainOnly(a);
+  };
+  /** a.b, a["b"], this.b: the path an expression reads, or undefined when it isn't one. */
+  const pathOf = (n: Node): string | undefined => {
+    if (n.type === "Identifier") return n.name;
+    if (n.type === "ThisExpression") return "this";
+    if (n.type === "TSNonNullExpression" || n.type === "TSAsExpression") return pathOf(n.expression as Node);
+    if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
+      const o = pathOf(n.object as Node);
+      const k = !n.computed && n.property.type === "Identifier" ? n.property.name : literalString(n.property as Node);
+      return o !== undefined && k !== undefined ? `${o}.${k}` : undefined;
+    }
+    return undefined;
+  };
+  // Locators held in a variable or a field: const label = page.getByText(s); this.label = page.getByText(s).
+  const held = new Map<string, Node>();
+  walkAst(ast, (x) => {
+    const keep = (name: string | undefined, init: Node | null | undefined) => {
+      if (name && init && isLocatorCall(init)) held.set(name, init);
+    };
+    if (x.type === "VariableDeclarator" && x.id.type === "Identifier") keep(x.id.name, x.init as Node | null);
+    if (x.type === "AssignmentExpression") keep(pathOf(x.left as Node), x.right as Node);
+    if ((x.type === "ClassProperty" || x.type === "ClassPrivateProperty") && x.key.type === "Identifier") keep(`this.${x.key.name}`, x.value as Node | null);
+  });
   /** expect(locator).toHaveText(value) with the locator picking by that same value checks nothing. */
   const checksItself = (n: Node) => {
     if (n.type !== "CallExpression" || (n.callee.type !== "MemberExpression" && n.callee.type !== "OptionalMemberExpression")) return;
     let base = n.callee.object as Node;
     if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
-    if (base.type !== "CallExpression" || base.callee.type !== "Identifier" || base.callee.name !== "expect" || !base.arguments[0] || !isLocatorCall(base.arguments[0] as Node)) return;
-    const picked = src(base.arguments[0] as Node);
+    if (base.type !== "CallExpression" || base.callee.type !== "Identifier" || base.callee.name !== "expect" || !base.arguments[0]) return;
+    const subject = base.arguments[0] as Node;
+    const picked = isLocatorCall(subject) ? subject : held.get(pathOf(subject) ?? "");
+    if (!picked) return;
+    const paths = new Set<string>();
+    const texts: string[] = [];
+    const patterns: RegExp[] = [];
+    walkAst(picked, (x) => {
+      const p = pathOf(x);
+      if (p !== undefined) paths.add(p);
+      const t = literalString(x);
+      if (t !== undefined && t.trim()) texts.push(t.trim());
+      if (x.type === "RegExpLiteral") {
+        try {
+          patterns.push(new RegExp(x.pattern, x.flags.replace(/[gy]/g, "")));
+        } catch {
+          // not a pattern JavaScript runs
+        }
+      }
+    });
     for (const a of n.arguments as Node[]) {
       if (isTimeoutOption(a)) continue;
-      const v = literalString(a) ?? src(a);
-      if (v.length > 1 && picked.includes(v)) locatorCode.add(`${src(n)} (the element is picked by the value it is checked against)`);
+      const p = pathOf(a);
+      const v = literalString(a)?.trim();
+      const same = (p !== undefined && paths.has(p)) || (v !== undefined && v !== "" && (texts.some((t) => v.includes(t) || t.includes(v)) || patterns.some((r) => r.test(v))));
+      if (same) locatorCode.add(`${src(n)} (the element is picked by the value it is checked against)`);
     }
   };
   function emit(n: Node, push: (t: { t: string; wait: boolean }) => void): void {
     checksItself(n);
     if (isLocatorCall(n)) {
-      readNames(n, locatorNames);
-      walkAst(n, (x) => {
-        const call = (x.type === "CallExpression" || x.type === "OptionalCallExpression") && !isLocatorCall(x);
-        if (call || RUNS_CODE.has(x.type)) locatorCode.add(src(x));
-      });
+      plainOnly(n);
       push({ t: "LOC", wait: false });
       return;
     }
@@ -332,7 +383,10 @@ export function fixSkeleton(text: string, file: string): FixSkeleton | undefined
           const child = c as Node;
           if ((n.type === "CallExpression" || n.type === "OptionalCallExpression") && k === "arguments" && isTimeoutOption(child)) continue;
           // A statement that only waits is one token, which a fix may add.
-          if ((k === "body" || k === "consequent") && isWait(child)) push({ t: `WAIT ${flat(child)}`, wait: true });
+          if ((k === "body" || k === "consequent") && isWait(child)) {
+            waitArgs(child);
+            push({ t: `WAIT ${flat(child)}`, wait: true });
+          }
           else emit(child, push);
         }
         push({ t: "]", wait: false });

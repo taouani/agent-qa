@@ -555,6 +555,7 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect(check(spec.replace("'button', { name: 'Approve' }", "'button', { name: 'Approve request' }"))).toEqual([]);
     expect(check(spec.replace("toHaveText(data.expectedStatus)", "toHaveText(data.expectedStatus, { timeout: 15000 })"))).toEqual([]);
     expect(check(spec.replace("  await page.getByRole('button'", "  await expect(page.getByRole('button', { name: 'Approve' })).toBeEnabled();\n  await page.getByRole('button'"), "timing")).toEqual([]);
+    expect(check(spec.replace("  await page.getByRole('button'", "  await page.waitForLoadState('networkidle', { timeout: 30000 });\n  await page.getByRole('button'"), "timing")).toEqual([]);
     // Refused: every way the review found to make a failing check pass.
     const dodges = [
       CHECK.replace(";", ".catch(() => {});"),
@@ -596,6 +597,15 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
       spec.replace("getByRole('status')", "getByRole((() => { data.expectedStatus = 'x'; return 'status'; })())"),
       spec.replace("getByRole('status')", "getByRole(String(process.env.X))"),
       spec.replace("{ name: 'Approve' }", "{ name: secret }"),
+      // A wait that runs code (W1).
+      spec.replace(CHECK, `await page.waitForLoadState((await page.evaluate(() => 1)) ? 'load' : 'load');\n  ${CHECK}`),
+      spec.replace(CHECK, `await page.waitForURL((u) => { void page.evaluate(() => 1); return true; });\n  ${CHECK}`),
+      spec.replace(CHECK, `await waitForLightning(page, { timeout: await page.evaluate(() => 1000) });\n  ${CHECK}`),
+      spec.replace(CHECK, `await expect(page.getByRole('status')).toBeVisible({ timeout: Number(await page.evaluate(() => localStorage.getItem('t'))) });\n  ${CHECK}`),
+      // A check whose element is picked by what it expects.
+      spec.replace("getByRole('status')", "getByText(data['expectedStatus'])"),
+      spec.replace("getByRole('status')", "getByText(/^Approv/)").replace("data.expectedStatus)", "'Approved')"),
+      spec.replace(CHECK, `const label = page.getByText(data.expectedStatus);\n  await expect(label).toHaveText(data.expectedStatus);`),
     ];
     for (const q of quiet) expect(check(q).length, q).toBeGreaterThan(0);
     // A spec with no failing test of its own stays as it is.

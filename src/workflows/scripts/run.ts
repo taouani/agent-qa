@@ -224,7 +224,7 @@ export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["fi
     if (added.length) err(`${at}.content`, `a locator reads ${added.join(", ")}, which the code didn't read before: pick elements by their role, label or text`);
     const ran = new Set(old.skeleton.locatorCode);
     const code = next.skeleton.locatorCode.filter((c) => !ran.has(c));
-    if (code.length) err(`${at}.content`, `a locator runs code (${code[0]!.slice(0, 120)}): a locator's arguments are plain values, such as a role, a name or text`);
+    if (code.length) err(`${at}.content`, `a locator or a wait runs code, or a check checks nothing (${code[0]!.slice(0, 160)}): a locator's and a wait's arguments are plain values, such as a role, a name, text or a timeout, and a check never picks its element by the value it expects`);
     if (mine.role === "spec" && next.titles.join("\n") !== old.titles.join("\n")) err(`${at}.content`, "changes a test's title: a fix keeps the tests as they are");
   });
   return errors;
