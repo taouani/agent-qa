@@ -471,6 +471,15 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect(data.replaced).toEqual([]);
   });
 
+  it("stops on the environment when the stability run can't start", async () => {
+    const { e, data, runId } = await written();
+    data.results.push(pass(), { status: "unavailable", reason: "the profile has no test command" });
+    await e.submit(runId, "run", { run: true }, { byPerson: true });
+    const r = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(r).toMatchObject({ status: "environment", reason: "the profile has no test command" });
+    expect(r.attempts.at(-1)).toMatchObject({ kind: "stability", unavailable: true });
+  });
+
   it("stops on a real defect and changes nothing", async () => {
     const { e, data, runId } = await written();
     data.results.push(fail("Error: expect(locator).toHaveText(expected)\nExpected: was created\nReceived: Something went wrong"));

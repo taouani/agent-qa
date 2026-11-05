@@ -56,8 +56,11 @@ describe("runnable rate", () => {
     expect(o(run({ status: "unstable", cases: cases(A, B), attempts: [attempt("run", [{ ...row(A, "flaky"), runs: 3, failedRuns: 1 }, row(B, "failed")])] }))).toEqual({ [A]: "unstable", [B]: "failing" });
     // Failed in the stability run after passing once: unstable.
     expect(o(run({ status: "unstable", cases: cases(A), attempts: [attempt("run", [row(A, "passed")]), attempt("stability", [{ ...row(A, "failed"), runs: 3, failedRuns: 1 }])] }))).toEqual({ [A]: "unstable" });
-    // The app was down for the stability run; the environment stop.
-    expect(o(run({ status: "gave-up", cases: cases(A), attempts: [attempt("run", [row(A, "passed")]), attempt("stability", [], ["no test report came back"])] }))).toEqual({ [A]: "environment" });
+    // The tests couldn't run at all for the stability run; the environment stop.
+    expect(o(run({ status: "environment", cases: cases(A), attempts: [attempt("run", [row(A, "passed")]), { ...attempt("stability", [], ["the profile has no test command"]), unavailable: true as const }] }))).toEqual({ [A]: "environment" });
+    // Code that doesn't load, or a case whose test never ran, is the generated code's failure.
+    expect(o(run({ status: "gave-up", cases: cases(A), attempts: [attempt("run", [], ["no test report came back: SyntaxError: Unexpected token"])] }))).toEqual({ [A]: "failing" });
+    expect(o(run({ status: "gave-up", cases: cases(A), attempts: [attempt("run", [], [`no test ran for ${A}: each case's test must run (not skipped, not left out)`])] }))).toEqual({ [A]: "failing" });
     expect(o(run({ status: "environment", cases: cases(A), attempts: [attempt("run", [row(A, "failed")])] }))).toEqual({ [A]: "environment" });
     // No stability runs asked for; a case with no test; a longer id isn't this case.
     expect(o(run({ stabilityRuns: 0, cases: cases(A), attempts: [attempt("run", [row(A, "passed")])] }))).toEqual({ [A]: "runnable" });

@@ -62,7 +62,8 @@ export function caseOutcomes(run: ScriptsRun): Map<string, CaseOutcome> {
     const passed = rows.length > 0 && rows.every((t) => t.outcome === "passed");
     // The model's words name the test: matched by the case's id, as the rows are.
     const defect = (run.stoppedOn ?? []).some((s) => s.kind === "defect" && (isMine.test(s.test) || rows.some((t) => t.title === s.test)));
-    const unreachable = last !== undefined && last.tests.length === 0 && last.errors.length > 0;
+    // Only a run that couldn't start: code that doesn't load, or a case with no test, is the generated code's failure.
+    const unreachable = last?.unavailable === true;
     let o: CaseOutcome;
     if (passed && (last?.kind === "stability" || run.status === "passed")) o = "runnable";
     else if (defect) o = "defects";
