@@ -19,6 +19,8 @@ export { CASE_ID, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, TEST_CASES_TEM
 export type { TestCase, TestCases, TestCasesDraft, XrayPush } from "./test-cases/artifact.js";
 export { profileInputSchema, profileWorkflow } from "./profile/workflow.js";
 export type { ProfileDeps, ProfileInputs } from "./profile/workflow.js";
+export { packageName, SCAFFOLD_STYLES, scaffoldFiles } from "./scaffold/templates.js";
+export type { ScaffoldFile, ScaffoldStyle } from "./scaffold/templates.js";
 export { exploreInputSchema, exploreWorkflow, MAX_EXPLORE_CASES, progressOf } from "./explore/workflow.js";
 export type { ExploreDeps, ExploreInputs } from "./explore/workflow.js";
 export { EXPLORATION_ARTIFACT, EXPLORATION_TEMPLATE_VERSION, explorationSchema, exploreActionSchema } from "./explore/artifact.js";
