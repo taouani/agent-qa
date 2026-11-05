@@ -19,12 +19,16 @@ export interface CodeScan {
   /** Syntax errors the parser recovered from. */
   syntaxErrors: number;
   findings: CodeFinding[];
+  /** test(...) and test.describe(...) calls with a literal title, by line range. */
+  tests: Array<{ title: string; start: number; end: number }>;
+  /** The lines where a test.step(...) call starts. */
+  stepLines: number[];
 }
 
 const MESSAGES: Record<CodeFinding["rule"], string> = {
   "fixed-wait": "uses a fixed wait (waitForTimeout or setTimeout): wait for Lightning or for the element instead",
   pause: "leaves page.pause() in",
-  "focus-or-skip": "uses .only, .skip or .fixme, which would run some tests and not others",
+  "focus-or-skip": "uses .only, .skip or .fixme (a conditional test.skip too), which would run some tests and not others: leave the test in and say in the notes what it needs",
   xpath: "uses XPath, which can't reach into Lightning's shadow roots: use getByRole or getByLabel",
   "generated-id": "selects by a generated Lightning id (data-aura-rendered-by, input-123, globalId), which changes on every load",
   "record-id": "hard-codes a record id: create the record in the test or take it from the test data",
@@ -38,6 +42,9 @@ const memberName = (n: Node): string | undefined => {
 };
 
 const XPATH = /^\s*(?:xpath=|\(?\/\/|\.\.\s*$)/;
+/** Methods whose string arguments are selectors. */
+const SELECTOR_METHODS = new Set(["locator", "frameLocator", "$", "$$", "$eval", "$$eval", "waitForSelector", "click", "dblclick", "fill", "type", "press", "check", "uncheck", "hover", "focus", "tap", "selectOption", "setInputFiles", "textContent", "innerText", "innerHTML", "inputValue", "getAttribute", "isVisible", "isHidden", "isEnabled", "isDisabled", "isChecked", "isEditable", "dispatchEvent", "dragAndDrop", "querySelector", "querySelectorAll", "evaluateHandle"]);
+const GLOBALS = new Set(["globalThis", "window", "self", "global"]);
 const GENERATED_ID = /data-aura-rendered-by|(?:^|[#"'=\s[])input-\d+\b|\bglobalId\b/;
 const RECORD_URL = /\/lightning\/r\/(?:\w+\/)?[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?(?:[/?#]|$)/;
 /** A bare record id: 15 or 18 letters and digits, a key prefix, a digit in the 4th place (the pod). */
@@ -48,24 +55,54 @@ const TEST_OBJECTS = new Set(["test", "describe", "it", "context"]);
 
 export function scanGeneratedCode(text: string, file: string): CodeScan {
   const ast = parseCode(text, file);
-  if (!ast) return { parsed: false, syntaxErrors: 0, findings: [] };
-  const findings: CodeFinding[] = [];
-  const add = (n: Node, rule: CodeFinding["rule"]) => findings.push({ line: n.loc?.start.line ?? 0, rule, message: MESSAGES[rule] });
+  if (!ast) return { parsed: false, syntaxErrors: 0, findings: [], tests: [], stepLines: [] };
+  const parents = new Map<Node, Node>();
   walkAst(ast, (n) => {
+    for (const v of Object.values(n)) {
+      if (Array.isArray(v)) for (const c of v) if (c && typeof c === "object" && typeof (c as Node).type === "string") parents.set(c as Node, n);
+      if (v && typeof v === "object" && !Array.isArray(v) && typeof (v as Node).type === "string") parents.set(v as Node, n);
+    }
+  });
+  const findings: CodeFinding[] = [];
+  const add = (n: Node, rule: CodeFinding["rule"]) => {
+    const line = n.loc?.start.line ?? 0;
+    if (!findings.some((f) => f.line === line && f.rule === rule)) findings.push({ line, rule, message: MESSAGES[rule] });
+  };
+  const tests: CodeScan["tests"] = [];
+  const stepLines: number[] = [];
+  const nameOf = (n: Node): string | undefined => (n.type === "Identifier" ? n.name : memberName(n));
+  walkAst(ast, (n) => {
+    if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
+      const name = memberName(n);
+      // page.waitForTimeout(...), page['waitForTimeout'], page.waitForTimeout.bind(page)
+      if (name === "waitForTimeout") add(n, "fixed-wait");
+      // globalThis.setTimeout, not test.setTimeout (Playwright's per-test timeout)
+      if (name === "setTimeout" && n.object.type === "Identifier" && GLOBALS.has(n.object.name)) add(n, "fixed-wait");
+    }
+    if ((n.type === "Identifier" && n.name === "setTimeout") || (n.type === "Identifier" && n.name === "waitForTimeout")) {
+      // Only a reference, not a property key or a member name (those are handled above).
+      const parent = parents.get(n);
+      const isKey = parent && (((parent.type === "MemberExpression" || parent.type === "OptionalMemberExpression") && parent.property === n && !parent.computed) || (parent.type === "ObjectProperty" && parent.key === n && !parent.computed) || parent.type === "ObjectMethod" || parent.type === "ClassMethod");
+      if (!isKey) add(n, "fixed-wait");
+    }
     if (n.type === "CallExpression" || n.type === "OptionalCallExpression") {
       const callee = n.callee as Node;
-      const name = callee.type === "Identifier" ? callee.name : memberName(callee);
-      if (name === "waitForTimeout" || name === "setTimeout") add(n, "fixed-wait");
+      const name = nameOf(callee);
       if (name === "pause" && n.arguments.length === 0) add(n, "pause");
-      if (name && FOCUS.has(name) && (callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression")) {
-        const obj = callee.object;
-        const objName = obj.type === "Identifier" ? obj.name : memberName(obj as Node);
-        if (objName && TEST_OBJECTS.has(objName)) add(n, "focus-or-skip");
+      const isMember = callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression";
+      const objName = isMember ? nameOf(callee.object as Node) : undefined;
+      if (name && FOCUS.has(name) && objName && TEST_OBJECTS.has(objName)) add(n, "focus-or-skip");
+      if (name && SELECTOR_METHODS.has(name)) {
+        for (const arg of n.arguments) {
+          const s = literalString(arg as Node);
+          if (s !== undefined && XPATH.test(s)) add(arg as Node, "xpath");
+        }
       }
-      for (const arg of n.arguments) {
-        const s = literalString(arg as Node);
-        if (s !== undefined && XPATH.test(s)) add(arg as Node, "xpath");
-      }
+      const title = n.arguments[0] ? literalString(n.arguments[0] as Node) : undefined;
+      const start = n.loc?.start.line ?? 0;
+      const end = n.loc?.end.line ?? 0;
+      if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) tests.push({ title, start, end });
+      if (objName === "test" && name === "step") stepLines.push(start);
     }
     // const { waitForTimeout: wait } = page
     if (n.type === "ObjectPattern") {
@@ -79,5 +116,5 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
     }
   });
   const errors = (ast as unknown as { errors?: unknown[] }).errors ?? [];
-  return { parsed: true, syntaxErrors: errors.length, findings: findings.sort((a, b) => a.line - b.line) };
+  return { parsed: true, syntaxErrors: errors.length, findings: findings.sort((a, b) => a.line - b.line), tests, stepLines };
 }

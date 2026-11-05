@@ -1,8 +1,8 @@
-import { CucumberExpression, ParameterTypeRegistry } from "@cucumber/cucumber-expressions";
+import { CucumberExpression, ParameterType, ParameterTypeRegistry } from "@cucumber/cucumber-expressions";
 import { AstBuilder, GherkinClassicTokenMatcher, Parser } from "@cucumber/gherkin";
 import { IdGenerator, type GherkinDocument, type Scenario, type Step, type Tag } from "@cucumber/messages";
 import type { OutputError } from "../../core/index.js";
-import { AUTH_PATH, scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
+import { scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
 import { lightningHelpersSource } from "../packs/salesforce.js";
 import type { TestCases } from "../test-cases/artifact.js";
 import type { ScriptsDraft } from "./artifact.js";
@@ -25,6 +25,8 @@ const PROTECTED_DIR = /(^|\/)(node_modules|\.git|\.agent-qa|\.github|\.vscode)(\
 /** playwright-bdd's tags that run some scenarios and not others. */
 const FOCUS_TAGS = /^@(?:only|skip|fixme)$/i;
 const CODE_ROLES = new Set(["spec", "steps", "page"]);
+/** Code paths that look like sign-in code. Narrower than the profile scan's: "user" pages and steps are ordinary code. */
+const SIGN_IN_CODE = /(^|[/._-])(auth|login|logout|sign-?in|sso|jwt|oauth|credentials?|secrets?|storage-?state)([/._-]|$)/i;
 
 const EXTENSIONS: Record<ScriptsDraft["files"][number]["role"], RegExp> = {
   spec: /\.(?:spec|test)\.[cm]?[jt]s$/,
@@ -53,6 +55,12 @@ function matcherOf(def: Definition, registry: ParameterTypeRegistry): Matcher | 
     if (def.kind === "regex") {
       const re = new RegExp(def.pattern, (def.flags ?? "").replace(/[gy]/g, ""));
       return { def, test: (t) => re.test(t) };
+    }
+    // The repo may register its own parameter types (defineParameterType). The
+    // scan doesn't read them, so an unknown {name} matches any text rather than none.
+    for (const m of def.pattern.matchAll(/(?<!\\)\{([^{}()\\/\s]+)\}/g)) {
+      const name = m[1]!;
+      if (!registry.lookupByTypeName(name)) registry.defineParameterType(new ParameterType(name, /.*/, null, (x: string | null) => x, false, false));
     }
     const expression = new CucumberExpression(def.pattern, registry);
     return { def, test: (t) => expression.match(t) !== null };
@@ -114,13 +122,14 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
   const auth = new Set(ctx.profile.authFiles.map(pathKey));
   const byPath = new Map<string, ScriptsDraft["files"][number]>();
   const keys = new Set<string>();
+  const specs = new Map<string, ReturnType<typeof scanGeneratedCode>>();
 
   draft.files.forEach((f, i) => {
     const at = `$.files[${i}]`;
     const key = pathKey(f.path);
     if (/\\|^\/|^[A-Za-z]:|(^|\/)\.\.?(\/|$)|\/\/|[\u0000-\u001f]/.test(f.path)) err(`${at}.path`, "must be a relative path with forward slashes, inside the framework folder");
     else if (PROTECTED.test(f.path) || PROTECTED_DIR.test(f.path)) err(`${at}.path`, `${f.path} is a project file Agent-QA never writes`);
-    else if (auth.has(key) || (CODE_ROLES.has(f.role) && AUTH_PATH.test(f.path))) err(`${at}.path`, `${f.path} looks like sign-in code: generated code uses the repo's own sign-in steps`);
+    else if (auth.has(key) || (CODE_ROLES.has(f.role) && SIGN_IN_CODE.test(f.path))) err(`${at}.path`, `${f.path} looks like sign-in code: generated code uses the repo's own sign-in steps`);
     else if (existing.has(key)) err(`${at}.path`, `${f.path} already exists: generated code only adds new files. Call its methods or steps instead`);
     if (!EXTENSIONS[f.role].test(f.path)) err(`${at}.path`, `a ${f.role} file must match ${EXTENSIONS[f.role].source}`);
     if (keys.has(key)) err(`${at}.path`, `${f.path} is listed twice`);
@@ -136,12 +145,15 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
       try {
         JSON.parse(f.content);
       } catch {
-        err(`${at}.content`, "isn't valid JSON");
+        return err(`${at}.content`, "isn't valid JSON");
       }
+      // The same literal rules as code: no record ids, org URLs or generated ids in the data.
+      for (const finding of scanGeneratedCode(`(${f.content})`, "data.ts").findings) err(`${at}.content`, `line ${finding.line} ${finding.message}`);
       return;
     }
     if (f.role === "feature") return;
     const scan = scanGeneratedCode(f.content, f.path);
+    if (f.role === "spec") specs.set(f.path, scan);
     if (!scan.parsed || scan.syntaxErrors > 0) err(`${at}.content`, "doesn't parse as TypeScript");
     for (const finding of scan.findings) err(`${at}.content`, `line ${finding.line} ${finding.message}`);
   });
@@ -171,6 +183,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
     seen.add(c.id);
     const covered = new Set<number>();
     if (bdd && ![...features.values()].some((list) => list.some((x) => x.tags.includes(`@${c.id}`)))) return err(`${at}.id`, `the scenario for ${c.id} must be tagged @${c.id}`);
+    if (!bdd && ![...specs.values()].some((scan) => scan.tests.some((t) => t.title.includes(c.id)))) return err(`${at}.id`, `no generated spec has a test or test.describe whose title holds ${c.id}`);
     c.steps.forEach((s, j) => {
       const sat = `${at}.steps[${j}]`;
       if (s.step > tc.steps.length) return err(`${sat}.step`, `${c.id} has ${tc.steps.length} step(s)`);
@@ -184,12 +197,10 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
         const ownLines = new Set(mine.flatMap((x) => [...x.background, ...x.scenario.steps].map((st) => st.location.line)));
         if (!ownLines.has(s.line)) return err(`${sat}.line`, `line ${s.line} of ${s.file} isn't a step of the scenario tagged @${c.id} (or its Background)`);
       } else {
-        // The test titled with the case id, up to the next test.
-        const start = lines.findIndex((l) => /\btest\s*\(/.test(l) && l.includes(c.id));
-        if (start === -1) return err(`${sat}.file`, `${s.file} has no test whose title holds ${c.id}`);
-        let end = lines.findIndex((l, k) => k > start && /^\s*test\s*\(/.test(l));
-        if (end === -1) end = lines.length;
-        if (!(s.line - 1 > start && s.line - 1 < end) || !/\btest\.step\s*\(/.test(lines[s.line - 1]!)) return err(`${sat}.line`, `line ${s.line} of ${s.file} isn't a test.step(...) call inside the test for ${c.id}`);
+        const blocks = specs.get(s.file)?.tests.filter((t) => t.title.includes(c.id)) ?? [];
+        if (!blocks.length) return err(`${sat}.file`, `${s.file} has no test or test.describe whose title holds ${c.id}`);
+        const isStep = specs.get(s.file)!.stepLines.includes(s.line);
+        if (!isStep || !blocks.some((b) => s.line > b.start && s.line <= b.end)) return err(`${sat}.line`, `line ${s.line} of ${s.file} isn't a test.step(...) call inside the test for ${c.id}`);
       }
       covered.add(s.step);
     });

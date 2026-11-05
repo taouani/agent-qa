@@ -85,7 +85,7 @@ describe("generated code checks", () => {
     const errors = check(draft({ files: [...draft().files, ...paths.map((path) => ({ path, role: "page" as const, content: "export class X {}" }))] }));
     for (const [i] of paths.entries()) expect(errors.some((e) => e.path === `$.files[${i + 4}].path`), paths[i]).toBe(true);
     // Only code is held to the sign-in rule: a feature about session timeouts is fine.
-    const ok = draft({ files: [...draft().files, { path: "test-data/session-timeout.json", role: "data", content: "{}" }] });
+    const ok = draft({ files: [...draft().files, { path: "test-data/session-timeout.json", role: "data", content: "{}" }, { path: "src/pages/user-settings-page.ts", role: "page", content: "export class UserSettingsPage {}" }, { path: "tests/step-definitions/user-management/abc.steps.ts", role: "steps", content: "export {};" }] });
     expect(check(ok)).toEqual([]);
   });
 
@@ -111,8 +111,14 @@ describe("generated code checks", () => {
       expect(check(d).map((e) => e.path), line).toContain("$.files[1].content");
     }
     const fine = draft();
-    fine.files[1] = { ...fine.files[1]!, content: `${STEPS}\nconst runtime = '[data-aura-class="forceFlexipageRuntime"]';\n` };
+    fine.files[1] = { ...fine.files[1]!, content: `${STEPS}\nconst runtime = '[data-aura-class="forceFlexipageRuntime"]';\ntest.setTimeout(180_000);\nconst file = join(__dirname, '..', 'data.json');\nconst api = { setTimeout: 1 };\n` };
     expect(check(fine)).toEqual([]);
+    const bound = draft();
+    bound.files[1] = { ...bound.files[1]!, content: `${STEPS}\nconst wait = page.waitForTimeout.bind(page);\nglobalThis.setTimeout(() => {}, 1);\n` };
+    expect(check(bound).filter((e) => e.message.includes("fixed wait"))).toHaveLength(2);
+    const data = draft();
+    data.files[2] = { ...data.files[2]!, content: JSON.stringify({ id: "001000000000001AAA", url: "https://acme.my.salesforce.com/x" }) };
+    expect(check(data).map((e) => e.path)).toEqual(["$.files[2].content", "$.files[2].content"]);
     const spaced = draft();
     spaced.files[2] = { ...spaced.files[2]!, content: JSON.stringify({ requester: "< PERSON_1 >" }).replace("< PERSON_1 >", "<PERSON\n_1>") };
     expect(check(spaced).map((e) => e.path)).toContain("$.files[2].content");
@@ -152,8 +158,11 @@ describe("generated code checks", () => {
     const across = check(acrossFiles).map((e) => e.message).join("\n");
     expect(across).toContain("defined already in tests/step-definitions/approval-request/abc-1.steps.ts");
     expect(across).toContain("matches 2 step definitions");
+    const custom = draft({}, );
+    custom.files[0] = { ...custom.files[0]!, content: FEATURE.replace("    When I create", "    And I am a store manager\n    When I create") };
+    expect(check(custom, { profile: { ...profile, steps: [...profile.steps, { keyword: "Given", pattern: "I am a {role}", kind: "expression", file: "tests/step-definitions/common/role.steps.ts", line: 1, fixtures: [] }] } })).toEqual([]);
     const broken = draft();
-    broken.files[1] = { ...broken.files[1]!, content: `${STEPS}\nWhen('I see {nope}', async () => {});\n` };
+    broken.files[1] = { ...broken.files[1]!, content: `${STEPS}\nWhen('I see (oops', async () => {});\n` };
     expect(check(broken).map((e) => e.message).join("\n")).toContain("doesn't compile");
   });
 
@@ -185,6 +194,23 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     const plain = { ...profile, kind: "playwright" as const, steps: [] };
     const d = draft({ files: [{ path: "tests/abc-1.spec.ts", role: "spec", content: spec }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/abc-1.spec.ts", line: 4 }, { step: 2, file: "tests/abc-1.spec.ts", line: 5 }] }] });
     expect(check(d, { profile: plain })).toEqual([]);
+    // Prettier's wrapped titles and an id on the describe both count.
+    const wrapped = `import { test } from '@playwright/test';
+
+test.describe('TC-ABC-1-001 Create an approval request', () => {
+  test(
+    'the long title',
+    async ({ page }) => {
+      await test.step('1. Sign in as a store manager', async () => {});
+      await test.step('2. Create a request', async () => {});
+    },
+  );
+});
+`;
+    const w = draft({ files: [{ path: "tests/abc-1.spec.ts", role: "spec", content: wrapped }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/abc-1.spec.ts", line: 7 }, { step: 2, file: "tests/abc-1.spec.ts", line: 8 }] }] });
+    expect(check(w, { profile: plain })).toEqual([]);
+    const none = draft({ files: [{ path: "tests/abc-1.spec.ts", role: "spec", content: wrapped.replace("TC-ABC-1-001 ", "") }], cases: w.cases });
+    expect(check(none, { profile: plain }).map((e) => e.path)).toEqual(["$.cases[0].id"]);
     expect(check({ ...d, cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/abc-1.spec.ts", line: 3 }, { step: 2, file: "tests/abc-1.spec.ts", line: 5 }] }] }, { profile: plain })[0]).toMatchObject({ message: expect.stringContaining("isn't a test.step(...) call") });
   });
 
