@@ -3,6 +3,7 @@ import type { WorkflowDefinition } from "../core/index.js";
 import { requirementsWorkflow } from "./requirements/workflow.js";
 import { testCasesWorkflow, type TestCasesDeps } from "./test-cases/workflow.js";
 import { profileWorkflow, type ProfileDeps } from "./profile/workflow.js";
+import { exploreWorkflow, type ExploreDeps } from "./explore/workflow.js";
 
 export const MODULE = "workflows";
 export { spikeWorkflow } from "./spike/workflow.js";
@@ -17,10 +18,14 @@ export { CASE_ID, TEST_CASES_ARTIFACT, TEST_CASES_DRAFT_ARTIFACT, TEST_CASES_TEM
 export type { TestCase, TestCases, TestCasesDraft, XrayPush } from "./test-cases/artifact.js";
 export { profileInputSchema, profileWorkflow } from "./profile/workflow.js";
 export type { ProfileDeps, ProfileInputs } from "./profile/workflow.js";
+export { exploreInputSchema, exploreWorkflow, MAX_EXPLORE_CASES, progressOf } from "./explore/workflow.js";
+export type { ExploreDeps, ExploreInputs } from "./explore/workflow.js";
+export { EXPLORATION_ARTIFACT, EXPLORATION_TEMPLATE_VERSION, explorationSchema, exploreActionSchema } from "./explore/artifact.js";
+export type { Exploration, ExploreAction } from "./explore/artifact.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps): ReadonlyArray<WorkflowDefinition<any>> {
+export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps): ReadonlyArray<WorkflowDefinition<any>> {
   // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
-  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps)];
+  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps)];
 }
