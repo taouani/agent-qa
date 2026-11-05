@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
 
@@ -132,6 +132,27 @@ export async function withScratchFile<T>(grant: WriteGrant, run: (path: string) 
     const value = await run(file);
     const text = await readFile(file, "utf8").catch(() => undefined);
     return { value, text };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A new, empty folder in the system's temp folder, removed with everything in
+ * it once `run` ends: the harness's stand-in repo (S2-10), which the repo
+ * writers then fill as they would a person's repo. With `nodeModules`, its
+ * node_modules is a link to that node_modules folder, so the repo's commands (npx
+ * playwright) and imports find those packages. Needs a direct `testCode` grant.
+ */
+export async function withScratchFolder<T>(grant: WriteGrant, run: (dir: string) => Promise<T>, nodeModules?: string): Promise<T> {
+  assertGrant(grant, "testCode");
+  if (grant.via !== "direct") throw new PolicyDenied("testCode", "a scratch repo is never made from CI's checkout");
+  // The real path: the repo writers compare resolved paths, and a temp folder can sit behind a link (macOS /var).
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "agent-qa-repo-")));
+  try {
+    // A junction on Windows: no admin right needed. Removing the folder removes the link, never what it points to.
+    if (nodeModules !== undefined) await symlink(resolve(nodeModules), join(dir, "node_modules"), "junction");
+    return await run(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

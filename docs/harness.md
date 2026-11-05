@@ -28,6 +28,17 @@ The stand-in Jira is simpler than the real one in two ways: field ids are made u
 
 Your own cases go in a fixtures folder named in `agent-qa.yaml` (`harness.sources`), with seeds in `harness.seededPersonalData`. A ticket has `key`, `summary` and `description`, and optionally `type`, `status`, `priority`, `acceptanceCriteria`, `fields`, `people`, `mentions`, `labels`, `components`, `fixVersions`, `pages`, `parent` and `links`. Every seed a case names must appear whole in its tickets. Jira sources are skipped for now.
 
+## Browser cases
+
+Two more cases run in a real browser, on a stand-in Lightning app the harness serves on `127.0.0.1` (list view, record pages in shadow DOM, spinners and toasts). Its records show the case's seeds. They run only with `--browser [folder]`, where the folder has Playwright and its Chromium installed (default: the project).
+
+- **approval-request-explore** explores a request with the `explore` workflow: every page snapshot, action result and `exploration@1` is scanned.
+- **approval-request-defect** checks how a real product bug is handled. The app has a seeded bug: Submit for Approval says the request was submitted, but its status turns to Rejected. The harness starts a plain Playwright repo for the app in a temp folder (removed afterwards; the folder's `node_modules`, which needs `@playwright/test`, is linked in), then runs the test-cases and scripts workflows. The generated test fails on the bug. The fixture model first tries to make it pass by changing what the test expects, which the fix checks must refuse, then reports a defect. The case passes only if the run ends as `defect` with the test unchanged on disk, and no seed reaches the model through the test's error or page snapshot.
+
+```bash
+agent-qa harness --browser            # both browser cases too
+```
+
 ## Kept rate
 
 The report also gives the kept rate: of the test cases the model wrote, the share people kept as written in review. It comes from the `test-cases@1` artifact of every run in `.agent-qa/runs/` (or `AGENT_QA_RUNS_DIR`). Runs reviewed with `--yes` are left out, because nobody looked at those cases, and harness runs never count.

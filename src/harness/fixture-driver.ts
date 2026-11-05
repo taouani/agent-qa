@@ -7,6 +7,11 @@ import type { ModelDriver, ModelRequest, ModelResponse } from "../llm/index.js";
  * copies that masked text into its answers, so whatever it was shown flows on
  * into later prompts the way a real model's echo would.
  *
+ * For the `scripts` workflow (S2-10) it writes one spec for the stand-in
+ * app's Submit for Approval, and, when that test fails on the app's seeded
+ * bug, first tries to make it pass by changing what it expects (which the
+ * fix checks must refuse), then reports the defect.
+ *
  * It proves the pipeline masks what it sends, not that answers are any good:
  * the quality numbers come from runs with a real model.
  */
@@ -15,7 +20,18 @@ export class FixtureDriver implements ModelDriver {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const step = (request.schemaName ?? "").replace(/_\d+$/, "");
-    const answer = step === "analyze" ? analyze(contextOf(request)) : step === "cases" ? cases(contextOf(request)) : step === "act" ? act(contextText(request)) : undefined;
+    const answer =
+      step === "analyze"
+        ? analyze(contextOf(request))
+        : step === "cases"
+          ? cases(contextOf(request))
+          : step === "act"
+            ? act(contextText(request))
+            : step === "draft"
+              ? draft(contextText(request))
+              : step === "fix"
+                ? fix(contextText(request), request.messages.length > 2)
+                : undefined;
     if (answer === undefined) throw new Error(`The fixture model can't answer step ${request.schemaName ?? "(unnamed)"}`);
     return { text: JSON.stringify(answer), model: "fixture" };
   }
@@ -103,4 +119,65 @@ function act(context: string) {
     () => ({ type: "verify", target: { role: "status" }, text: `Checked with ${need(heading, "record heading")}` }),
   ];
   return { step: 1, action: done < tour.length ? tour[done]!() : { type: "finish", summary: "Toured the stand-in app" } };
+}
+
+/** Where the generated spec goes, from the framework folder. */
+export const FIXTURE_SPEC = "tests/approval-request.spec.ts";
+
+/**
+ * One test per case: open the first request from the list, then, in the
+ * last step, submit it and check its status. No names in the code: the list
+ * link is picked by its place in the table.
+ */
+function draft(context: string) {
+  const cases = [...context.matchAll(/^### (TC-[A-Z][A-Z0-9]*-\d+-\d{3}): /gm)].map((m) => {
+    const rest = context.slice(m.index! + m[0].length);
+    const next = rest.search(/^### /m);
+    const section = next < 0 ? rest : rest.slice(0, next);
+    return { id: m[1]!, steps: [...section.matchAll(/^\| (\d+) \|/gm)].length };
+  });
+  if (!cases.length) throw new Error("The fixture model found no test cases in the context");
+  const lines = ["import { expect, test } from '@playwright/test';", ""];
+  const map: Array<{ id: string; steps: Array<{ step: number; file: string; line: number }> }> = [];
+  for (const c of cases) {
+    const steps: Array<{ step: number; file: string; line: number }> = [];
+    lines.push(`test('${c.id} submits the request for approval', async ({ page }) => {`);
+    for (let n = 1; n <= Math.max(c.steps, 1); n++) {
+      steps.push({ step: n, file: FIXTURE_SPEC, line: lines.length + 1 });
+      lines.push(`  await test.step('Step ${n}', async () => {`);
+      if (n === 1) {
+        lines.push("    await page.goto('/lightning/o/Approval_Request__c/list');");
+        lines.push("    await page.getByRole('table').getByRole('link').first().click();");
+        lines.push("    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();");
+      }
+      if (n === Math.max(c.steps, 1)) {
+        lines.push("    await page.getByRole('button', { name: 'Submit for Approval' }).click();");
+        lines.push("    await expect(page.getByRole('region', { name: 'Details' })).toContainText('Submitted');");
+      } else if (n > 1) lines.push("    await expect(page.getByRole('region', { name: 'Details' })).toBeVisible();");
+      lines.push("  });");
+    }
+    lines.push("});", "");
+    map.push({ id: c.id, steps: steps.filter((s) => s.step <= c.steps) });
+  }
+  return { files: [{ path: FIXTURE_SPEC, role: "spec", content: lines.join("\n") }], cases: map, notes: [] };
+}
+
+/**
+ * A fix round. First try: call every failure a selector problem and change
+ * the expected status to what the app shows, as a model chasing green might;
+ * the fix checks must refuse it. On the retry: report the defect, change nothing.
+ */
+function fix(context: string, retry: boolean) {
+  const failures = context.slice(context.indexOf("## Fix round"), context.indexOf("## The generated files"));
+  const titles = [...failures.matchAll(/^### (.+)$/gm)].map((m) => m[1]!).filter((t) => !t.startsWith("Errors outside the tests") && t !== "Earlier rounds");
+  if (/^### Errors outside the tests/m.test(failures)) titles.push("(the run)");
+  if (!titles.length) throw new Error("The fixture model found no failures in the context");
+  if (retry) return { failures: titles.map((test) => ({ test, kind: "defect", reason: "The request shows another status than Submitted after Submit for Approval" })), files: [] };
+  const at = context.indexOf(`### ${FIXTURE_SPEC} (spec)`);
+  const code = /```ts\n([^]*?)\n```/.exec(context.slice(at))?.[1];
+  if (at < 0 || code === undefined) throw new Error("The fixture model found no spec in the context");
+  return {
+    failures: titles.map((test) => ({ test, kind: "selector", reason: "The status shows another word" })),
+    files: [{ path: FIXTURE_SPEC, content: `${code.replace(/toContainText\('Submitted'\)/g, "toContainText('Rejected')")}\n` }],
+  };
 }

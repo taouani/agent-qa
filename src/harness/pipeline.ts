@@ -1,12 +1,14 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, type Step } from "../core/index.js";
 import { DataAccess, openRepoBrowser, type JiraCollection, type JiraInput, type JiraIssue, type OpenBrowser } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { EXPLORATION_ARTIFACT, exploreWorkflow, requirementsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import { EXPLORATION_ARTIFACT, exploreWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
 import type { Seed, SyntheticTicket } from "./cases.js";
+import { FIXTURE_SPEC } from "./fixture-driver.js";
 import { startStandInApp, type StandInApp } from "./stand-in-app.js";
 import type { Pipeline, PipelineContext } from "./runner.js";
 
@@ -27,6 +29,13 @@ import type { Pipeline, PipelineContext } from "./runner.js";
  * exploration@1 record are scanned the same way. The harness gives the yes
  * to explore itself, since the app is its own, on this machine.
  *
+ * A `scripts` case (S2-10) also starts a repo for the stand-in app in a
+ * scratch folder (data's scaffold writer, then removed), runs the test-cases
+ * workflow, then the scripts workflow: the generated test is written, run with
+ * the folder's Playwright, and fails on the app's seeded bug. The run must
+ * end as a reported defect with the test unchanged on disk; its output (the
+ * error, the page snapshot) is scanned like everything else.
+ *
  * Runs are kept under `runsDir` for inspection, apart from the project's own
  * runs so the kept rate never counts them. They hold masked text only: the
  * token vault lives in memory and is gone when the case ends.
@@ -42,7 +51,7 @@ export interface MaskedPipelineOptions {
 }
 
 /** Cases that run in a browser: they need `playwrightFolder`. */
-export const BROWSER_WORKFLOWS: ReadonlySet<string> = new Set(["explore"]);
+export const BROWSER_WORKFLOWS: ReadonlySet<string> = new Set(["explore", "scripts"]);
 /** Actions per explored case: the fixture model's tour is five actions, then finish. */
 const EXPLORE_MAX_ACTIONS = 10;
 
@@ -54,21 +63,28 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   const config = harnessConfig(options.config);
   return async (context) => {
     if (!BROWSER_WORKFLOWS.has(context.case.workflow)) return runCase(options, runs, config, context);
-    if (!options.playwrightFolder) throw new Error("an explore case needs a browser: run the harness with --browser");
-    const app = await startStandInApp(context.seeds);
+    if (!options.playwrightFolder) throw new Error(`a ${context.case.workflow} case needs a browser: run the harness with --browser`);
+    const scripts = context.case.workflow === "scripts";
+    const app = await startStandInApp(context.seeds, { defect: scripts });
     try {
-      return await runCase(options, runs, config, context, app);
+      if (!scripts) return await runCase(options, runs, config, context, app);
+      const modules = nodeModulesOf(options.playwrightFolder);
+      // The generated test imports @playwright/test, as a repo's tests do.
+      if (!existsSync(join(modules, "@playwright", "test", "package.json"))) throw new Error(`a scripts case runs its test with @playwright/test: ${modules} has none (npm install @playwright/test there)`);
+      // A bootstrap DataAccess only makes the scratch folder (through the policy layer); the case runs in it.
+      const boot = new DataAccess({ root: options.runsDir, store: runs, config, mode: "ide", audit: new MemoryAuditSink() });
+      return await boot.withScratchRepo("harness", (repo) => runCase(options, runs, config, context, app, repo), modules);
     } finally {
       await app.close();
     }
   };
 }
 
-async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: Config, { case: c, tickets, driver, seeds, observe }: PipelineContext, app?: StandInApp) {
+async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: Config, { case: c, tickets, driver, seeds, observe }: PipelineContext, app?: StandInApp, repo?: string) {
   const key = randomBytes(32);
   const folder = options.playwrightFolder;
   const data = new DataAccess({
-    root: options.runsDir,
+    root: repo ?? options.runsDir,
     store: runs,
     // The stand-in app is the only site the explorer may drive; opening the browser needs no question.
     config: app ? configSchema.parse({ ...config, playwright: { baseUrl: app.url }, policy: { writes: { commands: "allow" } } }) : config,
@@ -90,7 +106,8 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId })
     .register(requirementsWorkflow({ data, runs }))
     .register(testCasesWorkflow({ data, runs }))
-    .register(exploreWorkflow({ data, runs }));
+    .register(exploreWorkflow({ data, runs }))
+    .register(scriptsWorkflow({ data, runs }));
 
   const run = async (workflow: string, inputs: Record<string, unknown>) => {
     let step: Step = await engine.start(workflow, inputs);
@@ -100,15 +117,11 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
         else if (step.kind === "confirm") {
           // An IDE's model is shown this text: it must be as masked as any prompt.
           observe(`${step.instructions}\n${step.context}`);
-          // The person's yes to explore: the stand-in app is the harness's own.
-          const answer =
-            workflow === "explore" && step.stepId === "approve"
-              ? { approve: true }
-              : step.stepId === "review"
-                ? await editedReview(runs, step.runId, seeds)
-                : await engine.fixedAnswer(step.runId, "unattended");
+          // The person's yes to explore, and to write and run the scripts: the stand-in app and repo are the harness's own.
+          const yes = PERSON_YES[`${workflow}/${step.stepId}`];
+          const answer = yes ?? (workflow === "test-cases" && step.stepId === "review" ? await editedReview(runs, step.runId, seeds) : await engine.fixedAnswer(step.runId, "unattended"));
           if (answer === undefined) throw new Error(`Step ${step.stepId} has no unattended answer`);
-          step = (await engine.submit(step.runId, step.stepId, answer, { byPerson: workflow === "explore" && step.stepId === "approve" })).next;
+          step = (await engine.submit(step.runId, step.stepId, answer, { byPerson: yes !== undefined })).next;
         } else break;
       }
     } finally {
@@ -120,6 +133,7 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   };
   try {
     if (!app) return { runId: await run(c.workflow, c.inputs) };
+    if (repo) return await scriptsCase(data, runs, app, repo, c.inputs, run);
     const testCasesRun = await run("test-cases", c.inputs);
     const runId = await run("explore", { testCasesRun, start: app.start, maxActions: EXPLORE_MAX_ACTIONS });
     // A gate that only saw the list view proves little about record pages: the case fails.
@@ -129,6 +143,62 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   } finally {
     await data.close();
   }
+}
+
+/** The --browser folder's packages: the folder may be a project or its node_modules. */
+const nodeModulesOf = (folder: string) => (basename(folder) === "node_modules" ? folder : join(folder, "node_modules"));
+
+/** The steps the harness answers yes to as the person: its own app and its own scratch repo. */
+const PERSON_YES: Record<string, unknown> = {
+  "explore/approve": { approve: true },
+  "scripts/review": { write: true },
+  "scripts/run": { run: true },
+};
+
+/** The stand-in repo: plain Playwright, the app's address as its baseURL, no type check (it has no TypeScript). */
+function standInRepo(url: string) {
+  return [
+    { path: "package.json", content: `${JSON.stringify({ name: "stand-in-tests", private: true, devDependencies: { "@playwright/test": "*" } }, null, 2)}\n` },
+    {
+      path: "playwright.config.ts",
+      content: [
+        "import { defineConfig, devices } from '@playwright/test';",
+        "",
+        "export default defineConfig({",
+        "  testDir: './tests',",
+        "  retries: 0,",
+        "  workers: 1,",
+        "  expect: { timeout: 3_000 },",
+        `  use: { baseURL: ${JSON.stringify(url)} },`,
+        "  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],",
+        "});",
+        "",
+      ].join("\n"),
+    },
+  ];
+}
+
+/**
+ * The seeded-bug case: a repo is started for the stand-in app, its test is
+ * generated, written and run, and fails because the app rejects what it
+ * says it submitted. The run must report a defect and leave the test as written.
+ */
+async function scriptsCase(data: DataAccess, runs: RunStore, app: StandInApp, repo: string, inputs: Record<string, unknown>, run: (workflow: string, inputs: Record<string, unknown>) => Promise<string>) {
+  const commands = [["npx", "playwright", "test"]];
+  await data.scaffoldRepo("harness", ".", "playwright", () => standInRepo(app.url), commands, true);
+  const testCasesRun = await run("test-cases", inputs);
+  const runId = await run("scripts", { testCasesRun, stabilityRuns: 1 });
+  const result = await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT);
+  const drafted = await runs.readArtifact(runId, SCRIPTS_DRAFT_ARTIFACT);
+  if (!result || !drafted) throw new Error(`Run ${runId} wrote and ran no tests`);
+  const tests = result.data.attempts[0]?.tests ?? [];
+  if (result.data.status !== "defect") throw new Error(`Run ${runId} ended ${result.data.status}${result.data.reason ? ` (${result.data.reason})` : ""}, not as a reported defect`);
+  if (!tests.length || tests.some((t) => t.outcome !== "failed")) throw new Error(`Run ${runId}: the generated tests didn't all fail on the seeded bug${result.data.attempts[0]?.errors[0] ? ` (${result.data.attempts[0].errors[0].slice(0, 400)})` : ""}`);
+  // The test as written: a defect is reported, never "fixed" by changing what the test expects.
+  const written = drafted.data.files.find((f) => f.path === FIXTURE_SPEC)?.content;
+  const onDisk = await readFile(join(repo, FIXTURE_SPEC), "utf8").catch(() => undefined);
+  if (written === undefined || onDisk !== written || !onDisk.includes("toContainText('Submitted')")) throw new Error(`Run ${runId} changed the generated test instead of reporting the defect`);
+  return { runId, testCasesRun };
 }
 
 /**

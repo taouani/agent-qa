@@ -310,12 +310,13 @@ describe("agent-qa harness exit codes", () => {
   it("skips the browser cases unless asked, and names a missing Playwright", async () => {
     const r = await runCli(["harness", "--pipeline", "empty", "--cwd", dir]);
     expect(r.code).toBeUndefined();
-    expect(r.out).toContain("note: 1 browser case(s) skipped: run with --browser");
+    expect(r.out).toContain("note: 2 browser case(s) skipped: run with --browser");
     expect(r.out).toContain("3/3 passed");
     const browser = await runCli(["harness", "--browser", "--cwd", dir]);
     expect(browser.code).toBe(1);
     expect(browser.out).toMatch(/\[error\] approval-request-explore: .*Playwright isn't installed in the repo/);
-    expect(browser.out).toContain("3/4 passed");
+    expect(browser.out).toMatch(/\[error\] approval-request-defect: .*has none \(npm install @playwright\/test there\)/);
+    expect(browser.out).toContain("3/5 passed");
   }, 60_000);
 
   it("exits 2 with one line for a bad config or a missing fixtures folder", async () => {

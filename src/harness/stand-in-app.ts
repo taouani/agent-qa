@@ -11,7 +11,17 @@ import type { Seed } from "./cases.js";
  * spinner first, as Lightning's do.
  *
  * It holds no state on the server: each page builds itself from the seeds.
+ *
+ * With `defect`, it carries a seeded product bug (S2-10): Submit for Approval
+ * says the request was submitted, but its status turns to "Rejected". A
+ * generated test that checks the status must fail, and the run must report a
+ * defect, never change the test to pass.
  */
+
+export interface StandInOptions {
+  /** The seeded product bug: a submitted request shows as Rejected. */
+  defect?: boolean;
+}
 
 export interface StandInApp {
   /** http://127.0.0.1:<port> */
@@ -98,7 +108,7 @@ ${records.map((r) => `<tr><th scope="row"><a href="/lightning/r/${OBJECT}/${r.id
   );
 }
 
-function recordPage(r: StandInRecord): string {
+function recordPage(r: StandInRecord, defect: boolean): string {
   const fields = r.fields
     .map((f) => `<div class="slds-form-element"><span class="slds-form-element__label">${esc(f.label)}</span> <lightning-formatted-text${f.label === "Status" ? ' id="status"' : ""} value="${esc(f.value)}"></lightning-formatted-text></div>`)
     .join("\n");
@@ -115,7 +125,7 @@ document.getElementById("save").addEventListener("click", () => {
   busy(400, () => toast('Request "' + text + '" was saved.'));
 });
 document.getElementById("submit").addEventListener("click", () => busy(400, () => {
-  document.getElementById("status").shadowRoot.textContent = "Submitted";
+  document.getElementById("status").shadowRoot.textContent = ${JSON.stringify(defect ? "Rejected" : "Submitted")};
   toast("The request was submitted for approval.");
 }));`,
   );
@@ -133,13 +143,13 @@ document.getElementById("save").addEventListener("click", () => busy(400, () => 
 }
 
 /** Starts the app on a free port of 127.0.0.1. */
-export async function startStandInApp(seeds: readonly Seed[]): Promise<StandInApp> {
+export async function startStandInApp(seeds: readonly Seed[], options: StandInOptions = {}): Promise<StandInApp> {
   const records = standInRecords(seeds);
   const server: Server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://stand-in").pathname;
     const record = /^\/lightning\/r\/[A-Za-z_]+\/([A-Za-z0-9]+)\/view$/.exec(path);
     const r = record ? records.find((x) => x.id === record[1]) : undefined;
-    const html = path === STAND_IN_START ? listView(records) : path === `/lightning/o/${OBJECT}/new` ? newForm() : r ? recordPage(r) : undefined;
+    const html = path === STAND_IN_START ? listView(records) : path === `/lightning/o/${OBJECT}/new` ? newForm() : r ? recordPage(r, options.defect === true) : undefined;
     res.writeHead(html ? 200 : 404, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     res.end(html ?? page("Page not found", "<h1>Page not found</h1>"));
   });

@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -1048,6 +1048,20 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       }
     });
     return outcome.status === "done" ? { status: "done" as const, ...outcome.value } : { status: "declined" as const };
+  }
+
+  /**
+   * Runs `run` with a new, empty folder that is removed afterwards (S2-10):
+   * the harness's stand-in repo, where a DataAccess rooted there scaffolds,
+   * writes and runs generated tests exactly as in a person's repo; with
+   * `nodeModules`, using that node_modules folder. A `testCode` write,
+   * through the policy layer.
+   */
+  async withScratchRepo<T>(runId: string, run: (dir: string) => Promise<T>, nodeModules?: string): Promise<T> {
+    const config = await this.configOrDefault();
+    const outcome = await this.policy(config).guard({ target: "testCode", summary: "A scratch repo in the system's temp folder, removed afterwards", runId }, (grant) => withScratchFolder(grant, run, nodeModules));
+    if (outcome.status !== "done") throw new PolicyDenied("testCode", "the policy said no to a scratch repo");
+    return outcome.value;
   }
 
   /** The config, or the default rules when there is no agent-qa.yaml at all. A broken one is an error. */
