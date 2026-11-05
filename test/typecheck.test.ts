@@ -53,7 +53,8 @@ describe("type check with the repo's TypeScript", () => {
     const msg = `Could not find a declaration file for module 'x'. '${join(dir, "node_modules", "x", "index.js")}' implicitly has an 'any' type. See ${homedir()}/notes`;
     const out = local(msg, dir);
     expect(out).not.toContain(dir);
-    expect(out).toContain("'./node_modules/x/index.js'");
+    // The message keeps the platform's separators (join gives backslashes on Windows).
+    expect(out).toMatch(/'\.[\\/]node_modules[\\/]x[\\/]index\.js'/);
     expect(out).toContain("~/notes");
     // A root home (a container with no user) and a home that prefixes another folder change nothing else.
     const imp = "Module '\"@pages/approval-app-main-page\"' has no exported member 'X'.";
