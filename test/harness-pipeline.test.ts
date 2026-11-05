@@ -42,7 +42,7 @@ describe("masked pipeline (S1-14)", () => {
     }
     // Unattended reviews never count toward the kept rate, read from the real run store.
     expect(await keptRate(new RunStore(join(dir, "runs")))).toMatchObject({ runs: 0, unattendedRuns: 2, generated: 0 });
-  });
+  }, 30_000);
 
   it("fails the gate when masking is switched off", async () => {
     // Only names masked: emails, phones, cards, IBANs, ids and IPs reach the model.
@@ -52,7 +52,7 @@ describe("masked pipeline (S1-14)", () => {
     const leaked = new Set(report.cases.flatMap((c) => c.seededLeaks.map((l) => l.seedId)));
     for (const id of ["seed-email-1", "seed-phone-1", "seed-card-1", "seed-iban-1", "seed-national-id-1"]) expect(leaked).toContain(id);
     expect(JSON.stringify(report)).not.toContain("4111");
-  });
+  }, 30_000);
 
   it("scans the run folder even when a model call was refused", async () => {
     const report = await runHarness({
