@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
-import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, JiraClient, loadTypeScript, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
+import { ConnectorError, findTypeScript, JiraClient, loadTypeScript, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -130,6 +130,8 @@ export interface ScriptsData {
    * why it couldn't run (no typescript or tsconfig in the repo).
    */
   typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome>;
+  /** Whether a type check could run at all (the policy, the repo's typescript, a tsconfig), checked without loading anything: no question is asked when it couldn't. */
+  typeCheckReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }>;
 }
 
 export type TypeCheckOutcome = { status: "done"; diagnostics: TypeDiagnostic[] } | { status: "declined" } | { status: "unavailable"; reason: string };
@@ -469,29 +471,49 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return masked;
   }
 
+  async typeCheckReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }> {
+    const saved = await this.savedProfile();
+    if (!saved) return { ready: false, reason: "no reviewed framework profile" };
+    const decision = this.policy(await this.configOrDefault()).decide("commands");
+    if (decision.kind === "deny") return { ready: false, reason: `the policy doesn't allow it (${decision.reason})` };
+    if (this.options.typeCheck) return { ready: true };
+    const found = findTypeScript(hostCwd(this.options.root, saved.folder), hostCwd(this.options.root));
+    if ("reason" in found) return { ready: false, reason: await this.maskReason(tokensRun, found.reason) };
+    return { ready: true };
+  }
+
+  private async maskReason(tokensRun: string, reason: string): Promise<string> {
+    const { service } = await this.run(tokensRun);
+    const masked = service.maskText(reason, "typecheck.reason");
+    await service.saveVault();
+    return masked;
+  }
+
   async typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome> {
     if (!approved) return { status: "declined" };
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     const folder = hostCwd(this.options.root, saved.folder);
-    let config: Config | undefined;
-    try {
-      config = await this.loadConfig();
-    } catch (error) {
-      if (!(error instanceof ConfigError && error.code === "NOT_FOUND")) throw error;
-    }
+    const config = await this.configOrDefault();
     const check = this.options.typeCheck ?? ((grant: WriteGrant, f: typeof files) => typeCheckFiles(loadTypeScript(grant, folder, hostCwd(this.options.root)).ts, folder, f));
-    const summary = (await this.run(runId)).service.maskText(`Type-check ${files.length} generated file(s) with the repo's TypeScript in ${saved.folder}`, "host.summary");
+    const { service } = await this.run(tokensRun);
+    const summary = service.maskText(`Type-check ${files.length} generated file(s) with the repo's TypeScript in ${saved.folder}`, "host.summary");
     let outcome;
     try {
-      outcome = await this.policy(config ?? DEFAULT_RULES_CONFIG).guard({ target: "commands", summary, runId }, async (grant) => check(grant, files));
+      outcome = await this.policy(config).guard({ target: "commands", summary, runId }, async (grant) => check(grant, files));
     } catch (error) {
-      if (error instanceof TypeCheckError) return { status: "unavailable", reason: error.message };
-      throw error;
+      // Whatever stops the check (the policy, the repo's typescript, the compiler itself), the code is kept unchecked and says why:
+      // an error here would leave the step unable to finish.
+      const reason =
+        error instanceof TypeCheckError
+          ? error.message
+          : error instanceof PolicyDenied
+            ? "the policy doesn't allow running the repo's TypeScript (policy.writes.commands)"
+            : `the repo's TypeScript failed (${error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : "Error"})`;
+      return { status: "unavailable", reason: await this.maskReason(tokensRun, local(reason, folder)) };
     }
     if (outcome.status !== "done") return { status: "declined" };
-    const { service } = await this.run(tokensRun);
-    const diagnostics = outcome.value.map((d) => ({ ...d, message: service.maskText(d.message, "typecheck.message") }));
+    const diagnostics = outcome.value.map((d) => ({ ...d, message: service.maskText(local(d.message, folder), "typecheck.message") }));
     await service.saveVault();
     return { status: "done", diagnostics };
   }

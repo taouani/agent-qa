@@ -101,6 +101,7 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
       return profile;
     },
     savedProfile: async () => SAVED,
+    typeCheckReadiness: async () => ({ ready: true }),
     typeCheck: async (_run, tokensRun, files, approved) => {
       vaults.push(`typecheck:${tokensRun}`);
       if (!approved) return { status: "declined" };
@@ -133,8 +134,8 @@ describe("scripts workflow", () => {
   /** Starts a run and answers the type-check question (the person's own answer). */
   const begin = async (e: WorkflowEngine, inputs: Record<string, unknown>, approve = true) => {
     const first = await e.start("scripts", inputs);
-    expect(first.stepId).toBe("approve");
-    const next = (await e.submit(first.runId, "approve", { approve }, { byPerson: true })).next;
+    expect(first.stepId).toBe("typecheck");
+    const next = (await e.submit(first.runId, "typecheck", { approve }, { byPerson: true })).next;
     return { runId: first.runId, context: next.context, next };
   };
   const engine = (data: ScriptsDeps["data"] = fakeData()) => new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(scriptsWorkflow({ data, runs }));
@@ -169,8 +170,8 @@ describe("scripts workflow", () => {
   it("asks before the type check, sends its errors back to the model, and records a no", async () => {
     const e0 = engine();
     const asked = await e0.start("scripts", { testCasesRun: "tc-run" });
-    expect(await e0.approval(asked.runId, "approve")).toMatchObject({ question: expect.stringContaining("Type-check the generated code with the TypeScript installed in your repo (.)") });
-    await expect(e0.submit(asked.runId, "approve", { approve: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
+    expect(await e0.approval(asked.runId, "typecheck")).toMatchObject({ question: expect.stringContaining("Type-check the generated code with your repo's TypeScript (in the repo root)? Agent-QA runs the typescript package from your node_modules") });
+    await expect(e0.submit(asked.runId, "typecheck", { approve: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
 
     const data = fakeData({}, PROFILE, (files) => (files.some((f) => f.content.includes("navigateToNewForm(1)")) ? [{ file: "tests/step-definitions/approval-request/abc-1.steps.ts", line: 8, code: 2554, message: "Expected 0 arguments, but got 1." }] : []));
     const e = engine(data);
@@ -184,7 +185,25 @@ describe("scripts workflow", () => {
 
     const no = await begin(engine(), { testCasesRun: "tc-run" }, false);
     expect((await engine().submit(no.runId, "draft", DRAFT)).status).toBe("accepted");
-    expect((await runs.readArtifact(no.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.typeCheck).toEqual({ status: "skipped", reason: "the user didn't agree to the type check" });
+    expect((await runs.readArtifact(no.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.typeCheck).toEqual({ status: "skipped", reason: "not approved: the person said no, or nobody was asked (an unattended run)" });
+  });
+
+  it("asks nothing when a type check couldn't run, and records why", async () => {
+    const data = fakeData({ typeCheckReadiness: async () => ({ ready: false, reason: "TypeScript isn't installed in the repo" }) });
+    const e = engine(data);
+    const first = await e.start("scripts", { testCasesRun: "tc-run" });
+    expect(first.stepId).toBe("draft");
+    expect((await e.submit(first.runId, "draft", DRAFT)).status).toBe("accepted");
+    expect(data.checked).toEqual([]);
+    expect((await runs.readArtifact(first.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.typeCheck).toEqual({ status: "unavailable", reason: "TypeScript isn't installed in the repo" });
+  });
+
+  it("type-checks only code that passed the other checks", async () => {
+    const data = fakeData();
+    const e = engine(data);
+    const run = await begin(e, { testCasesRun: "tc-run" });
+    await e.submit(run.runId, "draft", { ...DRAFT, files: [{ ...DRAFT.files[0]!, content: FEATURE.replace("@TC-ABC-1-001 ", "") }, ...DRAFT.files.slice(1)] });
+    expect(data.checked).toEqual([]);
   });
 
   it("keeps the draft when the repo can't type-check, and says why", async () => {
