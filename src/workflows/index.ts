@@ -33,5 +33,5 @@ export { helperPlan, helpersPath, LIGHTNING_HELPERS, LIGHTNING_LOCATOR_ORDER, LI
 export type { HelperChoice, PackHelper, PackRule } from "./packs/salesforce.js";
 export { FILE_ROLES, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_TEMPLATE_VERSION, scriptsDraftArtifactSchema, scriptsDraftSchema } from "./scripts/artifact.js";
 export type { FileRole, GeneratedFile, ScriptsDraft, ScriptsDraftArtifact } from "./scripts/artifact.js";
-export { checkDraft, cucumberRegExp, TOKEN } from "./scripts/checks.js";
+export { checkDraft, pathKey, TOKEN } from "./scripts/checks.js";
 export type { CheckContext } from "./scripts/checks.js";

@@ -71,6 +71,7 @@ const stepSchema = z
     keyword: z.enum(["Given", "When", "Then", "Step"]),
     pattern: z.string(),
     kind: z.enum(["expression", "regex"]),
+    flags: z.string().regex(/^[dgimsuvy]{1,8}$/).optional(),
     file: z.string(),
     line: z.number().int().min(0),
     fixtures: z.array(z.string()),

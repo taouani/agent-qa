@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scanSource } from "../src/data/index.js";
-import { checkDraft, cucumberRegExp, lightningHelpersSource, scriptsDraftSchema, type CheckContext, type ScriptsDraft } from "../src/workflows/index.js";
+import { checkDraft, lightningHelpersSource, scriptsDraftSchema, type CheckContext, type ScriptsDraft } from "../src/workflows/index.js";
 
 const step = (action: string, expected: string) => ({ action, data: "", expected });
 const CASES: CheckContext["cases"] = [
@@ -52,26 +52,41 @@ function draft(over: Partial<ScriptsDraft> = {}): ScriptsDraft {
   });
 }
 
-const check = (d: ScriptsDraft, ctx: Partial<CheckContext> = {}) => checkDraft(d, { profile, cases: CASES, ...ctx });
+const EXISTING = ["src/fixtures/fixtures.ts", "tests/step-definitions/common/toast.steps.ts", "README.md"];
+const check = (d: ScriptsDraft, ctx: Partial<CheckContext> = {}) => checkDraft(d, { profile, cases: CASES, existingFiles: EXISTING, ...ctx });
+/** The draft with one more Given step and its definition, to test how a pattern matches. */
+function matches(pattern: string, text: string, kind: "expression" | "regex" = "expression"): boolean {
+  const d = draft();
+  d.files[0] = { ...d.files[0]!, content: FEATURE.replace('    When I create', `    And ${text}\n    When I create`) };
+  const def = kind === "regex" ? `/${pattern}/` : `'${pattern.replace(/[\\']/g, (c) => `\\${c}`)}'`;
+  d.files[1] = { ...d.files[1]!, content: `${STEPS}\nWhen(${def}, async () => {});\n` };
+  return !check(d).some((e) => e.message.includes("no step definition matches"));
+}
 
 describe("generated code checks", () => {
   it("passes a BDD draft that reuses the repo's steps and adds its own", () => {
     expect(check(draft())).toEqual([]);
   });
 
-  it("turns Cucumber expressions into patterns", () => {
-    expect(cucumberRegExp("I am logged into Salesforce as {string}").test('I am logged into Salesforce as "X"')).toBe(true);
-    expect(cucumberRegExp("I have {int} cucumber(s) in my belly/stomach").test("I have 1 cucumber in my stomach")).toBe(true);
-    expect(cucumberRegExp("I have {int} cucumber(s) in my belly/stomach").test("I have 2 cucumbers in my belly")).toBe(true);
-    expect(cucumberRegExp("I open {word} with {float} and {}").test("I open Accounts with 1.5 and anything at all")).toBe(true);
-    expect(cucumberRegExp("price is \\(net\\) {int}").test("price is (net) 4")).toBe(true);
-    expect(cucumberRegExp("a.b").test("axb")).toBe(false);
+  it("matches steps the way Cucumber expressions do", () => {
+    expect(matches("I have {int} cucumber(s) in my belly/stomach", "I have 1 cucumber in my stomach")).toBe(true);
+    expect(matches("I have {int} cucumber(s) in my belly/stomach", "I have 2 cucumbers in my belly")).toBe(true);
+    expect(matches("I go by bus/train/car", "I go by train")).toBe(true);
+    expect(matches("I go by bus/train/car", "I go by bike")).toBe(false);
+    expect(matches("I open {word} with {float} and {}", "I open Accounts with 1.5 and anything at all")).toBe(true);
+    expect(matches("price is \\(net\\) {int}", "price is (net) 4")).toBe(true);
+    expect(matches("I type {string}", 'I type "say \\"hi\\""')).toBe(true);
+    expect(matches("a.b", "axb")).toBe(false);
+    expect(matches("^I wait for (\\d+) records$", "I wait for 3 records", "regex")).toBe(true);
   });
 
   it("refuses existing, protected and sign-in paths, and odd ones", () => {
-    const paths = ["tests/features/ROPS-227-FRA.feature", "package.json", "playwright.config.ts", "src/auth/new-auth.steps.ts", "../outside.spec.ts", "/abs.spec.ts", "tests\\win.spec.ts", ".github/workflows/x.ts"];
+    const paths = ["tests/features/ROPS-227-FRA.feature", "tests/Features/rops-227-fra.feature", "SRC/fixtures/fixtures.ts", "Package.json", ".VSCode/settings.ts", "package.json", "playwright.config.ts", "src/auth/new-auth.steps.ts", "../outside.spec.ts", "/abs.spec.ts", "tests\\win.spec.ts", ".github/workflows/x.ts"];
     const errors = check(draft({ files: [...draft().files, ...paths.map((path) => ({ path, role: "page" as const, content: "export class X {}" }))] }));
     for (const [i] of paths.entries()) expect(errors.some((e) => e.path === `$.files[${i + 4}].path`), paths[i]).toBe(true);
+    // Only code is held to the sign-in rule: a feature about session timeouts is fine.
+    const ok = draft({ files: [...draft().files, { path: "test-data/session-timeout.json", role: "data", content: "{}" }] });
+    expect(check(ok)).toEqual([]);
   });
 
   it("refuses tokens, fixed waits, XPath, Aura ids, record ids and org URLs", () => {
@@ -84,12 +99,23 @@ describe("generated code checks", () => {
       "await page.goto('https://acme--uat.sandbox.my.salesforce.com/');",
       "test.only('x', async () => {});",
       "await page.pause();",
+      "setTimeout(() => {}, 500);",
+      "await page['waitForTimeout'](500);",
+      "test.describe.skip('x', () => {});",
+      "await page.locator('[data-aura-rendered-by=\"12:0\"]').click();",
+      "const x = ;",
     ];
     for (const line of bad) {
       const d = draft();
       d.files[1] = { ...d.files[1]!, content: `${STEPS}\n${line}\n` };
       expect(check(d).map((e) => e.path), line).toContain("$.files[1].content");
     }
+    const fine = draft();
+    fine.files[1] = { ...fine.files[1]!, content: `${STEPS}\nconst runtime = '[data-aura-class="forceFlexipageRuntime"]';\n` };
+    expect(check(fine)).toEqual([]);
+    const spaced = draft();
+    spaced.files[2] = { ...spaced.files[2]!, content: JSON.stringify({ requester: "< PERSON_1 >" }).replace("< PERSON_1 >", "<PERSON\n_1>") };
+    expect(check(spaced).map((e) => e.path)).toContain("$.files[2].content");
     const tokens = draft();
     tokens.files[2] = { ...tokens.files[2]!, content: JSON.stringify({ requester: "<PERSON_1>" }) };
     expect(check(tokens)[0]).toMatchObject({ path: "$.files[2].content", message: expect.stringContaining("<PERSON_1>") });
@@ -106,6 +132,10 @@ describe("generated code checks", () => {
     const untagged = draft();
     untagged.files[0] = { ...untagged.files[0]!, content: FEATURE.replace("@TC-ABC-1-001 ", "") };
     expect(check(untagged).map((e) => e.message)).toEqual(["the scenario for TC-ABC-1-001 must be tagged @TC-ABC-1-001"]);
+    const elsewhere = draft();
+    elsewhere.files[0] = { ...elsewhere.files[0]!, content: `${FEATURE}\n  @other\n  Scenario: Something else\n    Given I am logged into Salesforce as "X"\n    Then I see the toast "y"\n` };
+    elsewhere.cases[0]!.steps[1] = { step: 2, file: "tests/features/ABC-1.feature", line: 13 };
+    expect(check(elsewhere).map((e) => e.message)).toContain("line 13 of tests/features/ABC-1.feature isn't a step of the scenario tagged @TC-ABC-1-001 (or its Background)");
     const other = draft({ cases: [{ id: "TC-ABC-1-009", steps: [{ step: 1, file: "tests/features/ABC-1.feature", line: 5 }] }] });
     expect(check(other).map((e) => e.path)).toEqual(["$.cases[0].id", "$.cases"]);
   });
@@ -116,7 +146,32 @@ describe("generated code checks", () => {
     expect(check(unknown)).toEqual([expect.objectContaining({ message: expect.stringContaining('line 7: no step definition matches "I squint') })]);
     const twice = draft();
     twice.files[1] = { ...twice.files[1]!, content: `${STEPS}\nWhen('I am logged into Salesforce as {string}', async () => {});\n` };
-    expect(check(twice).map((e) => e.message).join("\n")).toContain("reuse the one in tests/step-definitions/authentication/login.steps.ts");
+    expect(check(twice).map((e) => e.message).join("\n")).toContain("defined already in tests/step-definitions/authentication/login.steps.ts");
+    const acrossFiles = draft();
+    acrossFiles.files.push({ path: "tests/step-definitions/approval-request/more.steps.ts", role: "steps", content: STEPS });
+    const across = check(acrossFiles).map((e) => e.message).join("\n");
+    expect(across).toContain("defined already in tests/step-definitions/approval-request/abc-1.steps.ts");
+    expect(across).toContain("matches 2 step definitions");
+    const broken = draft();
+    broken.files[1] = { ...broken.files[1]!, content: `${STEPS}\nWhen('I see {nope}', async () => {});\n` };
+    expect(check(broken).map((e) => e.message).join("\n")).toContain("doesn't compile");
+  });
+
+  it("reads features with Gherkin: focus tags, outlines and bad syntax", () => {
+    const focused = draft();
+    focused.files[0] = { ...focused.files[0]!, content: FEATURE.replace("@positive", "@positive @only") };
+    expect(check(focused).map((e) => e.message)).toEqual(["uses the @only tag, which would run some scenarios and not others"]);
+    const outline = (examples: string, then = 'Then I see the toast "<message>"') => {
+      const d = draft();
+      d.files[0] = { ...d.files[0]!, content: FEATURE.replace("Scenario:", "Scenario Outline:").replace('Then I see the toast "was created"', then) + examples };
+      return check(d).map((e) => e.message);
+    };
+    expect(outline(`\n    Examples:\n      | message |\n      | was created |\n`)).toEqual([]);
+    expect(outline(`\n    Examples:\n      | message |\n      | was created |\n`, "Then I frown at <message>")).toEqual(['line 7: no step definition matches "I frown at was created"']);
+    expect(outline(`\n    Examples:\n      | other |\n      | x |\n`)[0]).toContain("has a <placeholder> with no Examples value");
+    const bad = draft();
+    bad.files[0] = { ...bad.files[0]!, content: "Feature: x\n  Scenario: y\n    Given a\n  Examples oops\n    | a |\n" };
+    expect(check(bad).some((e) => e.message.startsWith("isn't valid Gherkin"))).toBe(true);
   });
 
   it("asks a plain Playwright repo for specs with one test.step per test step", () => {
@@ -145,5 +200,15 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     });
     expect(scanSource(STEPS, "x.steps.ts")!.steps.map((s) => s.pattern)).toEqual(["I create an approval request from the test data"]);
     expect(scanSource("export class {", "x.ts")).toBeUndefined();
+    const tricky = `export class P {
+  open(path: string): Promise<void>;
+  open(path: string, wait: boolean): Promise<void>;
+  open(path: string, wait = false) { return Promise.resolve(); }
+  find<T extends string>({ name, exact }: { name: T; exact?: boolean }) { return name; }
+}`;
+    expect(scanSource(tricky, "src/pages/p.ts")!.pages[0]!.signatures).toEqual({
+      open: "(path: string): Promise<void>; (path: string, wait: boolean): Promise<void>",
+      find: "<T extends string>(options: { name: T; exact?: boolean })",
+    });
   });
 });

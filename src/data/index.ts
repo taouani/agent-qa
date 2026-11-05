@@ -29,7 +29,9 @@ export {
   scanFramework,
 } from "./profile.js";
 export type { FrameworkProfile, ProfileCommands, SavedProfile } from "./profile.js";
-export { LOCATOR_FORMS, scanFeature, scanRepo, scanSource } from "./profile-scan.js";
+export { AUTH_PATH, LOCATOR_FORMS, scanFeature, scanRepo, scanSource } from "./profile-scan.js";
+export { scanGeneratedCode } from "./code-scan.js";
+export type { CodeFinding, CodeScan } from "./code-scan.js";
 export type { LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
 export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";
 export type { HostCommandOutcome, HostCommandRequest } from "./host.js";
