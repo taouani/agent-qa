@@ -1,7 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
-import { emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, type KeptRate } from "../harness/index.js";
+import { emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, type KeptRate, type RunnableRate } from "../harness/index.js";
 import { ApiDriver, ModelConfigError, StaticDriver, type ModelDriver } from "../llm/index.js";
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
@@ -108,7 +108,7 @@ export function buildProgram(): Command {
     });
   program
     .command("harness")
-    .description("run the quality harness: the real workflows on seeded fixtures, failing if a seeded value reaches a model")
+    .description("run the quality harness: the real workflows on seeded fixtures, failing if a seeded value reaches a model; prints the kept and runnable rates from the project's runs")
     .option("--model <provider:model>", "answer with this model (from models in agent-qa.yaml); default: the offline fixture model, no API key needed")
     .option("--pipeline <name>", "masked (the real workflows) or empty (no model calls, checks the setup)", "masked")
     .option("--json", "print the full JSON report")
@@ -158,16 +158,23 @@ export function buildProgram(): Command {
       }
       // From the project's own runs, where people reviewed the cases; the harness's runs never count.
       let kept: KeptRate | undefined;
+      let runnable: RunnableRate | undefined;
+      const own = new RunStore(process.env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs"));
       try {
-        kept = await keptRate(new RunStore(process.env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs")));
+        kept = await keptRate(own);
       } catch {
         kept = undefined;
+      }
+      try {
+        runnable = await runnableRate(own);
+      } catch {
+        runnable = undefined;
       }
       if (report.summary.cases === 0) {
         for (const note of sources.notes) process.stderr.write(`note: ${note}\n`);
         return setupError("no harness cases to run; add a fixtures source");
       }
-      if (opts.json) process.stdout.write(JSON.stringify({ ...report, notes: sources.notes, ...(kept ? { keptRate: kept } : {}) }, null, 2) + "\n");
+      if (opts.json) process.stdout.write(JSON.stringify({ ...report, notes: sources.notes, ...(kept ? { keptRate: kept } : {}), ...(runnable ? { runnableRate: runnable } : {}) }, null, 2) + "\n");
       else {
         for (const note of sources.notes) process.stdout.write(`note: ${note}\n`);
         for (const c of report.cases) {
@@ -177,6 +184,7 @@ export function buildProgram(): Command {
         const s = report.summary;
         process.stdout.write(`${s.passed}/${s.cases} passed, ${s.seededLeaks} seeded leak(s)\n`);
         if (kept) process.stdout.write(keptLine(kept) + "\n");
+        if (runnable) process.stdout.write(runnableLine(runnable) + "\n");
       }
       if (report.summary.failed + report.summary.errors > 0) process.exitCode = 1;
     });
@@ -218,6 +226,13 @@ export function profileCommand(opts: { root: string; folder?: string; json: bool
 }
 
 /** One line on the kept rate of the project's reviewed runs. */
+export function runnableLine(r: RunnableRate): string {
+  if (r.rate === undefined) return `runnable rate: no generated tests have run yet${r.declinedRuns ? ` (${r.declinedRuns} run(s) not run)` : ""}`;
+  const apart = [r.defects ? `${r.defects} stopped on a real defect` : "", r.environment ? `${r.environment} on the environment` : ""].filter(Boolean).join(", ");
+  const rest = [r.unstable ? `${r.unstable} unstable` : "", r.failing ? `${r.failing} failing` : ""].filter(Boolean).join(", ");
+  return `runnable rate: ${(r.rate * 100).toFixed(1)}% (${r.runnable} of ${r.cases - r.defects - r.environment} case(s) pass again and again${rest ? `; ${rest}` : ""}) over ${r.runs} run(s), ${r.fixRounds} fix round(s)${apart ? `; left out: ${apart}` : ""}`;
+}
+
 export function keptLine(k: KeptRate): string {
   const left = [k.unattendedRuns ? `${k.unattendedRuns} --yes run(s) left out` : "", k.unreadableRuns ? `${k.unreadableRuns} unreadable` : ""].filter(Boolean).join(", ");
   const tail = left ? ` (${left})` : "";

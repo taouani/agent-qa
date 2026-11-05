@@ -24,3 +24,5 @@ export { keptRate } from "./kept-rate.js";
 export type { KeptRate } from "./kept-rate.js";
 export { maskedPipeline } from "./pipeline.js";
 export type { MaskedPipelineOptions } from "./pipeline.js";
+export { caseOutcomes, runnableRate } from "./runnable-rate.js";
+export type { RunnableRate } from "./runnable-rate.js";
