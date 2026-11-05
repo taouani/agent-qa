@@ -131,8 +131,8 @@ export function typeCheckFiles(ts: TypeScriptModule, folder: string, files: Read
 /** A message with the folder's path made relative and the home folder as ~: no local layout or user name leaves. */
 export function local(message: string, folder: string, home: string = homedir()): string {
   const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Whole path parts only: /home/a never matches inside /home/abc.
-  const swap = (text: string, from: string, to: string) => text.replace(new RegExp(`${escape(from)}(?=[\\\\/'"\\s:),]|$)`, "g"), to);
+  // Whole path parts only: /home/a never matches inside /home/abc. Windows paths match in any case (TypeScript may lowercase them).
+  const swap = (text: string, from: string, to: string) => text.replace(new RegExp(`${escape(from)}(?=[\\\\/'"\\s:),]|$)`, process.platform === "win32" ? "gi" : "g"), to);
   const roots = new Set<string>();
   for (const f of [folder, safeRealpath(folder)]) if (f) for (const v of [resolve(f), resolve(f).replace(/\\/g, "/")]) if (v !== parse(v).root) roots.add(v);
   let out = message;
