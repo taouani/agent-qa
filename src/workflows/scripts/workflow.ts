@@ -8,7 +8,8 @@ import { helpersPath, lightningHelpersSource, renderPack } from "../packs/salesf
 import { CASE_ID, TEST_CASES_ARTIFACT, type TestCases } from "../test-cases/artifact.js";
 import { SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, SCRIPTS_MAX_FILES, SCRIPTS_TEMPLATE_VERSION, scriptsDraftSchema, type ScriptsDraft, type ScriptsDraftArtifact } from "./artifact.js";
 import { checkDraft, pathKey } from "./checks.js";
-import { DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, MAX_FIX_ROUNDS, runSteps } from "./run.js";
+import { DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, MAX_FIX_ROUNDS, runSteps, SCRIPTS_RUN_ARTIFACT } from "./run.js";
+import { prStep } from "./pull-request.js";
 
 /**
  * The `scripts` workflow (S2-6 to S2-8): the model writes the code for
@@ -404,7 +405,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
         id: "review",
         kind: "confirm",
         outputSchema: reviewSchema,
-        // Writing to the repo takes the person's own yes; unattended, nothing is written (CI opens a pull request instead, S2-9).
+        // Writing to the repo takes the person's own yes (in CI, --accept review); unattended, nothing is written.
         answers: { yes: { write: true }, no: { write: false }, unattended: { write: false } },
         approval: {
           personOnly: true,
@@ -451,6 +452,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
           const result = await deps.data.writeGeneratedFiles(ctx.runId, tokensRun, art.data.folder, files, out.write);
           const data = {
             status: result.status === "done" ? ("written" as const) : result.status,
+            ...(result.status === "done" && result.pullRequest ? { pullRequest: true as const } : {}),
             folder: art.data.folder,
             files: (result.status === "done" ? art.data.files : []).map((f) => ({ path: f.path, sha256: createHash("sha256").update(f.content).digest("hex") })),
           };
@@ -481,6 +483,14 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
           const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files].filter((f) => !mine.has(f)), links });
           return found.length ? found : typeErrors(ctx, draft, draft.files);
         },
+      }),
+      prStep<ScriptsInputs>({
+        data: deps.data,
+        runs: deps.runs,
+        tokensRun: async (ctx) => (await testCases(ctx)).data.requirements.run,
+        draft: draftOf,
+        written: async (ctx) => (await deps.runs.readArtifact(ctx.runId, SCRIPTS_WRITTEN_ARTIFACT))?.data,
+        run: async (ctx) => (await deps.runs.readArtifact(ctx.runId, SCRIPTS_RUN_ARTIFACT))?.data,
       }),
     ],
   };

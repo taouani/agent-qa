@@ -10,6 +10,14 @@ describe("cli", () => {
     expect(buildProgram().version()).toBe(VERSION);
   });
 
+  it("takes step ids for --accept one at a time or comma-separated", () => {
+    const run = buildProgram().commands.find((c) => c.name() === "run")!;
+    run.exitOverride();
+    run.parseOptions(["--accept", "review,run", "--accept", "pr"]);
+    expect(run.opts().accept).toEqual(["review", "run", "pr"]);
+    expect(() => run.parseOptions(["--accept", "review,,run"])).toThrow();
+  });
+
   it("lists the planned commands", () => {
     const names = buildProgram().commands.map((c) => c.name());
     expect(names).toEqual(["init", "run", "profile", "doctor", "harness", "mcp"]);

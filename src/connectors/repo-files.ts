@@ -12,6 +12,9 @@ import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
  * rename, so a reader never sees half of it.
  */
 export async function writeRepoFile(grant: WriteGrant, root: string, path: string, text: string): Promise<void> {
+  // The profile and other project files are written by the person's IDE only, never from CI's checkout.
+  assertGrant(grant, "testCode");
+  if (grant.via !== "direct") throw new PolicyDenied("testCode", "this write may only leave as a pull request");
   const { target, folder } = await prepare(grant, root, path, ".");
   const current = await lstat(target).catch(() => undefined);
   if (current && !current.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file`);
@@ -29,8 +32,9 @@ export async function writeRepoFile(grant: WriteGrant, root: string, path: strin
 export interface CreatedRepoFile {
   /** Relative to the root. */
   path: string;
-  dev: number;
-  ino: number;
+  /** Exact (bigint): Windows file ids don't fit a double, so two files could look the same. */
+  dev: bigint;
+  ino: bigint;
   /** The first folder this create made (mkdir -p), removed again if it is empty. */
   firstDir?: string | undefined;
 }
@@ -56,7 +60,7 @@ export async function createRepoFile(grant: WriteGrant, root: string, path: stri
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new PolicyDenied("testCode", `${path} already exists: generated code only adds new files`);
     throw error;
   }
-  const made = await lstat(target);
+  const made = await lstat(target, { bigint: true });
   return { status: "created", file: { path: relative(resolve(root), target), dev: made.dev, ino: made.ino, firstDir } };
 }
 
@@ -71,7 +75,7 @@ export async function removeCreatedRepoFile(grant: WriteGrant, root: string, fil
   const target = resolve(root, file.path);
   const rel = relative(await realpath(root), await realpath(target));
   if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${file.path} is outside the project folder`);
-  const current = await lstat(target);
+  const current = await lstat(target, { bigint: true });
   if (!current.isFile() || current.dev !== file.dev || current.ino !== file.ino) throw new PolicyDenied("testCode", `${file.path} is no longer the file Agent-QA created`);
   await rm(target);
   if (!file.firstDir) return;
@@ -136,7 +140,7 @@ export async function withScratchFile<T>(grant: WriteGrant, run: (path: string) 
 /** Checks the path, then makes its folders: every one, links resolved, inside `within` (relative to root). */
 async function prepare(grant: WriteGrant, root: string, path: string, within: string): Promise<{ target: string; folder: string; firstDir: string | undefined }> {
   assertGrant(grant, "testCode");
-  if (grant.via !== "direct") throw new PolicyDenied("testCode", "this write may only leave as a pull request");
+  // A pull-request grant (CI) writes the job's own checkout: what leaves it goes as a pull request (connectors/github.ts).
   const target = resolve(root, within, path);
   const rel = relative(resolve(root, within), target);
   if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${path} is outside the project folder`);

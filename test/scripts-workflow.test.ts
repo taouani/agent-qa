@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
 import { fixSkeleton, listFolderFiles, scanGeneratedCode, type FrameworkProfile, type SavedProfile, type TestRunOutcome, type TypeDiagnostic } from "../src/data/index.js";
-import { checkFix, EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_RUN_ARTIFACT, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
+import { checkFix, EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_PR_ARTIFACT, SCRIPTS_RUN_ARTIFACT, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 
 const HASH = "a".repeat(64);
@@ -112,6 +112,7 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
   const testRuns: Array<{ files: string[]; repeatEach?: number }> = [];
   const replaced: Array<Array<{ path: string; sha256: string }>> = [];
   const results: TestRunOutcome[] = [];
+  const prs: Array<{ folder: string; files: ReadonlyArray<{ path: string; sha256: string }>; title: string; body: string; draft: boolean }> = [];
   const data: ScriptsDeps["data"] = {
     frameworkProfile: async (_run, _folder, tokensRun) => {
       vaults.push(`profile:${tokensRun}`);
@@ -144,13 +145,18 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
       return { status: "done", diagnostics: typeErrors(files) };
     },
     frameworkFiles: async () => ({ files: ["src/fixtures/fixtures.ts", "src/pages/approval-app-main-page.ts", "tests/features/ROPS-227-FRA.feature", "playwright.config.ts", "tests/shared"], links: ["tests/shared"] }),
+    pullRequestReadiness: async () => ({ ready: false, reason: "not in this test" }),
+    openPullRequest: async (_run, _tokens, folder, pr) => {
+      prs.push({ folder, ...pr });
+      return { status: "done", number: 7, url: "https://github.com/o/r/pull/7", base: "main", branch: "agent-qa/run", draft: pr.draft, created: true };
+    },
     maskTexts: async (run, texts) => {
       vaults.push(`notes:${run}`);
       return texts.map((t) => t.replace(/Jane Doe/g, "<PERSON_1>"));
     },
     ...over,
   };
-  return Object.assign(data, { vaults, checked, writes, folders, testRuns, replaced, results });
+  return Object.assign(data, { vaults, checked, writes, folders, testRuns, replaced, results, prs });
 }
 
 describe("scripts workflow", () => {
@@ -520,6 +526,67 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect(end).toMatchObject({ status: "passed" });
     expect(end.pending).toBeUndefined();
     expect(end.attempts[1]).toMatchObject({ changed: [steps], classified: [{ kind: "selector" }] });
+  });
+
+  /** CI: the files are in the job's checkout, and leave only as a pull request. */
+  const inCi = (over: Partial<ScriptsDeps["data"]> = {}) =>
+    fakeData({
+      testRunReadiness: async () => ({ ready: true }),
+      pullRequestReadiness: async () => ({ ready: true, repo: "o/r" }),
+      writeGeneratedFiles: async (_run, _tokens, _folder, files, approved) => (approved ? { status: "done", written: files.map((f) => f.path), pullRequest: true } : { status: "declined" }),
+      ...over,
+    });
+
+  it("in CI, runs and fixes the tests in the checkout, then opens one pull request with the fixed files", async () => {
+    const { e, data, runId } = await written(inCi());
+    expect((await runs.readArtifact(runId, SCRIPTS_WRITTEN_ARTIFACT))!.data).toMatchObject({ status: "written", pullRequest: true });
+    data.results.push(fail());
+    await e.submit(runId, "run", { run: true }, { byPerson: true });
+    const pr = (await e.submit(runId, "fix_1", { failures: [{ test: TITLE, kind: "selector", reason: "the button is Save draft" }], files: [{ path: steps, content: fixedSteps }] })).next;
+    expect(pr).toMatchObject({ stepId: "pr", kind: "confirm" });
+    expect(await e.approval(runId, "pr")).toMatchObject({ question: expect.stringContaining("Open a pull request on o/r with 4 new file(s) (tests passed)?") });
+    // Unattended (CI's --yes): the policy already sends test code out as a pull request.
+    expect((await e.submit(runId, "pr", { open: true })).next.kind).toBe("done");
+    expect(data.prs).toHaveLength(1);
+    const sent = data.prs[0]!;
+    expect(sent.draft).toBe(false);
+    expect(sent.title).toBe("Agent-QA: tests for TC-ABC-1-001");
+    expect(sent.files.find((f) => f.path === steps)!.sha256).toBe(createHash("sha256").update(fixedSteps).digest("hex"));
+    expect(sent.body).toContain("**passed**: every test passed, then 3 more time(s) in a row (1 fix round(s)).");
+    expect(sent.body).toContain(`| ${TITLE} | passed`);
+    expect(sent.body).toContain("- Before run 2: " + TITLE + ": selector (the button is Save draft)");
+    expect(sent.body).toContain("- `tests/features/ABC-1.feature`");
+    expect((await runs.readArtifact(runId, SCRIPTS_PR_ARTIFACT))!.data).toMatchObject({ status: "opened", number: 7, url: "https://github.com/o/r/pull/7", draft: false });
+  });
+
+  it("in CI, opens a draft when the tests don't pass, and the files as written when they didn't run", async () => {
+    const stopped = await written(inCi());
+    stopped.data.results.push(fail("Error: expect(locator).toHaveText(expected)\nExpected: was created\nReceived: Something went wrong"));
+    await stopped.e.submit(stopped.runId, "run", { run: true }, { byPerson: true });
+    await stopped.e.submit(stopped.runId, "fix_1", { failures: [{ test: TITLE, kind: "defect", reason: "the app says Something went wrong" }], files: [] });
+    await stopped.e.submit(stopped.runId, "pr", { open: true });
+    expect(stopped.data.prs[0]).toMatchObject({ draft: true });
+    expect(stopped.data.prs[0]!.body).toContain(`- ${TITLE}: **defect** (the app says Something went wrong)`);
+
+    const notRun = await written(inCi());
+    await notRun.e.submit(notRun.runId, "run", { run: false }, { byPerson: true });
+    await notRun.e.submit(notRun.runId, "pr", { open: true });
+    expect(notRun.data.prs[0]).toMatchObject({ draft: true });
+    expect(notRun.data.prs[0]!.body).toContain("**Not run**: these tests have not been run");
+    expect(notRun.data.prs[0]!.files.map((f) => f.path)).toEqual(DRAFT.files.map((f) => f.path).concat("src/support/lightning.ts"));
+
+    // Outside CI (no pullRequest) or without a git section, nobody is asked.
+    const ide = await written();
+    await ide.e.submit(ide.runId, "run", { run: false }, { byPerson: true });
+    expect((await ide.e.status(ide.runId)).status).toBe("done");
+    // Files in CI's checkout with no way out: the step says why, and the record keeps it.
+    const noGit = await written(inCi({ pullRequestReadiness: async () => ({ ready: false, reason: "no git section" }) }));
+    const asked = (await noGit.e.submit(noGit.runId, "run", { run: false }, { byPerson: true })).next;
+    expect(asked.stepId).toBe("pr");
+    expect(await noGit.e.approval(noGit.runId, "pr")).toMatchObject({ question: expect.stringContaining("No pull request can be opened (no git section)") });
+    expect((await noGit.e.submit(noGit.runId, "pr", { open: true })).next.kind).toBe("done");
+    expect((await runs.readArtifact(noGit.runId, SCRIPTS_PR_ARTIFACT))!.data).toMatchObject({ status: "declined", reason: "no pull request could be opened: no git section" });
+    expect(noGit.data.prs).toEqual([]);
   });
 
   it("counts a skipped or missing case's test as not passed", async () => {
