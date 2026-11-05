@@ -2,12 +2,13 @@ import { randomBytes } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, type Step } from "../core/index.js";
-import { DataAccess, type JiraCollection, type JiraInput, type JiraIssue } from "../data/index.js";
+import { DataAccess, openRepoBrowser, type JiraCollection, type JiraInput, type JiraIssue, type OpenBrowser } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { requirementsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import { exploreWorkflow, requirementsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
 import type { Seed, SyntheticTicket } from "./cases.js";
-import type { Pipeline } from "./runner.js";
+import { startStandInApp, type StandInApp } from "./stand-in-app.js";
+import type { Pipeline, PipelineContext } from "./runner.js";
 
 /**
  * The masked pipeline (S1-14): each case runs the real requirements or
@@ -20,6 +21,12 @@ import type { Pipeline } from "./runner.js";
  * marked unattended. Xray is set up with a stand-in that never pushes, so the
  * push step's question and context are scanned; the push is always declined.
  *
+ * An `explore` case (S2-10) runs the test-cases workflow, then explores its
+ * cases in a real browser on the stand-in app (stand-in-app.ts), whose records
+ * hold the case's seeds: every page snapshot, action result and the
+ * exploration@1 record are scanned the same way. The harness gives the yes
+ * to explore itself, since the app is its own, on this machine.
+ *
  * Runs are kept under `runsDir` for inspection, apart from the project's own
  * runs so the kept rate never counts them. They hold masked text only: the
  * token vault lives in memory and is gone when the case ends.
@@ -29,7 +36,15 @@ export interface MaskedPipelineOptions {
   runsDir: string;
   /** The project's config: its masking and Jira field settings are used, never its connections. */
   config?: Config;
+  /** For `explore` cases: the folder whose Playwright (and installed Chromium) drives the browser. */
+  playwrightFolder?: string;
+  headed?: boolean;
 }
+
+/** Cases that run in a browser: they need `playwrightFolder`. */
+export const BROWSER_WORKFLOWS: ReadonlySet<string> = new Set(["explore"]);
+/** Actions per explored case: the fixture model's tour takes six. */
+const EXPLORE_MAX_ACTIONS = 10;
 
 const AC_FIELD = { id: "customfield_10001", name: "Acceptance criteria", custom: true };
 const SITE = "https://harness.invalid";
@@ -37,39 +52,62 @@ const SITE = "https://harness.invalid";
 export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   const runs = new RunStore(options.runsDir);
   const config = harnessConfig(options.config);
-  return async ({ case: c, tickets, driver, seeds, observe }) => {
-    const key = randomBytes(32);
-    const data = new DataAccess({
-      root: options.runsDir,
-      store: runs,
-      config,
-      vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "harness (memory)", getKey: async () => key } }),
-      jira: { collect: async (input: JiraInput) => collect(tickets, input) },
-      confluence: { pages: async (urls: string[]) => pagesFor(tickets, urls) },
-      xray: {
-        importAndWait: async () => {
-          throw new Error("The harness never pushes to Xray");
-        },
-      },
-      labels: { findByLabels: async () => new Map<string, string>() },
-      // `ide`, so the push step runs to its question (`ci` denies an ask rule); it is always declined.
-      mode: "ide",
-      audit: new MemoryAuditSink(),
-    });
-    const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId })
-      .register(requirementsWorkflow({ data, runs }))
-      .register(testCasesWorkflow({ data, runs }));
-
-    let step: Step = await engine.start(c.workflow, c.inputs);
+  return async (context) => {
+    if (!BROWSER_WORKFLOWS.has(context.case.workflow)) return runCase(options, runs, config, context);
+    if (!options.playwrightFolder) throw new Error("an explore case needs a browser: run the harness with --browser");
+    const app = await startStandInApp(context.seeds);
     try {
-      for (let guard = 0; guard < 200; guard++) {
+      return await runCase(options, runs, config, context, app);
+    } finally {
+      await app.close();
+    }
+  };
+}
+
+async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: Config, { case: c, tickets, driver, seeds, observe }: PipelineContext, app?: StandInApp) {
+  const key = randomBytes(32);
+  const folder = options.playwrightFolder;
+  const data = new DataAccess({
+    root: options.runsDir,
+    store: runs,
+    // The stand-in app is the only site the explorer may drive; opening the browser needs no question.
+    config: app ? configSchema.parse({ ...config, playwright: { baseUrl: app.url }, policy: { writes: { commands: "allow" } } }) : config,
+    ...(app && folder ? { browser: ((grant, o) => openRepoBrowser(grant, { folder, root: folder, headed: options.headed ?? o.headed })) satisfies OpenBrowser } : {}),
+    vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "harness (memory)", getKey: async () => key } }),
+    jira: { collect: async (input: JiraInput) => collect(tickets, input) },
+    confluence: { pages: async (urls: string[]) => pagesFor(tickets, urls) },
+    xray: {
+      importAndWait: async () => {
+        throw new Error("The harness never pushes to Xray");
+      },
+    },
+    labels: { findByLabels: async () => new Map<string, string>() },
+    // `ide`, so the push step runs to its question (`ci` denies an ask rule); it is always declined.
+    mode: "ide",
+    audit: new MemoryAuditSink(),
+  });
+  const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId })
+    .register(requirementsWorkflow({ data, runs }))
+    .register(testCasesWorkflow({ data, runs }))
+    .register(exploreWorkflow({ data, runs }));
+
+  const run = async (workflow: string, inputs: Record<string, unknown>) => {
+    let step: Step = await engine.start(workflow, inputs);
+    try {
+      for (let guard = 0; guard < 400; guard++) {
         if (step.kind === "generate") step = (await drive(engine, step, driver)).step;
         else if (step.kind === "confirm") {
           // An IDE's model is shown this text: it must be as masked as any prompt.
           observe(`${step.instructions}\n${step.context}`);
-          const answer = step.stepId === "review" ? await editedReview(runs, step.runId, seeds) : await engine.fixedAnswer(step.runId, "unattended");
+          // The person's yes to explore: the stand-in app is the harness's own.
+          const answer =
+            workflow === "explore" && step.stepId === "approve"
+              ? { approve: true }
+              : step.stepId === "review"
+                ? await editedReview(runs, step.runId, seeds)
+                : await engine.fixedAnswer(step.runId, "unattended");
           if (answer === undefined) throw new Error(`Step ${step.stepId} has no unattended answer`);
-          step = (await engine.submit(step.runId, step.stepId, answer)).next;
+          step = (await engine.submit(step.runId, step.stepId, answer, { byPerson: workflow === "explore" && step.stepId === "approve" })).next;
         } else break;
       }
     } finally {
@@ -77,8 +115,15 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
     }
     if (step.kind === "failed") throw new Error(`Run ${step.runId} failed: ${(step.errors ?? []).map((e) => `${e.path}: ${e.message}`).join("; ")}`);
     if (step.kind !== "done") throw new Error(`Run ${step.runId} didn't finish`);
-    return { runId: step.runId };
+    return step.runId;
   };
+  try {
+    if (!app) return { runId: await run(c.workflow, c.inputs) };
+    const testCasesRun = await run("test-cases", c.inputs);
+    return { runId: await run("explore", { testCasesRun, start: app.start, maxActions: EXPLORE_MAX_ACTIONS }), testCasesRun };
+  } finally {
+    await data.close();
+  }
 }
 
 /**

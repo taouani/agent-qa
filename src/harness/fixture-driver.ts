@@ -15,8 +15,7 @@ export class FixtureDriver implements ModelDriver {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const step = (request.schemaName ?? "").replace(/_\d+$/, "");
-    const context = contextOf(request);
-    const answer = step === "analyze" ? analyze(context) : step === "cases" ? cases(context) : undefined;
+    const answer = step === "analyze" ? analyze(contextOf(request)) : step === "cases" ? cases(contextOf(request)) : step === "act" ? act(contextText(request)) : undefined;
     if (answer === undefined) throw new Error(`The fixture model can't answer step ${request.schemaName ?? "(unnamed)"}`);
     return { text: JSON.stringify(answer), model: "fixture" };
   }
@@ -30,13 +29,18 @@ interface ContextIssue {
 
 const clip = (text: string, max: number) => (text.length > max ? text.slice(0, max) : text);
 
-/** The `{ "issues": [...] }` JSON of the step's context, from the first prompt (see `drive`). */
-function contextOf(request: ModelRequest): ContextIssue[] {
+/** The step's context, from the first prompt (see `drive`). */
+function contextText(request: ModelRequest): string {
   const prompt = request.messages.find((m) => m.role === "user")?.content ?? "";
   const start = prompt.indexOf("Context:\n");
   const end = prompt.indexOf("\n\nAnswer with JSON that matches this JSON Schema:");
   if (start < 0 || end < start) throw new Error("The fixture model found no context in the prompt");
-  const text = prompt.slice(start, end);
+  return prompt.slice(start + "Context:\n".length, end);
+}
+
+/** The `{ "issues": [...] }` JSON of the step's context. */
+function contextOf(request: ModelRequest): ContextIssue[] {
+  const text = contextText(request);
   const json = text.slice(text.indexOf("{"));
   const parsed = JSON.parse(json) as { issues?: ContextIssue[] };
   return parsed.issues ?? [];
@@ -72,4 +76,27 @@ function cases(issues: ContextIssue[]) {
       }),
     ),
   };
+}
+
+/**
+ * The explorer's tour of the stand-in app, one action per call: open the
+ * first record from the list by its (masked) name, check its heading, type a
+ * comment that names it, save, check the toast, finish. Names come from the
+ * page as the model sees it, so tokens flow back to the browser and the
+ * echoed value back to the model, as with a real model.
+ */
+function act(context: string) {
+  const done = Number(/## Done so far \((\d+) of \d+ actions\)/.exec(context)?.[1] ?? "0");
+  const page = context.slice(context.indexOf("## The page now"));
+  const link = /- link "(<[A-Z_]+_\d+>)"/.exec(page)?.[1];
+  const heading = /- heading "(<[A-Z_]+_\d+>)" \[level=1\]/.exec(page)?.[1];
+  const tour = [
+    link && { type: "click", target: { role: "link", name: link } },
+    heading && { type: "verify", target: { role: "heading", name: heading } },
+    heading && { type: "fill", target: { label: "Comments" }, value: `Checked with ${heading}` },
+    { type: "click", target: { role: "button", name: "Save" } },
+    heading && { type: "verify", target: { role: "status" }, text: `Checked with ${heading}` },
+  ];
+  const action = tour[done];
+  return { step: 1, action: action || { type: "finish", summary: "Toured the stand-in app" } };
 }

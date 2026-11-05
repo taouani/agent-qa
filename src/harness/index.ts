@@ -1,6 +1,7 @@
 /** `harness` module. See eslint.config.js for what it may import. */
 export const MODULE = "harness";
 export {
+  DEFAULT_BROWSER_CASES,
   DEFAULT_CASES,
   DEFAULT_SEEDS,
   harnessCaseSchema,
@@ -22,7 +23,9 @@ export type { HarnessSources } from "./sources.js";
 export { FixtureDriver } from "./fixture-driver.js";
 export { keptRate } from "./kept-rate.js";
 export type { KeptRate } from "./kept-rate.js";
-export { maskedPipeline } from "./pipeline.js";
+export { BROWSER_WORKFLOWS, maskedPipeline } from "./pipeline.js";
 export type { MaskedPipelineOptions } from "./pipeline.js";
 export { caseOutcomes, runnableRate } from "./runnable-rate.js";
+export { STAND_IN_START, standInRecords, startStandInApp } from "./stand-in-app.js";
+export type { StandInApp, StandInRecord } from "./stand-in-app.js";
 export type { RunnableRate } from "./runnable-rate.js";

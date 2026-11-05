@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import type { Config } from "../core/index.js";
-import { DEFAULT_CASES, DEFAULT_SEEDS, loadCases, loadSeeds, type HarnessCase, type Seed } from "./cases.js";
+import { DEFAULT_BROWSER_CASES, DEFAULT_CASES, DEFAULT_SEEDS, loadCases, loadSeeds, type HarnessCase, type Seed } from "./cases.js";
 
 export interface HarnessSources {
   cases: HarnessCase[];
@@ -15,7 +15,7 @@ export interface HarnessSources {
  */
 export async function harnessSources(config: Config | undefined, root: string): Promise<HarnessSources> {
   const at = (p: string) => (isAbsolute(p) ? p : join(root, p));
-  if (!config?.harness) return { cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, notes: ["no harness section: using the shipped synthetic cases"] };
+  if (!config?.harness) return { cases: [...DEFAULT_CASES, ...DEFAULT_BROWSER_CASES], seeds: DEFAULT_SEEDS, notes: ["no harness section: using the shipped synthetic cases"] };
   const cases: HarnessCase[] = [];
   const notes: string[] = [];
   for (const source of config.harness.sources) {
