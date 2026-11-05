@@ -36,7 +36,7 @@ describe("type check with the repo's TypeScript", () => {
     const user = { path: "tests/c.steps.ts", content: "import { h } from './support/h';\nexport const y: string = h(1);\n" };
     expect(typeCheckFiles(ts, dir, [helper, user]).map((d) => [d.file, d.line, d.code])).toEqual([["tests/c.steps.ts", 2, 2322]]);
     expect(typeCheckFiles(ts, dir, [{ path: "tests/d.ts", content: "const = 1;\n" }])[0]).toMatchObject({ file: "tests/d.ts", line: 1 });
-  });
+  }, 30_000); // Four full compiles: the Windows runner hit 5 s.
 
   it("sees the repo's global declarations, and refuses a tsconfig it can't use as is", async () => {
     await writeFile(join(dir, "src", "globals.ts"), "export {};\ndeclare global { function sfLogin(role: string): Promise<void>; }\n");

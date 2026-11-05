@@ -9,3 +9,5 @@
 - **Not counted**: runs whose tests never ran, and runs still in their fix loop.
 
 `--json` adds `runnableRate`.
+
+The run loop now records an attempt whose tests couldn't run at all, and stops on the environment when that happens in a stability run too.
