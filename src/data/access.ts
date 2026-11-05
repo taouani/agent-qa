@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
-import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources } from "../core/index.js";
-import { ConnectorError, JiraClient, runHostCommand, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
+import { ConnectorError, JiraClient, loadTypeScript, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -121,7 +121,18 @@ export interface ScriptsData {
    * to a model.
    */
   frameworkFiles(): Promise<FolderListing>;
+  /**
+   * Type-checks generated files (paths from the profile's folder) with the
+   * repo's own TypeScript and tsconfig, laid over the repo in memory: nothing
+   * is written. It loads the repo's typescript, so it runs through
+   * `Policy.guard` (target commands) and needs the person's yes (`approved`).
+   * Messages come back masked with `tokensRun`'s vault. "unavailable" says
+   * why it couldn't run (no typescript or tsconfig in the repo).
+   */
+  typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome>;
 }
+
+export type TypeCheckOutcome = { status: "done"; diagnostics: TypeDiagnostic[] } | { status: "declined" } | { status: "unavailable"; reason: string };
 
 /** The explorer's browser (S2-4): masked pages in, masked actions out. */
 export interface ExplorerData {
@@ -162,6 +173,8 @@ export interface DataAccessOptions {
   audit?: AuditSink;
   /** Replace the command runner, for tests. */
   host?: typeof runHostCommand;
+  /** The type check, for tests: by default the repo's own TypeScript (connectors/typecheck.ts). */
+  typeCheck?: (grant: WriteGrant, files: ReadonlyArray<{ path: string; content: string }>) => TypeDiagnostic[] | Promise<TypeDiagnostic[]>;
   /** Replace the explorer's browser, for tests. */
   browser?: OpenBrowser;
 }
@@ -454,6 +467,33 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     } as FrameworkProfile;
     await service.saveVault();
     return masked;
+  }
+
+  async typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    const folder = hostCwd(this.options.root, saved.folder);
+    let config: Config | undefined;
+    try {
+      config = await this.loadConfig();
+    } catch (error) {
+      if (!(error instanceof ConfigError && error.code === "NOT_FOUND")) throw error;
+    }
+    const check = this.options.typeCheck ?? ((grant: WriteGrant, f: typeof files) => typeCheckFiles(loadTypeScript(grant, folder, hostCwd(this.options.root)).ts, folder, f));
+    const summary = (await this.run(runId)).service.maskText(`Type-check ${files.length} generated file(s) with the repo's TypeScript in ${saved.folder}`, "host.summary");
+    let outcome;
+    try {
+      outcome = await this.policy(config ?? DEFAULT_RULES_CONFIG).guard({ target: "commands", summary, runId }, async (grant) => check(grant, files));
+    } catch (error) {
+      if (error instanceof TypeCheckError) return { status: "unavailable", reason: error.message };
+      throw error;
+    }
+    if (outcome.status !== "done") return { status: "declined" };
+    const { service } = await this.run(tokensRun);
+    const diagnostics = outcome.value.map((d) => ({ ...d, message: service.maskText(d.message, "typecheck.message") }));
+    await service.saveVault();
+    return { status: "done", diagnostics };
   }
 
   async frameworkFiles(): Promise<FolderListing> {

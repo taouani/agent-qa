@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
-import { listFolderFiles, type FrameworkProfile, type SavedProfile } from "../src/data/index.js";
+import { listFolderFiles, type FrameworkProfile, type SavedProfile, type TypeDiagnostic } from "../src/data/index.js";
 import { EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_DRAFT_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 
@@ -92,14 +92,21 @@ const DRAFT = {
 const SAVED = { version: 1, folder: ".", kind: "playwright-bdd", commands: {}, reviewedAt: "2026-11-04T10:00:00.000Z" } as unknown as SavedProfile;
 
 /** The data layer, faked: records which vault each mask call used. */
-function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkProfile = PROFILE) {
+function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkProfile = PROFILE, typeErrors: (files: ReadonlyArray<{ path: string; content: string }>) => TypeDiagnostic[] = () => []) {
   const vaults: string[] = [];
+  const checked: string[][] = [];
   const data: ScriptsDeps["data"] = {
     frameworkProfile: async (_run, _folder, tokensRun) => {
       vaults.push(`profile:${tokensRun}`);
       return profile;
     },
     savedProfile: async () => SAVED,
+    typeCheck: async (_run, tokensRun, files, approved) => {
+      vaults.push(`typecheck:${tokensRun}`);
+      if (!approved) return { status: "declined" };
+      checked.push(files.map((f) => f.path));
+      return { status: "done", diagnostics: typeErrors(files) };
+    },
     frameworkFiles: async () => ({ files: ["src/fixtures/fixtures.ts", "src/pages/approval-app-main-page.ts", "tests/features/ROPS-227-FRA.feature", "playwright.config.ts", "tests/shared"], links: ["tests/shared"] }),
     maskTexts: async (run, texts) => {
       vaults.push(`notes:${run}`);
@@ -107,7 +114,7 @@ function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkPro
     },
     ...over,
   };
-  return Object.assign(data, { vaults });
+  return Object.assign(data, { vaults, checked });
 }
 
 describe("scripts workflow", () => {
@@ -123,12 +130,19 @@ describe("scripts workflow", () => {
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
+  /** Starts a run and answers the type-check question (the person's own answer). */
+  const begin = async (e: WorkflowEngine, inputs: Record<string, unknown>, approve = true) => {
+    const first = await e.start("scripts", inputs);
+    expect(first.stepId).toBe("approve");
+    const next = (await e.submit(first.runId, "approve", { approve }, { byPerson: true })).next;
+    return { runId: first.runId, context: next.context, next };
+  };
   const engine = (data: ScriptsDeps["data"] = fakeData()) => new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(scriptsWorkflow({ data, runs }));
 
   it("shows the repo, the pack, the cases and the exploration, then keeps the checked draft", async () => {
     const e = engine();
-    const first = await e.start("scripts", { testCasesRun: "tc-run", explorationRun: "ex-run" });
-    expect(first).toMatchObject({ stepId: "draft", kind: "generate" });
+    const first = await begin(e, { testCasesRun: "tc-run", explorationRun: "ex-run" });
+    expect(first.next).toMatchObject({ stepId: "draft", kind: "generate" });
     const ctx = first.context!;
     expect(ctx).toContain("## The repo: playwright-bdd in .");
     expect(ctx).toContain("| Given | I am logged into Salesforce as {string} | expression | tests/step-definitions/authentication/login.steps.ts:5 |");
@@ -149,21 +163,50 @@ describe("scripts workflow", () => {
     // The steps import the helper file, so the server added the pack's copy.
     expect(art.files.map((f) => f.path)).toEqual([...DRAFT.files.map((f) => f.path), "src/support/lightning.ts"]);
     expect(art.files.at(-1)!.content).toBe(lightningHelpersSource());
+    expect(art.typeCheck).toEqual({ status: "passed" });
+  });
+
+  it("asks before the type check, sends its errors back to the model, and records a no", async () => {
+    const e0 = engine();
+    const asked = await e0.start("scripts", { testCasesRun: "tc-run" });
+    expect(await e0.approval(asked.runId, "approve")).toMatchObject({ question: expect.stringContaining("Type-check the generated code with the TypeScript installed in your repo (.)") });
+    await expect(e0.submit(asked.runId, "approve", { approve: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
+
+    const data = fakeData({}, PROFILE, (files) => (files.some((f) => f.content.includes("navigateToNewForm(1)")) ? [{ file: "tests/step-definitions/approval-request/abc-1.steps.ts", line: 8, code: 2554, message: "Expected 0 arguments, but got 1." }] : []));
+    const e = engine(data);
+    const run = await begin(e, { testCasesRun: "tc-run" });
+    const bad = { ...DRAFT, files: [DRAFT.files[0]!, { ...DRAFT.files[1]!, content: STEPS.replace("navigateToNewForm()", "navigateToNewForm(1)") }, DRAFT.files[2]!] };
+    const rejected = await e.submit(run.runId, "draft", bad);
+    expect(rejected.status === "rejected" && rejected.errors).toEqual([{ path: "$.files[1].content", message: "line 8: TS2554 Expected 0 arguments, but got 1." }]);
+    // The feature isn't TypeScript; the data file and the helper the server adds are checked with the code.
+    expect(data.checked[0]).toEqual(["tests/step-definitions/approval-request/abc-1.steps.ts", "test-data/ABC-1.json", "src/support/lightning.ts"]);
+    expect((await e.submit(run.runId, "draft", DRAFT)).status).toBe("accepted");
+
+    const no = await begin(engine(), { testCasesRun: "tc-run" }, false);
+    expect((await engine().submit(no.runId, "draft", DRAFT)).status).toBe("accepted");
+    expect((await runs.readArtifact(no.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.typeCheck).toEqual({ status: "skipped", reason: "the user didn't agree to the type check" });
+  });
+
+  it("keeps the draft when the repo can't type-check, and says why", async () => {
+    const e = engine(fakeData({ typeCheck: async () => ({ status: "unavailable", reason: "TypeScript isn't installed in the repo" }) }));
+    const run = await begin(e, { testCasesRun: "tc-run" });
+    expect((await e.submit(run.runId, "draft", DRAFT)).status).toBe("accepted");
+    expect((await runs.readArtifact(run.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.typeCheck).toEqual({ status: "unavailable", reason: "TypeScript isn't installed in the repo" });
   });
 
   it("masks the profile and the notes with the cases' vault", async () => {
     const data = fakeData();
     const e = engine(data);
-    const first = await e.start("scripts", { testCasesRun: "tc-run" });
+    const first = await begin(e, { testCasesRun: "tc-run" });
     await e.submit(first.runId, "draft", DRAFT);
-    expect(new Set(data.vaults)).toEqual(new Set(["profile:req-run", "notes:req-run"]));
+    expect(new Set(data.vaults)).toEqual(new Set(["profile:req-run", "notes:req-run", "typecheck:req-run"]));
   });
 
   it("refuses a draft that replaces a repo file or writes the helper itself", async () => {
     const e = engine();
-    const first = await e.start("scripts", { testCasesRun: "tc-run" });
+    const first = await begin(e, { testCasesRun: "tc-run" });
     // Each draft in a run of its own: three rejections end a run.
-    const fresh = async () => (await e.start("scripts", { testCasesRun: "tc-run" })).runId;
+    const fresh = async () => (await begin(e, { testCasesRun: "tc-run" })).runId;
     const replaced = await e.submit(first.runId, "draft", { ...DRAFT, files: [...DRAFT.files, { path: "SRC/Pages/approval-app-main-page.ts", role: "page", content: "export class X {}" }] });
     expect(replaced.status).toBe("rejected");
     expect(replaced.status === "rejected" && replaced.errors.map((x) => x.message).join("\n")).toContain("already exists");
@@ -202,7 +245,7 @@ describe("scripts workflow", () => {
     const web = { ...EXPLORED, target: { kind: "web" as const, host: "shop.example.com" }, cases: [] };
     await runs.writeArtifact("ex-run", EXPLORATION_ARTIFACT, web, { inputs: [], templateVersion: "exploration-1" });
     const e = engine(fakeData({ savedProfile: async () => ({ ...SAVED, kind: "playwright" }) }, plain));
-    const first = await e.start("scripts", { testCasesRun: "tc-run", explorationRun: "ex-run" });
+    const first = await begin(e, { testCasesRun: "tc-run", explorationRun: "ex-run" });
     expect(first.context).toContain("## Rules (a web app, not Salesforce)");
     expect(first.context).not.toContain("Salesforce Lightning rules");
     expect(first.context).not.toContain("helper file");
@@ -215,23 +258,26 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
   await test.step('2. Create a request', async () => {});
 });
 `;
-    const result = await e.submit(first.runId, "draft", { files: [{ path: "tests/abc-1.spec.ts", role: "spec", content: spec }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/abc-1.spec.ts", line: 5 }, { step: 2, file: "tests/abc-1.spec.ts", line: 6 }] }], notes: [] });
+    const draft = (content: string) => ({ files: [{ path: "tests/abc-1.spec.ts", role: "spec", content }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/abc-1.spec.ts", line: 5 }, { step: 2, file: "tests/abc-1.spec.ts", line: 6 }] }], notes: [] });
+    // A web app has no helper file to import.
+    const helper = await e.submit(first.runId, "draft", draft(spec.replace("import { x } from './support/lightning';", "import { x } from '../src/support/lightning';")));
+    expect(helper.status === "rejected" && helper.errors.map((x) => x.message)).toEqual(["this is a web app, not Salesforce: there is no helper file to import"]);
+    const result = await e.submit(first.runId, "draft", draft(spec.replace("import { x } from './support/lightning';", "import { expect } from '@playwright/test';")));
     expect(result.status, JSON.stringify(result)).toBe("accepted");
-    // No helper is added for a web app, even when the code imports one.
     expect((await runs.readArtifact(first.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.files.map((f) => f.path)).toEqual(["tests/abc-1.spec.ts"]);
   });
 
   it("refuses a repo that changed kind since the profile was reviewed", async () => {
     const e = engine(fakeData({ savedProfile: async () => ({ ...SAVED, kind: "playwright" }) }));
-    await expect(e.start("scripts", { testCasesRun: "tc-run" })).rejects.toThrow(/the repo is now playwright-bdd, but the reviewed profile says playwright/);
+    await expect(begin(e, { testCasesRun: "tc-run" })).rejects.toThrow(/the repo is now playwright-bdd, but the reviewed profile says playwright/);
   });
 
   it("reads an exploration again for each run", async () => {
     const e = engine();
     await runs.writeArtifact("ex-run", EXPLORATION_ARTIFACT, { ...EXPLORED, cases: [] }, { inputs: [], templateVersion: "exploration-1" });
-    expect((await e.start("scripts", { testCasesRun: "tc-run", explorationRun: "ex-run" })).context).toContain("Not explored.");
+    expect((await begin(e, { testCasesRun: "tc-run", explorationRun: "ex-run" })).context).toContain("Not explored.");
     await runs.writeArtifact("ex-run", EXPLORATION_ARTIFACT, EXPLORED, { inputs: [], templateVersion: "exploration-1" });
-    expect((await e.start("scripts", { testCasesRun: "tc-run", explorationRun: "ex-run" })).context).not.toContain("Not explored.");
+    expect((await begin(e, { testCasesRun: "tc-run", explorationRun: "ex-run" })).context).not.toContain("Not explored.");
   });
 
   it("adds the helper file only when the code imports it and the repo lacks it", () => {

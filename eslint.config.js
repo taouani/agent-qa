@@ -58,7 +58,7 @@ const SPAWNERS = ["src/connectors/host.ts"];
  * connector (S2-4) loads Playwright from the user's own repo (createRequire),
  * so its version matches their tests, and only with a policy grant.
  */
-const LOADERS = ["src/connectors/browser.ts"];
+const LOADERS = ["src/connectors/browser.ts", "src/connectors/typecheck.ts"];
 
 const restrictedImports = (blockFs, allow = []) => [
   "error",
