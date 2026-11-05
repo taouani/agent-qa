@@ -11,7 +11,7 @@ Two rules shape the design:
 
 ## Status
 
-v2 is in alpha: `2.0.0-alpha.0` on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis and test cases pushed to Xray. For everything else v1 did (test plans, strategies, Gherkin, Playwright, release notes and more), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).
+v2 is in alpha, on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis, test cases pushed to Xray, and Playwright scripts (Gherkin with playwright-bdd, or specs) written into your repo and run there. For everything else v1 did (test plans, strategies, release notes and more), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).
 
 ## Quickstart
 
@@ -40,7 +40,11 @@ npx -y sf-agent-qa@next run test-cases --jql "project = ABC AND fixVersion = 2.4
 
 `--yes` accepts the review as unattended and never pushes; `--accept push` pushes. In CI (`--ci`), a push also needs `policy.writes.xray: allow` in `agent-qa.yaml`, because `ask` is denied when nobody can be asked. Each run's files are in `.agent-qa/runs/`, with a cost report. To check that no personal data reaches a model, see [docs/harness.md](docs/harness.md).
 
-**Playwright (in progress, slice 2).** `agent-qa profile` reads your repo's Playwright project, including playwright-bdd steps and page objects, without running it. `agent-qa run profile --accept review` saves `agent-qa.profile.json`, the only commands Agent-QA may run in your repo. See [docs/profile.md](docs/profile.md). The `explore` workflow then walks reviewed test cases in a browser on your sandbox, from masked pages, into `exploration@1`: see [docs/explore.md](docs/explore.md).
+**Playwright.** Three workflows, each asking you before it writes or runs anything:
+
+1. `profile` reads your repo's Playwright project (playwright-bdd steps, page objects, fixtures) without running it. `agent-qa run profile --accept review` saves `agent-qa.profile.json`, the only commands Agent-QA may run in your repo. In a folder with no Playwright project and no `package.json`, `agent-qa run profile --accept scaffold` starts a new Salesforce Playwright repo instead. See [docs/profile.md](docs/profile.md).
+2. `explore` (optional) walks reviewed test cases in a browser on your sandbox, from masked pages, into `exploration@1`. See [docs/explore.md](docs/explore.md) and, for sign-in, [docs/salesforce.md](docs/salesforce.md).
+3. `scripts` writes the code for reviewed cases, checks it, writes it to your repo on your yes, runs it, and fixes only selectors, waits and test data. A real defect is reported, never fixed in the test. In CI, the code leaves as a pull request. See [docs/scripts.md](docs/scripts.md).
 
 ## Development
 

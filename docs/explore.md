@@ -1,6 +1,6 @@
 # Exploring test cases in a browser
 
-The `explore` workflow walks reviewed test cases (`test-cases@1`) in a real browser on your Salesforce sandbox. The model picks one action at a time from a masked view of the page, and Agent-QA performs it. What it finds is saved as `exploration@1`: the elements each step used, the waits it needed, and what the app did that the case doesn't describe. Script generation (coming next) builds from this.
+The `explore` workflow walks reviewed test cases (`test-cases@1`) in a real browser on your Salesforce sandbox. The model picks one action at a time from a masked view of the page, and Agent-QA performs it. What it finds is saved as `exploration@1`: the elements each step used, the waits it needed, and what the app did that the case doesn't describe. The `scripts` workflow builds from this: see [scripts.md](scripts.md).
 
 ## Before you start
 
