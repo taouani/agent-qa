@@ -29,3 +29,5 @@ export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps
   // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
   return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps)];
 }
+export { helperPlan, helpersPath, LIGHTNING_HELPERS, LIGHTNING_LOCATOR_ORDER, LIGHTNING_RULES, lightningHelpersSource, renderPack, SALESFORCE_PACK_VERSION } from "./packs/salesforce.js";
+export type { HelperChoice, PackHelper, PackRule } from "./packs/salesforce.js";

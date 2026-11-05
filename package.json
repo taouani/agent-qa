@@ -48,7 +48,8 @@
     "changeset": "changeset",
     "release": "npm run check && changeset publish",
     "prepublishOnly": "npm run build",
-    "schema": "npm run build && node scripts/write-schema.mjs"
+    "schema": "npm run build && node scripts/write-schema.mjs",
+    "packs": "node scripts/write-packs.mjs"
   },
   "devDependencies": {
     "@babel/types": "^7.29.8",
