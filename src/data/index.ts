@@ -32,7 +32,7 @@ export type { FrameworkProfile, ProfileCommands, SavedProfile } from "./profile.
 export { AUTH_PATH, listFolderFiles, LOCATOR_FORMS, MAX_LISTED_FILES, scanFeature, scanRepo, scanSource } from "./profile-scan.js";
 export { scanGeneratedCode } from "./code-scan.js";
 export type { CodeFinding, CodeScan } from "./code-scan.js";
-export type { LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
+export type { FolderListing, LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
 export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";
 export type { HostCommandOutcome, HostCommandRequest } from "./host.js";
 export { caseLabel, toXrayTest } from "./xray.js";

@@ -20,7 +20,7 @@ import {
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
-import { listFolderFiles } from "./profile-scan.js";
+import { listFolderFiles, type FolderListing } from "./profile-scan.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -93,8 +93,13 @@ export interface SalesforceData {
 }
 
 export interface ProfileData {
-  /** Scans the repo's Playwright project once per run (nothing in it runs) and keeps it as framework-profile@1. Every repo text comes back masked with the run's vault. */
-  frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile>;
+  /**
+   * Scans the repo's Playwright project once per run (nothing in it runs) and
+   * keeps it as framework-profile@1. Every repo text comes back masked with
+   * the vault of `tokensRun` (default: the run itself), so a prompt that also
+   * holds that run's cases has one meaning per token.
+   */
+  frameworkProfile(runId: string, folder?: string, tokensRun?: string): Promise<FrameworkProfile>;
   /** The reviewed profile, or undefined. Throws ProfileError when the file is broken. */
   savedProfile(): Promise<SavedProfile | undefined>;
   /**
@@ -109,8 +114,13 @@ export interface ProfileData {
 
 /** What script generation (S2-6) reads from the repo beyond the profile. */
 export interface ScriptsData {
-  /** Every file in the reviewed profile's folder (relative to it), so generated code never replaces one. Paths only, never contents, and never shown to a model. */
-  frameworkFiles(): Promise<string[]>;
+  /**
+   * Every file in the reviewed profile's folder (relative to it), so generated
+   * code never replaces one, and the symbolic links in it, which generated
+   * code must not write through. Paths only, never contents, and never shown
+   * to a model.
+   */
+  frameworkFiles(): Promise<FolderListing>;
 }
 
 /** The explorer's browser (S2-4): masked pages in, masked actions out. */
@@ -396,14 +406,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     await this.explorer?.closeAll();
   }
 
-  async frameworkProfile(runId: string, folder?: string): Promise<FrameworkProfile> {
+  async frameworkProfile(runId: string, folder?: string, tokensRun = runId): Promise<FrameworkProfile> {
     // Scanned once per run: the question, the review and the save all use what the person saw.
     let pending = this.profiles.get(runId);
     if (!pending) {
       pending = (async () => {
         const cached = await this.options.store.readArtifact(runId, FRAMEWORK_PROFILE_SPEC);
         if (cached) return cached.data;
-        const masked = await this.maskProfile(runId, scanFramework(this.options.root, folder));
+        const masked = await this.maskProfile(tokensRun, scanFramework(this.options.root, folder));
         const hash = createHash("sha256").update(JSON.stringify(masked)).digest("hex");
         await this.options.store.writeArtifact(runId, FRAMEWORK_PROFILE_SPEC, masked, {
           inputs: [{ kind: "repo-folder", ref: masked.folder, hash }],
@@ -446,7 +456,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return masked;
   }
 
-  async frameworkFiles(): Promise<string[]> {
+  async frameworkFiles(): Promise<FolderListing> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     return listFolderFiles(hostCwd(this.options.root, saved.folder));

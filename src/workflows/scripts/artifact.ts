@@ -13,6 +13,9 @@ import { CASE_ID } from "../test-cases/artifact.js";
 
 export const SCRIPTS_TEMPLATE_VERSION = "scripts-1";
 
+/** Files in a draft, the helper file the server adds included. */
+export const SCRIPTS_MAX_FILES = 30;
+
 export const FILE_ROLES = ["spec", "feature", "steps", "page", "data", "helper"] as const;
 export type FileRole = (typeof FILE_ROLES)[number];
 
@@ -42,7 +45,7 @@ export const caseCodeSchema = z
 
 export const scriptsDraftSchema = z
   .object({
-    files: z.array(generatedFileSchema).min(1).max(30),
+    files: z.array(generatedFileSchema).min(1).max(SCRIPTS_MAX_FILES),
     cases: z.array(caseCodeSchema).min(1).max(20),
     /** Anything the model wants the person to know: a step it couldn't automate, a value they must fill in. Masked. */
     notes: z.array(z.string().max(500)).max(20).default([]),

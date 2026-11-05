@@ -103,33 +103,45 @@ function walk(root: string, dir: string, out: string[], limit: number): boolean 
 const UNLISTED = new Set(["node_modules", ".git"]);
 export const MAX_LISTED_FILES = 200_000;
 
+export interface FolderListing {
+  /** Every file, links included, relative with forward slashes, sorted. */
+  files: string[];
+  /** The symbolic links among them: a path under one reaches a file this listing doesn't show. */
+  links: string[];
+}
+
 /**
- * Every file under `root`, relative with forward slashes, for the new-files
- * rule (S2-6): unlike the profile scan's walk nothing is skipped but
- * node_modules and .git, and symbolic links are listed, not followed. Throws
- * past MAX_LISTED_FILES rather than return a partial list.
+ * Every file under `root`, for the new-files rule (S2-6): unlike the profile
+ * scan's walk nothing is skipped but node_modules and .git. Symbolic links
+ * are listed, not followed. Throws past MAX_LISTED_FILES or on a folder it
+ * can't read, rather than return a partial list.
  */
-export function listFolderFiles(root: string): string[] {
-  const out: string[] = [];
+export function listFolderFiles(root: string): FolderListing {
+  const files: string[] = [];
+  const links: string[] = [];
   const visit = (dir: string) => {
     let entries;
     try {
       entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (e) {
+      // Removed while listing: nothing there to replace.
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error(`can't list ${posix(relative(root, dir)) || "."}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`);
     }
     for (const e of entries) {
       const path = join(dir, e.name);
       if (e.isDirectory()) {
         if (!UNLISTED.has(e.name)) visit(path);
-      } else {
-        out.push(posix(relative(root, path)));
-        if (out.length > MAX_LISTED_FILES) throw new Error(`more than ${MAX_LISTED_FILES} files under the Playwright folder`);
+        continue;
       }
+      const rel = posix(relative(root, path));
+      files.push(rel);
+      if (e.isSymbolicLink()) links.push(rel);
+      if (files.length > MAX_LISTED_FILES) throw new Error(`more than ${MAX_LISTED_FILES} files under the Playwright folder`);
     }
   };
   visit(root);
-  return out.sort();
+  return { files: files.sort(), links: links.sort() };
 }
 
 function read(root: string, file: string, budget: { left: number }): string | undefined {

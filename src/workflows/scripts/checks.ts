@@ -45,6 +45,8 @@ export interface CheckContext {
   cases: TestCases["cases"];
   /** Every file in the framework folder, from the folder itself (not just the ones the profile names). */
   existingFiles: readonly string[];
+  /** Symbolic links in the folder: a path under one would write somewhere else. */
+  links?: readonly string[];
 }
 
 type Definition = { pattern: string; kind: "expression" | "regex"; flags?: string | undefined; file: string };
@@ -120,6 +122,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
   const err = (path: string, message: string) => errors.push({ path, message });
   const existing = new Set([...ctx.existingFiles, ...ctx.profile.pages.map((p) => p.file), ...ctx.profile.steps.map((s) => s.file), ...ctx.profile.features.map((f) => f.file), ...ctx.profile.authFiles, ...(ctx.profile.config.file ? [ctx.profile.config.file] : [])].map(pathKey));
   const auth = new Set(ctx.profile.authFiles.map(pathKey));
+  const links = (ctx.links ?? []).map(pathKey);
   const byPath = new Map<string, ScriptsDraft["files"][number]>();
   const keys = new Set<string>();
   const specs = new Map<string, ReturnType<typeof scanGeneratedCode>>();
@@ -130,6 +133,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
     if (/\\|^\/|^[A-Za-z]:|(^|\/)\.\.?(\/|$)|\/\/|[\u0000-\u001f]/.test(f.path)) err(`${at}.path`, "must be a relative path with forward slashes, inside the framework folder");
     else if (PROTECTED.test(f.path) || PROTECTED_DIR.test(f.path)) err(`${at}.path`, `${f.path} is a project file Agent-QA never writes`);
     else if (auth.has(key) || (CODE_ROLES.has(f.role) && SIGN_IN_CODE.test(f.path))) err(`${at}.path`, `${f.path} looks like sign-in code: generated code uses the repo's own sign-in steps`);
+    else if (links.some((l) => key.startsWith(`${l}/`))) err(`${at}.path`, `${f.path} is under a symbolic link: write it where the link points, or elsewhere`);
     else if (existing.has(key)) err(`${at}.path`, `${f.path} already exists: generated code only adds new files. Call its methods or steps instead`);
     if (!EXTENSIONS[f.role].test(f.path)) err(`${at}.path`, `a ${f.role} file must match ${EXTENSIONS[f.role].source}`);
     if (keys.has(key)) err(`${at}.path`, `${f.path} is listed twice`);
