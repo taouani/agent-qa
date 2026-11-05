@@ -18,8 +18,13 @@ import type { Locator, Page } from "@playwright/test";
 export const BUSY_SELECTOR = 'lightning-spinner:visible, .slds-spinner_container:visible, .slds-spinner:visible, [role="progressbar"]:not([aria-valuenow]):visible';
 /** Lightning's toasts (not inline field errors, which also use role="alert"). */
 export const TOAST_SELECTOR = ".forceToastMessage:visible, .slds-notify_toast:visible, lightning-toast:visible";
-/** Options a lookup lists that aren't records. */
-const NOT_A_RECORD = /^\s*(?:Show All Results|Show more results|Search\b|New\b|Recent\s)/i;
+/**
+ * Entries a lookup lists that aren't records: Lightning marks its actions
+ * ("Show All Results", "New Account") with a data-value starting "action".
+ * The text check covers lists that don't.
+ */
+const LOOKUP_RECORD = '[role="option"]:not([data-value^="action"])';
+const NOT_A_RECORD = /^\s*Show (?:All|more) Results\b/i;
 
 export interface WaitOptions {
   /** Most time to wait, in milliseconds. */
@@ -53,7 +58,8 @@ export async function expectToast(page: Page, text?: string | RegExp, options: W
   await toast.waitFor({ state: "visible", timeout });
   // The message, without the close button's label.
   const message = toast.locator(".toastMessage, .slds-notify__content, [data-aura-class='forceActionsText']").first();
-  const raw = (await message.count()) ? await message.innerText() : await toast.innerText();
+  let raw = (await message.count()) ? await message.innerText() : await toast.innerText();
+  if (!(await message.count())) for (const label of await toast.getByRole("button").allInnerTexts()) raw = label.trim() ? raw.split(label).join(" ") : raw;
   return raw.replace(/\s+/g, " ").trim();
 }
 
@@ -75,7 +81,9 @@ export async function dismissToasts(page: Page): Promise<void> {
  * them. Popovers and hover cards also use role="dialog", so they are left out.
  */
 export function modal(page: Page): Locator {
-  return page.locator('[role="dialog"][aria-modal="true"]:visible, .slds-modal:visible [role="dialog"], section.slds-modal[role="dialog"]:visible, dialog[open]:visible').last();
+  // A date picker or popover inside a modal is a dialog too: never the modal itself.
+  const not = ":not(.slds-datepicker):not(.slds-popover)";
+  return page.locator([`[role="dialog"][aria-modal="true"]${not}:visible`, `.slds-modal:visible > [role="dialog"]${not}`, `.slds-modal__container[role="dialog"]${not}:visible`, `section.slds-modal[role="dialog"]${not}:visible`, `dialog[open]${not}:visible`].join(", ")).last();
 }
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&");
@@ -94,9 +102,12 @@ export function fieldName(label: string): RegExp {
 async function listOf(page: Page, box: Locator): Promise<Locator> {
   const id = (await box.getAttribute("aria-controls")) ?? (await box.getAttribute("aria-owns"));
   if (id && /^[\w:.-]+$/.test(id)) {
-    const own = page.locator(`[id="${id}"]`);
+    const own = page.locator(`[id="${id}"]:visible`);
     if ((await own.count()) === 1) return own;
   }
+  // Then a list in the field's own form element (XPath stays inside the field's shadow root, which is what's wanted here).
+  const near = box.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " slds-form-element ")][1]').locator('[role="listbox"]:visible');
+  if ((await near.count()) > 0) return near;
   return page.locator('[role="listbox"]:visible');
 }
 
@@ -117,7 +128,7 @@ export async function selectPicklist(scope: Page | Locator, label: string, optio
 /**
  * Fills a lookup: types `search` in the field labelled `label`, waits for the
  * results, and clicks the one named `option` (by default the first record
- * whose name contains `search`; "Show All Results" and "New" are skipped).
+ * whose name contains `search`; "Show All Results" and "New …" are skipped).
  */
 export async function fillLookup(scope: Page | Locator, label: string, search: string, option?: string | RegExp, options: WaitOptions = {}): Promise<void> {
   const page = pageOf(scope);
@@ -130,11 +141,9 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
     .first();
   await field.fill(search, { timeout });
   const list = await listOf(page, field);
-  const records = list.getByRole("option").filter({ hasNotText: NOT_A_RECORD });
-  await records
-    .filter({ hasText: option ?? search })
-    .first()
-    .click({ timeout });
+  // A named option is clicked as named; by default, the first record whose name holds the search.
+  const records = option === undefined ? list.locator(LOOKUP_RECORD).filter({ hasNotText: NOT_A_RECORD }).filter({ hasText: search }) : list.getByRole("option").filter({ hasText: option });
+  await records.first().click({ timeout });
   await waitForLightning(page, options);
 }
 

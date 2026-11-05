@@ -113,6 +113,7 @@ const APP = `<!doctype html><title>Acme | Account | Salesforce</title>
 <div class="slds-progress-bar" role="progressbar" aria-valuenow="40" style="width:100px;height:4px;background:#ccc"></div>
 <ul role="listbox" aria-label="Path"><li role="option">Prospecting</li><li role="option">Closed</li></ul>
 <sf-picklist></sf-picklist>
+<sf-region></sf-region>
 <button role="combobox" aria-label="Account Type">--None--</button>
 <sf-lookup></sf-lookup>
 <div id="portal"></div>
@@ -124,7 +125,7 @@ const APP = `<!doctype html><title>Acme | Account | Salesforce</title>
 </article>
 <div style="display:none"><records-record-layout-item><span>Phone</span><div class="slds-form-element__control">OLD-111</div></records-record-layout-item></div>
 <records-record-layout-item><span>Phone</span><div class="slds-form-element__control">NEW-222</div></records-record-layout-item>
-<section role="dialog" aria-modal="true" class="slds-modal" aria-label="Edit Account"><button>Save</button></section>
+<section role="dialog" aria-modal="true" class="slds-modal" aria-label="Edit Account"><button>Save</button><div role="dialog" class="slds-datepicker" aria-label="Date picker: June">1 2 3</div></section>
 <section role="dialog" class="slds-popover" aria-label="Hover card"><p>Ann</p></section>
 <button id="save">Save</button>
 <script>
@@ -138,12 +139,19 @@ const APP = `<!doctype html><title>Acme | Account | Salesforce</title>
     r.querySelector("button").onclick = () => (box.hidden = false);
     r.querySelectorAll("[role=option]").forEach((o) => (o.onclick = () => { window.picked = o.textContent; box.hidden = true; }));
   } });
+  // A picklist with no aria-controls: its list sits in its own form element.
+  customElements.define("sf-region", class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: "open" });
+    r.innerHTML = '<div class="slds-form-element"><label id="g">Region</label><div class="slds-combobox"><button role="combobox" aria-labelledby="g">--None--</button><div role="listbox" hidden><div role="option">Open</div><div role="option">Closed</div></div></div></div>';
+    const box = r.querySelector("[role=listbox]");
+    r.querySelector("button").onclick = () => (box.hidden = false);
+    r.querySelectorAll("[role=option]").forEach((o) => (o.onclick = () => { window.region = o.textContent; box.hidden = true; }));
+  } });
   // A lookup whose results render outside its shadow root, with the entries that aren't records.
   customElements.define("sf-lookup", class extends HTMLElement { constructor() { super(); const r = this.attachShadow({ mode: "open" });
     r.innerHTML = '<input role="combobox" aria-label="Account">';
     r.querySelector("input").oninput = (e) => { const v = e.target.value; setTimeout(() => {
-      const names = ['Show All Results for "' + v + '"', ...["Acme Corp", "Acme Ltd", "Globex"].filter((n) => n.includes(v)), "+ New Account"];
-      portal.innerHTML = '<div role="listbox">' + names.map((n) => '<div role="option">' + n + "</div>").join("") + "</div>";
+      const records = ["Acme Corp", "Acme Ltd", "New York Store", "Globex"].filter((n) => n.includes(v));
+      portal.innerHTML = '<div role="listbox"><div role="option" data-value="actionAdvancedSearch">Show All Results for "' + v + '"</div>' + records.map((n) => '<div role="option">' + n + "</div>").join("") + '<div role="option" data-value="actionCreateNew">New Account</div></div>';
       portal.querySelectorAll("[role=option]").forEach((o) => (o.onclick = () => (window.looked = o.textContent)));
     }, 300); };
   } });
@@ -199,11 +207,16 @@ describe.skipIf(!playwrightFolder)("Salesforce pack helpers (real Chromium)", ()
   it("picks a required picklist's own option, and a lookup's record, not Show All Results", async () => {
     await h.selectPicklist!(page, "Stage", "Closed");
     expect(await page.evaluate(() => (globalThis as unknown as { picked: string }).picked)).toBe("Closed");
+    await h.selectPicklist!(page, "Region", "Closed");
+    expect(await page.evaluate(() => (globalThis as unknown as { region: string }).region)).toBe("Closed");
     // "Account Type" is a picklist button ahead of the "Account" lookup.
     await h.fillLookup!(page, "Account", "Acme");
     expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("Acme Corp");
     await h.fillLookup!(page, "Account", "Acme", "Acme Ltd");
     expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("Acme Ltd");
+    // A record whose name starts with New is still a record.
+    await h.fillLookup!(page, "Account", "New York");
+    expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("New York Store");
   }, 30_000);
 
   it("waits for a toast's message (not a field error) and closes every toast", async () => {
@@ -213,5 +226,8 @@ describe.skipIf(!playwrightFolder)("Salesforce pack helpers (real Chromium)", ()
     await h.dismissToasts!(page);
     expect(await page.locator(".forceToastMessage:visible").count()).toBe(0);
     await expect(h.expectToast!(page, "never", { timeout: 300 })).rejects.toThrow();
+    // A toast without Lightning's message markup: the close button's label is left out.
+    await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", '<div class="slds-notify_toast">Saved <button>x</button></div>'));
+    expect(await h.expectToast!(page, "Saved")).toBe("Saved");
   }, 30_000);
 });
