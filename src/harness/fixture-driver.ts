@@ -90,13 +90,17 @@ function act(context: string) {
   const page = context.slice(context.indexOf("## The page now"));
   const link = /- link "(<[A-Z_]+_\d+>)"/.exec(page)?.[1];
   const heading = /- heading "(<[A-Z_]+_\d+>)" \[level=1\]/.exec(page)?.[1];
+  // A step whose element isn't on the page stops the tour loudly: a gate that saw less must not pass.
+  const need = (name: string | undefined, what: string) => {
+    if (name === undefined) throw new Error(`The fixture explorer found no ${what} on the page (action ${done + 1})`);
+    return name;
+  };
   const tour = [
-    link && { type: "click", target: { role: "link", name: link } },
-    heading && { type: "verify", target: { role: "heading", name: heading } },
-    heading && { type: "fill", target: { label: "Comments" }, value: `Checked with ${heading}` },
-    { type: "click", target: { role: "button", name: "Save" } },
-    heading && { type: "verify", target: { role: "status" }, text: `Checked with ${heading}` },
+    () => ({ type: "click", target: { role: "link", name: need(link, "record link") } }),
+    () => ({ type: "verify", target: { role: "heading", name: need(heading, "record heading") } }),
+    () => ({ type: "fill", target: { label: "Comments" }, value: `Checked with ${need(heading, "record heading")}` }),
+    () => ({ type: "click", target: { role: "button", name: "Save" } }),
+    () => ({ type: "verify", target: { role: "status" }, text: `Checked with ${need(heading, "record heading")}` }),
   ];
-  const action = tour[done];
-  return { step: 1, action: action || { type: "finish", summary: "Toured the stand-in app" } };
+  return { step: 1, action: done < tour.length ? tour[done]!() : { type: "finish", summary: "Toured the stand-in app" } };
 }

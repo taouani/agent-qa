@@ -294,7 +294,7 @@ describe("loadPlaywright", () => {
 
 // The real browser: Playwright from a folder's node_modules, as from the user's repo.
 const playwrightFolder = (() => {
-  // Not this repo's own @playwright/test (1.49, types only, no browser): a folder with a browser to match.
+  // A folder with Playwright and its browser: the repo's own in CI's browser job, /opt/node-tools locally.
   for (const from of [process.env.AGENT_QA_PLAYWRIGHT_DIR, "/opt/node-tools"].filter((x): x is string => !!x)) {
     try {
       return dirname(dirname(createRequire(join(from, "package.json")).resolve("playwright/package.json")));

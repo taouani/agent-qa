@@ -8,11 +8,12 @@ import { DEFAULT_BROWSER_CASES, DEFAULT_SEEDS, FixtureDriver, maskedPipeline, Re
 const seeds = (ids: string[]) => DEFAULT_SEEDS.filter((s) => ids.includes(s.id));
 
 describe("stand-in app", () => {
-  it("puts one record per seeded name, and the other seeds in their fields", () => {
+  it("puts one record per seeded name, and the other seeds in the first one's details", () => {
     const records = standInRecords(seeds(["seed-name-1", "seed-name-2", "seed-email-1", "seed-phone-1", "seed-iban-1"]));
     expect(records.map((r) => r.name)).toEqual(["Marguerite Quillfeather", "Tobias Wrenhallow"]);
     expect(records[0]!.contact).toBe("Tobias Wrenhallow");
-    const values = records.flatMap((r) => r.fields.map((f) => f.value));
+    // The record the tour opens shows every other seed in its details.
+    const values = records[0]!.fields.map((f) => f.value);
     for (const s of ["m.quillfeather@example.com", "+33 6 39 98 12 34", "DE89 3704 0044 0532 0130 00"]) expect(values).toContain(s);
     expect(new Set(records.map((r) => r.id)).size).toBe(2);
   });
@@ -73,6 +74,7 @@ describe.skipIf(!playwrightFolder)("browser leak gate (real Chromium on the stan
 
   it("fails the gate when a page shows a value no detector knows", async () => {
     // Addresses have no detector yet: on a record page, outside a table, one reaches the model.
+    // A canary for that known gap: when an address detector lands, this test must change to expect no leak.
     const address: Seed = { id: "seed-address-1", kind: "address", value: "12 Rue des Lilas" };
     const all = [...seeds(["seed-name-1"]), address];
     const c = DEFAULT_BROWSER_CASES[0]!;

@@ -5,7 +5,7 @@ import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, t
 import { DataAccess, openRepoBrowser, type JiraCollection, type JiraInput, type JiraIssue, type OpenBrowser } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { exploreWorkflow, requirementsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import { EXPLORATION_ARTIFACT, exploreWorkflow, requirementsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
 import type { Seed, SyntheticTicket } from "./cases.js";
 import { startStandInApp, type StandInApp } from "./stand-in-app.js";
 import type { Pipeline, PipelineContext } from "./runner.js";
@@ -43,7 +43,7 @@ export interface MaskedPipelineOptions {
 
 /** Cases that run in a browser: they need `playwrightFolder`. */
 export const BROWSER_WORKFLOWS: ReadonlySet<string> = new Set(["explore"]);
-/** Actions per explored case: the fixture model's tour takes six. */
+/** Actions per explored case: the fixture model's tour is five actions, then finish. */
 const EXPLORE_MAX_ACTIONS = 10;
 
 const AC_FIELD = { id: "customfield_10001", name: "Acceptance criteria", custom: true };
@@ -72,6 +72,7 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
     store: runs,
     // The stand-in app is the only site the explorer may drive; opening the browser needs no question.
     config: app ? configSchema.parse({ ...config, playwright: { baseUrl: app.url }, policy: { writes: { commands: "allow" } } }) : config,
+    // The folder is the one named with --browser, not the project's: no project-folder check, by choice.
     ...(app && folder ? { browser: ((grant, o) => openRepoBrowser(grant, { folder, root: folder, headed: options.headed ?? o.headed })) satisfies OpenBrowser } : {}),
     vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "harness (memory)", getKey: async () => key } }),
     jira: { collect: async (input: JiraInput) => collect(tickets, input) },
@@ -120,7 +121,11 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   try {
     if (!app) return { runId: await run(c.workflow, c.inputs) };
     const testCasesRun = await run("test-cases", c.inputs);
-    return { runId: await run("explore", { testCasesRun, start: app.start, maxActions: EXPLORE_MAX_ACTIONS }), testCasesRun };
+    const runId = await run("explore", { testCasesRun, start: app.start, maxActions: EXPLORE_MAX_ACTIONS });
+    // A gate that only saw the list view proves little about record pages: the case fails.
+    const explored = await runs.readArtifact(runId, EXPLORATION_ARTIFACT);
+    if (!explored?.data.cases.some((x) => x.pages.some((p) => p.startsWith("/lightning/r/")))) throw new Error(`Run ${runId} never opened a record page of the stand-in app`);
+    return { runId, testCasesRun };
   } finally {
     await data.close();
   }

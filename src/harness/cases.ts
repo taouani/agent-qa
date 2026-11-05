@@ -223,7 +223,8 @@ export const DEFAULT_CASES: HarnessCase[] = DEFAULT_CASE_INPUTS.map((c) => harne
 /**
  * Shipped cases that run in a browser (S2-10), on the stand-in app, whose
  * records hold the case's seeds: names in list cells, a record heading and a
- * sentence, an email, phone, IBAN and IP in detail fields outside any table.
+ * sentence; the email and phone in list cells too; the email, phone, IBAN and
+ * IP in the opened record's detail fields, outside any table.
  * They run with `agent-qa harness --browser`.
  */
 export const DEFAULT_BROWSER_CASES: HarnessCase[] = [

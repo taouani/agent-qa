@@ -32,7 +32,7 @@ export interface StandInRecord {
 const OBJECT = "Approval_Request__c";
 export const STAND_IN_START = `/lightning/o/${OBJECT}/list`;
 
-/** One record per seeded name; the other seeds spread over the records' fields. */
+/** One record per seeded name. The first, which the tour opens, shows every other seed in its details. */
 export function standInRecords(seeds: readonly Seed[]): StandInRecord[] {
   const names = seeds.filter((s) => s.kind === "name").map((s) => s.value);
   const people = names.length ? names : ["Request owner"];
@@ -42,7 +42,7 @@ export function standInRecords(seeds: readonly Seed[]): StandInRecord[] {
     // Salesforce ids are 18 characters; these are made up.
     id: `a0B5g0000${String(i + 1).padStart(6, "0")}AAA`,
     name,
-    fields: [{ label: "Status", value: "Draft" }, ...rest.filter((_, j) => j % people.length === i).map((s) => ({ label: label[s.kind], value: s.value }))],
+    fields: [{ label: "Status", value: "Draft" }, ...(i === 0 ? rest.map((s) => ({ label: label[s.kind], value: s.value })) : [])],
     ...(people.length > 1 ? { contact: people[(i + 1) % people.length]! } : {}),
   }));
 }
@@ -152,6 +152,11 @@ export async function startStandInApp(seeds: readonly Seed[]): Promise<StandInAp
   return {
     url: `http://127.0.0.1:${address.port}`,
     start: STAND_IN_START,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // A browser left open keeps its connections: never wait on them.
+        server.closeAllConnections();
+      }),
   };
 }
