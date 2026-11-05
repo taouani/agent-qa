@@ -23,7 +23,7 @@ const SETTLE_POLL_MS = 250;
 const STABLE_POLLS = 4;
 /** What reads as "the page is still working" on Lightning and most apps. */
 const BUSY = '[role="progressbar"]:visible, [aria-busy="true"]:visible, .slds-spinner_container:visible, lightning-spinner:visible';
-export const KEY = /^(?:[A-Za-z0-9]|F\d{1,2}|Enter|Tab|Escape|Space|Backspace|Delete|Arrow(?:Up|Down|Left|Right)|Home|End|PageUp|PageDown)(?:\+(?:[A-Za-z0-9]|Enter|Tab))?$|^(?:Control|Shift|Alt|Meta)\+[A-Za-z0-9]$/;
+export const KEY = /^(?:(?:Control|Shift|Alt|Meta|ControlOrMeta)\+)*(?:Enter|Tab|Escape|Backspace|Delete|Insert|Space|Home|End|PageUp|PageDown|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|F(?:[1-9]|1[0-2])|[A-Za-z0-9])$/;
 
 /** An element as a function run in the page sees it (no DOM types in this package). */
 interface PageElement {

@@ -115,6 +115,8 @@ interface Session {
   caseKey: string | undefined;
   applied: string[];
   results: MaskedResult[];
+  /** The open case was replayed at some point: said on every sync of it, until the next case. */
+  replayed: boolean;
   origin?: string;
 }
 
@@ -165,16 +167,17 @@ export class Explorer {
       const wanted = actions.map((a) => JSON.stringify(a));
       // Applied actions must be a prefix of the accepted ones; anything else starts the case again.
       const diverged = session.applied.some((a, i) => wanted[i] !== a);
-      let replayed = false;
       if (session.caseKey !== caseKey || diverged) {
+        const sameCase = session.caseKey === caseKey;
         // Cleared first: a start that fails must not leave the old case's actions counted.
         session.caseKey = undefined;
         session.applied = [];
         session.results = [];
+        session.replayed = (sameCase && session.replayed) || actions.length > 0;
         await this.startCase(session, setup);
         session.caseKey = caseKey;
-        replayed = actions.length > 0;
       }
+      const replayed = session.replayed;
       const mask = this.masker(vault, service);
       for (let i = session.applied.length; i < actions.length; i++) {
         let result: MaskedResult;
@@ -252,7 +255,7 @@ export class Explorer {
       const summary = `Open a browser with the repo's Playwright, ${target.kind === "salesforce" ? `signed in as ${target.role} on ${target.host}` : `on ${target.host}`}, to explore test cases`;
       const outcome = await this.deps.policy(config).guard({ target: "commands", summary, runId }, (grant) => open(grant, { folder, root: hostCwd(this.deps.root), headed: setup.headed ?? false }));
       if (outcome.status !== "done") throw new Error("the write policy refused to open a browser (policy.writes.commands)");
-      return { browser: outcome.value, caseKey: undefined, applied: [], results: [] };
+      return { browser: outcome.value, caseKey: undefined, applied: [], results: [], replayed: false };
     })();
     session.catch(() => {
       if (this.sessions.get(runId) === session) this.sessions.delete(runId);

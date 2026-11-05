@@ -6,6 +6,8 @@ export { isSalesforceSandbox } from "./explorer.js";
 export type { BrowserLike, ExplorerTarget, ExploreSetup, MaskedAction, MaskedPage, MaskedResult, OpenBrowser } from "./explorer.js";
 export { MAX_SNAPSHOT_CHARS, maskAriaSnapshot, maskTitle } from "./snapshot.js";
 export type { BrowserAction, BrowserTarget } from "../connectors/index.js";
+/** Key names the explorer presses: never free text. */
+export { KEY as PRESS_KEY } from "../connectors/index.js";
 export type { SalesforceSession } from "../connectors/index.js";
 export {
   commandList,
