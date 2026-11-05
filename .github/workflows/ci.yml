@@ -28,6 +28,12 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      # One job runs the browser tests and the browser leak gate, with the repo's own Playwright.
+      - name: Install Chromium for the browser tests
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        run: |
+          npx playwright install --with-deps chromium
+          echo "AGENT_QA_PLAYWRIGHT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
@@ -36,8 +42,9 @@ jobs:
         run: node dist/cli/bin.js --version
       # The leak gate: the real workflows on the shipped seeded fixtures, with the offline
       # fixture model. Exit 1 if any seeded value reaches a model prompt or an IDE-shown step.
+      # With --browser, the explorer also walks the stand-in app in Chromium.
       - name: Leak gate (harness)
-        run: node dist/cli/bin.js harness
+        run: node dist/cli/bin.js harness ${{ env.AGENT_QA_PLAYWRIGHT_DIR && '--browser' || '' }}
       # The fallback build for machines where esbuild can't read a parent folder.
       - run: npm run build:tsc
       - name: CLI smoke test (tsc build)

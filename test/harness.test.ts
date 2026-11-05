@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../src/cli/index.js";
 import { parseConfig } from "../src/core/index.js";
 import {
+  DEFAULT_BROWSER_CASES,
   DEFAULT_CASES,
   DEFAULT_SEEDS,
   emptyPipeline,
@@ -268,7 +269,7 @@ describe("harness cases", () => {
     });
 
     it("uses the shipped set without a harness section", async () => {
-      expect((await harnessSources(undefined, dir)).cases).toBe(DEFAULT_CASES);
+      expect((await harnessSources(undefined, dir)).cases).toEqual([...DEFAULT_CASES, ...DEFAULT_BROWSER_CASES]);
     });
   });
 });
@@ -305,6 +306,17 @@ describe("agent-qa harness exit codes", () => {
     expect(r.code).toBe(2);
     expect(r.err).toMatch(/no harness cases/);
   });
+
+  it("skips the browser cases unless asked, and names a missing Playwright", async () => {
+    const r = await runCli(["harness", "--pipeline", "empty", "--cwd", dir]);
+    expect(r.code).toBeUndefined();
+    expect(r.out).toContain("note: 1 browser case(s) skipped: run with --browser");
+    expect(r.out).toContain("3/3 passed");
+    const browser = await runCli(["harness", "--browser", "--cwd", dir]);
+    expect(browser.code).toBe(1);
+    expect(browser.out).toMatch(/\[error\] approval-request-explore: .*Playwright isn't installed in the repo/);
+    expect(browser.out).toContain("3/4 passed");
+  }, 60_000);
 
   it("exits 2 with one line for a bad config or a missing fixtures folder", async () => {
     await writeFile(join(dir, "agent-qa.yaml"), "version: 2\n");

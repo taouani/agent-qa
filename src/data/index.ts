@@ -5,7 +5,7 @@ export type { DataAccessOptions, ExplorerData, HostData, MaskedTestResult, Profi
 export { mdSafe, prBase } from "./access.js";
 export { parsePlaywrightReport, type ParsedReport, type ReportedTest, type TestOutcome } from "./test-report.js";
 export { isPlainRelativePath, isProtectedPath } from "./generated-files.js";
-export { isSalesforceSandbox } from "./explorer.js";
+export { isSalesforceSandbox, openRepoBrowser } from "./explorer.js";
 export type { BrowserLike, ExplorerTarget, ExploreSetup, MaskedAction, MaskedPage, MaskedResult, OpenBrowser } from "./explorer.js";
 export { MAX_SNAPSHOT_CHARS, maskAriaSnapshot, maskTitle } from "./snapshot.js";
 export type { BrowserAction, BrowserTarget } from "../connectors/index.js";

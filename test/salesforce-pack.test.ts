@@ -97,7 +97,7 @@ describe("Salesforce pack", () => {
 
 // The helpers on a real browser, against a stand-in page built the way Lightning builds its own: shadow roots, late spinners.
 const playwrightFolder = (() => {
-  // Not this repo's own @playwright/test (1.49, types only, no browser): a folder with a browser to match.
+  // A folder with Playwright and its browser: the repo's own in CI's browser job, /opt/node-tools locally.
   for (const from of [process.env.AGENT_QA_PLAYWRIGHT_DIR, "/opt/node-tools"].filter((x): x is string => !!x)) {
     try {
       return dirname(dirname(createRequire(join(from, "package.json")).resolve("playwright/package.json")));

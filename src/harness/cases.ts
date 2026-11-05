@@ -220,6 +220,32 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
 
 export const DEFAULT_CASES: HarnessCase[] = DEFAULT_CASE_INPUTS.map((c) => harnessCaseSchema.parse(c));
 
+/**
+ * Shipped cases that run in a browser (S2-10), on the stand-in app, whose
+ * records hold the case's seeds: names in list cells, a record heading and a
+ * sentence; the email and phone in list cells too; the email, phone, IBAN and
+ * IP in the opened record's detail fields, outside any table.
+ * They run with `agent-qa harness --browser`.
+ */
+export const DEFAULT_BROWSER_CASES: HarnessCase[] = [
+  harnessCaseSchema.parse({
+    id: "approval-request-explore",
+    description: "Explores an approval request on the stand-in app: its records show the requesters' names, email, phone, IBAN and last login IP.",
+    workflow: "explore",
+    inputs: { key: "QAH-7" },
+    tickets: [
+      {
+        key: "QAH-7",
+        summary: "Comment on an approval request",
+        description:
+          "Open the request of Marguerite Quillfeather (m.quillfeather@example.com, +33 6 39 98 12 34), backed up by Tobias Wrenhallow. Payouts go to DE89 3704 0044 0532 0130 00; she last signed in from 192.0.2.44.",
+        acceptanceCriteria: "- A comment saved on the request shows in a confirmation message",
+      },
+    ],
+    seeds: ["seed-name-1", "seed-name-2", "seed-email-1", "seed-phone-1", "seed-iban-1", "seed-ip-1"],
+  }),
+];
+
 /** Check that every seed a case names exists and actually appears in its tickets. */
 export function validateCases(cases: HarnessCase[], seeds: Seed[]): void {
   const byId = new Map<string, Seed>();
