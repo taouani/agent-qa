@@ -389,6 +389,18 @@ describe("batched and optional steps", () => {
     const first = await engine.start("loop3", {});
     expect((await engine.submit(first.runId, "act_1", { n: 1 })).next.stepId).toBe("act_2");
     expect((await engine.submit(first.runId, "act_2", { n: 2 })).next.kind).toBe("done");
+    // An until that fails after onAccept says the answer was used: the same one again finishes the step.
+    let broken = true;
+    const late = new WorkflowEngine({ store: new MemoryStateStore() }).register({
+      id: "loop4",
+      description: "a loop",
+      inputSchema: z.object({}),
+      steps: [{ id: "act", kind: "generate", outputSchema: z.object({ n: z.number() }), batches: () => 2, untilAfterAccept: true, until: () => { if (broken) throw new Error("disk"); return true; }, instructions: () => "act" }],
+    });
+    const run = await late.start("loop4", {});
+    await expect(late.submit(run.runId, "act_1", { n: 1 })).rejects.toThrow(/The answer was used, but the step is still open/);
+    broken = false;
+    expect((await late.submit(run.runId, "act_1", { n: 1 })).next.kind).toBe("done");
     expect(() => new WorkflowEngine({ store: new MemoryStateStore() }).register({ id: "bad2", description: "x", inputSchema: z.object({}), steps: [{ id: "a", kind: "generate", outputSchema: z.object({}), batches: () => 1, untilAfterAccept: true, instructions: () => "" }] })).toThrow(/untilAfterAccept needs until/);
   });
 

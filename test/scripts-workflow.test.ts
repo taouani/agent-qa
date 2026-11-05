@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
-import { listFolderFiles, type FrameworkProfile, type SavedProfile, type TestRunOutcome, type TypeDiagnostic } from "../src/data/index.js";
+import { listFolderFiles, scanGeneratedCode, type FrameworkProfile, type SavedProfile, type TestRunOutcome, type TypeDiagnostic } from "../src/data/index.js";
 import { checkFix, EXPLORATION_ARTIFACT, lightningHelpersSource, SCRIPTS_RUN_ARTIFACT, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_WRITTEN_ARTIFACT, scriptsWorkflow, TEST_CASES_ARTIFACT, withHelper, type Exploration, type ScriptsDeps, type TestCases } from "../src/workflows/index.js";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 
@@ -101,7 +101,7 @@ const fail = (message = "TimeoutError: locator.click: Timeout 5000ms exceeded.\n
   timedOut: false,
   durationMs: 10,
   errors: [],
-  tests: [{ title: TITLE, tags: [], file: ".features-gen/ABC-1.feature.spec.js", line: 6, outcome: "failed", runs: 1, failedRuns: 1, failure: { message, snippet: "> 8 | await pages.approvalAppMainPage.navigateToNewForm();", snapshot: "- button \"Save draft\"" } }],
+  tests: [{ title: TITLE, tags: ["@TC-ABC-1-001"], file: ".features-gen/ABC-1.feature.spec.js", line: 6, outcome: "failed", runs: 1, failedRuns: 1, failure: { message, snippet: "> 8 | await pages.approvalAppMainPage.navigateToNewForm();", snapshot: "- button \"Save draft\"" } }],
 });
 
 function fakeData(over: Partial<ScriptsDeps["data"]> = {}, profile: FrameworkProfile = PROFILE, typeErrors: (files: ReadonlyArray<{ path: string; content: string }>) => TypeDiagnostic[] = () => []) {
@@ -415,7 +415,7 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect((await e.submit(runId, "run", { run: true }, { byPerson: true })).next.kind).toBe("done");
     expect(data.testRuns).toEqual([{ files: ["tests/features/ABC-1.feature"] }, { files: ["tests/features/ABC-1.feature"], repeatEach: 3 }]);
     const r = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
-    expect(r).toMatchObject({ status: "passed", reason: "every test passed 3 times in a row", rounds: 0 });
+    expect(r).toMatchObject({ status: "passed", reason: "every test passed, then 3 more time(s) in a row", rounds: 0 });
     expect(r.attempts.map((a) => a.kind)).toEqual(["run", "stability"]);
 
     // No: nothing runs; and with no way to run, nobody is asked.
@@ -493,23 +493,103 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect((await runs.readArtifact(flaky.runId, SCRIPTS_RUN_ARTIFACT))!.data.status).toBe("unstable");
   });
 
-  it("checks a fix keeps every check, title and test", () => {
-    const last = { kind: "run" as const, changed: [], classified: [], exitCode: 1, timedOut: false, durationMs: 1, errors: [], tests: [{ title: "t", file: "a.spec.ts", line: 3, outcome: "failed" as const, runs: 1, failedRuns: 1 }] };
-    const spec = "test('TC-1 t', async ({ page }) => {\n  await expect(page.getByRole('button')).toBeVisible();\n});\n";
-    const files = [{ path: "a.spec.ts", role: "spec" as const, content: spec, sha256: "0".repeat(64) }, { path: "d.json", role: "data" as const, content: "{}", sha256: "0".repeat(64) }];
-    const titles = (c: string) => [...c.matchAll(/test\('([^']+)'/g)].map((m) => m[1]!);
-    const check = (content: string, kind = "selector", path = "a.spec.ts") => checkFix({ failures: [{ test: "t", kind: kind as never, reason: "r" }], files: [{ path, content }] }, last, files, titles).map((x) => x.message);
-    expect(check(spec.replace("button'", "link'"))).toEqual([]);
-    expect(check(spec.replace("await expect(page.getByRole('button')).toBeVisible();", "await page.getByRole('button').click();"))).toEqual([expect.stringContaining("fewer expect")]);
-    expect(check(spec.replace("await expect(", "await expect.soft("))).toEqual(expect.arrayContaining([expect.stringContaining("expect.soft")]));
-    expect(check(spec.replace("test('TC-1 t',", "test.fail('TC-1 t',"))).toEqual(expect.arrayContaining([expect.stringContaining("never hides a failure")]));
-    expect(check(spec.replace("TC-1 t", "TC-1 u"))).toEqual([expect.stringContaining("changes a test's title")]);
-    expect(check('{"a":1}', "selector", "d.json")).toEqual(["test data changes only for a data failure"]);
-    expect(check('{"a":1}', "data", "d.json")).toEqual([]);
-    expect(check(spec.replace("button'", "link'"), "data")).toEqual(["code changes only for a selector or timing failure"]);
+  it("goes on after a stop halfway through a fix round, from what is in the repo", async () => {
+    const { e, data, runId } = await written();
+    data.results.push(fail());
+    await e.submit(runId, "run", { run: true }, { byPerson: true });
+    const run = data.runGeneratedTests;
+    let broken = true;
+    data.runGeneratedTests = async (...args) => {
+      if (broken) {
+        broken = false;
+        throw new Error("the IDE closed");
+      }
+      return run(...args);
+    };
+    const fix = { failures: [{ test: TITLE, kind: "selector", reason: "the button is Save draft" }], files: [{ path: steps, content: fixedSteps }] };
+    await expect(e.submit(runId, "fix_1", fix)).rejects.toThrow(/the IDE closed/);
+    // The fix is in the repo and in the record, its run still owed.
+    const mid = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(mid).toMatchObject({ status: "failing", rounds: 1, pending: { changed: [steps] } });
+    expect(mid.files.find((f) => f.path === steps)!.content).toBe(fixedSteps);
+    // Another answer for the same round changes nothing more: only the owed run happens.
+    const other = { failures: [{ test: TITLE, kind: "timing", reason: "slow" }], files: [{ path: steps, content: `${fixedSteps}\n` }] };
+    expect((await e.submit(runId, "fix_1", other)).next.kind).toBe("done");
+    expect(data.replaced).toHaveLength(1);
+    const end = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(end).toMatchObject({ status: "passed" });
+    expect(end.pending).toBeUndefined();
+    expect(end.attempts[1]).toMatchObject({ changed: [steps], classified: [{ kind: "selector" }] });
+  });
+
+  it("counts a skipped or missing case's test as not passed", async () => {
+    const { e, data, runId } = await written(undefined, { fixRounds: 1 });
+    const skipped = pass() as Extract<TestRunOutcome, { status: "done" }>;
+    data.results.push({ ...skipped, tests: [{ ...skipped.tests[0]!, outcome: "skipped" }] }, { ...skipped, tests: [{ ...skipped.tests[0]!, title: "Someone else's test", tags: [] }] });
+    const fix = (await e.submit(runId, "run", { run: true }, { byPerson: true })).next;
+    expect(fix.stepId).toBe("fix");
+    expect(data.testRuns).toHaveLength(1);
+    expect((await e.submit(runId, "fix", { failures: [{ test: TITLE, kind: "flake", reason: "skipped" }] })).next.kind).toBe("done");
+    const r = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(r.status).toBe("gave-up");
+    // The repo's own test that the filter caught is left out, and the case's missing test is said.
+    expect(r.attempts[1]).toMatchObject({ tests: [], errors: ["no test ran for TC-ABC-1-001: each case's test must run (not skipped, not left out)"] });
+  });
+
+  it("checks a fix keeps every check, title and test, and can't hide a failure", () => {
+    const last = { kind: "run" as const, changed: [], classified: [], exitCode: 1, timedOut: false, durationMs: 1, errors: [], tests: [{ title: "TC-1 t", tags: [], file: "a.spec.ts", line: 3, outcome: "failed" as const, runs: 1, failedRuns: 1 }] };
+    const spec = "import { test, expect } from '@playwright/test';\nimport data from './d.json';\ntest('TC-1 t', async ({ page }) => {\n  await page.getByRole('button', { name: 'Approve' }).click();\n  await expect(page.getByRole('status')).toHaveText(data.expectedStatus);\n});\n";
+    const other = "import { test } from '@playwright/test';\ntest('TC-2 u', async ({ page }) => {\n  await page.goto('/');\n});\n";
+    const files = [
+      { path: "a.spec.ts", role: "spec" as const, content: spec, sha256: "0".repeat(64) },
+      { path: "b.spec.ts", role: "spec" as const, content: other, sha256: "0".repeat(64) },
+      { path: "d.json", role: "data" as const, content: '{"expectedStatus":"Approved","reason":"Restock"}', sha256: "0".repeat(64) },
+    ];
+    const scan = (c: string, p: string) => {
+      const x = scanGeneratedCode(c, p);
+      return { titles: x.tests.map((t) => t.title), checks: x.checks, checkedNames: x.checkedNames, branches: x.branches };
+    };
+    const check = (content: string, kind = "selector", path = "a.spec.ts") => checkFix({ failures: [{ test: "TC-1 t", kind: kind as never, reason: "r" }], files: [{ path, content }] }, last, files, scan).map((x) => x.message);
+    const CHECK = "await expect(page.getByRole('status')).toHaveText(data.expectedStatus);";
+    // Allowed: a new locator, a longer wait on a check, an extra check.
+    expect(check(spec.replace("'button', { name: 'Approve' }", "'button', { name: 'Approve request' }"))).toEqual([]);
+    expect(check(spec.replace("toHaveText(data.expectedStatus)", "toHaveText(data.expectedStatus, { timeout: 15000 })"))).toEqual([]);
+    expect(check(spec.replace("  await page.getByRole('button'", "  await expect(page.getByRole('button', { name: 'Approve' })).toBeEnabled();\n  await page.getByRole('button'"), "timing")).toEqual([]);
+    // Refused: every way the review found to make a failing check pass.
+    const dodges = [
+      CHECK.replace(";", ".catch(() => {});"),
+      CHECK.replace("toHaveText", "not.toHaveText"),
+      CHECK.replace("data.expectedStatus", "/.*/"),
+      CHECK.replace("toHaveText(data.expectedStatus)", "toBeDefined()"),
+      `return;\n  ${CHECK}`,
+      `if (Date.now() < 0) ${CHECK}`,
+      `await Promise.allSettled([${CHECK.replace("await ", "").replace(";", "")}]);`,
+      `// ${CHECK}`,
+      `test.info().skip();\n  ${CHECK}`,
+      `test.fail();\n  ${CHECK}`,
+      `expect.extend({ toHaveText: () => ({ pass: true, message: () => '' }) });\n  ${CHECK}`,
+      `expect.configure({ soft: true });\n  ${CHECK}`,
+      CHECK.replace("await expect(", "await expect.soft("),
+      `try { ${CHECK} } catch {}`,
+      `const { readFileSync } = require('fs');\n  throw new Error(readFileSync('.env', 'utf8'));`,
+      `await test.info().attach('error-context', { path: '.env' });\n  ${CHECK}`,
+    ];
+    for (const d of dodges) {
+      const changed = spec.replace(CHECK, d);
+      const messages = [...check(changed), ...scanGeneratedCode(changed, "a.spec.ts").findings.map((f) => f.message)];
+      expect(messages.length, d).toBeGreaterThan(0);
+    }
+    expect(check(spec.replace("TC-1 t", "TC-1 u"))).toEqual(expect.arrayContaining([expect.stringContaining("changes a test's title")]));
+    // A spec with no failing test of its own stays as it is.
+    expect(check(other.replace("'/'", "'/home'"), "selector", "b.spec.ts")).toEqual([expect.stringContaining("no selector or timing failure is in b.spec.ts")]);
+    // Data: only for a data failure, and never a value a check compares against.
+    expect(check('{"expectedStatus":"Approved","reason":"Restock now"}', "selector", "d.json")).toEqual(["test data changes only for a data failure"]);
+    expect(check('{"expectedStatus":"Approved","reason":"Restock now"}', "data", "d.json")).toEqual([]);
+    expect(check('{"expectedStatus":"Rejected","reason":"Restock"}', "data", "d.json")).toEqual([expect.stringContaining('changes "expectedStatus", which a check compares against')]);
+    expect(check(spec.replace("'Approve'", "'Go'"), "data")).toEqual(["code changes only for a selector or timing failure"]);
     expect(check(spec, "selector")).toEqual(["is unchanged: leave it out"]);
     // A run that broke before any test: classified as the run itself.
-    expect(checkFix({ failures: [{ test: "(the run)", kind: "environment", reason: "no browser" }], files: [] }, { ...last, tests: [], errors: ["bddgen failed"] }, files, titles)).toEqual([]);
+    expect(checkFix({ failures: [{ test: "(the run)", kind: "environment", reason: "no browser" }], files: [] }, { ...last, tests: [], errors: ["bddgen failed"] }, files, scan)).toEqual([]);
   });
 
   it("adds the helper file only when the code imports it and the repo lacks it", () => {

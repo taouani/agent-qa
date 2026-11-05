@@ -469,7 +469,10 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
         fixRounds: (ctx) => ctx.inputs.fixRounds ?? DEFAULT_FIX_ROUNDS,
         stabilityRuns: (ctx) => ctx.inputs.stabilityRuns ?? DEFAULT_STABILITY_RUNS,
         cases: casesOf,
-        scanTitles: (content, path) => scanGeneratedCode(content, path).tests.map((t) => t.title),
+        scan: (content, path) => {
+          const c = scanGeneratedCode(content, path);
+          return { titles: c.tests.map((t) => t.title), checks: c.checks, checkedNames: c.checkedNames, branches: c.branches };
+        },
         checkCode: async (ctx, draft) => {
           const { profile: p } = await profile(ctx);
           const { files, links } = await existing(ctx);

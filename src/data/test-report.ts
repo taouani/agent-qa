@@ -31,7 +31,7 @@ interface Suite {
 const suite: z.ZodType<Suite> = z.lazy(() => z.object({ title: z.string(), file: z.string().optional(), specs: z.array(spec).optional(), suites: z.array(suite).optional() }).passthrough());
 const report = z
   .object({
-    config: z.object({ rootDir: z.string().optional() }).passthrough().optional(),
+    config: z.object({ rootDir: z.string().optional(), projects: z.array(z.object({ outputDir: z.string().optional() }).passthrough()).optional() }).passthrough().optional(),
     suites: z.array(suite),
     errors: z.array(error).optional(),
     stats: z.object({ expected: z.number(), unexpected: z.number(), flaky: z.number(), skipped: z.number() }).passthrough(),
@@ -77,6 +77,18 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
   if (!parsed.success) throw new Error("Playwright's JSON report has an unexpected shape");
   const r = parsed.data;
   const base = r.config?.rootDir ?? folder;
+  // A page snapshot is only Playwright's own error-context.md in a project's output folder: an attachment
+  // the test code made could name any file (.env, a saved session).
+  const outputs = (r.config?.projects ?? []).map((p) => p.outputDir).filter((d): d is string => typeof d === "string" && isAbsolute(d));
+  const snapshotFile = (path: string | undefined) => {
+    if (!path || posix.basename(path.replace(/\\/g, "/")) !== "error-context.md") return undefined;
+    return outputs.some((d) => {
+      const rel = relative(d, path);
+      return rel !== "" && !isAbsolute(rel) && !rel.split(sep).includes("..");
+    })
+      ? path
+      : undefined;
+  };
   const tests: ReportedTest[] = [];
   const walk = (s: Suite, titles: string[]) => {
     // The file's own suite is titled with the file name: left out of the title.
@@ -99,11 +111,12 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
           ...(first
             ? {
                 failure: {
-                  message: plain(err?.message ?? `the test ended ${first.status}`).slice(0, 4000),
-                  snippet: err?.snippet ? plain(err.snippet).slice(0, 2000) : undefined,
+                  // Whole: cut only once masked, so a value at the edge isn't half-hidden from the detectors.
+                  message: plain(err?.message ?? `the test ended ${first.status}`),
+                  snippet: err?.snippet ? plain(err.snippet) : undefined,
                   at: err?.location ? { file: fromFolder(err.location.file, folder, base), line: err.location.line } : undefined,
-                  snapshotPath: context?.path,
-                  snapshot: context?.body !== undefined ? Buffer.from(context.body, "base64").toString("utf8") : undefined,
+                  snapshotPath: snapshotFile(context?.path),
+                  snapshot: context?.body !== undefined && context.contentType?.startsWith("text/") ? Buffer.from(context.body, "base64").toString("utf8") : undefined,
                 },
               }
             : {}),
@@ -113,7 +126,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
     for (const c of s.suites ?? []) walk(c, here);
   };
   for (const s of r.suites) walk(s, []);
-  return { tests: merged(tests), errors: (r.errors ?? []).map((e) => plain(e.message ?? e.stack ?? "an error outside the tests").slice(0, 4000)) };
+  return { tests: merged(tests), errors: (r.errors ?? []).map((e) => plain(e.message ?? e.stack ?? "an error outside the tests")) };
 }
 
 /** --repeat-each runs a test as several: one row each, its runs counted. Passing some and failing others is flaky. */

@@ -87,19 +87,27 @@ export async function removeCreatedRepoFile(grant: WriteGrant, root: string, fil
 /**
  * Replaces a file Agent-QA wrote itself (S2-8, a fix to generated code): only
  * while it still holds exactly the bytes Agent-QA wrote (`expectedSha256`),
- * so an edit the person made since is never overwritten. Written whole,
- * through a temporary file and a rename.
+ * so an edit the person made since is never overwritten. The new text is
+ * written to a temporary file first, the old bytes are checked, then the
+ * temporary file is renamed over it at once, keeping the file's mode. A file
+ * that already holds `text` is left as it is ("same"). Returns the bytes it
+ * replaced, for a rollback.
  */
-export async function replaceCreatedRepoFile(grant: WriteGrant, root: string, path: string, text: string, expectedSha256: string, within: string): Promise<void> {
+export async function replaceCreatedRepoFile(grant: WriteGrant, root: string, path: string, text: string, expectedSha256: string, within: string): Promise<{ status: "same" } | { status: "replaced"; before: string }> {
   const { target, folder } = await prepare(grant, root, path, within);
   const current = await lstat(target).catch(() => undefined);
   if (!current?.isFile()) throw new PolicyDenied("testCode", `${path} is gone or not a plain file: only files Agent-QA wrote are changed`);
-  const now = createHash("sha256").update(await readFile(target)).digest("hex");
-  if (now !== expectedSha256) throw new PolicyDenied("testCode", `${path} changed since Agent-QA wrote it: it is never overwritten`);
   const temp = join(folder, `.${randomBytes(6).toString("hex")}.agent-qa.tmp`);
   try {
-    await writeFile(temp, text, { encoding: "utf8", flag: "wx" });
+    await writeFile(temp, text, { encoding: "utf8", flag: "wx", mode: current.mode & 0o777 });
+    const before = await readFile(target, "utf8");
+    if (before === text) {
+      await rm(temp, { force: true });
+      return { status: "same" };
+    }
+    if (createHash("sha256").update(before).digest("hex") !== expectedSha256) throw new PolicyDenied("testCode", `${path} changed since Agent-QA wrote it: it is never overwritten`);
     await rename(temp, target);
+    return { status: "replaced", before };
   } catch (error) {
     await rm(temp, { force: true });
     throw error;

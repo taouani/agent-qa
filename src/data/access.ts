@@ -18,10 +18,11 @@ import {
   type SavedProfile,
 } from "./profile.js";
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
-import { Explorer, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
+import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, restorer, results, toXrayTest, type ExistingTest, type PushCase, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
 import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
+import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 
 /**
@@ -402,8 +403,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const result: HostCommandOutcome = {
       exitCode: r.exitCode,
       timedOut: r.timedOut,
-      stdout: service.maskText(r.stdout, "host.stdout"),
-      stderr: service.maskText(r.stderr, "host.stderr"),
+      // Colour codes and local paths go first: either can hide a value from the detectors.
+      stdout: service.maskText(local(plain(r.stdout), cwd), "host.stdout"),
+      stderr: service.maskText(local(plain(r.stderr), cwd), "host.stderr"),
       truncated: r.truncated,
       durationMs: r.durationMs,
     };
@@ -430,8 +432,10 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     for (const f of request.files) if (!isPlainRelativePath(f) || isProtectedPath(f)) throw new ProfileError(`${f} isn't a generated test file`);
     const repeat = Math.min(Math.max(Math.trunc(request.repeatEach ?? 1), 1), 10);
     const dir = hostCwd(this.options.root, saved.folder);
-    const { service } = await this.run(tokensRun);
-    const mask = (text: string, field: string) => service.maskText(local(plain(text), dir), field);
+    const { service, vault } = await this.run(tokensRun);
+    // What the app showed (an error's received text, a page snapshot): the vault's known values first, then the detectors, then cut.
+    const echo = vaultMasker(vault, service, "test.error");
+    const mask = (text: string, field: string, max: number) => echo.detect(local(plain(text), dir), field).slice(0, max);
     const tail = (r: HostCommandOutcome) => (r.stderr.trim() || r.stdout.trim()).slice(-3000);
     let durationMs = 0;
     if (saved.commands.generate) {
@@ -440,11 +444,12 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       durationMs += g.result.durationMs;
       // A feature bddgen can't match to steps stops here: there is nothing to run yet.
       if (g.result.exitCode !== 0 || g.result.timedOut) {
-        return { status: "done", exitCode: g.result.exitCode, timedOut: g.result.timedOut, durationMs, tests: [], errors: [`${saved.commands.generate.join(" ")} failed: ${local(plain(tail(g.result)), dir)}`] };
+        return { status: "done", exitCode: g.result.exitCode, timedOut: g.result.timedOut, durationMs, tests: [], errors: [`${saved.commands.generate.join(" ")} failed: ${tail(g.result)}`] };
       }
     }
     // playwright-bdd runs the specs it generated from the features: they are found by the feature's name.
-    const filters = saved.kind === "playwright-bdd" ? request.files.map((f) => (f.endsWith(".feature") ? posixBase(f) : f)) : request.files;
+    // Playwright reads file arguments as patterns: the dots are escaped, so ABC-1.feature doesn't also match ABC-1xfeature.
+    const filters = saved.kind === "playwright-bdd" ? request.files.map((f) => (f.endsWith(".feature") ? posixBase(f).replace(/[.+]/g, "\\$&") : f)) : request.files;
     const args = ["--reporter=json", "--retries=0", "--workers=1", ...(repeat > 1 ? [`--repeat-each=${repeat}`] : []), ...filters];
     const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands.test, args, purpose: repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests" }, true, true);
     if (t.status !== "done") return { status: "declined" };
@@ -455,14 +460,16 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       parsed = parsePlaywrightReport(JSON.parse(t.report ?? "null"), dir);
     } catch {
       await service.saveVault();
-      return { ...base, tests: [], errors: [`no test report came back${t.result.timedOut ? " (the run timed out)" : ""}: ${local(plain(tail(t.result)), dir) || "no output"}`] };
+      return { ...base, tests: [], errors: [`no test report came back${t.result.timedOut ? " (the run timed out)" : ""}: ${tail(t.result) || "no output"}`] };
     }
     const tests: MaskedTestResult[] = [];
     for (const x of parsed.tests) {
-      const snapshot = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
+      const raw = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
+      // A page snapshot is an ARIA snapshot: field values, record names and table cells become tokens, as the explorer's do.
+      const snapshot = raw !== undefined ? maskAriaSnapshot(raw, echo).text.slice(0, 6000) : undefined;
       tests.push({
-        title: mask(x.title, "test.title"),
-        tags: x.tags.map((g) => mask(g, "test.tag")),
+        title: mask(x.title, "test.title", 2000),
+        tags: x.tags.map((g) => mask(g, "test.tag", 200)),
         file: x.file,
         line: x.line,
         outcome: x.outcome,
@@ -471,16 +478,16 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         ...(x.failure
           ? {
               failure: {
-                message: mask(x.failure.message, "test.error"),
-                snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet") : undefined,
+                message: mask(x.failure.message, "test.error", 4000),
+                snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
                 at: x.failure.at,
-                snapshot: snapshot !== undefined ? mask(snapshot.slice(0, 6000), "test.snapshot") : undefined,
+                snapshot,
               },
             }
           : {}),
       });
     }
-    const errors = parsed.errors.map((e) => mask(e, "test.error"));
+    const errors = parsed.errors.map((e) => mask(e, "test.error", 4000));
     await service.saveVault();
     return { ...base, tests, errors };
   }
@@ -510,11 +517,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         const done: Array<{ path: string; before: string; after: string }> = [];
         try {
           for (const f of files) {
-            // Already fixed (a retry after a stop halfway): nothing to do.
-            const before = await readFile(resolvePath(root, folder, f.path), "utf8").catch(() => undefined);
-            if (before !== undefined && sha(before) === sha(f.content)) continue;
-            await replaceCreatedRepoFile(grant, this.options.root, f.path, f.content, f.sha256, folder);
-            done.push({ path: f.path, before: before ?? "", after: f.content });
+            // A file that already holds the fix (a retry after a stop halfway) is left as it is.
+            const r = await replaceCreatedRepoFile(grant, this.options.root, f.path, f.content, f.sha256, folder);
+            if (r.status === "replaced") done.push({ path: f.path, before: r.before, after: f.content });
           }
         } catch (error) {
           // All or none: what this call replaced gets its earlier bytes back.

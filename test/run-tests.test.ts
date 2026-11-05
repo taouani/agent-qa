@@ -104,7 +104,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const write = reply;
     reply = async (argv, file) => (argv.includes("bddgen") ? { exitCode: 0 } : write(argv, file));
     await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "ABC-1.feature"]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "ABC-1\\.feature"]]);
     ran.length = 0;
     reply = async () => ({ exitCode: 1, stderr: `Missing step definitions: When I pay jane.doe@example.com in ${dir}/tests/features/ABC-1.feature` });
     const r = await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
@@ -113,6 +113,40 @@ describe("DataAccess: running and fixing generated tests", () => {
     // No report: what the command said, masked.
     reply = async (argv) => ({ exitCode: argv.includes("bddgen") ? 0 : 1, stderr: "Error: No tests found" });
     expect(await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true)).toMatchObject({ status: "done", errors: ["no test report came back: Error: No tests found"] });
+  });
+
+  it("masks a page snapshot as the explorer does, reads only Playwright's own, and masks before it cuts", async () => {
+    await profile("playwright");
+    await mkdir(join(dir, "test-results", "a-t"), { recursive: true });
+    await writeFile(join(dir, ".env"), "SF_PASSWORD=hunter2\n");
+    const aria = ['- table:', '  - row "Name Account":', '    - cell "Initech Partners"', '- textbox "Reference": ACME-77821-ZX', '- paragraph: Contact anna.kowalska@example.com'].join("\n");
+    await writeFile(join(dir, "test-results", "a-t", "error-context.md"), aria);
+    const long = `${"x".repeat(3990)} anna.kowalska@example.com`;
+    const report = (attachment: object) =>
+      JSON.stringify({
+        config: { rootDir: dir, projects: [{ outputDir: join(dir, "test-results") }] },
+        suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [{ title: "TC-1 t", file: "a.spec.ts", line: 1, tests: [{ status: "unexpected", results: [{ status: "failed", error: { message: long }, attachments: [attachment] }] }] }] }],
+        stats: { expected: 0, unexpected: 1, flaky: 0, skipped: 0 },
+      });
+    let attach: object = { name: "error-context", contentType: "text/markdown", path: join(dir, "test-results", "a-t", "error-context.md") };
+    reply = async (_argv, file) => {
+      await writeFile(file!, report(attach));
+      return { exitCode: 1 };
+    };
+    const r = await data().runGeneratedTests("run-4", "run-4", ".", { files: ["a.spec.ts"] }, true);
+    if (r.status !== "done") throw new Error(r.status);
+    const f = r.tests[0]!.failure!;
+    expect(f.snapshot).toBeDefined();
+    for (const v of ["Initech Partners", "ACME-77821-ZX", "anna.kowalska"]) expect(f.snapshot).not.toContain(v);
+    expect(f.message).not.toContain("anna.kowalska@examp");
+    expect(f.message.length).toBeLessThanOrEqual(4000);
+    // An attachment the test made, naming any other file, is never read.
+    for (const other of [{ name: "error-context", contentType: "text/plain", path: join(dir, ".env") }, { name: "error-context", contentType: "text/markdown", path: join(dir, "error-context.md") }]) {
+      attach = other;
+      await writeFile(join(dir, "error-context.md"), "SF_PASSWORD=hunter2");
+      const again = await data().runGeneratedTests("run-4", "run-4", ".", { files: ["a.spec.ts"] }, true);
+      expect(JSON.stringify(again)).not.toContain("hunter2");
+    }
   });
 
   it("changes only files that still hold what Agent-QA wrote, all or none", async () => {

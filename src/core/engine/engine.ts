@@ -275,11 +275,11 @@ export class WorkflowEngine {
         parts = [...((state.outputs[def.id] as unknown[] | undefined) ?? [])];
         parts[batch] = kept;
       }
-      const ended = async () => (def.until ? (await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!({ ...this.ctx(state, batch, batches), outputs: { ...state.outputs, [def.id]: parts } }, kept))) === true : false);
+      const ended = async (after: boolean) => (def.until ? (await this.guarded(state, def, "can't tell whether the loop is over", () => def.until!({ ...this.ctx(state, batch, batches), outputs: { ...state.outputs, [def.id]: parts } }, kept), after)) === true : false);
       // Decided before onAccept, so a loop check that fails leaves nothing done; or after it, when the step says so.
-      const early = def.untilAfterAccept ? false : await ended();
+      const early = def.untilAfterAccept ? false : await ended(false);
       await def.onAccept?.(stepCtx, kept);
-      const stop = def.untilAfterAccept ? await ended() : early;
+      const stop = def.untilAfterAccept ? await ended(true) : early;
       state.outputs[def.id] = def.batches ? parts : kept;
       state.attempt = 1;
       if (!stop && batch + 1 < batches) {
@@ -343,13 +343,15 @@ export class WorkflowEngine {
   }
 
   /** Runs workflow code whose failure means its data is unreachable: CONTEXT_FAILED, nothing used up. */
-  private async guarded<T>(state: RunState, def: StepDefinition<unknown, unknown>, what: string, fn: () => T | Promise<T>): Promise<T> {
+  private async guarded<T>(state: RunState, def: StepDefinition<unknown, unknown>, what: string, fn: () => T | Promise<T>, after = false): Promise<T> {
     try {
       return await fn();
     } catch (error) {
       if (error instanceof EngineError) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      throw new EngineError("CONTEXT_FAILED", `Run ${state.runId}, step ${def.id}: ${what} (${message}). Nothing was used up: fix the cause and try again.`, [], state.runId);
+      // After onAccept, its work is done but the step is still open: the same answer again finishes it.
+      const next = after ? "The answer was used, but the step is still open: submit the same answer again." : "Nothing was used up: fix the cause and try again.";
+      throw new EngineError("CONTEXT_FAILED", `Run ${state.runId}, step ${def.id}: ${what} (${message}). ${next}`, [], state.runId);
     }
   }
 

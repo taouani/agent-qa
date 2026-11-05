@@ -1,3 +1,5 @@
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -203,7 +205,8 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
           .describe("JSON object matching the step's outputSchema"),
       },
     },
-    async ({ runId: id, stepId, output }) => guard(() => submit(id, stepId, parseOutput(output))),
+    // A step can run the user's tests for minutes: a host that asked for progress hears that it is still going.
+    async ({ runId: id, stepId, output }, extra) => withProgress(extra, () => guard(() => submit(id, stepId, parseOutput(output)))),
   );
 
   server.registerTool(
@@ -238,4 +241,19 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
   }
 
   return server;
+}
+
+/** Progress every 10 s while `fn` runs, when the host sent a progress token: it can then keep a long call open. */
+async function withProgress<T>(extra: RequestHandlerExtra<ServerRequest, ServerNotification>, fn: () => Promise<T>): Promise<T> {
+  const token = extra._meta?.progressToken;
+  if (token === undefined) return fn();
+  let progress = 0;
+  const timer = setInterval(() => {
+    extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: ++progress, message: "still working: running the tests can take minutes" } }).catch(() => undefined);
+  }, 10_000);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
 }

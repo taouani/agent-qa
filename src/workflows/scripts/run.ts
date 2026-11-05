@@ -28,6 +28,7 @@ export const DEFAULT_STABILITY_RUNS = 3;
 const testRowSchema = z
   .object({
     title: z.string(),
+    tags: z.array(z.string()),
     file: z.string(),
     line: z.number(),
     outcome: z.enum(["passed", "failed", "flaky", "skipped"]),
@@ -78,6 +79,8 @@ export const scriptsRunSchema = z
     rounds: z.number(),
     /** What the model said about the failures the loop stopped on (a defect, the environment). */
     stoppedOn: z.array(z.object({ test: z.string(), kind: z.enum(FAILURE_KINDS), reason: z.string() }).strict()).optional(),
+    /** A fix written whose run hasn't happened yet: what it changed, and what the model said. */
+    pending: z.object({ changed: z.array(z.string()), classified: z.array(z.object({ test: z.string(), kind: z.enum(FAILURE_KINDS), reason: z.string() }).strict()) }).strict().optional(),
   })
   .strict();
 export type ScriptsRun = z.infer<typeof scriptsRunSchema>;
@@ -105,7 +108,7 @@ export const fixSchema = z
       .array(
         z
           .object({
-            test: z.string().max(500).describe("The failing test's title, exactly as the context shows it"),
+            test: z.string().max(2000).describe("The failing test's title, exactly as the context shows it"),
             kind: z.enum(FAILURE_KINDS).describe("selector: a locator finds nothing or the wrong element; timing: a wait is missing or too short; data: the test data is wrong for the app; flake: it passed in another run with no change; environment: sign-in, the app or the network is down or misconfigured; defect: the app does something the test case says it must not"),
             reason: z.string().min(1).max(500).describe("What the error, the code and the page snapshot show"),
           })
@@ -130,14 +133,26 @@ const fence = (content: string, path: string) => {
   return `${ticks}${lang}\n${content.replace(/\n$/, "")}\n${ticks}`;
 };
 
-/** Hard checks in a file: a fix never has fewer, and never turns one soft. */
-const hardChecks = (content: string) => (content.match(/\bexpect\s*\(/g) ?? []).length + (content.match(/\bexpect\.poll\s*\(/g) ?? []).length;
-const softChecks = (content: string) => (content.match(/\bexpect\.soft\s*\(/g) ?? []).length;
-/** Marks that make a failing test count as passing, or not run. */
-const ESCAPES = /\btest(?:\.describe)?\.(?:fail|fixme|skip|only)\b|\btest\.info\(\)\.annotations|\bexpectedStatus\b|\.toPass\s*\(\s*\{[^}]*\btimeout\s*:\s*\d{6,}|\btry\s*\{[\s\S]*?\bexpect\s*\(/;
+/** What the code scan says about a file, for comparing a fix with the code before it. */
+export interface CodeFacts {
+  titles: string[];
+  /** Every check with what it expects (see CodeScan.checks). */
+  checks: string[];
+  /** Names read in the expected values of checks. */
+  checkedNames: string[];
+  branches: number;
+}
+
+/** The leaves of a JSON value, by path: a.b[0].c → value. */
+function leaves(value: unknown, at: string[] = [], out = new Map<string, { key: string; value: string }>()) {
+  if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) leaves(v, [...at, k], out);
+  } else out.set(JSON.stringify(at), { key: at.at(-1) ?? "", value: JSON.stringify(value) });
+  return out;
+}
 
 /** The failing tests of a run, by the title the model is shown. */
-export const failing = (a: RunAttempt) => a.tests.filter((t) => t.outcome === "failed" || t.outcome === "flaky");
+export const failing = (a: RunAttempt) => a.tests.filter((t) => t.outcome !== "passed");
 
 /**
  * What a fix may do (the plan's "allowed fixes only"): classify every failure
@@ -146,7 +161,7 @@ export const failing = (a: RunAttempt) => a.tests.filter((t) => t.outcome === "f
  * the helper; keep every test title and every check; data files only for
  * data failures, code only for selector or timing ones.
  */
-export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["files"], scanTitles: (content: string, path: string) => string[]): OutputError[] {
+export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["files"], scan: (content: string, path: string) => CodeFacts): OutputError[] {
   const errors: OutputError[] = [];
   const err = (path: string, message: string) => errors.push({ path, message });
   const failed = failing(last);
@@ -161,6 +176,11 @@ export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["fi
   const kinds = new Set(out.failures.map((f) => f.kind));
   const stops = [...kinds].filter((k) => STOPS.has(k));
   if (stops.length && out.files.length) err("$.files", `a ${stops.join(" or ")} failure is reported, never fixed in the test: send no files`);
+  // A spec may change only for a selector or timing failure in that spec.
+  const codeFixes = new Set(out.failures.filter((f) => f.kind === "selector" || f.kind === "timing").map((f) => f.test));
+  const specsFailing = new Set(failed.filter((t) => codeFixes.has(t.title)).flatMap((t) => [t.file, ...(t.failure?.at ? [t.failure.at.file] : [])]));
+  // Values the checks compare against, in every code file: a data fix can't change what a test expects.
+  const checked = new Set(files.filter((f) => f.role !== "data" && f.role !== "feature").flatMap((f) => scan(f.content, f.path).checkedNames));
   const byPath = new Map(files.map((f) => [f.path, f]));
   const changed = new Set<string>();
   out.files.forEach((f, i) => {
@@ -172,14 +192,38 @@ export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["fi
     if (mine.role === "feature") return err(`${at}.path`, "the scenarios are the reviewed test cases: a fix never changes a feature file");
     if (mine.role === "helper") return err(`${at}.path`, "the pack's helper file never changes");
     if (f.content === mine.content) return err(`${at}.content`, "is unchanged: leave it out");
-    if (mine.role === "data" ? !kinds.has("data") : !kinds.has("selector") && !kinds.has("timing")) {
-      err(`${at}.path`, mine.role === "data" ? "test data changes only for a data failure" : "code changes only for a selector or timing failure");
+    if (mine.role === "data" ? !kinds.has("data") : codeFixes.size === 0) {
+      return err(`${at}.path`, mine.role === "data" ? "test data changes only for a data failure" : "code changes only for a selector or timing failure");
     }
-    if (mine.role === "data") return;
-    if (hardChecks(f.content) < hardChecks(mine.content)) err(`${at}.content`, "has fewer expect(...) checks than before: a fix never removes a check");
-    if (softChecks(f.content) > softChecks(mine.content)) err(`${at}.content`, "turns a check into expect.soft: a fix never weakens a check");
-    if (ESCAPES.test(f.content) && !ESCAPES.test(mine.content)) err(`${at}.content`, "marks a test as failing, skipped or fixme, or catches a failed check: a fix never hides a failure");
-    if (mine.role === "spec" && scanTitles(f.content, f.path).join("\n") !== scanTitles(mine.content, mine.path).join("\n")) err(`${at}.content`, "changes a test's title: a fix keeps the tests as they are");
+    if (mine.role === "spec" && !specsFailing.has(mine.path)) err(`${at}.path`, `no selector or timing failure is in ${mine.path}: change only the code of the tests that failed`);
+    if (mine.role === "data") {
+      if (!mine.path.endsWith(".json")) return;
+      let before: unknown, after: unknown;
+      try {
+        before = JSON.parse(mine.content);
+        after = JSON.parse(f.content);
+      } catch {
+        return err(`${at}.content`, "isn't valid JSON");
+      }
+      const was = leaves(before);
+      const now = leaves(after);
+      for (const [path, v] of was) {
+        const next = now.get(path);
+        if (checked.has(v.key) && next?.value !== v.value) err(`${at}.content`, `changes "${v.key}", which a check compares against: when the app disagrees with the test case, that is a defect, not test data`);
+      }
+      return;
+    }
+    const old = scan(mine.content, mine.path);
+    const next = scan(f.content, f.path);
+    // Every check stays, word for word in what it expects; new ones may be added. The element checked may change.
+    const left = [...next.checks];
+    for (const c of old.checks) {
+      const k = left.indexOf(c);
+      if (k < 0) err(`${at}.content`, `drops or changes the check ${c.slice(0, 160)}: a fix never removes, softens or changes a check`);
+      else left.splice(k, 1);
+    }
+    if (next.branches > old.branches) err(`${at}.content`, "adds a branch, a return, a loop or a try/catch: a fix may not make a check run only sometimes");
+    if (mine.role === "spec" && next.titles.join("\n") !== old.titles.join("\n")) err(`${at}.content`, "changes a test's title: a fix keeps the tests as they are");
   });
   return errors;
 }
@@ -195,7 +239,7 @@ export interface RunHelpers<I> {
   /** The full checks on the code as fixed (checks.ts and the type check): errors reject the fix. */
   checkCode: (ctx: StepContext<I>, draft: ScriptsDraft) => Promise<OutputError[]>;
   cases: (ctx: StepContext<I>) => Promise<TestCases["cases"]>;
-  scanTitles: (content: string, path: string) => string[];
+  scan: (content: string, path: string) => CodeFacts;
 }
 
 export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
@@ -216,6 +260,7 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
       : { kind, changed, classified, exitCode: r.exitCode, timedOut: r.timedOut, durationMs: r.durationMs, tests: r.tests.map(row), errors: r.errors };
   const row = (t: MaskedTestResult): RunAttempt["tests"][number] => ({
     title: t.title,
+    tags: t.tags,
     file: t.file,
     line: t.line,
     outcome: t.outcome,
@@ -225,28 +270,38 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
       ? { failure: { message: t.failure.message, ...(t.failure.snippet !== undefined ? { snippet: t.failure.snippet } : {}), ...(t.failure.at ? { at: t.failure.at } : {}), ...(t.failure.snapshot !== undefined ? { snapshot: t.failure.snapshot } : {}) } }
       : {}),
   });
-  const passedAll = (a: RunAttempt) => a.errors.length === 0 && a.tests.length > 0 && a.tests.every((t) => t.outcome === "passed" || t.outcome === "skipped") && a.tests.some((t) => t.outcome === "passed");
+  /** Every case's test ran and passed: none skipped, none missing, nothing else wrong. */
+  const passedAll = (a: RunAttempt) => a.errors.length === 0 && a.tests.length > 0 && a.tests.every((t) => t.outcome === "passed");
 
   /** Runs the tests, then the stability runs when they pass; returns the new status. */
   const runAndJudge = async (ctx: Ctx, state: ScriptsRun, changed: string[], classified: RunAttempt["classified"], round: number): Promise<ScriptsRun> => {
     const tokensRun = await h.tokensRun(ctx);
     const files = runFiles(state);
+    const ids = state.cases.map((c) => c.id);
+    // Only the cases' own tests count (a file filter can catch a test of the repo's), and each case's test must have run.
+    const judged = (x: RunAttempt): RunAttempt => {
+      const mine = (t: RunAttempt["tests"][number], id: string) => t.title.includes(id) || t.tags.some((g) => g.includes(id));
+      const tests = x.tests.filter((t) => ids.some((id) => mine(t, id)));
+      const missing = ids.filter((id) => !tests.some((t) => mine(t, id)));
+      return { ...x, tests, errors: [...x.errors, ...(missing.length && x.errors.length === 0 ? [`no test ran for ${missing.join(", ")}: each case's test must run (not skipped, not left out)`] : [])] };
+    };
     const r = await h.data.runGeneratedTests(ctx.runId, tokensRun, state.folder, { files }, true);
     if (r.status === "declined") return { ...state, status: "declined", reason: "the policy or the person said no to running the tests" };
-    let attempts = [...state.attempts, attemptOf(r, "run", changed, classified)];
+    let attempts = [...state.attempts, judged(attemptOf(r, "run", changed, classified))];
     let last = attempts.at(-1)!;
-    if (passedAll(last) && state.stabilityRuns > 1) {
+    if (passedAll(last) && state.stabilityRuns >= 1) {
       const s = await h.data.runGeneratedTests(ctx.runId, tokensRun, state.folder, { files, repeatEach: state.stabilityRuns }, true);
       if (s.status === "declined") return { ...state, attempts, status: "declined", reason: "the policy or the person said no to the stability runs" };
-      attempts = [...attempts, attemptOf(s, "stability", [], [])];
+      attempts = [...attempts, judged(attemptOf(s, "stability", [], []))];
       last = attempts.at(-1)!;
     }
-    const left = round < state.fixRounds;
-    if (passedAll(last)) return { ...state, attempts, status: "passed", reason: last.kind === "stability" ? `every test passed ${state.stabilityRuns} times in a row` : "every test passed" };
+    if (passedAll(last)) return { ...state, attempts, status: "passed", reason: last.kind === "stability" ? `every test passed, then ${state.stabilityRuns} more time(s) in a row` : "every test passed" };
     if (r.status === "unavailable") return { ...state, attempts, status: "environment", reason: r.reason };
+    if (round < state.fixRounds) return { ...state, attempts, status: "failing" };
     const flaky = last.tests.some((t) => t.outcome === "flaky") || (last.kind === "stability" && last.tests.some((t) => t.outcome === "failed"));
-    if (left) return { ...state, attempts, status: "failing" };
-    return { ...state, attempts, status: flaky ? "unstable" : "gave-up", reason: `still failing after ${state.fixRounds} fix round(s)` };
+    return flaky
+      ? { ...state, attempts, status: "unstable", reason: `some tests pass only some of the time, after ${state.fixRounds} fix round(s)` }
+      : { ...state, attempts, status: "gave-up", reason: `still failing after ${state.fixRounds} fix round(s)` };
   };
 
   return [
@@ -336,8 +391,10 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
       check: async (ctx, raw) => {
         const out = raw as FixOutput;
         const state = await readRun(ctx);
+        // This round's fix is in already (a stop halfway): the answer is taken again, and only the owed run happens.
+        if (state && state.rounds >= (ctx.batch ?? 0) + 1) return [];
         if (!state || state.status !== "failing") return [{ path: "$", message: "there is no failing run to fix" }];
-        const found = checkFix(out, state.attempts.at(-1)!, state.files, h.scanTitles);
+        const found = checkFix(out, state.attempts.at(-1)!, state.files, h.scan);
         if (found.length || out.files.length === 0) return found;
         const fixed = new Map(out.files.map((f) => [f.path, f.content]));
         const d = (await h.draft(ctx)).data;
@@ -353,26 +410,32 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
       },
       onAccept: async (ctx, raw) => {
         const out = raw as FixOutput;
-        const state = (await readRun(ctx))!;
         const round = (ctx.batch ?? 0) + 1;
-        // Already done (a retry after a stop halfway): the round is in the record.
-        if (state.status !== "failing" || state.rounds >= round) return;
-        const classified = out.failures.map((f) => ({ test: f.test, kind: f.kind, reason: f.reason }));
-        const stop = out.failures.find((f) => STOPS.has(f.kind));
-        if (stop) {
-          return save(ctx, { ...state, rounds: round, status: stop.kind === "defect" ? "defect" : "environment", reason: `${stop.kind === "defect" ? "a real defect" : "the environment"}: ${one(stop.test)}: ${one(stop.reason)}`, stoppedOn: classified });
+        let state = (await readRun(ctx))!;
+        if (state.status !== "failing") return;
+        if (state.rounds < round) {
+          const classified = out.failures.map((f) => ({ test: f.test, kind: f.kind, reason: f.reason }));
+          const stop = out.failures.find((f) => STOPS.has(f.kind));
+          if (stop) {
+            return save(ctx, { ...state, rounds: round, status: stop.kind === "defect" ? "defect" : "environment", reason: `${stop.kind === "defect" ? "a real defect" : "the environment"}: ${one(stop.test)}: ${one(stop.reason)}`, stoppedOn: classified });
+          }
+          let files = state.files;
+          if (out.files.length) {
+            const tokensRun = await h.tokensRun(ctx);
+            const change = out.files.map((f) => ({ path: f.path, content: f.content, sha256: state.files.find((x) => x.path === f.path)!.sha256 }));
+            const w = await h.data.replaceGeneratedFiles(ctx.runId, tokensRun, state.folder, change, true);
+            if (w.status !== "done") return save(ctx, { ...state, rounds: round, status: "declined", reason: w.status === "pull-request" ? "in CI the fix leaves only as a pull request" : "the policy said no to changing the files" });
+            const fixed = new Map(out.files.map((f) => [f.path, f.content]));
+            files = state.files.map((f) => (fixed.has(f.path) ? { ...f, content: fixed.get(f.path)!, sha256: sha(fixed.get(f.path)!) } : f));
+          }
+          // Kept at once, before the tests run (minutes): a stop now leaves a record that matches the repo, and the run goes on from it.
+          state = { ...state, rounds: round, files, cases: out.cases ?? state.cases, pending: { changed: out.files.map((f) => f.path), classified } };
+          await save(ctx, state);
         }
-        let files = state.files;
-        if (out.files.length) {
-          const tokensRun = await h.tokensRun(ctx);
-          const change = out.files.map((f) => ({ path: f.path, content: f.content, sha256: state.files.find((x) => x.path === f.path)!.sha256 }));
-          const w = await h.data.replaceGeneratedFiles(ctx.runId, tokensRun, state.folder, change, true);
-          if (w.status !== "done") return save(ctx, { ...state, rounds: round, status: "declined", reason: w.status === "pull-request" ? "in CI the fix leaves only as a pull request" : "the policy said no to changing the files" });
-          const fixed = new Map(out.files.map((f) => [f.path, f.content]));
-          files = state.files.map((f) => (fixed.has(f.path) ? { ...f, content: fixed.get(f.path)!, sha256: sha(fixed.get(f.path)!) } : f));
-        }
-        const next: ScriptsRun = { ...state, rounds: round, files, cases: out.cases ?? state.cases };
-        await save(ctx, await runAndJudge(ctx, next, out.files.map((f) => f.path), classified, round));
+        // The fix is in; its run is owed (now, or again after a stop halfway).
+        if (!state.pending) return;
+        const { pending, ...rest } = state;
+        await save(ctx, await runAndJudge(ctx, rest, pending.changed, pending.classified, round));
       },
     },
   ];
