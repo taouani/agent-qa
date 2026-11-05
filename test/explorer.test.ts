@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -266,6 +266,25 @@ describe("DataAccess explorer", () => {
       new DataAccess({ root: dir, store: new RunStore(join(dir, "runs")), config: configSchema.parse({ version: 1, playwright: { baseUrl } }), audit: new MemoryAuditSink(), browser: fake.open });
     await expect(web("https://intranet.example").explorerTarget()).rejects.toThrow(/isn't on this machine/);
     expect(await web("http://localhost:4173").explorerTarget()).toEqual({ kind: "web", host: "localhost:4173" });
+  });
+});
+
+describe("loadPlaywright", () => {
+  it("takes a copy hoisted to the project root, never one above it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-qa-hoist-"));
+    try {
+      const pkg = join(root, "node_modules", "@playwright", "test");
+      await mkdir(join(root, "e2e"), { recursive: true });
+      await mkdir(pkg, { recursive: true });
+      await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@playwright/test", version: "1.58.0", main: "index.js" }));
+      await writeFile(join(pkg, "index.js"), "exports.chromium = { launch: async () => { throw new Error('no'); } };\n");
+      const policy = new Policy({ rules: configSchema.parse({ version: 1, policy: { writes: { commands: "allow" } } }).policy.writes, mode: "ide", audit: new MemoryAuditSink() });
+      const load = (boundary?: string) => policy.guard({ target: "commands", summary: "x" }, async (grant) => loadPlaywright(grant, join(root, "e2e"), boundary));
+      expect(await load(root)).toMatchObject({ status: "done", value: { version: "1.58.0", from: "@playwright/test" } });
+      await expect(load()).rejects.toThrow(/isn't installed/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

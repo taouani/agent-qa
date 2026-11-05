@@ -74,9 +74,9 @@ export interface BrowserLike {
   close(): Promise<void>;
 }
 
-export type OpenBrowser = (grant: Parameters<typeof loadPlaywright>[0], options: { folder: string; headed: boolean }) => Promise<BrowserLike>;
+export type OpenBrowser = (grant: Parameters<typeof loadPlaywright>[0], options: { folder: string; root: string; headed: boolean }) => Promise<BrowserLike>;
 
-export const openRepoBrowser: OpenBrowser = async (grant, { folder, headed }) => ExplorerBrowser.open(grant, { playwright: loadPlaywright(grant, folder), headed });
+export const openRepoBrowser: OpenBrowser = async (grant, { folder, root, headed }) => ExplorerBrowser.open(grant, { playwright: loadPlaywright(grant, folder, root), headed });
 
 export interface ExplorerDeps {
   root: string;
@@ -250,7 +250,7 @@ export class Explorer {
       const folder = hostCwd(this.deps.root, await this.deps.playwrightFolder());
       const open = this.deps.openBrowser ?? openRepoBrowser;
       const summary = `Open a browser with the repo's Playwright, ${target.kind === "salesforce" ? `signed in as ${target.role} on ${target.host}` : `on ${target.host}`}, to explore test cases`;
-      const outcome = await this.deps.policy(config).guard({ target: "commands", summary, runId }, (grant) => open(grant, { folder, headed: setup.headed ?? false }));
+      const outcome = await this.deps.policy(config).guard({ target: "commands", summary, runId }, (grant) => open(grant, { folder, root: hostCwd(this.deps.root), headed: setup.headed ?? false }));
       if (outcome.status !== "done") throw new Error("the write policy refused to open a browser (policy.writes.commands)");
       return { browser: outcome.value, caseKey: undefined, applied: [], results: [] };
     })();

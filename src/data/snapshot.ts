@@ -14,6 +14,9 @@
  * Values the run already knows (one the explorer typed, echoed in a toast)
  * are put back as their tokens before the detectors run (data/explorer.ts).
  *
+ * Accepted risk: verify with text, and match counts, let a model test a guess
+ * about a masked value. Only a model set on it would, one guess per action.
+ *
  * Known gap: field values on a record page that sit outside a table or an
  * input are only as safe as the detectors. The harness's stand-in app (S2-10)
  * measures what reaches a model.

@@ -97,15 +97,19 @@ const atLeast = (version: string, [major, minor]: readonly [number, number]) => 
   return a > major || (a === major && b >= minor);
 };
 
-/** Loads Playwright from `folder`'s node_modules. Runs the repo's own copy of Playwright: needs a commands grant. */
-export function loadPlaywright(grant: WriteGrant, folder: string): LoadedPlaywright {
+/**
+ * Loads Playwright as `folder` resolves it: its node_modules, or one above it
+ * inside `boundary` (a workspace that hoists packages to the project root).
+ * Runs the repo's own copy of Playwright: needs a commands grant.
+ */
+export function loadPlaywright(grant: WriteGrant, folder: string, boundary: string = folder): LoadedPlaywright {
   assertGrant(grant, "commands");
   const load = createRequire(join(folder, "package.json"));
-  const root = realpathSync(folder);
+  const root = realpathSync(boundary);
   for (const from of ["@playwright/test", "playwright"]) {
     let version: string;
     try {
-      // Only the repo's own copy: Node would also look in every folder above it (~/node_modules).
+      // Only the project's own copy: Node would also look in every folder above it (~/node_modules).
       const rel = relative(root, realpathSync(load.resolve(`${from}/package.json`)));
       if (rel.split(/[\\/]/)[0] === ".." || isAbsolute(rel)) continue;
       version = (load(`${from}/package.json`) as { version: string }).version;
