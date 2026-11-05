@@ -136,7 +136,8 @@ const APP = `<!doctype html><title>Acme | Account | Salesforce</title>
     // A required field: the star is part of the label.
     r.innerHTML = '<label id="l"><abbr title="required">*</abbr>Stage</label><button role="combobox" aria-labelledby="l" aria-controls="stage-list">--None--</button><div role="listbox" id="stage-list" hidden><div role="option">Closed Won</div><div role="option">Closed</div></div>';
     const box = r.querySelector("[role=listbox]");
-    r.querySelector("button").onclick = () => (box.hidden = false);
+    // The list opens a moment after the click, as Lightning's do.
+    r.querySelector("button").onclick = () => setTimeout(() => (box.hidden = false), 150);
     r.querySelectorAll("[role=option]").forEach((o) => (o.onclick = () => { window.picked = o.textContent; box.hidden = true; }));
   } });
   // A picklist with no aria-controls: its list sits in its own form element.
@@ -214,6 +215,9 @@ describe.skipIf(!playwrightFolder)("Salesforce pack helpers (real Chromium)", ()
     expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("Acme Corp");
     await h.fillLookup!(page, "Account", "Acme", "Acme Ltd");
     expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("Acme Ltd");
+    // The search and the option the same: Show All Results holds it too, and is skipped.
+    await h.fillLookup!(page, "Account", "Acme Corp", "Acme Corp");
+    expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("Acme Corp");
     // A record whose name starts with New is still a record.
     await h.fillLookup!(page, "Account", "New York");
     expect(await page.evaluate(() => (globalThis as unknown as { looked: string }).looked)).toBe("New York Store");
@@ -227,7 +231,7 @@ describe.skipIf(!playwrightFolder)("Salesforce pack helpers (real Chromium)", ()
     expect(await page.locator(".forceToastMessage:visible").count()).toBe(0);
     await expect(h.expectToast!(page, "never", { timeout: 300 })).rejects.toThrow();
     // A toast without Lightning's message markup: the close button's label is left out.
-    await page.evaluate(() => (globalThis as unknown as { document: { body: { insertAdjacentHTML(p: string, h: string): void } } }).document.body.insertAdjacentHTML("beforeend", '<div class="slds-notify_toast">Saved <button>x</button></div>'));
-    expect(await h.expectToast!(page, "Saved")).toBe("Saved");
+    await page.evaluate(() => (globalThis as unknown as { document: { body: { insertAdjacentHTML(p: string, h: string): void } } }).document.body.insertAdjacentHTML("beforeend", '<div class="slds-notify_toast">Close Date was updated <button>Close</button></div>'));
+    expect(await h.expectToast!(page, "was updated")).toBe("Close Date was updated");
   }, 30_000);
 });

@@ -59,7 +59,8 @@ export async function expectToast(page: Page, text?: string | RegExp, options: W
   // The message, without the close button's label.
   const message = toast.locator(".toastMessage, .slds-notify__content, [data-aura-class='forceActionsText']").first();
   let raw = (await message.count()) ? await message.innerText() : await toast.innerText();
-  if (!(await message.count())) for (const label of await toast.getByRole("button").allInnerTexts()) raw = label.trim() ? raw.split(label).join(" ") : raw;
+  // No message markup: the buttons' labels (Close) come last in the text, and only there are they cut.
+  if (!(await message.count())) for (const label of (await toast.getByRole("button").allInnerTexts()).reverse()) if (label.trim()) raw = raw.replace(new RegExp(`\\s*${escapeRegExp(label.trim())}\\s*$`), "");
   return raw.replace(/\s+/g, " ").trim();
 }
 
@@ -100,14 +101,12 @@ export function fieldName(label: string): RegExp {
  * field's shadow root, so the search is page-wide.
  */
 async function listOf(page: Page, box: Locator): Promise<Locator> {
+  // Chosen by what exists, not what shows: lists open a moment after the click. The visible form is returned, and the click waits for it.
   const id = (await box.getAttribute("aria-controls")) ?? (await box.getAttribute("aria-owns"));
-  if (id && /^[\w:.-]+$/.test(id)) {
-    const own = page.locator(`[id="${id}"]:visible`);
-    if ((await own.count()) === 1) return own;
-  }
+  if (id && /^[\w:.-]+$/.test(id) && (await page.locator(`[id="${id}"]`).count()) > 0) return page.locator(`[id="${id}"]:visible`);
   // Then a list in the field's own form element (XPath stays inside the field's shadow root, which is what's wanted here).
-  const near = box.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " slds-form-element ")][1]').locator('[role="listbox"]:visible');
-  if ((await near.count()) > 0) return near;
+  const form = box.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " slds-form-element ")][1]');
+  if ((await form.locator('[role="listbox"]').count()) > 0) return form.locator('[role="listbox"]:visible');
   return page.locator('[role="listbox"]:visible');
 }
 
@@ -141,8 +140,11 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
     .first();
   await field.fill(search, { timeout });
   const list = await listOf(page, field);
-  // A named option is clicked as named; by default, the first record whose name holds the search.
-  const records = option === undefined ? list.locator(LOOKUP_RECORD).filter({ hasNotText: NOT_A_RECORD }).filter({ hasText: search }) : list.getByRole("option").filter({ hasText: option });
+  // The first record whose name holds the option (or the search), never one of Lightning's actions.
+  const records = list
+    .locator(LOOKUP_RECORD)
+    .filter({ hasNotText: NOT_A_RECORD })
+    .filter({ hasText: option ?? search });
   await records.first().click({ timeout });
   await waitForLightning(page, options);
 }
