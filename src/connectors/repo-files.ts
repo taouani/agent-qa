@@ -32,8 +32,9 @@ export async function writeRepoFile(grant: WriteGrant, root: string, path: strin
 export interface CreatedRepoFile {
   /** Relative to the root. */
   path: string;
-  dev: number;
-  ino: number;
+  /** Exact (bigint): Windows file ids don't fit a double, so two files could look the same. */
+  dev: bigint;
+  ino: bigint;
   /** The first folder this create made (mkdir -p), removed again if it is empty. */
   firstDir?: string | undefined;
 }
@@ -59,7 +60,7 @@ export async function createRepoFile(grant: WriteGrant, root: string, path: stri
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new PolicyDenied("testCode", `${path} already exists: generated code only adds new files`);
     throw error;
   }
-  const made = await lstat(target);
+  const made = await lstat(target, { bigint: true });
   return { status: "created", file: { path: relative(resolve(root), target), dev: made.dev, ino: made.ino, firstDir } };
 }
 
@@ -74,7 +75,7 @@ export async function removeCreatedRepoFile(grant: WriteGrant, root: string, fil
   const target = resolve(root, file.path);
   const rel = relative(await realpath(root), await realpath(target));
   if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) throw new PolicyDenied("testCode", `${file.path} is outside the project folder`);
-  const current = await lstat(target);
+  const current = await lstat(target, { bigint: true });
   if (!current.isFile() || current.dev !== file.dev || current.ino !== file.ino) throw new PolicyDenied("testCode", `${file.path} is no longer the file Agent-QA created`);
   await rm(target);
   if (!file.firstDir) return;
