@@ -35,7 +35,10 @@ export const exploreActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("select"), target: targetSchema, value: z.string().min(1).max(500) }).strict(),
   z.object({ type: z.literal("check"), target: targetSchema }).strict(),
   z.object({ type: z.literal("uncheck"), target: targetSchema }).strict(),
-  z.object({ type: z.literal("press"), key: z.string().min(1).max(30).describe("A key such as Enter, Tab, Escape, ArrowDown"), target: targetSchema.optional() }).strict(),
+  z.object({ type: z.literal("press"), key: z
+      .string()
+      .regex(/^(?:(?:Control|Shift|Alt|Meta)\+)*(?:[A-Z][A-Za-z0-9]{1,19}|[A-Za-z0-9])$/, "a key name such as Enter, Tab, Escape, ArrowDown or Control+A")
+      .describe("A key such as Enter, Tab, Escape, ArrowDown"), target: targetSchema.optional() }).strict(),
   z.object({ type: z.literal("goto"), path: z.string().regex(/^\/(?!\/)/, "a path on the same site, such as /lightning/o/Account/list").max(1000) }).strict(),
   z.object({ type: z.literal("verify"), target: targetSchema, text: z.string().min(1).max(1000).optional().describe("Text the element must hold, exactly as the app shows it") }).strict(),
   z.object({ type: z.literal("unverifiable"), reason: z.string().min(1).max(500).describe("Why the step can't be done or checked on this page") }).strict(),
@@ -91,6 +94,8 @@ export const explorationSchema = z
           deviations: z.array(z.object({ step: z.number().int().min(1), note: z.string() }).strict()),
           /** Paths visited, in order of first visit. */
           pages: z.array(z.string()),
+          /** The browser was started again during the case and its actions replayed: records may exist twice. */
+          replayed: z.boolean().optional(),
           summary: z.string().optional(),
         })
         .strict(),
@@ -129,7 +134,7 @@ export function describeAction(a: ExploreAction): string {
 export function renderExploration(data: Exploration): string {
   const lines = ["# Exploration", "", `${data.cases.length} case(s) explored on ${data.target.host}${data.target.role ? ` as ${data.target.role}` : ""}, from ${data.start}. Values are masked as tokens such as <VALUE_1>.`];
   for (const c of data.cases) {
-    lines.push("", `## ${c.id}: ${one(c.title)}`, "", `${c.status} (ended by ${c.endedBy}). Pages: ${c.pages.join(", ") || "none"}`);
+    lines.push("", `## ${c.id}: ${one(c.title)}`, "", `${c.status} (ended by ${c.endedBy}). Pages: ${c.pages.join(", ") || "none"}${c.replayed ? ". Replayed after a restart: records may exist twice" : ""}`);
     for (const s of c.steps) {
       lines.push("", `### Step ${s.index}: ${s.status}${s.reason ? ` (${one(s.reason)})` : ""}`, "", `${one(s.action)} → ${one(s.expected)}`);
       for (const a of s.actions) {

@@ -30,7 +30,7 @@ Only you can approve a run. The model's yes is refused, and so is `--yes`.
    - shows the page's accessibility tree, masked;
    - takes back one action (click, fill, select, check, press, go to a path, or verify an expected result), marks a step unverifiable, or ends the case.
 3. Elements are named by role and name, as generated code will name them. When the page shows a token such as `<VALUE_3>`, the model uses the token, and Agent-QA puts the real value in the browser.
-4. A case ends when the model finishes it, after `maxActions` actions, or after three unverifiable steps in a row.
+4. A case ends when the model finishes it, after `maxActions` actions, or after three unverifiable steps in a row. It is recorded as `complete` when every step was verified or marked unverifiable, and `partial` otherwise. However the run ends (done, failed after rejected answers, or cancelled), its browser closes.
 
 ## What the model sees
 
@@ -53,4 +53,4 @@ If a click reaches the element but the page doesn't change within about a second
 
 ## After a restart
 
-The browser's state follows the run's saved actions. If the MCP server or CLI restarts mid-case, the case starts again and its actions are replayed on the org. Records it created may then exist twice, and the page tells the model so.
+The browser's state follows the run's saved actions. If the MCP server or CLI restarts mid-case, the case starts again and its actions are replayed on the org. Records it created may then exist twice. The page tells the model so, and a case whose final actions were replayed carries `replayed: true` in exploration@1.

@@ -104,6 +104,7 @@ describe("explore workflow", () => {
     const c = exploration.cases[0]!;
     expect(c).toMatchObject({ id: "TC-ABC-1-001", status: "complete", endedBy: "finish", summary: "Saved without a toast", deviations: [{ step: 2, note: "A required Region field appeared" }] });
     expect(c.steps.map((s) => s.status)).toEqual(["verified", "unverifiable"]);
+    expect(c.pages[0]).toBe("/lightning/n/Approval_App");
     expect(c.steps[0]!.actions[0]).toMatchObject({ action: { type: "click" }, outcome: "ok" });
     expect(JSON.stringify(exploration)).not.toContain("Jane Doe");
     // Case 2: three unverifiable steps in a row end it, and the run.
@@ -112,7 +113,8 @@ describe("explore workflow", () => {
     const done = (await runs.readArtifact(first.runId, EXPLORATION_ARTIFACT))!.data;
     expect(done.cases.map((x) => [x.id, x.status, x.endedBy])).toEqual([
       ["TC-ABC-1-001", "complete", "finish"],
-      ["TC-ABC-1-002", "partial", "unverifiable-streak"],
+      // Its one step was marked unverifiable: every step is accounted for.
+      ["TC-ABC-1-002", "complete", "unverifiable-streak"],
     ]);
     expect(fake.closed).toEqual([first.runId]);
   });
@@ -134,7 +136,69 @@ describe("explore workflow", () => {
   it("refuses unknown case ids and a missing test-cases run", async () => {
     const e = engine(fakeExplorer());
     await expect(e.start("explore", { ...inputs, cases: ["TC-ABC-1-009"] })).rejects.toBeInstanceOf(EngineError);
-    await expect(e.start("explore", { ...inputs, testCasesRun: "nope" })).rejects.toMatchObject({ code: "CONTEXT_FAILED" });
+    await expect(e.start("explore", { ...inputs, testCasesRun: "nope" })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
+    await expect(e.start("explore", { ...inputs, cases: ["TC-ABC-1-001", "TC-ABC-1-001"] })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
+    // Refused before anything is saved: no run is left stuck at approve.
+    expect(await runs.list()).toHaveLength(1);
+  });
+
+  it("masks every free-text field the model writes, and allows key names only", async () => {
+    const fake = fakeExplorer();
+    const e = engine(fake);
+    const first = await e.start("explore", { ...inputs, cases: ["TC-ABC-1-001"] });
+    await e.submit(first.runId, "approve", { approve: true }, { byPerson: true });
+    const press = await e.submit(first.runId, "act_1", { step: 1, action: { type: "press", key: "Jane Doe" } });
+    expect(press.status).toBe("rejected");
+    const answers = [
+      { step: 1, action: { type: "click", target: { role: "button", name: "Jane Doe", within: { role: "dialog", name: "Jane Doe" } } }, note: "Jane Doe appeared" },
+      { step: 1, action: { type: "verify", target: { text: "Jane Doe" }, text: "Hello Jane Doe" } },
+      { step: 1, action: { type: "press", key: "Control+Enter" } },
+      { step: 2, action: { type: "unverifiable", reason: "Jane Doe is not shown" } },
+      { step: 2, action: { type: "finish", summary: "Done for Jane Doe" } },
+    ];
+    for (const [i, answer] of answers.entries()) expect((await e.submit(first.runId, `act_${i + 1}`, answer)).status).toBe("accepted");
+    const state = await e.status(first.runId);
+    const saved = JSON.stringify(state.outputs) + JSON.stringify((await runs.readArtifact(first.runId, EXPLORATION_ARTIFACT))!.data);
+    expect(saved).not.toContain("Jane Doe");
+    expect(saved).toContain("Control+Enter");
+  });
+
+  it("closes the browser when the run fails or is cancelled", async () => {
+    const fake = fakeExplorer();
+    const e = engine(fake);
+    const failing = await e.start("explore", inputs);
+    await e.submit(failing.runId, "approve", { approve: true }, { byPerson: true });
+    for (let i = 0; i < 3; i++) await e.submit(failing.runId, "act_1", { step: 9, action: { type: "finish" } });
+    expect((await e.status(failing.runId)).status).toBe("failed");
+    expect(fake.closed).toEqual([failing.runId]);
+    const cancelled = await e.start("explore", { ...inputs, cases: ["TC-ABC-1-002"] });
+    await e.submit(cancelled.runId, "approve", { approve: true }, { byPerson: true });
+    await e.cancel(cancelled.runId);
+    await e.cancel(cancelled.runId);
+    expect(fake.closed).toEqual([failing.runId, cancelled.runId]);
+  });
+
+  it("resumes mid-case after a restart, and a failed sync leaves the step open", async () => {
+    const fake = fakeExplorer();
+    const first = await engine(fake).start("explore", { ...inputs, cases: ["TC-ABC-1-001"] });
+    await engine(fake).submit(first.runId, "approve", { approve: true }, { byPerson: true });
+    await engine(fake).submit(first.runId, "act_1", { step: 1, action: { type: "click", target: { role: "button", name: "New" } } });
+    // A new engine (the server restarted) picks up the same case, with the actions done so far.
+    const again = engine(fake);
+    const step = await again.status(first.runId).then(() => again.submit(first.runId, "act_2", { step: 1, action: { type: "verify", target: { role: "button", name: "Save" } } }));
+    expect(step.status).toBe("accepted");
+    expect(step.next.context).toContain("1. step 1: ");
+    expect(fake.syncs.at(-1)!.actions.map((a) => a.type)).toEqual(["click", "verify"]);
+    // The case-ending sync fails: nothing is accepted, and the same answer goes through once it works.
+    const sync = fake.data.explorerSync;
+    fake.data.explorerSync = async () => {
+      throw new Error("browser gone");
+    };
+    await expect(again.submit(first.runId, "act_3", { step: 2, action: { type: "finish" } })).rejects.toThrow();
+    expect((await again.status(first.runId)).accepted.act_3).toBeUndefined();
+    fake.data.explorerSync = sync;
+    expect((await again.submit(first.runId, "act_3", { step: 2, action: { type: "finish" } })).next.kind).toBe("done");
+    expect((await runs.readArtifact(first.runId, EXPLORATION_ARTIFACT))!.data.cases).toHaveLength(1);
   });
 
   it("counts progress from the accepted actions alone", () => {

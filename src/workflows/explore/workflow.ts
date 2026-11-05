@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { Artifact, OutputError, RunStore, StepContext, WorkflowDefinition } from "../../core/index.js";
+import { EngineError, type Artifact, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
 import type { BrowserAction, ExplorerData, ExploreSetup, MaskedPage, MaskedResult, RequirementsData } from "../../data/index.js";
 import { CASE_ID, TEST_CASES_ARTIFACT, type TestCases } from "../test-cases/artifact.js";
 import { BROWSER_TYPES, describeAction, EXPLORATION_ARTIFACT, EXPLORATION_TEMPLATE_VERSION, exploreActionSchema, type Exploration, type Target } from "./artifact.js";
@@ -20,7 +20,7 @@ import { BROWSER_TYPES, describeAction, EXPLORATION_ARTIFACT, EXPLORATION_TEMPLA
  */
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
-/** Fields that hold no free text: an action type, an ARIA role, a key name. */
+/** Fields that hold no free text: an action type, an ARIA role, a key name (the schema allows key names only). */
 const KEEP = new Set(["type", "role", "key"]);
 export const MAX_EXPLORE_CASES = 20;
 const UNVERIFIABLE_STREAK = 3;
@@ -28,7 +28,12 @@ const UNVERIFIABLE_STREAK = 3;
 export const exploreInputSchema = z
   .object({
     testCasesRun: z.string().regex(RUN_ID, "must be a run id").describe("Id of a test-cases run whose reviewed cases (test-cases@1) to explore"),
-    cases: z.array(z.string().regex(CASE_ID)).min(1).max(MAX_EXPLORE_CASES).optional().describe("Only these case ids. Default: every reviewed case, up to 20"),
+    cases: z
+      .array(z.string().regex(CASE_ID))
+      .min(1)
+      .max(MAX_EXPLORE_CASES)
+      .refine((ids) => new Set(ids).size === ids.length, "a case id is listed twice")
+      .optional().describe("Only these case ids. Default: every reviewed case, up to 20"),
     role: z.string().min(1).max(60).optional().describe("The salesforce.users role to sign in as"),
     start: z.string().regex(/^\/(?!\/)/, "a path on the org, such as /lightning/n/Approval_App").max(500).describe("Where each case starts: a path on the org, e.g. /lightning/n/Approval_App"),
     headed: z.boolean().default(false).describe("Show the browser window"),
@@ -119,13 +124,13 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
     }
     return art;
   };
-  const casesOf = async (ctx: Ctx): Promise<Case[]> => {
-    const all = (await testCases(ctx)).data.cases;
-    if (!ctx.inputs.cases) return all.slice(0, MAX_EXPLORE_CASES);
-    const missing = ctx.inputs.cases.filter((id) => !all.some((c) => c.id === id));
-    if (missing.length) throw new Error(`run ${ctx.inputs.testCasesRun} has no reviewed case ${missing.join(", ")}`);
-    return ctx.inputs.cases.map((id) => all.find((c) => c.id === id)!);
+  const pick = (inputs: ExploreInputs, all: readonly Case[]): Case[] => {
+    if (!inputs.cases) return all.slice(0, MAX_EXPLORE_CASES);
+    const missing = inputs.cases.filter((id) => !all.some((c) => c.id === id));
+    if (missing.length) throw new Error(`run ${inputs.testCasesRun} has no reviewed case ${missing.join(", ")}`);
+    return inputs.cases.map((id) => all.find((c) => c.id === id)!);
   };
+  const casesOf = async (ctx: Ctx): Promise<Case[]> => pick(ctx.inputs, (await testCases(ctx)).data.cases);
   const setupOf = async (ctx: Ctx): Promise<ExploreSetup> => ({
     tokensRun: (await testCases(ctx)).data.requirements.run,
     ...(ctx.inputs.role ? { role: ctx.inputs.role } : {}),
@@ -151,7 +156,7 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
       ...(page.truncated ? ["The snapshot was cut: use within to reach elements lower on the page."] : []),
     ].join("\n");
 
-  const explored = (c: Case, acts: readonly Act[], results: readonly MaskedResult[], endedBy: Exploration["cases"][number]["endedBy"]): Exploration["cases"][number] => {
+  const explored = (ctx: Ctx, c: Case, acts: readonly Act[], results: readonly MaskedResult[], endedBy: Exploration["cases"][number]["endedBy"], replayed: boolean): Exploration["cases"][number] => {
     let r = 0;
     const withResults = acts.map((a) => ({ act: a, result: BROWSER_TYPES.has(a.action.type) ? results[r++] : undefined }));
     const steps = c.steps.map((s, i) => {
@@ -183,7 +188,8 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
       };
     });
     const finish = acts.at(-1)?.action;
-    const complete = endedBy === "finish" && steps.every((s) => s.status === "verified" || s.status === "unverifiable");
+    // Ended by finish or by unverifiable steps, with every step accounted for: nothing was left untried.
+    const complete = endedBy !== "cap" && steps.every((s) => s.status === "verified" || s.status === "unverifiable");
     return {
       id: c.id,
       title: c.title,
@@ -191,7 +197,8 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
       endedBy,
       steps,
       deviations: acts.filter((a) => a.note).map((a) => ({ step: a.step, note: a.note! })),
-      pages: [...new Set(results.map((x) => x.page))],
+      pages: [...new Set([ctx.inputs.start, ...results.map((x) => x.page)])],
+      ...(replayed ? { replayed: true } : {}),
       ...(finish?.type === "finish" && finish.summary ? { summary: finish.summary } : {}),
     };
   };
@@ -201,6 +208,17 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
     description:
       "Walk reviewed test cases (test-cases@1) in a real browser on the Salesforce sandbox, one action per step from a masked page, and record the elements, waits and deviations found in exploration@1 for script generation.",
     inputSchema: exploreInputSchema,
+    // Checked before the run is saved, so a typo leaves no run stuck at approve.
+    prepareInputs: async (_runId, inputs) => {
+      const art = await deps.runs.readArtifact(inputs.testCasesRun, TEST_CASES_ARTIFACT);
+      if (!art) throw new EngineError("INVALID_INPUTS", `Run ${inputs.testCasesRun} has no test-cases@1: run the test-cases workflow and review its cases first`, [{ path: "$.testCasesRun", message: "no test-cases@1 in this run" }]);
+      try {
+        if (pick(inputs, art.data.cases).length === 0) throw new Error(`run ${inputs.testCasesRun} has no reviewed cases`);
+      } catch (e) {
+        throw new EngineError("INVALID_INPUTS", (e as Error).message, [{ path: "$.cases", message: (e as Error).message }]);
+      }
+      return inputs;
+    },
     steps: [
       {
         id: "approve",
@@ -328,7 +346,7 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
           const end = p.ended.at(-1)!;
           const c = cases[p.ended.length - 1]!;
           const caseActs = acts.slice(end.from, end.to);
-          const { results } = await sync(ctx, acts.slice(0, end.to), c, end.from);
+          const { results, page } = await sync(ctx, acts.slice(0, end.to), c, end.from);
           const art = await testCases(ctx);
           const target = await deps.data.explorerTarget(ctx.inputs.role);
           const existing = await deps.runs.readArtifact(ctx.runId, EXPLORATION_ARTIFACT);
@@ -338,16 +356,17 @@ export function exploreWorkflow(deps: ExploreDeps): WorkflowDefinition<ExploreIn
             target,
             start: ctx.inputs.start,
             // In case order, so a rerun of the step writes the same file.
-            cases: [...others, explored(c, caseActs, results, end.endedBy)].sort((x, y) => cases.findIndex((k) => k.id === x.id) - cases.findIndex((k) => k.id === y.id)),
+            cases: [...others, explored(ctx, c, caseActs, results, end.endedBy, page.replayed === true)].sort((x, y) => cases.findIndex((k) => k.id === x.id) - cases.findIndex((k) => k.id === y.id)),
           };
           const hash = createHash("sha256").update(JSON.stringify(art.data)).digest("hex");
           await deps.runs.writeArtifact(ctx.runId, EXPLORATION_ARTIFACT, data, {
             inputs: [{ kind: "artifact", ref: `${ctx.inputs.testCasesRun}/test-cases`, hash }],
             templateVersion: EXPLORATION_TEMPLATE_VERSION,
           });
-          if (p.done) await deps.data.explorerClose(ctx.runId);
         },
       },
     ],
+    // However the run ends (done, failed, cancelled), its signed-in browser closes.
+    onEnd: (runId) => deps.data.explorerClose(runId),
   };
 }

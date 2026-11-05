@@ -288,6 +288,25 @@ describe("batched and optional steps", () => {
     expect((await none.status(step.runId)).outputs).toEqual({ parts: [] });
   });
 
+  it("calls onEnd once however a run ends, and ignores its errors", async () => {
+    const ends: string[] = [];
+    const onEnd = vi.fn(async (runId: string, status: string) => {
+      ends.push(`${runId}:${status}`);
+      throw new Error("cleanup failed");
+    });
+    const e = engine(new MemoryStateStore(), { ...demoWorkflow(), onEnd });
+    const done = await e.start("demo", { issue: "PROJ-1" });
+    await e.submit(done.runId, "analyze", { summary: "s" });
+    await e.submit(done.runId, "cases", { cases: [{ id: "TC-PROJ-1-001", title: "t" }] });
+    expect((await e.submit(done.runId, "push", { approve: true })).next.kind).toBe("done");
+    const failed = await e.start("demo", { issue: "PROJ-2" });
+    for (let i = 0; i < 3; i++) await e.submit(failed.runId, "analyze", { summary: "" });
+    const cancelled = await e.start("demo", { issue: "PROJ-3" });
+    await e.cancel(cancelled.runId);
+    await e.cancel(cancelled.runId);
+    expect(ends).toEqual(["run-1:done", "run-2:failed", "run-3:cancelled"]);
+  });
+
   it("ends a looping step early when until says so, with batches as the cap", async () => {
     const loop: WorkflowDefinition<{ n: number }> = {
       id: "loop",

@@ -165,6 +165,7 @@ export class WorkflowEngine {
     };
     await this.advance(workflow, state);
     await this.store.save(state);
+    await this.ended(workflow, state);
     return this.render(registered, state);
   }
 
@@ -261,6 +262,7 @@ export class WorkflowEngine {
           state.attempt = attempt + 1;
         }
         await this.save(state);
+        await this.ended(workflow, state);
         const next = await this.renderAfter(registered, state, "rejected", errors);
         return { status: "rejected", errors, attempt, maxAttempts: max, next };
       }
@@ -287,6 +289,7 @@ export class WorkflowEngine {
       }
       state.accepted[stepId] = true;
       await this.save(state);
+      await this.ended(workflow, state);
       return { status: "accepted", next: await this.renderAfter(registered, state, "accepted", []) };
     });
   }
@@ -297,10 +300,11 @@ export class WorkflowEngine {
 
   async cancel(runId: string): Promise<RunState> {
     return this.withLock(runId, async () => {
-      const { state } = await this.load(runId);
+      const { registered, state } = await this.load(runId);
       if (state.status === "running") {
         state.status = "cancelled";
         await this.save(state);
+        await this.ended(registered.workflow, state);
       }
       return state;
     });
@@ -312,6 +316,16 @@ export class WorkflowEngine {
     const registered = this.workflows.get(state.workflowId);
     if (!registered) throw new EngineError("UNKNOWN_WORKFLOW", `Run ${runId} uses unregistered workflow ${state.workflowId}`);
     return { registered, state };
+  }
+
+  /** Calls the workflow's onEnd: only from a call that found the run running, so once per run. */
+  private async ended(workflow: WorkflowDefinition<unknown>, state: RunState): Promise<void> {
+    if (state.status === "running" || !workflow.onEnd) return;
+    try {
+      await workflow.onEnd(state.runId, state.status);
+    } catch {
+      // Cleanup is best effort: the run's outcome is already saved.
+    }
   }
 
   private async save(state: RunState): Promise<void> {

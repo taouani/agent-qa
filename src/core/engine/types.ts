@@ -128,6 +128,12 @@ export interface WorkflowDefinition<I = unknown> {
    * in the run folder (a JQL filter can name a person) with vault tokens.
    */
   prepareInputs?: (runId: string, inputs: I) => I | Promise<I>;
+  /**
+   * Runs once when a run stops running: done, failed (too many rejected
+   * answers) or cancelled. For cleanup that must happen however the run ends,
+   * such as closing a browser. Best effort: an error here is ignored.
+   */
+  onEnd?: (runId: string, status: Exclude<RunStatus, "running">) => void | Promise<void>;
   // Steps differ in output type, so the list is typed loosely here.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   steps: ReadonlyArray<StepDefinition<I, any>>;
