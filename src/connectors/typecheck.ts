@@ -26,6 +26,13 @@ export class TypeCheckError extends Error {
   }
 }
 
+export interface TypeCheckOptions {
+  /** Diagnostics for every file of the folder the program reads (not node_modules), not only the given ones: a change can break the files that import it. */
+  everyFile?: boolean;
+  /** Most diagnostics returned; MAX_DIAGNOSTICS by default. */
+  limit?: number;
+}
+
 export interface TypeDiagnostic {
   /** The generated file, as given. */
   file: string;
@@ -79,7 +86,7 @@ export function loadTypeScript(grant: WriteGrant, folder: string, boundary: stri
  * can't be used as is: a check with half its options would report errors the
  * generated code can't fix.
  */
-export function typeCheckFiles(ts: TypeScriptModule, folder: string, files: ReadonlyArray<{ path: string; content: string }>): TypeDiagnostic[] {
+export function typeCheckFiles(ts: TypeScriptModule, folder: string, files: ReadonlyArray<{ path: string; content: string }>, check: TypeCheckOptions = {}): TypeDiagnostic[] {
   const configPath = join(folder, "tsconfig.json");
   const flat = (m: string | TS.DiagnosticMessageChain) => local(ts.flattenDiagnosticMessageText(m, " "), folder).slice(0, 500);
   if (!ts.sys.fileExists(configPath)) throw new TypeCheckError("the Playwright folder has no tsconfig.json");
@@ -115,14 +122,29 @@ export function typeCheckFiles(ts: TypeScriptModule, folder: string, files: Read
   const program = ts.createProgram({ rootNames: roots, options, host });
   const byKey = new Map(program.getSourceFiles().map((sf) => [key(sf.fileName), sf]));
   const out: TypeDiagnostic[] = [];
-  for (const f of code) {
-    const sf = byKey.get(key(join(folder, f.path)));
+  const limit = check.limit ?? MAX_DIAGNOSTICS;
+  const inFolder = (p: string) => {
+    const rel = relative(folder, p).replace(/\\/g, "/");
+    return rel && !rel.startsWith("../") && !isAbsolute(rel) && !rel.split("/").includes("node_modules") ? rel : undefined;
+  };
+  const checked: Array<{ path: string; sf: TS.SourceFile | undefined }> = check.everyFile
+    ? program
+        .getSourceFiles()
+        .filter((sf) => !program.isSourceFileDefaultLibrary(sf) && !program.isSourceFileFromExternalLibrary(sf))
+        .flatMap((sf) => {
+          const rel = inFolder(sf.fileName);
+          return rel ? [{ path: overlay.get(key(sf.fileName))?.path ?? rel, sf }] : [];
+        })
+        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    : code.map((f) => ({ path: f.path, sf: byKey.get(key(join(folder, f.path))) }));
+  for (const f of checked) {
+    const sf = f.sf;
     if (!sf) continue;
     for (const d of [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)]) {
       if (d.category !== ts.DiagnosticCategory.Error) continue;
       const line = d.start !== undefined ? sf.getLineAndCharacterOfPosition(d.start).line + 1 : 0;
       out.push({ file: f.path, line, code: d.code, message: flat(d.messageText) });
-      if (out.length >= MAX_DIAGNOSTICS) return out;
+      if (out.length >= limit) return out;
     }
   }
   return out;

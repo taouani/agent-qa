@@ -10,12 +10,17 @@ export const HAND_WRITTEN_PAGE = "tests/pages/request-page.ts";
 /** The test's title, as Playwright reports it. */
 export const HAND_WRITTEN_TITLE = "a submitted request shows as Submitted";
 
-export function handWrittenSuite(person: string): Array<{ path: string; content: string }> {
+/**
+ * With `flaws` (the `review` case, S3-4): two known problems a review must
+ * find, a fixed wait in the spec (the code scan's) and a check inside the
+ * page object (the model's).
+ */
+export function handWrittenSuite(person: string, flaws = false): Array<{ path: string; content: string }> {
   return [
     {
       path: HAND_WRITTEN_PAGE,
       content: [
-        "import type { Locator, Page } from '@playwright/test';",
+        flaws ? "import { expect, type Locator, type Page } from '@playwright/test';" : "import type { Locator, Page } from '@playwright/test';",
         "",
         "export class RequestPage {",
         "  constructor(private readonly page: Page) {}",
@@ -27,6 +32,7 @@ export function handWrittenSuite(person: string): Array<{ path: string; content:
         "",
         "  async submit() {",
         "    await this.page.getByRole('button', { name: 'Submit for Approval' }).click();",
+        ...(flaws ? ["    await expect(this.page.getByRole('status')).toBeVisible();"] : []),
         "  }",
         "",
         "  details(): Locator {",
@@ -45,6 +51,7 @@ export function handWrittenSuite(person: string): Array<{ path: string; content:
         `test('${HAND_WRITTEN_TITLE}', async ({ page }) => {`,
         "  const request = new RequestPage(page);",
         `  await request.open('${person.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}');`,
+        ...(flaws ? ["  await page.waitForTimeout(1000);"] : []),
         "  await request.submit();",
         "  await expect(request.details()).toContainText('Submitted');",
         "});",

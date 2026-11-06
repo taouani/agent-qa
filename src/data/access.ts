@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -152,9 +152,11 @@ export interface ScriptsData {
    * is written. It loads the repo's typescript, so it runs through
    * `Policy.guard` (target commands) and needs the person's yes (`approved`).
    * Messages come back masked with `tokensRun`'s vault. "unavailable" says
-   * why it couldn't run (no typescript or tsconfig in the repo).
+   * why it couldn't run (no typescript or tsconfig in the repo). With
+   * `everyFile`, diagnostics come for every file of the folder, not only the
+   * given ones (up to `limit`).
    */
-  typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome>;
+  typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean, options?: TypeCheckOptions): Promise<TypeCheckOutcome>;
   /**
    * Writes the reviewed generated files into the profile's folder through
    * `Policy.guard` (target testCode), all or none: each is created, never
@@ -387,7 +389,7 @@ export interface DataAccessOptions {
   /** Replace the command runner, for tests. */
   host?: typeof runHostCommand;
   /** The type check, for tests: by default the repo's own TypeScript (connectors/typecheck.ts). */
-  typeCheck?: (grant: WriteGrant, files: ReadonlyArray<{ path: string; content: string }>) => TypeDiagnostic[] | Promise<TypeDiagnostic[]>;
+  typeCheck?: (grant: WriteGrant, files: ReadonlyArray<{ path: string; content: string }>, options?: TypeCheckOptions) => TypeDiagnostic[] | Promise<TypeDiagnostic[]>;
   /** Replace the explorer's browser, for tests. */
   browser?: OpenBrowser;
   /** Replace the GitHub client, for tests. */
@@ -1175,18 +1177,18 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return masked;
   }
 
-  async typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean): Promise<TypeCheckOutcome> {
+  async typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean, options: TypeCheckOptions = {}): Promise<TypeCheckOutcome> {
     if (!approved) return { status: "declined" };
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     const folder = hostCwd(this.options.root, saved.folder);
     const config = await this.configOrDefault();
-    const check = this.options.typeCheck ?? ((grant: WriteGrant, f: typeof files) => typeCheckFiles(loadTypeScript(grant, folder, hostCwd(this.options.root)).ts, folder, f));
+    const check = this.options.typeCheck ?? ((grant: WriteGrant, f: typeof files, o: TypeCheckOptions) => typeCheckFiles(loadTypeScript(grant, folder, hostCwd(this.options.root)).ts, folder, f, o));
     const { service } = await this.run(tokensRun);
     const summary = service.maskText(`Type-check ${files.length} generated file(s) with the repo's TypeScript in ${saved.folder}`, "host.summary");
     let outcome;
     try {
-      outcome = await this.policy(config).guard({ target: "commands", summary, runId }, async (grant) => check(grant, files));
+      outcome = await this.policy(config).guard({ target: "commands", summary, runId }, async (grant) => check(grant, files, options));
     } catch (error) {
       // Whatever stops the check (the policy, the repo's typescript, the compiler itself), the code is kept unchecked and says why:
       // an error here would leave the step unable to finish.

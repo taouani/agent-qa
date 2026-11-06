@@ -6,10 +6,10 @@ import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, t
 import { DataAccess, openRepoBrowser, type JiraCollection, type JiraInput, type JiraIssue, type OpenBrowser } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { DEBUG_REPORT_ARTIFACT, debugWorkflow, EXPLORATION_ARTIFACT, exploreWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import { DEBUG_REPORT_ARTIFACT, debugWorkflow, EXPLORATION_ARTIFACT, exploreWorkflow, FINDINGS_ARTIFACT, reviewWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
 import type { Seed, SyntheticTicket } from "./cases.js";
 import { FIXTURE_SPEC } from "./fixture-driver.js";
-import { HAND_WRITTEN_SPEC, handWrittenSuite } from "./hand-written.js";
+import { HAND_WRITTEN_PAGE, HAND_WRITTEN_SPEC, handWrittenSuite } from "./hand-written.js";
 import { startStandInApp, type StandInApp } from "./stand-in-app.js";
 import type { Pipeline, PipelineContext } from "./runner.js";
 
@@ -71,6 +71,11 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   const runs = new RunStore(options.runsDir);
   const config = harnessConfig(options.config);
   return async (context) => {
+    if (context.case.workflow === "review") {
+      // No browser and no packages: a review reads the code, and the harness never says yes to its fixes.
+      const boot = new DataAccess({ root: options.runsDir, store: runs, config, mode: "ide", audit: new MemoryAuditSink() });
+      return boot.withScratchRepo(SCRATCH_AUDIT_ID, (repo) => runCase(options, runs, config, context, undefined, repo));
+    }
     if (!BROWSER_WORKFLOWS.has(context.case.workflow)) return runCase(options, runs, config, context);
     const scripts = context.case.workflow === "scripts";
     const debug = context.case.workflow === "debug";
@@ -120,7 +125,8 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
     .register(testCasesWorkflow({ data, runs }))
     .register(exploreWorkflow({ data, runs }))
     .register(scriptsWorkflow({ data, runs }))
-    .register(debugWorkflow({ data, runs }));
+    .register(debugWorkflow({ data, runs }))
+    .register(reviewWorkflow({ data, runs }));
 
   const run = async (workflow: string, inputs: Record<string, unknown>) => {
     let step: Step = await engine.start(workflow, inputs);
@@ -145,6 +151,7 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
     return step.runId;
   };
   try {
+    if (repo && c.workflow === "review") return await reviewCase(data, runs, repo, seeds, c.inputs, run);
     if (!app) return { runId: await run(c.workflow, c.inputs) };
     if (repo && c.workflow === "debug") return await debugCase(data, runs, app, repo, seeds, c.inputs, run);
     if (repo) return await scriptsCase(data, runs, app, repo, c.inputs, run);
@@ -247,6 +254,36 @@ async function debugCase(data: DataAccess, runs: RunStore, app: StandInApp, repo
   for (const f of files) {
     const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
     if (onDisk !== f.content) throw new Error(`Run ${runId} changed ${f.path} instead of reporting the defect`);
+  }
+  return { runId };
+}
+
+/**
+ * The `review` case (S3-4): a repo with the hand-written suite and two known
+ * flaws. The review must report both (the scan's fixed wait, the model's
+ * check in a page object) and, since the harness never says yes to a fix,
+ * leave the files as they were.
+ */
+async function reviewCase(data: DataAccess, runs: RunStore, repo: string, seeds: Seed[], inputs: Record<string, unknown>, run: (workflow: string, inputs: Record<string, unknown>) => Promise<string>) {
+  const person = seeds.find((s) => s.kind === "name")?.value;
+  if (!person) throw new Error("a review case needs a seeded name: its test opens that person's request");
+  const files = handWrittenSuite(person, true);
+  await data.scaffoldRepo("harness", ".", "playwright", () => standInRepo("http://127.0.0.1:9", files), [["npx", "playwright", "test"]], true);
+  const runId = await run("review", { paths: ["tests/**/*.ts"], ...inputs });
+  const r = (await runs.readArtifact(runId, FINDINGS_ARTIFACT))?.data;
+  if (!r) throw new Error(`Run ${runId} recorded no findings`);
+  if (r.files.length !== 2) throw new Error(`Run ${runId} reviewed ${r.files.length} file(s), not the suite's 2`);
+  const at = (path: string, text: string) => files.find((f) => f.path === path)!.content.split("\n").findIndex((l) => l.includes(text)) + 1;
+  const wait = at(HAND_WRITTEN_SPEC, "waitForTimeout");
+  const check = at(HAND_WRITTEN_PAGE, "await expect(");
+  if (!r.findings.some((f) => f.source === "rule" && f.kind === "fixed-wait" && f.path === HAND_WRITTEN_SPEC && f.line === wait)) throw new Error(`Run ${runId} didn't report the fixed wait at ${HAND_WRITTEN_SPEC}:${wait}`);
+  if (!r.findings.some((f) => f.source === "model" && f.path === HAND_WRITTEN_PAGE && Math.abs(f.line - check) <= 1)) throw new Error(`Run ${runId}: the model didn't report the check inside the page object at ${HAND_WRITTEN_PAGE}:${check}`);
+  if (r.changes.length || r.status === "fixed") throw new Error(`Run ${runId} wrote a fix without the person's yes`);
+  // The fixture proposes a fix: the unattended run must have asked and recorded no, not proposed nothing.
+  if (r.status !== "declined" || !r.proposal) throw new Error(`Run ${runId} ended ${r.status}: the fixture's fix should have been proposed and declined`);
+  for (const f of files) {
+    const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
+    if (onDisk !== f.content) throw new Error(`Run ${runId} changed ${f.path}`);
   }
   return { runId };
 }

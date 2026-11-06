@@ -5,6 +5,7 @@ import { hasSelection, selectionFields, selectionOf } from "../run-tests/workflo
 import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
 import type { FileRole } from "../scripts/artifact.js";
 import { TOKEN } from "../scripts/checks.js";
+import { leaving, testFilesPrRecordSchema, testFilesPrStep } from "../shared/test-files-pr.js";
 
 /**
  * `debug` (S3-3): the S2-8 run-and-fix loop pointed at the repo's own tests.
@@ -80,10 +81,7 @@ export const debugReportSchema = z
     /** In CI the changes are in the job's checkout: they leave only as a pull request. */
     pullRequest: z.literal(true).optional(),
     /** In CI: the pull request the changes left in, or why they didn't. */
-    pr: z
-      .object({ status: z.enum(["opened", "declined"]), reason: z.string().optional(), number: z.number().optional(), url: z.string().optional(), branch: z.string().optional(), draft: z.boolean().optional() })
-      .strict()
-      .optional(),
+    pr: testFilesPrRecordSchema.optional(),
   })
   .strict();
 export type DebugReport = z.infer<typeof debugReportSchema>;
@@ -133,22 +131,13 @@ export const debugFixSchema = z
   .strict();
 export type DebugFix = z.infer<typeof debugFixSchema>;
 
-const prSchema = z.object({ open: z.boolean().describe("true to open the pull request") }).strict();
-
-/** Each changed file once: its bytes now (the last round's sha256) and its blob on the base (the first round's). */
-export function leaving(r: Pick<DebugReport, "changes">): Array<{ path: string; sha256: string; gitBlob: string }> {
-  const out = new Map<string, { path: string; sha256: string; gitBlob: string }>();
-  for (const c of r.changes) out.set(c.path, { path: c.path, sha256: c.sha256, gitBlob: out.get(c.path)?.gitBlob ?? c.gitBlob });
-  return [...out.values()];
-}
-
 const cell = (s: string) => one(s).replace(/\|/g, "\\|").slice(0, 300);
 
 /** The pull request's description: what failed, what kind, what changed, and how the tests ran after. Masked text only. */
 export function debugPrBody(runId: string, r: DebugReport): string {
   const last = r.attempts.at(-1);
   return [
-    `Agent-QA debugged failing tests (run \`${runId}\`) and changed ${leaving(r).length} test file(s), each change approved by the person (in CI with --accept apply-N).`,
+    `Agent-QA debugged failing tests (run \`${runId}\`) and changed ${leaving(r.changes).length} test file(s), each change approved by the person (in CI with --accept apply-N).`,
     "",
     "## Result",
     "",
@@ -425,39 +414,21 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
     },
   });
 
-  /** In CI the changed files are in the job's checkout: they leave only as a pull request (S2-9), a draft unless every test passed. */
-  const prStep: StepDefinition<DebugInputs, z.infer<typeof prSchema>> = {
-    id: "pr",
-    kind: "confirm",
-    outputSchema: prSchema,
-    when: async (ctx) => {
-      const s = await read(ctx);
-      return !!s && s.pullRequest === true && s.changes.length > 0 && s.status !== "failing" && s.status !== "proposed" && !s.pr;
-    },
-    // In CI the policy sends test code out as a pull request without asking: the person's yes was each apply (--accept apply-1…).
-    answers: { yes: { open: true }, no: { open: false }, unattended: { open: true } },
-    approval: {
-      question: async (ctx) => {
-        const s = (await read(ctx))!;
-        const ready = await deps.data.pullRequestReadiness();
-        if (!ready.ready) return `No pull request can be opened (${ready.reason}): the changes stay in this checkout only. Submit any answer to finish.`;
-        return `Open a pull request on ${ready.repo} with the changes to ${leaving(s).length} file(s) (debug ${s.status})? It is a draft unless every test passed and stayed stable.`;
-      },
-    },
-    instructions: () => "Ask whether to open a pull request with the changed test files. Submit open: true only if the user said yes.",
-    context: async (ctx) => debugPrBody(ctx.runId, (await read(ctx))!),
-    onAccept: async (ctx, out) => {
-      const s = await read(ctx);
-      if (!s || s.pr) return;
-      const ready = await deps.data.pullRequestReadiness();
-      if (!ready.ready) return void (await save(ctx, { ...s, pr: { status: "declined", reason: `no pull request could be opened: ${ready.reason}` } }));
-      if (!out.open) return void (await save(ctx, { ...s, pr: { status: "declined", reason: "the pull request was declined" } }));
-      const files = leaving(s);
-      const r = await deps.data.openPullRequest(ctx.runId, ctx.runId, s.folder, { files, title: `Agent-QA: fix ${files.length} test file(s) (debug ${s.status})`, body: debugPrBody(ctx.runId, s), draft: s.status !== "passed" });
-      if (r.status !== "done") return void (await save(ctx, { ...s, pr: { status: "declined", reason: "the policy said no to opening the pull request" } }));
-      await save(ctx, { ...s, pr: { status: "opened", number: r.number, url: r.url, branch: r.branch, draft: r.draft } });
-    },
-  };
+  /** In CI the changed files are in the job's checkout: they leave only as a pull request, a draft unless every test passed. */
+  const prStep = testFilesPrStep<DebugInputs, DebugReport>({
+    data: deps.data,
+    read,
+    save,
+    due: (s) => s.pullRequest === true && s.status !== "failing" && s.status !== "proposed",
+    changes: (s) => s.changes,
+    folder: (s) => s.folder,
+    pr: (s) => s.pr,
+    withPr: (s, pr) => ({ ...s, pr }),
+    title: (s) => `Agent-QA: fix ${leaving(s.changes).length} test file(s) (debug ${s.status})`,
+    body: debugPrBody,
+    ready: (s) => s.status === "passed",
+    outcome: (s) => `debug ${s.status}`,
+  });
 
   const rounds = Array.from({ length: MAX_FIX_ROUNDS }, (_, i) => i + 1);
   return {

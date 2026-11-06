@@ -18,9 +18,9 @@ const run = (config?: ReturnType<typeof parseConfig>) =>
 describe("masked pipeline (S1-14)", () => {
   it("runs the real workflows on the shipped cases with no seeded value reaching the model", async () => {
     const report = await run();
-    expect(report.summary).toEqual({ cases: 3, passed: 3, failed: 0, errors: 0, seededLeaks: 0 });
+    expect(report.summary).toEqual({ cases: 4, passed: 4, failed: 0, errors: 0, seededLeaks: 0 });
     const runs = (await readdir(join(dir, "runs"))).sort();
-    expect(runs).toHaveLength(3);
+    expect(runs).toHaveLength(4);
     // The run folders keep masked text only: nothing seeded is on disk.
     for (const r of runs) {
       const files = [...(await readdir(join(dir, "runs", r))).filter((f) => f.includes(".")), ...(await readdir(join(dir, "runs", r, "steps"))).map((f) => join("steps", f))];
@@ -31,7 +31,7 @@ describe("masked pipeline (S1-14)", () => {
       }
     }
     // The review edited one case with a seeded value: it was masked before it was kept.
-    const cases = runs.filter((r) => !r.includes("QAH-6"));
+    const cases = runs.filter((r) => !r.includes("QAH-6") && !r.includes("review"));
     for (const r of cases) {
       const art = JSON.parse(await readFile(join(dir, "runs", r, "test-cases.json"), "utf8"));
       expect(art.data.review).toMatchObject({ edited: 1, unattended: true });
@@ -47,7 +47,8 @@ describe("masked pipeline (S1-14)", () => {
   it("fails the gate when masking is switched off", async () => {
     // Only names masked: emails, phones, cards, IBANs, ids and IPs reach the model.
     const report = await run(parseConfig("version: 1\nmasking:\n  detectors: [name]\n"));
-    expect(report.summary.passed).toBe(0);
+    // Only the review case passes: its one seed is a name.
+    expect(report.cases.filter((c) => c.status === "pass").map((c) => c.id)).toEqual(["approval-request-review"]);
     expect(report.summary.failed).toBe(3);
     const leaked = new Set(report.cases.flatMap((c) => c.seededLeaks.map((l) => l.seedId)));
     for (const id of ["seed-email-1", "seed-phone-1", "seed-card-1", "seed-iban-1", "seed-national-id-1"]) expect(leaked).toContain(id);
@@ -141,6 +142,6 @@ describe("kept rate", () => {
 
 describe("fixture model", () => {
   it("refuses steps it doesn't know", async () => {
-    await expect(new FixtureDriver().complete({ schemaName: "review", messages: [{ role: "user", content: "Context:\n{}\n\nAnswer with JSON that matches this JSON Schema:\n{}" }] })).rejects.toThrow(/can't answer step review/);
+    await expect(new FixtureDriver().complete({ schemaName: "nope", messages: [{ role: "user", content: "Context:\n{}\n\nAnswer with JSON that matches this JSON Schema:\n{}" }] })).rejects.toThrow(/can't answer step nope/);
   });
 });
