@@ -148,9 +148,13 @@ export class WorkflowEngine {
       throw new EngineError("INVALID_INPUTS", `Invalid inputs for ${workflowId}`, toOutputErrors(parsed.error));
     }
     const timestamp = this.now().toISOString();
-    const runId = this.newRunId(workflowId, parsed.data);
     // Before prepareInputs, so a colliding start writes nothing (prepareInputs may write the run's vault).
-    if (await this.store.load(runId)) throw new EngineError("RUN_COLLISION", `Run id already exists: ${runId}`);
+    // A short random id can repeat one already taken: a few fresh ones are tried before giving up.
+    let runId = this.newRunId(workflowId, parsed.data);
+    for (let tries = 1; await this.store.load(runId); tries++) {
+      if (tries >= 5) throw new EngineError("RUN_COLLISION", `Run id already exists: ${runId}`);
+      runId = this.newRunId(workflowId, parsed.data);
+    }
     const prepared = workflow.prepareInputs ? await workflow.prepareInputs(runId, parsed.data) : parsed.data;
     const state: RunState = {
       runId,
