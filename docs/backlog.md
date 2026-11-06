@@ -18,6 +18,13 @@ Found in the PR #72 review (6 Nov 2026). `review` and `debug` send test-file pat
 
 Found in the PR #72 review (6 Nov 2026). A review fix may not add a branch, but branches are counted for the whole file. A fix that removes one `if` and puts a check behind a new one keeps the total and passes. Counting branches per test would close this.
 
+## Refactor guard limits
+
+Found in the PR #74 review (6 Nov 2026). `refactor` checks each task against the code with only its renames applied. Three limits remain:
+- What each test reaches is matched by name, not by symbol. A check moved into a page-object method can be passed another existing value of the same name and still pass. The type check and the test run are the guards that remain.
+- Checks must stay word for word, apart from a page object's `this.`. A check whose element moves into a page-object getter (`expect(requestPage.status)`) is refused, even when it reads the same element.
+- The lint step isn't run: the report says so, and the type check stands in. Path aliases are read from the folder, not from tsconfig's `baseUrl`, and renames don't reach files that weren't read.
+
 ## Done or moved into a slice
 
 ### Healing existing scripts

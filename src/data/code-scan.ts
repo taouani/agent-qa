@@ -607,3 +607,71 @@ export function codeLiterals(text: string, file: string): string[] | undefined {
   });
   return out.sort();
 }
+
+/**
+ * What each test reaches (S3-6), by its title: the names of the calls its
+ * body makes and the values it holds, and those of every declaration it
+ * reads by name across the files (a page object's method, a helper, a
+ * constant), followed as far as they go. A refactor may move what a test
+ * does into a page object or a helper, never leave out an action or a value:
+ * each test reaches at least what it reached before. Names are matched by
+ * text, not by symbol, so the set is wide, never narrow.
+ */
+export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, Set<string>> {
+  const decls = new Map<string, Node[]>();
+  const declare = (name: string | undefined, body: Node | null | undefined) => {
+    if (name && body) decls.set(name, [...(decls.get(name) ?? []), body]);
+  };
+  const keyName = (k: Node) => (k.type === "Identifier" ? k.name : k.type === "PrivateName" ? k.id.name : literalString(k));
+  const tests: Array<{ title: string; body: Node[] }> = [];
+  for (const f of files) {
+    const ast = parseCode(f.content, f.path);
+    if (!ast) continue;
+    walkAst(ast, (n) => {
+      if (n.type === "VariableDeclarator") {
+        if (n.id.type === "Identifier") declare(n.id.name, n.init);
+        else walkAst(n.id as Node, (x) => x.type === "Identifier" && declare(x.name, n.init));
+      } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n.value as Node | null);
+      else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n.body);
+      else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n.body);
+      else if (n.type === "ObjectProperty") declare(keyName(n.key as Node), n.value as Node);
+      else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n.right);
+      else if (n.type === "ClassDeclaration" && n.id) declare(n.id.name, n.body);
+      else if (n.type === "CallExpression") {
+        const callee = n.callee as Node;
+        const isMember = callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression";
+        const name = callee.type === "Identifier" ? callee.name : memberName(callee);
+        const objName = isMember ? (callee.object.type === "Identifier" ? callee.object.name : memberName(callee.object as Node)) : undefined;
+        const title = n.arguments[0] ? literalString(n.arguments[0] as Node) : undefined;
+        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) tests.push({ title, body: n.arguments.slice(1) as Node[] });
+      }
+    });
+  }
+  const out = new Map<string, Set<string>>();
+  for (const t of tests) {
+    const reach = out.get(t.title) ?? new Set<string>();
+    const seen = new Set<string>();
+    const queue = [...t.body];
+    const follow = (name: string) => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      queue.push(...(decls.get(name) ?? []));
+    };
+    while (queue.length) {
+      walkAst(queue.pop()!, (x) => {
+        if (x.type === "CallExpression" || x.type === "OptionalCallExpression" || x.type === "NewExpression") {
+          const c = x.callee as Node;
+          const name = c.type === "Identifier" ? c.name : memberName(c);
+          if (name) reach.add(`c:${name}`);
+        }
+        if (x.type === "Identifier") follow(x.name);
+        else if ((x.type === "MemberExpression" || x.type === "OptionalMemberExpression") && memberName(x)) follow(memberName(x)!);
+        else if (x.type === "StringLiteral") reach.add(`s:${x.value}`);
+        else if (x.type === "NumericLiteral") reach.add(`n:${x.value}`);
+        else if (x.type === "TemplateElement") reach.add(`s:${x.value.cooked ?? x.value.raw}`);
+      });
+    }
+    out.set(t.title, reach);
+  }
+  return out;
+}

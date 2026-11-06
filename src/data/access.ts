@@ -233,6 +233,13 @@ export interface TestFilesData {
    * someone changed since stays, and the error names it.
    */
   removeTestFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; sha256: string }>, approved: boolean): Promise<{ status: "done"; removed: string[] } | { status: "declined" }>;
+  /**
+   * Why Agent-QA couldn't change or remove each path as a test file of
+   * `folder` (a project file, a tool's config, an auth file, a file git
+   * ignores…), one message per refused path: a refactor's new files must be
+   * ones a rollback can remove.
+   */
+  testPathProblems(folder: string, paths: readonly string[]): Promise<string[]>;
 }
 
 /** A test file as a model may see it. */
@@ -950,6 +957,18 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     }
     if (outcome.status !== "done") return { status: "declined" };
     return { status: "done", removed: outcome.value };
+  }
+
+  async testPathProblems(folder: string, paths: readonly string[]): Promise<string[]> {
+    const problems: string[] = [];
+    for (const p of paths)
+      try {
+        await this.checkTestPaths(folder, [p]);
+      } catch (error) {
+        if (!(error instanceof ProfileError)) throw error;
+        problems.push(error.message);
+      }
+    return problems;
   }
 
   /**

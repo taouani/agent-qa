@@ -55,6 +55,48 @@ function declarationOf(sf: SourceFile, symbol: string, within: string | undefine
   return { node: found[0] as never };
 }
 
+/** Property names and member keys: an identifier there names no variable. */
+function isKeyPosition(id: Node): boolean {
+  const parent = id.getParent();
+  if (!parent) return false;
+  if (Node.isPropertyAccessExpression(parent)) return parent.getNameNode() === id;
+  if (Node.isQualifiedName(parent)) return parent.getRight() === id;
+  if (Node.isPropertyAssignment(parent) || Node.isPropertyDeclaration(parent) || Node.isPropertySignature(parent) || Node.isMethodDeclaration(parent) || Node.isMethodSignature(parent) || Node.isGetAccessorDeclaration(parent) || Node.isSetAccessorDeclaration(parent) || Node.isEnumMember(parent)) return parent.getNameNode() === id;
+  return false;
+}
+
+/**
+ * A top-level rename that could make a reference read something else: `to`
+ * is already a name (declared, imported or read, not a property) in a file
+ * that declares or refers to the symbol, so a renamed reference could
+ * resolve to a local or another import instead.
+ */
+function nameClash(node: Node, to: string): string | undefined {
+  const name = (node as Node & { getNameNode?: () => Node }).getNameNode?.();
+  if (!name || !Node.isIdentifier(name)) return `the declaration has no plain name to rename`;
+  const files = new Set([node.getSourceFile(), ...name.findReferencesAsNodes().map((r) => r.getSourceFile())]);
+  for (const f of files) {
+    const taken = f.getDescendantsOfKind(ts.SyntaxKind.Identifier).find((id) => id.getText() === to && !isKeyPosition(id));
+    if (taken) return `${to} is already a name in ${f.getFilePath().slice(1)} (line ${taken.getStartLineNumber()}): renaming to it could make a reference read something else`;
+  }
+  return undefined;
+}
+
+/** A member rename onto a name the class, a class it extends or one extending it already has. */
+function memberClash(sf: SourceFile, within: string, to: string): string | undefined {
+  const cls = sf.getClass(within);
+  const owners: Array<{ getName(): string | undefined; getMembers(): Node[] }> = [];
+  if (cls) {
+    for (let c: typeof cls | undefined = cls; c; c = c.getBaseClass()) owners.push(c);
+    owners.push(...cls.getDerivedClasses());
+  } else {
+    const i = sf.getInterface(within);
+    if (i) owners.push(i, ...i.getBaseDeclarations().filter((b) => Node.isInterfaceDeclaration(b) || Node.isClassDeclaration(b)), ...i.getImplementations().map((x) => x.getNode().getFirstAncestorByKind(ts.SyntaxKind.ClassDeclaration)).filter((x) => x !== undefined));
+  }
+  for (const o of owners) if (o.getMembers().some((m) => Node.hasName(m) && m.getName() === to)) return `${o.getName() ?? within} already has a member ${to}`;
+  return undefined;
+}
+
 /** Applies `ops` in order to `files`; an operation that can't apply is reported and skipped. */
 export function applyRefactor(files: ReadonlyArray<{ path: string; content: string }>, ops: readonly RefactorOp[], aliases: Record<string, string[]> = {}): RefactorResult {
   const before = new Map(files.map((f) => [f.path, f.content]));
@@ -86,6 +128,8 @@ export function applyRefactor(files: ReadonlyArray<{ path: string; content: stri
     if (op.to === op.symbol) return err("the rename keeps the same name");
     const d = declarationOf(sf, op.symbol, op.within);
     if ("error" in d) return err(d.error);
+    const clash = op.within ? memberClash(sf, op.within, op.to) : nameClash(d.node, op.to);
+    if (clash) return err(clash);
     try {
       d.node.rename(op.to);
     } catch (error) {

@@ -100,6 +100,7 @@ describe("refactor workflow (S3-6)", () => {
       for (const x of w) files.delete(x.path);
       return { status: "done", removed: w.map((x) => x.path) };
     },
+    testPathProblems: async (_f, paths) => paths.filter((x) => /auth/.test(x)).map((x) => `${x} looks like an auth or session file: Agent-QA never reads it`),
     typeCheckReadiness: async () => ({ ready: true }),
     typeCheck: async (_r, _t, f) => ({ status: "done", diagnostics: diagnostics(f) }),
     testRunReadiness: async () => ({ ready: true }),
@@ -137,7 +138,8 @@ describe("refactor workflow (S3-6)", () => {
     expect(files.get("tests/a.spec.ts")).toContain("submitRequest()");
     expect(files.get("tests/pages/request-page.ts")).toContain("async submitRequest()");
     expect(await report(first.runId)).toMatchObject({ status: "applied", affected: ["tests/a.spec.ts", "tests/b.spec.ts"], typeCheck: "passed" });
-    expect((await e.submit(first.runId, "run", { run: true })).next.kind).toBe("done");
+    await expect(e.submit(first.runId, "run", { run: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
+    expect((await e.submit(first.runId, "run", { run: true }, { byPerson: true })).next.kind).toBe("done");
     expect(calls).toContain("run tests/a.spec.ts,tests/b.spec.ts");
     const done = await report(first.runId);
     expect(done).toMatchObject({ status: "passed", tests: { passed: 2, failed: 0 } });
@@ -156,13 +158,119 @@ describe("refactor workflow (S3-6)", () => {
     await e.submit(first.runId, "plan", plan);
     await e.submit(first.runId, "apply", { apply: true }, { byPerson: true });
     expect(files.has("tests/support/steps.ts")).toBe(true);
-    await e.submit(first.runId, "run", { run: true });
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
     const r = await report(first.runId);
     expect(r).toMatchObject({ status: "rolled-back", tests: { failed: 1, failing: ["tests/b.spec.ts: t"] }, changes: [] });
     expect(r.tasks[0]!.status).toBe("rolled-back");
     expect(files.get("tests/a.spec.ts")).toBe(SPEC(1));
     expect(files.get("tests/pages/request-page.ts")).toBe(PAGE);
     expect(files.has("tests/support/steps.ts")).toBe(false);
+  });
+
+  const TWO: RefactorPlan = {
+    phases: [
+      {
+        goal: "g",
+        tasks: [
+          { key: "rename", findings: ["AF-001"], title: "Rename", why: "w", operations: [{ op: "rename", path: "tests/pages/request-page.ts", within: "RequestPage", symbol: "clickButton3", to: "submitRequest" }] },
+          { key: "other", findings: ["AF-001"], title: "Other", why: "w", operations: [{ op: "edit", path: "tests/c.spec.ts", old: "  await page.goto('/requests');\n", new: "  await page.goto('/requests');\n  await page.reload();\n" }] },
+        ],
+      },
+    ],
+  };
+
+  it("carries on after a stop between tasks, keeping the record of what was written", async () => {
+    let fail = true;
+    const base = fake();
+    const e = engine({
+      ...base,
+      editTestFiles: async (...a) => {
+        if (fail && a[3].some((x) => x.path === "tests/c.spec.ts")) {
+          fail = false;
+          throw new Error("the process stopped");
+        }
+        return base.editTestFiles(...a);
+      },
+    });
+    const first = await e.start("refactor", { auditRun: "audit-run", findings: ["AF-001"] });
+    await e.submit(first.runId, "plan", TWO);
+    await expect(e.submit(first.runId, "apply", { apply: true }, { byPerson: true })).rejects.toThrow(/the process stopped/);
+    const mid = await report(first.runId);
+    expect(mid.status).toBe("applying");
+    expect(mid.tasks.map((t) => t.status)).toEqual(["applied", "planned"]);
+    expect(mid.pending?.task).toBe("T-2");
+    expect(new Set(mid.changes.map((c) => c.path))).toEqual(new Set(["tests/a.spec.ts", "tests/b.spec.ts", "tests/pages/request-page.ts"]));
+    // The retry sees T-1's files as written by this run, not as changed since the plan.
+    await e.submit(first.runId, "apply", { apply: true }, { byPerson: true });
+    const r = await report(first.runId);
+    expect(r).toMatchObject({ status: "applied" });
+    expect(r.pending).toBeUndefined();
+    expect(r.tasks.map((t) => t.status)).toEqual(["applied", "applied"]);
+    expect(r.changes.map((c) => c.path).sort()).toEqual(["tests/a.spec.ts", "tests/b.spec.ts", "tests/c.spec.ts", "tests/pages/request-page.ts"]);
+    expect(r.changes.find((c) => c.path === "tests/a.spec.ts")!.before).toBe(SPEC(1));
+    expect(files.get("tests/c.spec.ts")).toContain("page.reload()");
+  });
+
+  it("finds a task's files written before a stop, and puts back the rest on a retry of the rollback", async () => {
+    outcomes = ["failed"];
+    let stopRemove = true;
+    let stopAfterWrite = true;
+    const base = fake();
+    const plan: RefactorPlan = { phases: [{ goal: "g", tasks: [{ key: "helper", findings: ["AF-001"], title: "A helper file", why: "w", operations: [{ op: "create", path: "tests/support/helpers.ts", content: "export function step() {}\n" }, { op: "edit", path: "tests/c.spec.ts", old: "  await page.goto('/requests');\n", new: "  await page.goto('/requests');\n  await page.reload();\n" }] }] }] };
+    const e = engine({
+      ...base,
+      // The files are written, then the process stops before the record is saved.
+      writeGeneratedFiles: async (...a) => {
+        const w = await base.writeGeneratedFiles(...a);
+        if (stopAfterWrite) {
+          stopAfterWrite = false;
+          throw new Error("the process stopped");
+        }
+        return w;
+      },
+      removeTestFiles: async (...a) => {
+        if (stopRemove) {
+          stopRemove = false;
+          throw new Error("the process stopped");
+        }
+        return base.removeTestFiles(...a);
+      },
+    });
+    const first = await e.start("refactor", { auditRun: "audit-run", findings: ["AF-001"] });
+    await e.submit(first.runId, "plan", plan);
+    await expect(e.submit(first.runId, "apply", { apply: true }, { byPerson: true })).rejects.toThrow(/stopped/);
+    await e.submit(first.runId, "apply", { apply: true }, { byPerson: true });
+    const applied = await report(first.runId);
+    expect(applied).toMatchObject({ status: "applied", affected: ["tests/c.spec.ts"] });
+    expect(applied.changes.map((c) => [c.path, c.created ?? false])).toEqual([
+      ["tests/c.spec.ts", false],
+      ["tests/support/helpers.ts", true],
+    ]);
+    await expect(e.submit(first.runId, "run", { run: true }, { byPerson: true })).rejects.toThrow(/stopped/);
+    expect(await report(first.runId)).toMatchObject({ status: "rolling-back", tests: { failed: 1 } });
+    expect(files.get("tests/c.spec.ts")).toBe(OTHER);
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
+    // The tests ran once: the retry only finished putting things back.
+    expect(calls.filter((c) => c.startsWith("run "))).toHaveLength(1);
+    expect(await report(first.runId)).toMatchObject({ status: "rolled-back", changes: [] });
+    expect(files.has("tests/support/helpers.ts")).toBe(false);
+  });
+
+  it("names a file the rollback couldn't put back, and refuses new files it couldn't remove", async () => {
+    outcomes = ["failed"];
+    const base = fake();
+    const e = engine({ ...base, removeTestFiles: async () => Promise.reject(new ProfileError("tests/support/steps.ts changed since Agent-QA wrote it")) });
+    const plan = (path: string): RefactorPlan => ({ phases: [{ goal: "g", tasks: [{ key: "helper", findings: ["AF-001"], title: "A helper file", why: "w", operations: [{ op: "create", path, content: "export function step() {}\n" }, { op: "edit", path: "tests/c.spec.ts", old: "  await page.goto('/requests');\n", new: "  await page.goto('/requests');\n  await page.reload();\n" }] }] }] });
+    const first = await e.start("refactor", { auditRun: "audit-run", findings: ["AF-001"] });
+    expect(await e.submit(first.runId, "plan", plan("tests/auth/steps.ts"))).toMatchObject({ status: "rejected", errors: [expect.objectContaining({ message: expect.stringMatching(/a new file: tests\/auth\/steps.ts looks like an auth/) })] });
+    await e.submit(first.runId, "plan", plan("tests/support/steps.ts"));
+    await e.submit(first.runId, "apply", { apply: true }, { byPerson: true });
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
+    const r = await report(first.runId);
+    expect(r.status).toBe("rolled-back");
+    expect(r.reason).toMatch(/Not put back, so still as Agent-QA wrote them: tests\/support\/steps.ts \(tests\/support\/steps.ts changed since/);
+    expect(r.changes.map((c) => c.path)).toEqual(["tests/support/steps.ts"]);
+    expect(files.get("tests/c.spec.ts")).toBe(OTHER);
   });
 
   it("writes no task that adds a type error, and stops the phase there", async () => {
@@ -276,15 +384,70 @@ describe("refactor operations (ts-morph)", () => {
     expect(r.changed).toEqual([]);
   });
 
-  it("lets a check move between files", () => {
-    const before = new Map([
-      ["a.spec.ts", "test('a', async ({ page }) => {\n  await expect(page.getByRole('status')).toHaveText('Done');\n});\n"],
-      ["p.ts", "export const status = (page) => page.getByRole('status');\n"],
-    ]);
-    const after = new Map([
-      ["a.spec.ts", "test('a', async ({ page }) => {\n  await expect(status(page)).toHaveText('Done');\n});\n"],
-      ["p.ts", "export const status = (page) => page.getByRole('status');\n"],
-    ]);
-    expect(checkRefactored(before, after, [])).toEqual([]);
+  const RP = `import type { Locator, Page } from '@playwright/test';
+export class RequestPage {
+  constructor(private readonly page: Page) {}
+  async submit() { await this.page.getByRole('button', { name: 'Submit' }).click(); }
+  details(): Locator { return this.page.getByRole('region', { name: 'Details' }); }
+  error(): Locator { return this.page.getByRole('alert'); }
+}
+`;
+  const RS = `import { expect, test } from '@playwright/test';
+import { RequestPage } from './pages/request-page';
+const toast = 'Saved';
+test('T1', async ({ page }) => {
+  const request = new RequestPage(page);
+  const ok = page.getByRole('alert');
+  await request.submit();
+  await page.locator('#notes').fill('Late');
+  await expect(request.details()).toContainText('Submitted');
+  await expect(page.getByText(toast)).toBeVisible();
+  await expect(request.error()).toBeHidden();
+});
+`;
+  const start = new Map([["tests/pages/request-page.ts", RP], ["tests/a.spec.ts", RS]]);
+  const verdict = (ops: Parameters<typeof applyRefactor>[1]) => {
+    const r = applyRefactor([...start].map(([path, content]) => ({ path, content })), ops);
+    if (r.errors.length) return `op: ${r.errors[0]!.message}`;
+    return checkRefactored(start, r.files, r.created, ops).join(" | ") || "passes";
+  };
+  const edit = (path: string, old: string, n: string) => ({ op: "edit" as const, path, old, new: n });
+
+  it("refuses edits that skip, swallow, swap or loosen a check, or drop an action", () => {
+    const spec = "tests/a.spec.ts";
+    const po = "tests/pages/request-page.ts";
+    expect(verdict([edit(spec, "  await request.submit();\n", "  await request.submit();\n  return;\n")])).toMatch(/adds a branch/);
+    expect(verdict([edit(spec, "  await expect(request.error()).toBeHidden();", "  try { await expect(request.error()).toBeHidden(); } catch {}")])).toMatch(/adds a branch/);
+    expect(verdict([edit(spec, "  await expect(request.details())", "  if (false) await expect(request.details())")])).toMatch(/adds a branch/);
+    expect(verdict([edit(spec, "  await request.submit();\n", "")])).toMatch(/no longer reaches submit\(\)/);
+    expect(verdict([edit(spec, "expect(request.error()).toBeHidden()", "expect(page.getByText(toast)).toBeHidden()")])).toMatch(/changes what the tests check/);
+    expect(verdict([edit(po, "getByRole('region', { name: 'Details' })", "getByRole('region')")])).toMatch(/changes details|"Details"/);
+    expect(verdict([edit(po, "getByRole('button', { name: 'Submit' })", "getByRole('button')")])).toMatch(/no longer reaches "Submit"|takes out "Submit"/);
+  });
+
+  it("refuses a rename that could make a reference read something else", () => {
+    expect(verdict([{ op: "rename", path: "tests/a.spec.ts", symbol: "toast", to: "ok" }])).toMatch(/op: ok is already a name in tests\/a.spec.ts/);
+    expect(verdict([{ op: "rename", path: "tests/pages/request-page.ts", within: "RequestPage", symbol: "error", to: "details" }])).toMatch(/op: RequestPage already has a member details/);
+  });
+
+  it("lets a refactor rename what checks read and move actions into a page object", () => {
+    // A renamed method a check calls: the check reads the same element.
+    expect(verdict([{ op: "rename", path: "tests/pages/request-page.ts", within: "RequestPage", symbol: "error", to: "errorAlert" }])).toBe("passes");
+    expect(verdict([{ op: "rename", path: "tests/a.spec.ts", symbol: "toast", to: "savedMessage" }])).toBe("passes");
+    // An inline action moved into a page-object method.
+    expect(
+      verdict([
+        edit("tests/pages/request-page.ts", "  error(): Locator", "  async addNote() { await this.page.locator('#notes').fill('Late'); }\n  error(): Locator"),
+        edit("tests/a.spec.ts", "  await page.locator('#notes').fill('Late');", "  await request.addNote();"),
+      ]),
+    ).toBe("passes");
+    // A check moved, as written, into the page object.
+    expect(
+      verdict([
+        edit("tests/pages/request-page.ts", "  error(): Locator", "  async expectSaved(toast: string) { await expect(this.page.getByText(toast)).toBeVisible(); }\n  error(): Locator"),
+        edit("tests/pages/request-page.ts", "import type { Locator, Page } from '@playwright/test';", "import { expect, type Locator, type Page } from '@playwright/test';"),
+        edit("tests/a.spec.ts", "  await expect(page.getByText(toast)).toBeVisible();", "  await request.expectSaved(toast);"),
+      ]),
+    ).toBe("passes");
   });
 });
