@@ -196,8 +196,8 @@ export function globRegExp(glob: string): RegExp {
 const isGlob = (p: string) => /[*?]/.test(p);
 
 const TOKENS = new RegExp(TOKEN.source, "g");
-/** A timeout option or call, and its value when it is a number: timeout: 5000, setTimeout(60_000). */
-const TIMEOUTS = /\b(?:timeout\s*:|[sS]etTimeout\s*\()\s*([\d_]+)?/g;
+/** A timeout option or call with its value as written: timeout: 5 * 1000, setTimeout(60_000), test.setTimeout(LONG). */
+const TIMEOUTS = /\b(?:timeout\s*:|[sS]etTimeout\s*\()[^,)}\n]*/g;
 
 /** The fixes applied to one file's masked text, in order; an error for each that doesn't apply. */
 function applyFixes(content: string, fixes: ReadonlyArray<{ at: number; fix: { old: string; new: string } }>, errors: OutputError[]): string {
@@ -230,9 +230,9 @@ function checkFixed(path: string, before: string, after: string, at: string): Ou
   if (!b.parsed || b.syntaxErrors > a.syntaxErrors) return [{ path: at, message: `${path}: the fixed file doesn't parse` }];
   const count = (s: typeof a, rule: string) => s.findings.filter((f) => f.rule === rule).length;
   for (const rule of new Set(b.findings.map((f) => f.rule))) if (count(b, rule) > count(a, rule)) err(`a fix adds what the review reports (${b.findings.find((f) => f.rule === rule)!.message})`);
-  // Every check stays as it was, word for word: what it checks, what it expects, .not and all. A fix may add checks, never change one.
-  const left = [...b.checks];
-  const changed = a.checks.filter((c) => {
+  // Every check stays as it was, word for word: the element it checks, what it expects, .not and all. A fix may add checks, never change one.
+  const left = [...b.checkSources];
+  const changed = a.checkSources.filter((c) => {
     const i = left.indexOf(c);
     if (i < 0) return true;
     left.splice(i, 1);
@@ -241,14 +241,21 @@ function checkFixed(path: string, before: string, after: string, at: string): Ou
   if (changed.length) err(`a fix removes or changes a check (${changed.slice(0, 2).map((c) => one(c).slice(0, 120)).join("; ")}): a review keeps every check as it is`);
   // A branch, return, throw or try around a check can stop it from running.
   if (b.branches > a.branches) err("a fix adds a branch (if, ?:, &&, ||, ?., try, return, throw, a loop): a check behind one may never run");
-  const timeouts = (t: string) => [...t.matchAll(TIMEOUTS)].map((m) => Number((m[1] ?? "0").replace(/_/g, "")));
-  const [ta, tb] = [timeouts(before), timeouts(after)];
-  if (tb.length > ta.length || Math.max(0, ...tb) > Math.max(0, ...ta)) err("a fix adds or lengthens a timeout: a review never makes a test wait longer");
+  // A timeout may go, never come or change: each one after is one there before, as written.
+  const timeouts = (t: string) => [...t.matchAll(TIMEOUTS)].map((m) => m[0].replace(/\s+/g, ""));
+  const had = timeouts(before);
+  const grown = timeouts(after).filter((t) => {
+    const i = had.indexOf(t);
+    if (i < 0) return true;
+    had.splice(i, 1);
+    return false;
+  });
+  if (grown.length) err(`a fix adds or changes a timeout (${grown[0]!.slice(0, 80)}): a review never makes a test wait longer`);
   const soft = (s: typeof a) => s.checks.filter((c) => c.startsWith("expect.soft")).length;
   if (soft(b) > soft(a)) err("a fix makes a check soft: a failed check must fail the test");
   if (b.tests.map((t) => t.title).join("\n") !== a.tests.map((t) => t.title).join("\n")) err("a fix changes a test's title: a review keeps the tests as they are");
-  const had = new Set(before.match(TOKENS) ?? []);
-  const foreign = [...new Set(after.match(TOKENS) ?? [])].filter((t) => !had.has(t));
+  const held = new Set(before.match(TOKENS) ?? []);
+  const foreign = [...new Set(after.match(TOKENS) ?? [])].filter((t) => !held.has(t));
   if (foreign.length) err(`a fix holds ${foreign.slice(0, 3).join(", ")}, which the file doesn't: a masked value can't be written here`);
   return errors;
 }

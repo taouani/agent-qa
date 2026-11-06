@@ -29,6 +29,8 @@ export interface CodeScan {
    * argument) and a timeout option are left out, so a selector or a wait can change.
    */
   checks: string[];
+  /** Every check whole, with the element it checks (`expect(page.getByRole('status')).toHaveText('Submitted')`), timeout options left out: what a review fix may never change. */
+  checkSources: string[];
   /** Names read inside the expected values of checks (testData.expectedStatus → expectedStatus): data a fix can't change. */
   checkedNames: string[];
   /** Branches, returns, loops and try/catch: a fix adds none, so no check is skipped on some path. */
@@ -82,7 +84,7 @@ function chainRoot(n: Node): Node {
 
 export function scanGeneratedCode(text: string, file: string): CodeScan {
   const ast = parseCode(text, file);
-  if (!ast) return { parsed: false, syntaxErrors: 0, findings: [], tests: [], stepLines: [], checks: [], checkedNames: [], branches: 0 };
+  if (!ast) return { parsed: false, syntaxErrors: 0, findings: [], tests: [], stepLines: [], checks: [], checkSources: [], checkedNames: [], branches: 0 };
   const parents = new Map<Node, Node>();
   walkAst(ast, (n) => {
     for (const v of Object.values(n)) {
@@ -98,6 +100,7 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
   const tests: CodeScan["tests"] = [];
   const stepLines: number[] = [];
   const checks: string[] = [];
+  const checkSources: string[] = [];
   const checkedNames = new Set<string>();
   let branches = 0;
   const source = (n: Node) => text.slice(n.start ?? 0, n.end ?? 0).replace(/\s+/g, " ").trim();
@@ -174,6 +177,7 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
         if (kind) {
           const args = n.arguments.filter((a) => !isTimeoutOption(a as Node)).map((a) => source(a as Node));
           checks.push(`${kind}${not ? ".not" : ""}.${name}(${args.join(", ")})`);
+          checkSources.push(`${source(base)}${not ? ".not" : ""}.${name}(${args.join(", ")})`);
           for (const a of n.arguments) walkAst(a as Node, (x) => {
             if ((x.type === "MemberExpression" || x.type === "OptionalMemberExpression") && memberName(x)) checkedNames.add(memberName(x)!);
             if (x.type === "Identifier") checkedNames.add(x.name);
@@ -212,7 +216,7 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
     }
   });
   const errors = (ast as unknown as { errors?: unknown[] }).errors ?? [];
-  return { parsed: true, syntaxErrors: errors.length, findings: findings.sort((a, b) => a.line - b.line), tests, stepLines, checks: checks.sort(), checkedNames: [...checkedNames].sort(), branches };
+  return { parsed: true, syntaxErrors: errors.length, findings: findings.sort((a, b) => a.line - b.line), tests, stepLines, checks: checks.sort(), checkSources: checkSources.sort(), checkedNames: [...checkedNames].sort(), branches };
 }
 
 /** Calls that pick an element: their arguments are what a selector fix changes. */

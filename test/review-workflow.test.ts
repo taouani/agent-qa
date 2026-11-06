@@ -156,6 +156,8 @@ describe("review workflow (S3-4)", () => {
       "  await expect(page.getByRole('status')).toHaveText('Rejected');\n",
       "  await expect(page.getByRole('status')).not.toHaveText('Submitted');\n",
       "  expect(true).toBe(true);\n",
+      // The same matcher and value on another element.
+      "  await expect(page.getByRole('heading')).toHaveText('Submitted');\n",
     ])
       expect(one({ old: status, new: swap }), swap).toMatch(/removes or changes a check/);
     for (const swap of [
@@ -164,7 +166,11 @@ describe("review workflow (S3-4)", () => {
       "  return;\n" + status,
     ])
       expect(one({ old: status, new: swap }), swap).toMatch(/adds a branch/);
-    expect(one({ old: status, new: "  await expect(page.getByRole('status')).toHaveText('Submitted', { timeout: 600000 });\n" })).toMatch(/lengthens a timeout/);
+    expect(one({ old: status, new: "  await expect(page.getByRole('status')).toHaveText('Submitted', { timeout: 600000 });\n" })).toMatch(/adds or changes a timeout/);
+    const timed = { path: "tests/t.spec.ts", content: "test('t', async ({ page }) => {\n  await expect(page.getByRole('status')).toBeVisible({ timeout: 5000 });\n});\n" };
+    const timeout = (n: string) => checkReview({ findings: [{ path: timed.path, line: 2, severity: "low", kind: "other", problem: "p", why: "w", fix: { old: "timeout: 5000", new: n } }] }, [timed]).errors.map((x) => x.message).join();
+    expect(timeout("timeout: 5 * 600000")).toMatch(/adds or changes a timeout/);
+    expect(timeout("timeout: LONG")).toMatch(/adds or changes a timeout/);
     expect(one({ old: "await expect(page.getByRole('status'))", new: "await expect.soft(page.getByRole('status'))" })).toMatch(/makes a check soft/);
     expect(one({ old: "await request.submit();", new: "await request.submit();\n  await page.waitForTimeout(500);" })).toMatch(/adds what the review reports \(uses a fixed wait/);
     expect(one({ old: "test('submits", new: "test.skip('submits" })).toMatch(/adds what the review reports|title/);
