@@ -116,9 +116,14 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
     }
     return undefined;
   };
+  const soleReturns = new Set<Node>();
+  walkAst(ast, (n) => {
+    if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") && n.body.type === "BlockStatement" && n.body.body.length === 1 && n.body.body[0]!.type === "ReturnStatement") soleReturns.add(n.body.body[0] as Node);
+  });
   const nameOf = (n: Node): string | undefined => (n.type === "Identifier" ? n.name : memberName(n));
   walkAst(ast, (n) => {
-    if (BRANCHES.has(n.type)) branches++;
+    // A function whose body is one return (a getter, `submit() { return …click(); }`) skips nothing.
+    if (BRANCHES.has(n.type) && !(n.type === "ReturnStatement" && soleReturns.has(n))) branches++;
     // Reading files, the environment or other programs.
     if (n.type === "ImportDeclaration" && SYSTEM_MODULES.test(n.source.value)) add(n, "system-access");
     if (n.type === "Identifier" && ["process", "require", "eval", "Function"].includes(n.name)) {
@@ -557,7 +562,8 @@ export function checkDependencies(text: string, file: string, seed: Iterable<str
     } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n, n.value as Node | null);
     else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n, n.body);
     else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n, n.body);
-    else if (n.type === "ObjectProperty") declare(keyName(n.key as Node), n, n.value as Node);
+    // { page } (a fixture parameter, a shorthand) only passes a name on: no declaration of it.
+    else if (n.type === "ObjectProperty" && !n.shorthand) declare(keyName(n.key as Node), n, n.value as Node);
     else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n, n.right);
     else if (expand && n.type === "CallExpression" && (n.callee.type === "MemberExpression" || n.callee.type === "OptionalMemberExpression")) {
       // A matcher hanging off expect(...): what the check reads.
@@ -629,7 +635,8 @@ const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "ty
  */
 export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, { reach: Set<string>; order: string[]; complete: boolean }> {
   const decls = new Map<string, Array<{ text: string; node: Node }>>();
-  const tests: Array<{ title: string; body: Node[] }> = [];
+  const tests: Array<{ title: string; file: string; body: Node[] }> = [];
+  const hooks = new Map<string, Node[]>();
   for (const f of files) {
     const ast = parseCode(f.content, f.path);
     if (!ast) continue;
@@ -644,7 +651,7 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n.value as Node | null);
       else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n.body);
       else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n.body);
-      else if (n.type === "ObjectProperty") declare(keyName(n.key as Node), n.value as Node);
+      else if (n.type === "ObjectProperty" && !n.shorthand) declare(keyName(n.key as Node), n.value as Node);
       else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n.right);
       else if (n.type === "CallExpression") {
         const callee = n.callee as Node;
@@ -652,11 +659,17 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         const name = callee.type === "Identifier" ? callee.name : memberName(callee);
         const objName = isMember ? (callee.object.type === "Identifier" ? callee.object.name : memberName(callee.object as Node)) : undefined;
         const title = n.arguments[0] ? literalString(n.arguments[0] as Node) : undefined;
-        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) tests.push({ title, body: n.arguments.slice(1) as Node[] });
+        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) tests.push({ title, file: f.path, body: n.arguments.slice(1) as Node[] });
+        // A hook runs before each test of its file: setup may move into one.
+        if (objName === "test" && (name === "beforeEach" || name === "beforeAll")) hooks.set(f.path, [...(hooks.get(f.path) ?? []), ...(n.arguments.filter((a) => a.type === "ArrowFunctionExpression" || a.type === "FunctionExpression") as Node[])]);
       }
     });
   }
-  for (const d of decls.values()) d.sort((x, y) => (x.text < y.text ? -1 : x.text > y.text ? 1 : 0));
+  // One expansion for each text: the same `const request = new RequestPage(page)` in ten tests is one declaration, ordered by its text.
+  for (const [name, d] of decls) {
+    const seen = new Set<string>();
+    decls.set(name, d.filter((x) => !seen.has(x.text) && seen.add(x.text)).sort((x, y) => (x.text < y.text ? -1 : x.text > y.text ? 1 : 0)));
+  }
   const callName = (n: Node): string | undefined => {
     if (n.type !== "CallExpression" && n.type !== "OptionalCallExpression" && n.type !== "NewExpression") return undefined;
     const c = n.callee as Node;
@@ -681,8 +694,8 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") && !runs) return;
       // A class's methods and a declared function are reached by their names, where they are called.
       if (n.type === "ClassBody" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "FunctionDeclaration") return;
-      // A declared value is reached where it is read (a locator built does nothing); one awaited runs here too.
-      if (n.type === "VariableDeclarator") return n.init?.type === "AwaitExpression" ? visit(n.init as Node, false) : undefined;
+      // A declared value is reached where it is read (a locator built does nothing); one awaited, or a wait started early (waitForResponse, waitForEvent), runs here too.
+      if (n.type === "VariableDeclarator") return n.init && (n.init.type === "AwaitExpression" || /^waitFor/.test(callName(n.init as Node) ?? "")) ? visit(n.init as Node, false) : undefined;
       if (n.type === "AwaitExpression") {
         const arg = n.argument as Node;
         if (arg.type === "CallExpression" || arg.type === "OptionalCallExpression") {
@@ -722,7 +735,7 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         } else if (v && typeof v === "object" && typeof (v as Node).type === "string") visit(v as Node, false);
       }
     };
-    for (const b of t.body) visit(b, true);
+    for (const b of [...(hooks.get(t.file) ?? []), ...t.body]) visit(b, true);
     const prev = out.get(t.title);
     const all = [...(prev?.order ?? []), ...order];
     out.set(t.title, { reach: new Set(all), order: all, complete: (prev?.complete ?? true) && !full() });

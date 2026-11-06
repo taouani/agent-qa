@@ -321,8 +321,11 @@ export function checkRefactored(before: ReadonlyMap<string, string>, after: Read
     const show = (x: string) => (x.startsWith("a:") ? `await ${x.slice(2)}()` : x.startsWith("c:") ? `${x.slice(2)}()` : JSON.stringify(x.slice(2)).slice(0, 60));
     if (left.length) errors.push(`the test "${title.slice(0, 80)}" no longer reaches ${left.slice(0, 3).map(show).join(", ")}: a refactor may move what a test does, never leave an action, an await or a value out`);
     else if (n) {
-      const at = outOfOrder(r.order, n.order);
-      if (at !== undefined) errors.push(`the test "${title.slice(0, 80)}" reaches ${show(r.order[at]!)} out of its order: a refactor keeps the order of what a test does and checks`);
+      // The order of calls and awaits; values only as a set (a page-object method's argument is read where its parameter is).
+      const steps = (o: readonly string[]) => o.filter((x) => x.startsWith("c:") || x.startsWith("a:"));
+      const first = steps(r.order);
+      const at = outOfOrder(first, steps(n.order));
+      if (at !== undefined) errors.push(`the test "${title.slice(0, 80)}" reaches ${show(first[at]!)} out of its order: a refactor keeps the order of what a test does and checks`);
     }
     if (errors.length > 8) break;
   }

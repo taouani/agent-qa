@@ -23,7 +23,8 @@ Found in the PR #72 review (6 Nov 2026). A review fix may not add a branch, but 
 Found in the PR #74 review (6 Nov 2026). `refactor` checks each task against the code with only its renames applied. Three limits remain:
 - What each test reaches is matched by name, not by symbol. A check moved into a page-object method can be passed another existing value of the same name and still pass. The type check and the test run remain, but a test run rarely catches this for a negative check (`toBeHidden`, `.not`).
 - Checks must stay word for word, apart from `this.page` in a page object standing for a spec's `page`. A check whose element moves into a page-object getter (`expect(requestPage.status)`) is refused, even when it reads the same element.
-- Branches are counted, not placed: `submit() { return this.page…click(); }` in place of an awaited body is refused as a new return, though it skips nothing.
+- Branches are counted, not placed: a function body that is a single return doesn't count, but any other new return does, even one that skips nothing.
+- Values are compared as a set for each test, and calls and awaits in order. A value may therefore move between two steps of the same test. Hooks count only within their own file.
 - The lint step isn't run: the report says so, and the type check stands in. Path aliases are read from the folder, not from tsconfig's `baseUrl`, and renames don't reach files that weren't read.
 
 ## Done or moved into a slice

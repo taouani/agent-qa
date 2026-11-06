@@ -486,6 +486,56 @@ test('T1', async ({ page }) => {
     expect(checkRefactored(before, r.files, r.created, ops)).toEqual([]);
   });
 
+  it("lets a parameterised method, a getter, a fixture and a beforeEach take over what tests did", () => {
+    const pass = (before: Map<string, string>, ops: Parameters<typeof applyRefactor>[1]) => {
+      const r = applyRefactor([...before].map(([path, content]) => ({ path, content })), ops);
+      expect(r.errors).toEqual([]);
+      return checkRefactored(before, r.files, r.created, ops);
+    };
+    const head = "import { expect, test } from '@playwright/test';\nimport { RequestPage } from './pages/request-page';\n";
+    const t = (title: string, body: string) => `test('${title}', async ({ page }) => {\n  const request = new RequestPage(page);\n${body}});\n`;
+    const login = "  await page.goto('/login');\n  await page.getByLabel('User').fill('ann');\n  await page.getByLabel('City').fill('Paris');\n  await page.getByRole('button', { name: 'Go' }).click();\n";
+    const start = new Map([
+      ["tests/pages/request-page.ts", RP],
+      ["tests/a.spec.ts", `${head}${t("T1", `${login}  await request.submit();\n  await expect(page.getByRole('status')).toHaveText('Done');\n`)}${t("T3", `${login}  await request.submit();\n`)}`],
+    ]);
+    // A method with parameters, its arguments used before its last step; the other test keeps its own copy.
+    expect(
+      pass(start, [
+        edit("tests/pages/request-page.ts", "  error(): Locator", "  async login(user: string, city: string) {\n    await this.page.goto('/login');\n    await this.page.getByLabel('User').fill(user);\n    await this.page.getByLabel('City').fill(city);\n    await this.page.getByRole('button', { name: 'Go' }).click();\n  }\n  error(): Locator"),
+        edit("tests/a.spec.ts", `${login}  await request.submit();\n  await expect`, "  await request.login('ann', 'Paris');\n  await request.submit();\n  await expect"),
+      ]),
+    ).toEqual([]);
+    // A getter for a locator; the shared goto in a beforeEach.
+    expect(
+      pass(start, [
+        edit("tests/pages/request-page.ts", "  error(): Locator", "  get go(): Locator {\n    return this.page.getByRole('button', { name: 'Go' });\n  }\n  error(): Locator"),
+        edit("tests/a.spec.ts", "  await page.getByRole('button', { name: 'Go' }).click();\n  await request.submit();\n  await expect", "  await request.go.click();\n  await request.submit();\n  await expect"),
+      ]),
+    ).toEqual([]);
+    expect(
+      pass(start, [
+        edit("tests/a.spec.ts", "import { RequestPage } from './pages/request-page';\n", "import { RequestPage } from './pages/request-page';\ntest.beforeEach(async ({ page }) => {\n  await page.goto('/login');\n});\n"),
+        edit("tests/a.spec.ts", "test('T1', async ({ page }) => {\n  const request = new RequestPage(page);\n  await page.goto('/login');\n", "test('T1', async ({ page }) => {\n  const request = new RequestPage(page);\n"),
+        edit("tests/a.spec.ts", "test('T3', async ({ page }) => {\n  const request = new RequestPage(page);\n  await page.goto('/login');\n", "test('T3', async ({ page }) => {\n  const request = new RequestPage(page);\n"),
+      ]),
+    ).toEqual([]);
+    // One test takes its page object from a fixture.
+    expect(
+      pass(start, [
+        { op: "create", path: "tests/fixtures.ts", content: "import { test as base } from '@playwright/test';\nimport { RequestPage } from './pages/request-page';\nexport const test = base.extend<{ requestPage: RequestPage }>({\n  requestPage: async ({ page }, use) => {\n    await use(new RequestPage(page));\n  },\n});\n" },
+        edit("tests/a.spec.ts", "test('T3', async ({ page }) => {\n  const request = new RequestPage(page);\n", "test('T3', async ({ page, requestPage: request }) => {\n"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("keeps a wait started before an action in its place", () => {
+    const spec = "import { test } from '@playwright/test';\ntest('t', async ({ page }) => {\n  const resp = page.waitForResponse('**/api');\n  await page.getByRole('button').click();\n  await resp;\n});\n";
+    const before = new Map([["t.spec.ts", spec]]);
+    const after = new Map([["t.spec.ts", spec.replace("  const resp = page.waitForResponse('**/api');\n  await page.getByRole('button').click();\n", "  await page.getByRole('button').click();\n  const resp = page.waitForResponse('**/api');\n")]]);
+    expect(checkRefactored(before, after, []).join()).toMatch(/out of its order/);
+  });
+
   it("follows the same declarations whatever the order of the files, and gives up on a test too large to follow", () => {
     const po = (n: string) => `export class ${n} {\n  constructor(private readonly page: any) {}\n  async open() { await this.page.goto('/${n}'); }\n}\n`;
     const spec = "import { test } from '@playwright/test';\ntest('t', async ({ page }) => {\n  await new A(page).open();\n});\n";
