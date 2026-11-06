@@ -90,7 +90,7 @@ describe("DataAccess: changing existing test files (S3-1)", () => {
     await expect(d.readTestFiles("run-1", "run-1", "other", ["tests/login.spec.ts"])).rejects.toThrow(/profile changed/);
     await expect(d.readTestFiles("run-1", "run-1", "e2e", ["tests/none.spec.ts"])).rejects.toThrow(/isn't a plain file/);
     const [f] = await d.readTestFiles("run-1", "run-1", "e2e", ["tests/login.spec.ts"]);
-    await expect(d.editTestFiles("run-1", "run-1", "e2e", [{ path: "tests/login.spec.ts", content: `${f!.content}// <PERSON_9>\n`, sha256: f!.sha256 }], true)).rejects.toThrow(/no value for[^]*PERSON_9/);
+    await expect(d.editTestFiles("run-1", "run-1", "e2e", [{ path: "tests/login.spec.ts", content: `${f!.content}// <PERSON_9>\n`, sha256: f!.sha256 }], true)).rejects.toThrow(/the file didn't hold[^]*PERSON_9/);
     expect(await readFile(join(dir, "e2e", "tests", "login.spec.ts"), "utf8")).toBe(SPEC);
   });
 
@@ -99,8 +99,9 @@ describe("DataAccess: changing existing test files (S3-1)", () => {
     await writeFile(join(dir, "secret.ts"), "x");
     await symlink(join(dir, "secret.ts"), join(dir, "e2e", "tests", "linked.spec.ts"));
     await expect(d.readTestFiles("run-1", "run-1", "e2e", ["tests/linked.spec.ts"])).rejects.toThrow(/isn't a plain file/);
-    await writeFile(join(dir, "e2e", "tests", "bin.json"), Buffer.from([0xff, 0xfe, 0x00]));
-    await expect(d.readTestFiles("run-1", "run-1", "e2e", ["tests/bin.json"])).rejects.toThrow(/isn't UTF-8 text/);
+    await mkdir(join(dir, "e2e", "tests", "data"));
+    await writeFile(join(dir, "e2e", "tests", "data", "bin.json"), Buffer.from([0xff, 0xfe, 0x00]));
+    await expect(d.readTestFiles("run-1", "run-1", "e2e", ["tests/data/bin.json"])).rejects.toThrow(/isn't UTF-8 text/);
     // Text that looks like a token the vault knows would come back as that token's value.
     const [f] = await d.readTestFiles("run-1", "run-1", "e2e", ["tests/login.spec.ts"]);
     const token = /<EMAIL_\d+>/.exec(f!.content)![0];
@@ -118,5 +119,51 @@ describe("DataAccess: changing existing test files (S3-1)", () => {
     const audit = new MemoryAuditSink();
     expect(await data({ mode: "ci", audit }).editTestFiles("run-1", "run-1", "e2e", edit, true)).toEqual({ status: "done", written: [{ path: "tests/other.spec.ts", sha256: sha("test('b')\n") }], pullRequest: true });
     expect(JSON.stringify(audit.entries)).toContain("Change 1 existing test file(s) in e2e");
+  });
+
+  it("never brings back a value of the run's other sources, even one the vault knows", async () => {
+    const d = data();
+    // A requirement of the same run named another person's address: its token is in the vault.
+    const [other] = await d.maskTexts("run-1", ["Contact john.smith@example.com"], "jira.description");
+    const token = /<EMAIL_\d+>/.exec(other!)![0];
+    const [f] = await d.readTestFiles("run-1", "run-1", "e2e", ["tests/login.spec.ts"]);
+    expect(f!.content).not.toContain(token);
+    await expect(d.editTestFiles("run-1", "run-1", "e2e", [{ path: "tests/login.spec.ts", content: `${f!.content}// ${token}\n`, sha256: f!.sha256 }], true)).rejects.toThrow(/the file didn't hold/);
+    expect(await readFile(join(dir, "e2e", "tests", "login.spec.ts"), "utf8")).toBe(SPEC);
+  });
+
+  it("refuses tool configs at any depth, auth and session files, ignored files and JSON outside test data", async () => {
+    const d = data();
+    await mkdir(join(dir, "e2e", "tests", "data"), { recursive: true });
+    await mkdir(join(dir, "e2e", "pkg"), { recursive: true });
+    await mkdir(join(dir, "e2e", "tests", ".auth"), { recursive: true });
+    const files: Record<string, string> = {
+      "pkg/vitest.config.ts": "export default {}\n",
+      "pkg/.eslintrc.json": "{}\n",
+      "turbo.json": "{}\n",
+      "tests/.auth/user.json": "{}\n",
+      "tests/data/state.json": '{ "cookies": [{ "name": "sid" }], "origins": [] }\n',
+      "tests/local.spec.ts": "test('local')\n",
+    };
+    for (const [p, t] of Object.entries(files)) await writeFile(join(dir, "e2e", p), t);
+    await writeFile(join(dir, ".gitignore"), "e2e/tests/local.spec.ts\n");
+    for (const p of Object.keys(files)) await expect(d.readTestFiles("run-1", "run-1", "e2e", [p])).rejects.toBeInstanceOf(ProfileError);
+    await writeFile(join(dir, "e2e", "tests", "data", "users.json"), '{ "user": "jane.doe@example.com" }\n');
+    const [f] = await d.readTestFiles("run-1", "run-1", "e2e", ["tests/data/users.json"]);
+    expect(f!.content).not.toContain("jane.doe");
+  });
+
+  it("reads through no linked folder, and keeps CRLF line ends", async () => {
+    const d = data();
+    await mkdir(join(dir, "outside"));
+    await writeFile(join(dir, "outside", "x.spec.ts"), "x\n");
+    await symlink(join(dir, "outside"), join(dir, "e2e", "tests", "linked"), "dir");
+    await expect(d.readTestFiles("run-1", "run-1", "e2e", ["tests/linked/x.spec.ts"])).rejects.toThrow(/outside e2e/);
+    const crlf = "test('a', async () => {\r\n  await go();\r\n});\r\n";
+    await writeFile(join(dir, "e2e", "tests", "crlf.spec.ts"), crlf);
+    const [f] = await d.readTestFiles("run-1", "run-1", "e2e", ["tests/crlf.spec.ts"]);
+    expect(f!.content).toBe(crlf);
+    await d.editTestFiles("run-1", "run-1", "e2e", [{ path: "tests/crlf.spec.ts", content: f!.content.replace("go()", "go(1)"), sha256: f!.sha256 }], true);
+    expect(await readFile(join(dir, "e2e", "tests", "crlf.spec.ts"), "utf8")).toBe(crlf.replace("go()", "go(1)"));
   });
 });

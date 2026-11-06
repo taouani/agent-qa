@@ -63,4 +63,13 @@ describe("unifiedDiff", () => {
       expect(apply(before, diff)).toBe(after);
     }
   });
+
+  it("keeps changes 6 lines apart in one hunk, and stays small for a whole rewrite", () => {
+    const before = Array.from({ length: 12 }, (_, i) => `l${i}`).join("\n") + "\n";
+    expect(unifiedDiff("x", before, before.replace("l1\n", "L1\n").replace("l8\n", "L8\n")).match(/^@@/gm)).toHaveLength(1);
+    const big = (p: string) => Array.from({ length: 8000 }, (_, i) => `${p}${i}`).join("\n") + "\n";
+    const diff = unifiedDiff("x", big("a"), big("b"));
+    expect(apply(big("a"), diff)).toBe(big("b"));
+    expect(diffStats(big("a"), big("b"))).toEqual({ added: 8000, removed: 8000 });
+  });
 });

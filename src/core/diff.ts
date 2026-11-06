@@ -42,21 +42,24 @@ function script(a: string[], b: string[]): Op[] {
   const m = y.length;
   const max = n + m;
   // Beyond this many differences, a plain "all removed, all added" is shown: the review still sees everything.
-  const limit = Math.min(max, 4_000);
-  const v = new Map<number, number>([[1, 0]]);
-  const trace: Array<Map<number, number>> = [];
+  const limit = Math.min(max, 2_000);
+  // The frontier of each step, only its own diagonals -d..d (index k + d): memory grows with d², not d·(n+m).
+  const off = limit + 1;
+  const v = new Int32Array(2 * off + 1);
+  const trace: Int32Array[] = [];
   let found = -1;
+  v[1 + off] = 0;
   for (let d = 0; d <= limit && found < 0; d++) {
-    trace.push(new Map(v));
+    trace.push(d === 0 ? new Int32Array([0]) : v.slice(off - (d - 1), off + d));
     for (let k = -d; k <= d; k += 2) {
-      const down = k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1));
-      let i = down ? (v.get(k + 1) ?? 0) : (v.get(k - 1) ?? 0) + 1;
+      const down = k === -d || (k !== d && v[k - 1 + off]! < v[k + 1 + off]!);
+      let i = down ? v[k + 1 + off]! : v[k - 1 + off]! + 1;
       let j = i - k;
       while (i < n && j < m && x[i] === y[j]) {
         i++;
         j++;
       }
-      v.set(k, i);
+      v[k + off] = i;
       if (i >= n && j >= m) {
         found = d;
         break;
@@ -72,10 +75,11 @@ function script(a: string[], b: string[]): Op[] {
     let j = m;
     for (let d = found; d > 0; d--) {
       const prev = trace[d]!;
+      const at = (kk: number) => prev[kk + d - 1]!;
       const k = i - j;
-      const down = k === -d || (k !== d && (prev.get(k - 1) ?? -1) < (prev.get(k + 1) ?? -1));
+      const down = k === -d || (k !== d && at(k - 1) < at(k + 1));
       const pk = down ? k + 1 : k - 1;
-      const pi = prev.get(pk) ?? 0;
+      const pi = at(pk);
       const pj = pi - pk;
       while (i > pi + (down ? 0 : 1) && j > pj + (down ? 1 : 0)) {
         middle.push({ kind: " ", line: x[--i]! });
@@ -118,7 +122,8 @@ export function unifiedDiff(path: string, before: string, after: string, context
   while (h < changed.length) {
     const from = Math.max(0, changed[h]! - context);
     let to = changed[h]!;
-    while (h < changed.length && changed[h]! <= to + 2 * context) to = changed[h++]!;
+    // Changes at most 2 × context lines apart share a hunk, as in git.
+    while (h < changed.length && changed[h]! <= to + 2 * context + 1) to = changed[h++]!;
     const end = Math.min(ops.length - 1, to + context);
     const slice = ops.slice(from, end + 1);
     const aCount = slice.filter((o) => o.kind !== "+").length;

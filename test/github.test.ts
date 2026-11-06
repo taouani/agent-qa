@@ -14,7 +14,9 @@ const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]; blobs?: Record<string, { sha: string; mode: string }>; truncated?: boolean; status?: number } = {}) {
   const commits: Record<string, { tree: string; parents: string[] }> = { c0: { tree: "t0", parents: [] } };
   const trees: Record<string, string[]> = { t0: [...(start.files ?? []), ...Object.keys(start.blobs ?? {})] };
-  const entry = (p: string) => ({ path: p, type: "blob", ...start.blobs?.[p] });
+  const blobsAt: Record<string, Record<string, { sha: string; mode: string }> | undefined> = {};
+  let current = "t0";
+  const entry = (p: string) => ({ path: p, type: "blob", ...(blobsAt[current] ?? start.blobs)?.[p] });
   const branches: Record<string, string> = { main: "c0", ...start.branches };
   const pulls: Array<{ number: number; head: string; base: string; draft: boolean; body: string; title: string }> = [];
   const calls: string[] = [];
@@ -39,6 +41,7 @@ function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]
     if (method === "GET" && tree) {
       // A folder of a tree, as GitHub lists it without `recursive`: "<tree>::<folder>".
       const [id, prefix = ""] = tree[1]!.split("::");
+      current = id!;
       if (start.truncated && url.searchParams.get("recursive")) return json(200, { truncated: true, tree: [] });
       if (!url.searchParams.get("recursive")) {
         const below = trees[id!]!.filter((p) => p.startsWith(prefix ? `${prefix}/` : "")).map((p) => p.slice(prefix ? prefix.length + 1 : 0));
@@ -85,7 +88,15 @@ function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]
     trees[`tp${n}`] = [...trees[commits[branches[branch]!]!.tree]!, `other${n}.ts`];
     branches[branch] = c;
   };
-  return { fetch, branches, pulls, calls, posted, push };
+  /** Someone changes a file on a branch: a new commit whose tree holds another blob for it. */
+  const change = (branch: string, path: string, sha: string) => {
+    const c = `p${++n}`;
+    commits[c] = { tree: `tp${n}`, parents: [branches[branch]!] };
+    trees[`tp${n}`] = [...trees[commits[branches[branch]!]!.tree]!];
+    blobsAt[`tp${n}`] = { ...blobsAt[commits[branches[branch]!]!.tree], [path]: { sha, mode: "100644" } };
+    branches[branch] = c;
+  };
+  return { fetch, branches, pulls, calls, posted, push, change };
 }
 
 const ciGrant = async <T>(fn: (g: WriteGrant) => Promise<T>) => {
@@ -188,6 +199,17 @@ describe("GitHubClient: changed files (S3-1)", () => {
         expect(gh.posted).toEqual([]);
       }
     }
+    // A retry after the base changed the file since the first try: refused, not sent over the old version.
+    const moved = fakeGitHub({ blobs: { "tests/a.spec.ts": { sha: blob, mode: "100644" } } });
+    const retry = new GitHubClient({ repo: "o/r", token: "tok", fetch: moved.fetch, retries: 0 });
+    await ciGrant(async (g) => {
+      const tree = (await retry.http.request<{ sha: string }>("/repos/o/r/git/trees", { method: "POST", grant: g, body: { base_tree: "t0", tree: [{ path: "tests/a.spec.ts", mode: "100644", type: "blob", content: "test('fixed')\n" }] } })).sha;
+      const c = (await retry.http.request<{ sha: string }>("/repos/o/r/git/commits", { method: "POST", grant: g, body: { message: "m", tree, parents: ["c0"] } })).sha;
+      await retry.http.request("/repos/o/r/git/refs", { method: "POST", grant: g, body: { ref: "refs/heads/agent-qa/run-2", sha: c } });
+    });
+    moved.change("main", "tests/a.spec.ts", "e".repeat(40));
+    await expect(ciGrant((g) => retry.openPullRequest(g, pr))).rejects.toThrow(/changed on main since Agent-QA read it/);
+
     // A new file is still checked folder by folder when the tree is too large.
     const gh = fakeGitHub({ blobs: { "tests/a.spec.ts": { sha: blob, mode: "100644" } }, truncated: true });
     const client = new GitHubClient({ repo: "o/r", token: "tok", fetch: gh.fetch, retries: 0 });

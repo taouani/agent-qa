@@ -211,6 +211,8 @@ export class GitHubClient {
       const tip = await this.commit(existing);
       const parent = tip.parents.length === 1 ? tip.parents[0]! : undefined;
       const onBase = parent !== undefined && ["ahead", "identical"].includes(String(obj(await this.http.get(this.path(`/compare/${parent}...${baseHead}`))).status));
+      // The files are checked on the base as it is now too: a change made there since the first try stops this one.
+      if (onBase) await this.checkBase(pr.files, (await this.commit(baseHead)).tree, base);
       const parentTree = onBase ? (await this.commit(parent)).tree : undefined;
       if (!parentTree || (await this.tree(grant, parentTree, pr.files, await this.checkBase(pr.files, parentTree, base))) !== tip.tree) {
         throw new Error(`the branch ${pr.branch} exists with other commits or files: delete it on GitHub, then run again`);

@@ -27,7 +27,7 @@ export { BRANCH, GITHUB_API, GitHubClient } from "./github.js";
 export type { GitHubClientOptions, OpenedPullRequest, PullRequestFiles } from "./github.js";
 export { runHostCommand } from "./host.js";
 export type { HostCommandOptions, HostCommandResult } from "./host.js";
-export { createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, writeRepoFile, type CreatedRepoFile } from "./repo-files.js";
+export { createRepoFile, removeCreatedRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, writeRepoFile, type CreatedRepoFile } from "./repo-files.js";
 export { defaultAudience, normalizePem, OAUTH_HINTS, SalesforceAuth, SalesforceAuthError, SalesforceSession, signAssertion } from "./salesforce.js";
 export type { SalesforceAuthOptions } from "./salesforce.js";
 export { BrowserError, ExplorerBrowser, KEY, loadPlaywright, MIN_PLAYWRIGHT } from "./browser.js";

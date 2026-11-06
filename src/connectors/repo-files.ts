@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { assertGrant, PolicyDenied, type WriteGrant } from "../core/index.js";
 
@@ -166,6 +167,23 @@ export async function withScratchFolder<T>(grant: WriteGrant, run: (dir: string)
     // The link itself first, so the removal below never walks into what it points to.
     if (nodeModules !== undefined) await unlink(join(dir, "node_modules")).catch(() => rmdir(join(dir, "node_modules")).catch(() => undefined));
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Reads a plain file without following a link in its place (O_NOFOLLOW where
+ * the system has it), at most `maxBytes`: undefined for a link, anything but
+ * a plain file, or a larger file. Read-only, so no grant.
+ */
+export async function readPlainFile(path: string, maxBytes: number): Promise<Buffer | undefined> {
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0)).catch(() => undefined);
+  if (!handle) return undefined;
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maxBytes) return undefined;
+    return await handle.readFile();
+  } finally {
+    await handle.close();
   }
 }
 
