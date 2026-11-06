@@ -207,6 +207,14 @@ describe("engine state in run folders", () => {
     await expect(runs.stateStore({ host: "cli", driver: "api" }).save({ runId: "fixed-id", workflowId: "spike-test-cases" } as never)).rejects.toMatchObject({ code: "RUN_COLLISION" });
   });
 
+  it("tries a fresh id when a random one is taken", async () => {
+    const runs = new RunStore(root, { now, random: fixed });
+    const ids = ["taken-id", "taken-id", "free-id"];
+    const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: () => ids.shift()! }).register(spikeWorkflow);
+    expect((await engine.start("spike-test-cases", { ticket: "SPIKE-1" })).runId).toBe("taken-id");
+    expect((await engine.start("spike-test-cases", { ticket: "SPIKE-1" })).runId).toBe("free-id");
+  });
+
   it("keeps needs-input until the engine's status changes, and repairs run.json after a crash", async () => {
     const runs = new RunStore(root, { now, random: fixed });
     const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(spikeWorkflow);

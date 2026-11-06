@@ -1,8 +1,8 @@
 /** `data` module. See eslint.config.js for what it may import. */
 export const MODULE = "data";
 export { DataAccess, salesforceKey, salesforceKeyPath, secretSources } from "./access.js";
-export type { DataAccessOptions, ExplorerData, HostData, MaskedTestResult, ProfileData, RequirementsData, SalesforceData, ScriptsData, TestRunOutcome, TypeCheckOutcome, WriteFilesOutcome, PullRequestOutcome, XrayData, TestFilesData, TestFileRead, EditFilesOutcome } from "./access.js";
-export { gitBlobId, mdSafe, prBase } from "./access.js";
+export type { DataAccessOptions, ExplorerData, HostData, MaskedTestResult, ProfileData, RequirementsData, SalesforceData, ScriptsData, TestRunOutcome, TypeCheckOutcome, WriteFilesOutcome, PullRequestOutcome, XrayData, TestFilesData, TestFileRead, EditFilesOutcome, SuiteData, TestSelection, SelectedTests } from "./access.js";
+export { gitBlobId, MAX_REPORT_TESTS, mdSafe, prBase } from "./access.js";
 export { parsePlaywrightReport, type ParsedReport, type ReportedTest, type TestOutcome } from "./test-report.js";
 export { isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 export { isSalesforceSandbox, openRepoBrowser } from "./explorer.js";
