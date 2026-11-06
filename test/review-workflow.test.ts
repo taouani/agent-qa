@@ -167,6 +167,18 @@ describe("review workflow (S3-4)", () => {
     ])
       expect(one({ old: status, new: swap }), swap).toMatch(/adds a branch/);
     expect(one({ old: status, new: "  await expect(page.getByRole('status')).toHaveText('Submitted', { timeout: 600000 });\n" })).toMatch(/adds or changes a timeout/);
+    // A check that reads the same while what it reads changes: the element in a variable, the expected value in a constant, a page object's field.
+    const held = { path: "tests/h.spec.ts", content: "const expected = 'Submitted';\ntest('h', async ({ page }) => {\n  const toast = page.getByText('Saved');\n  await page.waitForTimeout(100);\n  await expect(toast).toBeVisible();\n  await expect(page.getByRole('status')).toHaveText(expected);\n});\n" };
+    const page = { path: "tests/pages/p.ts", content: "export class P {\n  readonly status = this.page.getByRole('status');\n  readonly other = this.page.getByRole('link');\n  constructor(private readonly page: Page) {}\n}\n" };
+    const spec = { path: "tests/p.spec.ts", content: "test('p', async ({ page }) => {\n  await expect(new P(page).status).toHaveText('Done');\n});\n" };
+    const via = (f: { path: string; content: string }, fix: { old: string; new: string }) => checkReview({ findings: [{ path: f.path, line: 2, severity: "low", kind: "other", problem: "p", why: "w", fix }] }, [held, page, spec]).errors.map((x) => x.message).join();
+    expect(via(held, { old: "getByText('Saved')", new: "getByText('Anything')" })).toMatch(/changes toast, which a check reads/);
+    expect(via(held, { old: "const expected = 'Submitted'", new: "const expected = 'Rejected'" })).toMatch(/changes expected, which a check reads/);
+    expect(via(held, { old: "  await page.waitForTimeout(100);\n", new: "  expected = 'Rejected';\n" })).toMatch(/which a check reads/);
+    expect(via(page, { old: "getByRole('status')", new: "getByRole('heading')" })).toMatch(/changes status, which a check reads/);
+    // What no check reads can change.
+    expect(via(page, { old: "getByRole('link')", new: "getByRole('link', { name: 'Open' })" })).toBe("");
+    expect(via(held, { old: "  await page.waitForTimeout(100);\n", new: "  await expect(toast).toBeAttached();\n" })).toBe("");
     const timed = { path: "tests/t.spec.ts", content: "test('t', async ({ page }) => {\n  await expect(page.getByRole('status')).toBeVisible({ timeout: 5000 });\n});\n" };
     const timeout = (n: string) => checkReview({ findings: [{ path: timed.path, line: 2, severity: "low", kind: "other", problem: "p", why: "w", fix: { old: "timeout: 5000", new: n } }] }, [timed]).errors.map((x) => x.message).join();
     expect(timeout("timeout: 5 * 600000")).toMatch(/adds or changes a timeout/);

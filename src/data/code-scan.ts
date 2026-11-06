@@ -496,3 +496,62 @@ export function onlyWaitsAdded(before: FixSkeleton, after: FixSkeleton): boolean
   }
   return j === before.tokens.length;
 }
+
+/**
+ * What a file's checks depend on (S3-4): the names they read (the element
+ * and the expected value, `toast` in expect(toast) and `expected` in
+ * toHaveText(expected)), widened through the declarations of those names
+ * (const toast = page.getByText(MESSAGE) adds MESSAGE), and those
+ * declarations' source. A review fix leaves every one as it was, or the
+ * check checks something else while reading the same. `seed` adds names
+ * other files' checks read (a page object's field a spec checks); with
+ * `expand: false` the names are taken as given.
+ */
+export function checkDependencies(text: string, file: string, seed: Iterable<string> = [], expand = true): { names: string[]; declarations: string[] } {
+  const ast = parseCode(text, file);
+  if (!ast) return { names: [...seed].sort(), declarations: [] };
+  const source = (n: Node) => text.slice(n.start ?? 0, n.end ?? 0).replace(/\s+/g, " ").trim();
+  const reads = (n: Node | null | undefined, into: Set<string>) => {
+    if (!n) return;
+    walkAst(n, (x) => {
+      if (x.type === "Identifier") into.add(x.name);
+      else if ((x.type === "MemberExpression" || x.type === "OptionalMemberExpression") && memberName(x)) into.add(memberName(x)!);
+    });
+  };
+  const keyName = (k: Node) => (k.type === "Identifier" ? k.name : k.type === "PrivateName" ? k.id.name : literalString(k));
+  const decls = new Map<string, Array<{ source: string; reads: Set<string> }>>();
+  const declare = (name: string | undefined, n: Node, value: Node | null | undefined) => {
+    if (!name) return;
+    const r = new Set<string>();
+    reads(value, r);
+    decls.set(name, [...(decls.get(name) ?? []), { source: source(n), reads: r }]);
+  };
+  const names = new Set<string>(seed);
+  walkAst(ast, (n) => {
+    if (n.type === "VariableDeclarator") {
+      if (n.id.type === "Identifier") declare(n.id.name, n, n.init);
+      else walkAst(n.id as Node, (x) => x.type === "Identifier" && declare(x.name, n, n.init));
+    } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n, n.value as Node | null);
+    else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n, n.body);
+    else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n, n.body);
+    else if (n.type === "ObjectProperty") declare(keyName(n.key as Node), n, n.value as Node);
+    else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n, n.right);
+    else if (expand && n.type === "CallExpression" && (n.callee.type === "MemberExpression" || n.callee.type === "OptionalMemberExpression")) {
+      // A matcher hanging off expect(...): what the check reads.
+      let base = n.callee.object as Node;
+      if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && ["not", "resolves", "rejects"].includes(memberName(base) ?? "")) base = base.object as Node;
+      if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
+      if (base.type !== "CallExpression") return;
+      const c = base.callee as Node;
+      const isExpect = (c.type === "Identifier" && c.name === "expect") || ((c.type === "MemberExpression" || c.type === "OptionalMemberExpression") && c.object.type === "Identifier" && c.object.name === "expect");
+      if (!isExpect) return;
+      for (const a of [...base.arguments, ...n.arguments]) reads(a as Node, names);
+    }
+  });
+  if (expand) {
+    const queue = [...names];
+    while (queue.length) for (const d of decls.get(queue.pop()!) ?? []) for (const r of d.reads) if (!names.has(r)) names.add(r), queue.push(r);
+  }
+  const declarations = [...names].flatMap((name) => (decls.get(name) ?? []).map((d) => `${name}\u0000${d.source}`)).sort();
+  return { names: [...names].sort(), declarations };
+}

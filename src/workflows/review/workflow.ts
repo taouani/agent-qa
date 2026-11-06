@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { diffStats, unifiedDiff, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
-import { ProfileError, scanGeneratedCode, type CodeFinding, type ProfileData, type ScriptsData, type TestFileRead, type TestFilesData } from "../../data/index.js";
+import { checkDependencies, ProfileError, scanGeneratedCode, type CodeFinding, type ProfileData, type ScriptsData, type TestFileRead, type TestFilesData } from "../../data/index.js";
 import { TOKEN } from "../scripts/checks.js";
 import { leaving, testFilesPrRecordSchema, testFilesPrStep } from "../shared/test-files-pr.js";
 
@@ -222,7 +222,7 @@ function applyFixes(content: string, fixes: ReadonlyArray<{ at: number; fix: { o
 }
 
 /** What a fixed file may not do that the file before it didn't: the review's own never-apply list. */
-function checkFixed(path: string, before: string, after: string, at: string): OutputError[] {
+function checkFixed(path: string, before: string, after: string, at: string, checkedElsewhere: ReadonlySet<string>): OutputError[] {
   const errors: OutputError[] = [];
   const err = (message: string) => errors.push({ path: at, message: `${path}: ${message}` });
   const a = scanGeneratedCode(before, path);
@@ -239,6 +239,17 @@ function checkFixed(path: string, before: string, after: string, at: string): Ou
     return false;
   });
   if (changed.length) err(`a fix removes or changes a check (${changed.slice(0, 2).map((c) => one(c).slice(0, 120)).join("; ")}): a review keeps every check as it is`);
+  // What the checks read stays as it was too: the variable holding the element, the constant holding the expected value, the page object's field a spec checks.
+  const deps = checkDependencies(before, path, checkedElsewhere);
+  const kept = checkDependencies(after, path, deps.names, false).declarations;
+  const moved = deps.declarations.filter((d) => {
+    const i = kept.indexOf(d);
+    if (i < 0) return true;
+    kept.splice(i, 1);
+    return false;
+  });
+  const what = (d: string) => d.split("\u0000")[0]!;
+  if (moved.length || kept.length) err(`a fix changes ${[...new Set([...moved, ...kept].map(what))].slice(0, 3).join(", ")}, which a check reads: a review keeps what every check checks as it is`);
   // A branch, return, throw or try around a check can stop it from running.
   if (b.branches > a.branches) err("a fix adds a branch (if, ?:, &&, ||, ?., try, return, throw, a loop): a check behind one may never run");
   // A timeout may go, never come or change: each one after is one there before, as written.
@@ -273,11 +284,13 @@ export function checkReview(out: ReviewOutput, files: ReadonlyArray<{ path: stri
     if (f.fix) fixes.set(f.path, [...(fixes.get(f.path) ?? []), { at: i, fix: f.fix }]);
   });
   const fixed = new Map<string, string>();
+  // Names the shown files' checks read: a page object's field is checked from a spec.
+  const checkedElsewhere = new Set(files.flatMap((f) => checkDependencies(f.content, f.path).names));
   for (const [path, list] of fixes) {
     const before = byPath.get(path)!.content;
     const after = applyFixes(before, list, errors);
     if (after === before) continue;
-    errors.push(...checkFixed(path, before, after, `$.findings[${list[0]!.at}].fix`));
+    errors.push(...checkFixed(path, before, after, `$.findings[${list[0]!.at}].fix`, checkedElsewhere));
     fixed.set(path, after);
   }
   return { errors, fixed };
