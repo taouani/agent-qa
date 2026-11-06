@@ -124,7 +124,7 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
       const passed = new Set<Node>();
       walkAst(n.body.body[0] as Node, (x) => {
         // expect.poll(() => …), test.step('…', async () => …): run by the call they are passed to.
-        if ((x.type === "CallExpression" || x.type === "OptionalCallExpression") && RUNNERS.has((x.callee.type === "Identifier" ? x.callee.name : memberName(x.callee as Node)) ?? "")) for (const a of x.arguments) passed.add(a as Node);
+        if ((x.type === "CallExpression" || x.type === "OptionalCallExpression") && ["step", "poll"].includes((x.callee.type === "Identifier" ? x.callee.name : memberName(x.callee as Node)) ?? "")) for (const a of x.arguments) passed.add(a as Node);
         if ((x.type === "ArrowFunctionExpression" || x.type === "FunctionExpression") && !passed.has(x)) fn = true;
       });
       if (!fn) soleReturns.add(n.body.body[0] as Node);
@@ -628,8 +628,15 @@ export function codeLiterals(text: string, file: string): string[] | undefined {
 export const MAX_REACH = 20_000;
 const MAX_REACH_VISITS = 300_000;
 const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeParameters", "implements", "decorators"]);
-/** Calls known to run the function passed to them (Playwright's, and a promise's then and finally); any other call may never run it. */
-const RUNNERS = new Set(["test", "describe", "serial", "parallel", "step", "beforeEach", "afterEach", "beforeAll", "afterAll", "expect", "poll", "toPass", "then", "finally"]);
+/**
+ * Calls known to run the function passed to them (Playwright's, and a
+ * promise's then and finally), unless the files declare a method of that
+ * name; any other call may never run it. expect(fn) and expect.poll(fn) run
+ * it only under a matcher (toPass, toBe…).
+ */
+const RUNNERS = new Set(["test", "describe", "serial", "parallel", "step", "beforeEach", "afterEach", "beforeAll", "afterAll", "then", "finally"]);
+/** Of those, the ones whose callbacks run later: an action inside counts as awaited only if the call is. */
+const LATER = new Set(["then", "finally", "step"]);
 const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration", "ClassMethod", "ClassPrivateMethod", "ObjectMethod"]);
 
 interface Binding {
@@ -740,6 +747,10 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
     const order: string[] = [];
     let visits = 0;
     const running = new Set<Node>();
+    /** Calls awaited or returned; expect calls under a matcher; how deep in a callback no one awaits. */
+    const awaited = new Set<Node>();
+    const matched = new Set<Node>();
+    let floating = 0;
     const full = () => order.length >= MAX_REACH || visits >= MAX_REACH_VISITS;
     const root: Env = { vars: new Map() };
     const lookup = (env: Env | undefined, name: string): Binding | undefined => {
@@ -823,16 +834,31 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         if (n.init && (n.init.type === "AwaitExpression" || /^waitFor/.test(callName(n.init as Node) ?? ""))) visit(n.init as Node, env, false);
         return;
       }
-      if (n.type === "AwaitExpression") {
-        const name = callName(n.argument as Node);
-        if (name) order.push(`a:${name}`);
-        return visit(n.argument as Node, env, false);
+      if (n.type === "AwaitExpression" || (n.type === "ReturnStatement" && n.argument)) {
+        const arg = n.argument as Node;
+        // The awaited (or returned) call and the calls it chains on: x.then(a).finally(b).
+        for (let c: Node | undefined = arg; c && (c.type === "CallExpression" || c.type === "OptionalCallExpression"); ) {
+          awaited.add(c);
+          const callee = c.callee as Node;
+          c = callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression" ? (callee.object as Node) : undefined;
+        }
+        if (n.type === "AwaitExpression") {
+          const name = callName(arg);
+          if (name && floating === 0) order.push(`a:${name}`);
+        }
+        return visit(arg, env, false);
       }
       if (n.type === "CallExpression" || n.type === "OptionalCallExpression" || n.type === "NewExpression") {
         const name = callName(n);
         if (name) order.push(`c:${name}`);
         const c = n.callee as Node;
         const args = n.arguments as Node[];
+        // A matcher runs what expect(fn) or expect.poll(fn) was given.
+        if (c.type === "MemberExpression" || c.type === "OptionalMemberExpression") {
+          let o = c.object as Node;
+          if ((o.type === "MemberExpression" || o.type === "OptionalMemberExpression") && ["not", "resolves", "rejects"].includes(memberName(o) ?? "")) o = o.object as Node;
+          if ((o.type === "CallExpression" || o.type === "OptionalCallExpression") && ["expect", "poll"].includes(callName(o) ?? "")) matched.add(o);
+        }
         if (c.type === "Identifier") reach(c.name, env, args, true, true);
         else if (c.type === "MemberExpression" || c.type === "OptionalMemberExpression") {
           visit(c.object as Node, env, false);
@@ -841,8 +867,13 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
           if (m) reach(m, env, args, true, false);
         } else visit(c, env, false);
         // The arguments as written too, so a value passed but never read is still reached; a function passed runs only if the call is one known to run it.
-        const runner = RUNNERS.has(name ?? "") || /^test\.describe(?:\.|$)/.test(pathOfExpr(c) ?? "");
+        const describe = /^test\.describe(?:\.|$)/.test(pathOfExpr(c) ?? "");
+        const declared = c.type !== "Identifier" && !!name && decls.has(name);
+        const runner = describe || (RUNNERS.has(name ?? "") && !declared) || matched.has(n);
+        const later = runner && LATER.has(name ?? "") && !awaited.has(n);
+        if (later) floating++;
         for (const a of args) visit(a, env, runner);
+        if (later) floating--;
         return;
       }
       if (n.type === "Identifier") return reach(n.name, env, undefined, runs, true);

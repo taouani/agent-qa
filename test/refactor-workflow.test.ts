@@ -556,6 +556,13 @@ test('T1', async ({ page }) => {
     expect(check(spec.replace("  await request.submit();", "  await Promise.all([].map(async () => { await request.submit(); }));"))).toMatch(/T1" no longer reaches/);
     expect(check(spec.replace("  await request.submit();", "  await request.later(async () => { await request.submit(); });"))).toMatch(/T1" no longer reaches/);
     expect(check(spec.replace("  await request.submit();", "  await request.now(async () => { await request.submit(); });"))).toBe("");
+    // expect(fn) and expect.poll(fn) run fn only under a matcher; a callback no one awaits leaves its action unawaited.
+    expect(check(spec.replace("  await request.submit();", "  await expect(async () => { await request.submit(); });"))).toMatch(/T1" no longer reaches/);
+    expect(check(spec.replace("  await request.submit();", "  await expect.poll(async () => { await request.submit(); });"))).toMatch(/T1" no longer reaches/);
+    // Under toPass the action runs (the new check is refused on its own).
+    expect(check(spec.replace("  await request.submit();", "  await expect(async () => { await request.submit(); }).toPass();"))).not.toMatch(/no longer reaches/);
+    expect(check(spec.replace("  await request.submit();", "  Promise.resolve().then(async () => { await request.submit(); });"))).toMatch(/no longer reaches await submit\(\)/);
+    expect(check(spec.replace("  await request.submit();", "  await Promise.resolve().then(async () => { await request.submit(); });"))).toBe("");
     expect(check(spec.replace("  await page.goto('/requests');\n", "").replace("test.describe.serial('S', () => {\n", "test.describe.serial('S', () => {\n  test.beforeEach(async ({ page }) => {\n    await page.goto('/requests');\n  });\n"))).toMatch(/T1" no longer reaches/);
     expect(check(spec.replace("fill(username);\n  await page.getByLabel('Password').fill(password)", "fill(password);\n  await page.getByLabel('Password').fill(username)"))).toMatch(/out of its order/);
     // A default parameter stands for the value the test held.
