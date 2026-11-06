@@ -7,6 +7,7 @@ import { exploreWorkflow, type ExploreDeps } from "./explore/workflow.js";
 import { scriptsWorkflow, type ScriptsDeps } from "./scripts/workflow.js";
 import { runTestsWorkflow, type RunTestsDeps } from "./run-tests/workflow.js";
 import { debugWorkflow, type DebugDeps } from "./debug/workflow.js";
+import { reviewWorkflow, type ReviewDeps } from "./review/workflow.js";
 
 export const MODULE = "workflows";
 export { spikeWorkflow } from "./spike/workflow.js";
@@ -30,9 +31,9 @@ export type { Exploration, ExploreAction } from "./explore/artifact.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps & RunTestsDeps & DebugDeps): ReadonlyArray<WorkflowDefinition<any>> {
+export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps & RunTestsDeps & DebugDeps & ReviewDeps): ReadonlyArray<WorkflowDefinition<any>> {
   // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
-  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps), scriptsWorkflow(deps), runTestsWorkflow(deps), debugWorkflow(deps)];
+  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps), scriptsWorkflow(deps), runTestsWorkflow(deps), debugWorkflow(deps), reviewWorkflow(deps)];
 }
 export { helperPlan, helpersPath, LIGHTNING_HELPERS, LIGHTNING_LOCATOR_ORDER, LIGHTNING_RULES, lightningHelpersSource, renderPack, SALESFORCE_PACK_VERSION } from "./packs/salesforce.js";
 export type { HelperChoice, PackHelper, PackRule } from "./packs/salesforce.js";
@@ -48,3 +49,6 @@ export { runTestsInputSchema, runTestsWorkflow, statusOf, TEST_RUN_ARTIFACT, tes
 export type { RunTestsDeps, RunTestsInputs, TestRun } from "./run-tests/workflow.js";
 export { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugFixSchema, debugPrBody, debugInputSchema, debugReportSchema, debugWorkflow, roleOf } from "./debug/workflow.js";
 export type { DebugDeps, DebugFix, DebugInputs, DebugReport } from "./debug/workflow.js";
+export { checkReview, FINDING_KINDS, FINDINGS_ARTIFACT, findingsSchema, globRegExp, MAX_REVIEW_FILES, reviewInputSchema, reviewOutputSchema, reviewPrBody, reviewWorkflow, SEVERITIES } from "./review/workflow.js";
+export type { Finding, Findings, ReviewDeps, ReviewInputs, ReviewOutput, Severity } from "./review/workflow.js";
+export { leaving, testFilesPrStep, type TestFilesPrRecord } from "./shared/test-files-pr.js";

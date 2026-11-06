@@ -24,6 +24,8 @@ The offline fixture model answers from the step's own masked context and copies 
 
 Three cases put seeds in summary, description, @-mentions, the acceptance-criteria field, criteria inside a description, a custom text field, people, labels, components, fix versions, a linked Confluence page (title and body), a child issue, a linked issue and a JQL filter. The seed kinds are name, email, phone, IBAN, card, national id and IP. There is no address seed, because addresses have no detector yet.
 
+A fourth case, **approval-request-review**, runs the `review` workflow, with no browser, on a hand-written test and page object that name a seeded person. They have two known flaws: a fixed wait, which the code scan must report, and a check inside the page object, which the model must report. The harness never says yes to a fix, so the case also checks that the files stay as they were.
+
 The stand-in Jira is simpler than the real one in two ways: field ids are made up, so `masking.fields` rules written with real field ids (`customfield_10042`) don't apply (rules by field name do), and the read limits in `atlassian.jira` (depth, issue count) are ignored.
 
 Your own cases go in a fixtures folder named in `agent-qa.yaml` (`harness.sources`), with seeds in `harness.seededPersonalData`. A ticket has `key`, `summary` and `description`, and optionally `type`, `status`, `priority`, `acceptanceCriteria`, `fields`, `people`, `mentions`, `labels`, `components`, `fixVersions`, `pages`, `parent` and `links`. Every seed a case names must appear whole in its tickets. Jira sources are skipped for now.

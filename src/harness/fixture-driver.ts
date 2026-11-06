@@ -32,7 +32,9 @@ export class FixtureDriver implements ModelDriver {
               ? draft(contextText(request))
               : step === "fix"
                 ? fix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
-                : /^fix-\d+$/.test(step)
+                : step === "review"
+                  ? review(contextText(request))
+                  : /^fix-\d+$/.test(step)
                   ? debugFix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
                   : undefined;
     if (answer === undefined) throw new Error(`The fixture model can't answer step ${request.schemaName ?? "(unnamed)"}`);
@@ -207,4 +209,25 @@ function debugFix(context: string, refusal: string | undefined) {
     failures: titles.map((test) => ({ test, kind: "selector", reason: "The status shows another word" })),
     files: [{ path: spec[1]!, content: `${spec[2]!.replace(/toContainText\('Submitted'\)/g, "toContainText('Rejected')")}\n` }],
   };
+}
+
+/**
+ * A `review` (S3-4): a check inside a page object, found where the page
+ * object's code calls expect, and a fix for the spec's fixed wait (which the
+ * harness never approves). The scan reports the wait on its own.
+ */
+function review(context: string) {
+  const files = [...context.matchAll(/^### (\S+\.ts)\n\n```ts\n([^]*?)\n```/gm)].map((m) => ({ path: m[1]!, content: m[2]! }));
+  if (!files.length) throw new Error("The fixture model found no files in the review's context");
+  const findings = [];
+  for (const f of files) {
+    const lines = f.content.split("\n");
+    if (/export class/.test(f.content)) {
+      const at = lines.findIndex((l) => l.includes("await expect("));
+      if (at >= 0) findings.push({ path: f.path, line: at + 1, severity: "medium", kind: "assertion-in-page-object", problem: "The page object checks the status itself", why: "Checks belong in the spec, where a reader sees what the test checks" });
+    }
+    const wait = lines.find((l) => l.includes("waitForTimeout("));
+    if (wait) findings.push({ path: f.path, line: lines.indexOf(wait) + 1, severity: "high", kind: "fixed-wait", problem: "Waits a fixed second before submitting", why: "Slow when the page is ready, flaky when it isn't", fix: { old: `${wait}\n`, new: "" } });
+  }
+  return { findings };
 }

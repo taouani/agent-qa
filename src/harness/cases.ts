@@ -216,6 +216,15 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
     tickets: [{ key: "QAH-6", type: "Task", summary: "Update the delivery contact", description: "Deliveries for this account go to Tobias Wrenhallow, phone +33 6 39 98 12 34." }],
     seeds: ["seed-name-2", "seed-phone-1"],
   },
+  {
+    id: "approval-request-review",
+    description: "Reviews a hand-written test and page object (no browser) with two known flaws: a fixed wait the code scan reports, and a check inside the page object the model must report. The test names a seeded person; the harness never approves the proposed fix, so the files stay as they were.",
+    workflow: "review",
+    inputs: {},
+    // review reads no Jira: the ticket only carries the seed, which the hand-written test uses.
+    tickets: [{ key: "QAH-10", summary: "Review the request submission test", description: "The test opens the request of Marguerite Quillfeather." }],
+    seeds: ["seed-name-1"],
+  },
 ];
 
 export const DEFAULT_CASES: HarnessCase[] = DEFAULT_CASE_INPUTS.map((c) => harnessCaseSchema.parse(c));
