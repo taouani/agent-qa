@@ -21,7 +21,7 @@ import { generatedFileSchema, caseCodeSchema, type ScriptsDraft, type ScriptsDra
 export const FAILURE_KINDS = ["selector", "timing", "data", "flake", "environment", "defect"] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 /** The kinds that stop the loop: nothing in the test is changed for them. */
-const STOPS = new Set<FailureKind>(["environment", "defect"]);
+export const STOPS = new Set<FailureKind>(["environment", "defect"]);
 
 export const DEFAULT_FIX_ROUNDS = 3;
 export const MAX_FIX_ROUNDS = 5;
@@ -43,7 +43,7 @@ export const testRowSchema = z
   })
   .strict();
 
-const attemptSchema = z
+export const attemptSchema = z
   .object({
     kind: z.enum(["run", "stability"]),
     /** Files the fix before this run changed. */
@@ -170,7 +170,7 @@ export const failing = (a: RunAttempt) => a.tests.filter((t) => t.outcome !== "p
  * the helper; keep every test title and every check; data files only for
  * data failures, code only for selector or timing ones.
  */
-export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["files"], scan: (content: string, path: string) => CodeFacts): OutputError[] {
+export function checkFix(out: Pick<FixOutput, "failures" | "files">, last: RunAttempt, files: ReadonlyArray<{ path: string; role: ScriptsRun["files"][number]["role"]; content: string }>, scan: (content: string, path: string) => CodeFacts, notListed = "isn't a file Agent-QA wrote for these tests: only those can change"): OutputError[] {
   const errors: OutputError[] = [];
   const err = (path: string, message: string) => errors.push({ path, message });
   const failed = failing(last);
@@ -195,7 +195,7 @@ export function checkFix(out: FixOutput, last: RunAttempt, files: ScriptsRun["fi
   out.files.forEach((f, i) => {
     const at = `$.files[${i}]`;
     const mine = byPath.get(f.path);
-    if (!mine) return err(`${at}.path`, `${f.path} isn't a file Agent-QA wrote for these tests: only those can change`);
+    if (!mine) return err(`${at}.path`, `${f.path} ${notListed}`);
     if (changed.has(f.path)) err(`${at}.path`, `${f.path} is listed twice`);
     changed.add(f.path);
     if (mine.role === "feature") return err(`${at}.path`, "the scenarios are the reviewed test cases: a fix never changes a feature file");

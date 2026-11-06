@@ -13,8 +13,8 @@ import { testRowSchema } from "../scripts/run.js";
  * start of `debug` (S3-3), and a record of its own.
  */
 
-export const runTestsInputSchema = z
-  .object({
+/** Which tests to run: the selection fields `run-tests` and `debug` share. */
+export const selectionFields = {
     files: z.array(z.string().min(1).max(300)).min(1).max(50).optional().describe("Spec or feature paths from the profile's folder; a spec may end with :line"),
     grep: z.string().min(1).max(200).optional().describe("Text in the tests' titles (plain text)"),
     tag: z.string().min(2).max(101).optional().describe("A tag, such as @smoke (also picks tags that start with it)"),
@@ -22,9 +22,15 @@ export const runTestsInputSchema = z
     failedIn: z.string().min(1).max(300).optional().describe("A Playwright JSON report in the folder: its failed and flaky tests run again"),
     repeatEach: z.number().int().min(1).max(10).optional().describe("Run each test this many times"),
     workers: z.number().int().min(1).max(4).optional().describe("Parallel workers; default 1"),
-  })
+};
+
+/** At least one of files, grep, tag or failedIn; grep or tag, not both. */
+export const hasSelection = (i: { files?: unknown; grep?: unknown; tag?: unknown; failedIn?: unknown }) => i.files !== undefined || i.grep !== undefined || i.tag !== undefined || i.failedIn !== undefined;
+
+export const runTestsInputSchema = z
+  .object(selectionFields)
   .strict()
-  .refine((i) => i.files !== undefined || i.grep !== undefined || i.tag !== undefined || i.failedIn !== undefined, "pick the tests: files, grep, tag or failedIn")
+  .refine(hasSelection, "pick the tests: files, grep, tag or failedIn")
   .refine((i) => !(i.grep !== undefined && i.tag !== undefined), "pick grep or tag, not both");
 export type RunTestsInputs = z.infer<typeof runTestsInputSchema>;
 
@@ -78,7 +84,7 @@ export interface RunTestsDeps {
 
 type Ctx = StepContext<RunTestsInputs>;
 
-const selectionOf = (i: RunTestsInputs): TestSelection => ({ files: i.files, grep: i.grep, tag: i.tag, project: i.project, failedIn: i.failedIn, repeatEach: i.repeatEach, workers: i.workers });
+export const selectionOf = (i: Pick<RunTestsInputs, "files" | "grep" | "tag" | "project" | "failedIn" | "repeatEach" | "workers">): TestSelection => ({ files: i.files, grep: i.grep, tag: i.tag, project: i.project, failedIn: i.failedIn, repeatEach: i.repeatEach, workers: i.workers });
 
 /** The outcome of the tests, from their rows: a skipped test counts as not run. */
 export function statusOf(tests: Pick<MaskedTestResult, "outcome">[], errors: string[]): TestRun["status"] {

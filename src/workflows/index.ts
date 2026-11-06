@@ -6,6 +6,7 @@ import { profileWorkflow, type ProfileDeps } from "./profile/workflow.js";
 import { exploreWorkflow, type ExploreDeps } from "./explore/workflow.js";
 import { scriptsWorkflow, type ScriptsDeps } from "./scripts/workflow.js";
 import { runTestsWorkflow, type RunTestsDeps } from "./run-tests/workflow.js";
+import { debugWorkflow, type DebugDeps } from "./debug/workflow.js";
 
 export const MODULE = "workflows";
 export { spikeWorkflow } from "./spike/workflow.js";
@@ -29,9 +30,9 @@ export type { Exploration, ExploreAction } from "./explore/artifact.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps & RunTestsDeps): ReadonlyArray<WorkflowDefinition<any>> {
+export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps & RunTestsDeps & DebugDeps): ReadonlyArray<WorkflowDefinition<any>> {
   // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
-  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps), scriptsWorkflow(deps), runTestsWorkflow(deps)];
+  return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps), scriptsWorkflow(deps), runTestsWorkflow(deps), debugWorkflow(deps)];
 }
 export { helperPlan, helpersPath, LIGHTNING_HELPERS, LIGHTNING_LOCATOR_ORDER, LIGHTNING_RULES, lightningHelpersSource, renderPack, SALESFORCE_PACK_VERSION } from "./packs/salesforce.js";
 export type { HelperChoice, PackHelper, PackRule } from "./packs/salesforce.js";
@@ -45,3 +46,5 @@ export { MAX_SCRIPT_CASES, scriptsInputSchema, scriptsWorkflow, withHelper } fro
 export type { ScriptsDeps, ScriptsInputs } from "./scripts/workflow.js";
 export { runTestsInputSchema, runTestsWorkflow, statusOf, TEST_RUN_ARTIFACT, testRunSchema } from "./run-tests/workflow.js";
 export type { RunTestsDeps, RunTestsInputs, TestRun } from "./run-tests/workflow.js";
+export { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugFixSchema, debugInputSchema, debugReportSchema, debugWorkflow, roleOf } from "./debug/workflow.js";
+export type { DebugDeps, DebugFix, DebugInputs, DebugReport } from "./debug/workflow.js";

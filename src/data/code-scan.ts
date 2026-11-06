@@ -359,11 +359,32 @@ export function fixSkeleton(text: string, file: string): FixSkeleton | undefined
       if (same) locatorCode.add(`${src(n)} (the element is picked by the value it is checked against)`);
     }
   };
+  // expect(locator).toBeVisible(): with no expected value, the element picked is what the check checks, so its texts stay.
+  const checkedByPresence = new Set<Node>();
+  walkAst(ast, (x) => {
+    if (x.type !== "CallExpression" || (x.callee.type !== "MemberExpression" && x.callee.type !== "OptionalMemberExpression")) return;
+    if ((x.arguments as Node[]).some((a) => !isTimeoutOption(a))) return;
+    let base = x.callee.object as Node;
+    if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
+    if (base.type !== "CallExpression" || base.callee.type !== "Identifier" || base.callee.name !== "expect" || !base.arguments[0]) return;
+    const subject = base.arguments[0] as Node;
+    const picked = isLocatorCall(subject) ? subject : held.get(pathOf(subject) ?? "");
+    if (picked) checkedByPresence.add(picked);
+  });
+  const textsOf = (n: Node) => {
+    const out: string[] = [];
+    walkAst(n, (x) => {
+      const t = literalString(x);
+      if (t !== undefined) out.push(JSON.stringify(t));
+      if (x.type === "RegExpLiteral") out.push(`/${x.pattern}/${x.flags}`);
+    });
+    return out.join(" ");
+  };
   function emit(n: Node, push: (t: { t: string; wait: boolean }) => void): void {
     checksItself(n);
     if (isLocatorCall(n)) {
       plainOnly(n);
-      push({ t: "LOC", wait: false });
+      push({ t: checkedByPresence.has(n) ? `LOC ${textsOf(n)}` : "LOC", wait: false });
       return;
     }
     const rec = n as unknown as Record<string, unknown>;
