@@ -35,7 +35,7 @@ const summaryPipeline: Pipeline = async ({ tickets, driver }) => {
 describe("harness runner", () => {
   it("runs an empty pipeline over the shipped cases", async () => {
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: emptyPipeline, pipelineName: "empty", driver: new StaticDriver(), now });
-    expect(report.summary).toEqual({ cases: 4, passed: 4, failed: 0, errors: 0, seededLeaks: 0 });
+    expect(report.summary).toEqual({ cases: 5, passed: 5, failed: 0, errors: 0, seededLeaks: 0 });
     expect(report).toMatchObject({ version: 1, pipeline: "empty", driver: "static", startedAt: "2026-11-20T10:00:00.000Z" });
   });
 
@@ -43,7 +43,7 @@ describe("harness runner", () => {
     const inner = new StaticDriver();
     const forwarded = vi.spyOn(inner, "complete");
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: leakyPipeline, driver: inner, now });
-    expect(report.summary).toMatchObject({ failed: 4, seededLeaks: 8 });
+    expect(report.summary).toMatchObject({ failed: 5, seededLeaks: 9 });
     expect(report.cases[0]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-email-1", "seed-name-1", "seed-name-2", "seed-phone-1"]);
     expect(report.cases[1]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-name-3"]);
     expect(report.cases[2]!.seededLeaks.map((l) => l.seedId).sort()).toEqual(["seed-name-2", "seed-phone-1"]);
@@ -54,8 +54,8 @@ describe("harness runner", () => {
 
   it("passes calls that carry no seeded data", async () => {
     const report = await runHarness({ cases: DEFAULT_CASES, seeds: DEFAULT_SEEDS, pipeline: summaryPipeline, driver: new StaticDriver(), now });
-    expect(report.summary).toMatchObject({ passed: 4, seededLeaks: 0 });
-    expect(report.cases.map((c) => c.modelCalls)).toEqual([1, 1, 1, 1]);
+    expect(report.summary).toMatchObject({ passed: 5, seededLeaks: 0 });
+    expect(report.cases.map((c) => c.modelCalls)).toEqual([1, 1, 1, 1, 1]);
   });
 
   it("fails a case even when the pipeline swallows the leak error", async () => {
@@ -311,13 +311,13 @@ describe("agent-qa harness exit codes", () => {
     const r = await runCli(["harness", "--pipeline", "empty", "--cwd", dir]);
     expect(r.code).toBeUndefined();
     expect(r.out).toContain("note: 3 browser case(s) skipped: run with --browser");
-    expect(r.out).toContain("4/4 passed");
+    expect(r.out).toContain("5/5 passed");
     const browser = await runCli(["harness", "--browser", "--cwd", dir]);
     expect(browser.code).toBe(1);
     expect(browser.out).toMatch(/\[error\] approval-request-explore: .*Playwright isn't installed in the repo/);
     expect(browser.out).toMatch(/\[error\] approval-request-defect: .*has none \(npm install @playwright\/test there\)/);
     expect(browser.out).toMatch(/\[error\] approval-request-debug: .*has none \(npm install @playwright\/test there\)/);
-    expect(browser.out).toContain("4/7 passed");
+    expect(browser.out).toContain("5/8 passed");
   }, 60_000);
 
   it("exits 2 with one line for a bad config or a missing fixtures folder", async () => {
@@ -348,11 +348,11 @@ describe("agent-qa harness", () => {
     try {
       await buildProgram().parseAsync(["node", "agent-qa", "harness", "--json", "--cwd", dir]);
       const report = JSON.parse(out.join(""));
-      expect(report).toMatchObject({ pipeline: "masked", driver: "fixture", summary: { cases: 4, passed: 4, seededLeaks: 0 } });
-      expect(report.cases.map((c: { modelCalls: number }) => c.modelCalls)).toEqual([2, 2, 1, 1]);
+      expect(report).toMatchObject({ pipeline: "masked", driver: "fixture", summary: { cases: 5, passed: 5, seededLeaks: 0 } });
+      expect(report.cases.map((c: { modelCalls: number }) => c.modelCalls)).toEqual([2, 2, 1, 1, 1]);
       expect(report.keptRate).toMatchObject({ runs: 0, generated: 0 });
       // Harness runs are kept apart from the project's runs.
-      expect((await readdir(join(dir, ".agent-qa", "harness", "runs"))).length).toBe(4);
+      expect((await readdir(join(dir, ".agent-qa", "harness", "runs"))).length).toBe(5);
       expect(process.exitCode).toBe(before);
     } finally {
       write.mockRestore();

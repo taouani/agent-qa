@@ -225,6 +225,14 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
     tickets: [{ key: "QAH-10", summary: "Review the request submission test", description: "The test opens the request of Marguerite Quillfeather." }],
     seeds: ["seed-name-1"],
   },
+  {
+    id: "approval-request-audit",
+    description: "Audits the same hand-written suite (no browser), read-only: the code scan counts the fixed wait, the model reports the check inside the page object with evidence there, the findings are ranked from AF-001, and no file changes.",
+    workflow: "audit",
+    inputs: {},
+    tickets: [{ key: "QAH-11", summary: "Audit the request suite", description: "The suite opens the request of Marguerite Quillfeather." }],
+    seeds: ["seed-name-1"],
+  },
 ];
 
 export const DEFAULT_CASES: HarnessCase[] = DEFAULT_CASE_INPUTS.map((c) => harnessCaseSchema.parse(c));
