@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { unifiedDiff, diffStats, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
-import { fixSkeleton, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
+import { fixSkeleton, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
 import { hasSelection, selectionFields, selectionOf } from "../run-tests/workflow.js";
-import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, STOPS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
+import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
 import type { FileRole } from "../scripts/artifact.js";
+import { TOKEN } from "../scripts/checks.js";
 
 /**
  * `debug` (S3-3): the S2-8 run-and-fix loop pointed at the repo's own tests.
@@ -19,6 +20,9 @@ import type { FileRole } from "../scripts/artifact.js";
  * The model sees only masked text: test files, errors and page snapshots
  * hold tokens such as <PERSON_1>, which the write puts back.
  */
+
+/** The diff in the apply question is cut here: the person sees at least this much in the prompt itself. */
+const MAX_QUESTION_DIFF = 6000;
 
 /** At most this many files shown for one round: the failing specs and the files their errors point at. */
 const MAX_SHOWN = 10;
@@ -41,13 +45,14 @@ const classifiedSchema = z.object({ test: z.string(), kind: z.enum(FAILURE_KINDS
  * for the person's yes (its diff is here); passed: every test passes after
  * the fixes, and again in the stability runs; nothing-to-fix: every test
  * passed on the first run; unstable: some pass only some of the time;
- * defect, environment: reported, nothing changed for it; gave-up: still
- * failing after the last round; declined: the person said no (to running,
+ * defect, environment, data: reported, nothing changed for it (debug
+ * doesn't change test data yet); gave-up: still failing after the last
+ * round, or a test that failed no longer runs; declined: the person said no (to running,
  * or to a change, kept here as a diff); no-tests, unavailable: nothing ran.
  */
 export const debugReportSchema = z
   .object({
-    status: z.enum(["failing", "proposed", "passed", "nothing-to-fix", "unstable", "defect", "environment", "gave-up", "declined", "no-tests", "unavailable"]),
+    status: z.enum(["failing", "proposed", "passed", "nothing-to-fix", "unstable", "defect", "environment", "data", "gave-up", "declined", "no-tests", "unavailable"]),
     reason: z.string().optional(),
     folder: z.string(),
     selection: z.record(z.string(), z.unknown()),
@@ -142,10 +147,15 @@ export function roleOf(path: string): FileRole {
   return "page";
 }
 
-const scan = (content: string, path: string): CodeFacts => {
-  const c = scanGeneratedCode(content, path);
-  return { titles: c.tests.map((t) => t.title), checkedNames: c.checkedNames, skeleton: fixSkeleton(content, path) };
+/** The scan checkFix uses, with the page-object fields a shown spec checks by presence pinned in every shown file. */
+const scanWith = (files: ReadonlyArray<{ path: string; content: string }>) => {
+  const pinned = new Set(files.flatMap((f) => presenceCheckedFields(f.content, f.path)));
+  return (content: string, path: string): CodeFacts => {
+    const c = scanGeneratedCode(content, path);
+    return { titles: c.tests.map((t) => t.title), checkedNames: c.checkedNames, skeleton: fixSkeleton(content, path, pinned) };
+  };
 };
+const TOKENS = new RegExp(TOKEN.source, "g");
 
 const row = (t: MaskedTestResult): RunAttempt["tests"][number] => ({
   title: t.title,
@@ -188,14 +198,26 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
     let last = attempts.at(-1)!;
     if (last.unavailable) return { ...state, attempts, status: "unavailable", reason: last.errors[0] ?? "the tests couldn't run" };
     if (passedAll(last) && round === 0) return { ...state, attempts, status: "nothing-to-fix", reason: "every selected test passed: there is nothing to debug" };
-    if (passedAll(last) && state.stabilityRuns >= 1) {
+    const ranNone = (a: RunAttempt) => a.tests.every((t) => t.outcome === "skipped") && a.errors.every((e) => /No tests found/i.test(e));
+    if (ranNone(last)) {
+      return round === 0
+        ? { ...state, attempts, status: "no-tests", reason: last.tests.length ? "every selected test was skipped" : "the selection matched no test" }
+        : { ...state, attempts, status: "gave-up", reason: "after the fix no selected test ran (each was skipped, or none was found)" };
+    }
+    // A test that failed counts as fixed only when it passes: skipped (a test.skip the fix tripped) or gone isn't fixed.
+    const lost = (a: RunAttempt) => {
+      const now = new Map(a.tests.map((t) => [t.title, t.outcome]));
+      return [...new Set(state.attempts.flatMap((x) => broken(x).map((t) => t.title)))].filter((t) => now.get(t) !== "passed" && now.get(t) !== "failed" && now.get(t) !== "flaky");
+    };
+    if (round > 0 && lost(last).length) return { ...state, attempts, status: "gave-up", reason: `a test that failed doesn't run any more after the fix (skipped, or not found): ${lost(last).slice(0, 3).map(one).join("; ")}` };
+    if (passedAll(last)) {
       const s = await deps.data.runTests(ctx.runId, ctx.runId, state.folder, { ...selectionOf(ctx.inputs), repeatEach: state.stabilityRuns }, true);
       if (s.status === "declined") return { ...state, attempts, status: "declined", reason: "the policy or the person said no to the stability runs" };
       attempts = [...attempts, attemptOf(s, "stability", [], [])];
       last = attempts.at(-1)!;
     }
+    if (lost(last).length && last.kind === "stability") return { ...state, attempts, status: "gave-up", reason: `a test that failed doesn't run in the stability runs: ${lost(last).slice(0, 3).map(one).join("; ")}` };
     if (passedAll(last)) return { ...state, attempts, status: "passed", reason: last.kind === "stability" ? `every test passed, then ${state.stabilityRuns} more time(s) in a row` : "every test passed" };
-    if (round === 0 && last.tests.length === 0 && last.errors.every((e) => /No tests found/i.test(e))) return { ...state, attempts, status: "no-tests", reason: "the selection matched no test" };
     if (round < state.fixRounds) return { ...state, attempts, status: "failing" };
     const flaky = last.tests.some((t) => t.outcome === "flaky") || (last.kind === "stability" && last.tests.some((t) => t.outcome === "failed"));
     return flaky
@@ -206,9 +228,10 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
   /** The files a round shows: the failing specs and the files their errors point at, read now (masked), and why others aren't. */
   const shownFiles = async (ctx: Ctx, state: DebugReport): Promise<{ files: TestFileRead[]; left: string[] }> => {
     const last = state.attempts.at(-1)!;
-    const paths = [...new Set(broken(last).flatMap((t) => [t.file, ...(t.failure?.at ? [t.failure.at.file] : [])]))].slice(0, MAX_SHOWN);
+    const all = [...new Set(broken(last).flatMap((t) => [t.file, ...(t.failure?.at ? [t.failure.at.file] : [])]))];
+    const paths = all.slice(0, MAX_SHOWN);
     const files: TestFileRead[] = [];
-    const left: string[] = [];
+    const left: string[] = all.slice(MAX_SHOWN).map((p) => `${p}: more than ${MAX_SHOWN} files in one round`);
     for (const p of paths) {
       try {
         files.push(...(await deps.data.readTestFiles(ctx.runId, ctx.runId, state.folder, [p])));
@@ -269,17 +292,16 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
       const state = await read(ctx);
       if (!state || state.status !== "failing" || state.rounds !== round - 1) return [{ path: "$", message: "there is no failing run to fix" }];
       const { files } = await shownFiles(ctx, state);
-      return checkFix(out, withoutSkipped(state.attempts.at(-1)!), files.map((f) => ({ path: f.path, role: roleOf(f.path), content: f.content })), scan, "isn't one of the files shown: only those can change");
+      return checkDebugFix(out, state.attempts.at(-1)!, files);
     },
     onAccept: async (ctx, out) => {
       const state = await read(ctx);
       if (!state || state.status !== "failing" || state.rounds !== round - 1) return;
       const classified = out.failures.map((f) => ({ test: f.test, kind: f.kind, reason: f.reason }));
-      const stop = out.failures.find((f) => STOPS.has(f.kind));
-      if (stop) {
-        const defect = out.failures.find((f) => f.kind === "defect");
-        if (defect) return void (await save(ctx, { ...state, rounds: round, status: "defect", reason: `a real defect: ${one(defect.test)}: ${one(defect.reason)}`, stoppedOn: classified }));
-        return void (await save(ctx, { ...state, rounds: round, status: "environment", reason: `the environment: ${one(stop.test)}: ${one(stop.reason)}`, stoppedOn: classified }));
+      const first = (kind: string) => out.failures.find((f) => f.kind === kind);
+      for (const [kind, what] of [["defect", "a real defect"], ["environment", "the environment"], ["data", "the test data (debug doesn't change test data yet)"]] as const) {
+        const f = first(kind);
+        if (f) return void (await save(ctx, { ...state, rounds: round, status: kind, reason: `${what}: ${one(f.test)}: ${one(f.reason)}`, stoppedOn: classified }));
       }
       // Nothing to change (a flake): the tests run again, as the person agreed at the start.
       if (out.files.length === 0) return void (await save(ctx, await runAndJudge(ctx, { ...state, rounds: round }, [], classified, round)));
@@ -312,7 +334,8 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
         const p = (await read(ctx))!.proposal!;
         const added = p.files.reduce((n, f) => n + f.added, 0);
         const removed = p.files.reduce((n, f) => n + f.removed, 0);
-        return `Write this change to ${p.files.length} file(s) of your repo (+${added} −${removed} lines): ${p.files.map((f) => f.path).join(", ")}? Each file is changed only if it is still as Agent-QA read it; then the tests run again.`;
+        const diff = p.diff.length > MAX_QUESTION_DIFF ? `${p.diff.slice(0, MAX_QUESTION_DIFF)}\n… (the whole diff is in debug-report.md of run ${ctx.runId})` : p.diff;
+        return `Write this change to ${p.files.length} file(s) of your repo (+${added} −${removed} lines): ${p.files.map((f) => f.path).join(", ")}? Each file is changed only if it is still as Agent-QA read it; then the tests run again.\n\n${diff}`;
       },
     },
     instructions: () =>
@@ -329,8 +352,19 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
       if (!state || state.status !== "proposed" || state.proposal?.round !== round) return;
       const p = state.proposal;
       if (!out.apply && !p.written) return void (await save(ctx, { ...state, status: "declined", reason: "the person said no to the proposed change, or nobody was asked (an unattended run): it is kept below as a diff" }));
+      if (!out.apply) return void (await save(ctx, { ...state, status: "declined", reason: "the change was written (see Changes written), but the tests didn't run again after it" }));
       if (!p.written) {
-        const w = await deps.data.editTestFiles(ctx.runId, ctx.runId, state.folder, p.files.map((f) => ({ path: f.path, content: f.content, sha256: f.sha256 })), true);
+        let w: Awaited<ReturnType<typeof deps.data.editTestFiles>>;
+        try {
+          w = await deps.data.editTestFiles(ctx.runId, ctx.runId, state.folder, p.files.map((f) => ({ path: f.path, content: f.content, sha256: f.sha256 })), true);
+        } catch (error) {
+          if (!(error instanceof ProfileError)) throw error;
+          // The change can't be applied as it is (a file changed since it was read): nothing was written; the next round proposes again from the files as they are now.
+          const rest: DebugReport = { ...state };
+          delete rest.proposal;
+          const reason = `round ${round}'s change wasn't written: ${error.message}`;
+          return void (await save(ctx, round < state.fixRounds ? { ...rest, rounds: round, status: "failing", reason } : { ...rest, rounds: round, status: "gave-up", reason }));
+        }
         if (w.status !== "done") return void (await save(ctx, { ...state, status: "declined", reason: "the policy said no to changing the files" }));
         const after = new Map(w.written.map((x) => [x.path, x.sha256]));
         // The blob a pull request checks on the base: the file as Agent-QA first read it.
@@ -366,7 +400,7 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
             const p = await deps.data.selectTests(ctx.runId, await folder(), selectionOf(ctx.inputs));
             const grep = ctx.inputs.grep !== undefined ? (await deps.data.maskTexts(ctx.runId, [ctx.inputs.grep], "run.grep"))[0]! : undefined;
             const shown = await deps.data.maskTexts(ctx.runId, [...p.command, ...p.args.map((a) => (grep !== undefined && a.startsWith("--grep=") ? `--grep=${grep}` : a))], "run.command");
-            return `Run \`${shown.join(" ")}\` to debug the failing tests? They sign in and use your app as your test users do, and run again after each fix, up to ${ctx.inputs.fixRounds} time(s). Agent-QA proposes fixes to selectors, waits and test data only: you see each diff and decide before anything is written.`;
+            return `Run \`${shown.join(" ")}\` to debug the failing tests? They sign in and use your app as your test users do, ${ctx.inputs.fixRounds ? `and run again after each fix, up to ${ctx.inputs.fixRounds} time(s). Agent-QA proposes fixes to selectors and waits only: you see each diff and decide before anything is written.` : "once: no fix is proposed (fixRounds is 0)."}`;
           },
         },
         instructions: () =>
@@ -391,5 +425,16 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
 
 /** For tests: the checks a fix goes through, without a run. */
 export function checkDebugFix(out: DebugFix, last: RunAttempt, files: ReadonlyArray<{ path: string; content: string }>): OutputError[] {
-  return checkFix(out, withoutSkipped(last), files.map((f) => ({ ...f, role: roleOf(f.path) })), scan, "isn't one of the files shown: only those can change");
+  const errors = checkFix(out, withoutSkipped(last), files.map((f) => ({ ...f, role: roleOf(f.path) })), scanWith(files), "isn't one of the files shown: only those can change");
+  const kinds = new Set(out.failures.map((f) => f.kind));
+  if (kinds.has("data") && out.files.length) errors.push({ path: "$.files", message: "debug reports a data failure, it doesn't change test data yet: send no files" });
+  if (!kinds.has("data") && (kinds.has("selector") || kinds.has("timing")) && out.files.length === 0) errors.push({ path: "$.files", message: "send the fix for the selector or timing failure, or say it is a flake" });
+  // Only the tokens the file itself holds: editTestFiles puts back no other (a name from the snapshot is often another file's).
+  const shown = new Map(files.map((f) => [f.path, new Set(f.content.match(TOKENS) ?? [])]));
+  out.files.forEach((f, i) => {
+    const had = shown.get(f.path);
+    const foreign = had ? [...new Set(f.content.match(TOKENS) ?? [])].filter((t) => !had.has(t)) : [];
+    if (foreign.length) errors.push({ path: `$.files[${i}].content`, message: `holds ${foreign.slice(0, 3).join(", ")}, which this file doesn't hold: a masked value can't be written here. Pick the element by its role or another text the file already holds` });
+  });
+  return errors;
 }

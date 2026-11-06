@@ -252,6 +252,55 @@ function readNames(n: Node, into: Set<string>): void {
   }
 }
 
+/** a.b, a["b"], this.b: the path an expression reads, or undefined when it isn't one. */
+function pathOfExpr (n: Node): string | undefined {
+  if (n.type === "Identifier") return n.name;
+  if (n.type === "ThisExpression") return "this";
+  if (n.type === "TSNonNullExpression" || n.type === "TSAsExpression") return pathOfExpr(n.expression as Node);
+  if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
+    const o = pathOfExpr(n.object as Node);
+    const k = !n.computed && n.property.type === "Identifier" ? n.property.name : literalString(n.property as Node);
+    return o !== undefined && k !== undefined ? `${o}.${k}` : undefined;
+  }
+  return undefined;
+}
+
+const isLocatorCallNode = (n: Node) => (n.type === "CallExpression" || n.type === "OptionalCallExpression") && LOCATOR_METHODS.has(memberName(n.callee as Node) ?? (n.callee.type === "Identifier" ? n.callee.name : ""));
+const isTimeoutOptionNode = (n: Node) => n.type === "ObjectExpression" && n.properties.length > 0 && n.properties.every((p) => p.type === "ObjectProperty" && ["timeout", "intervals"].includes(p.key.type === "Identifier" ? p.key.name : (literalString(p.key as Node) ?? "")));
+
+/**
+ * The subject of a check whose element is what it checks: expect(x).toBeVisible()
+ * (any matcher without an expected value), expect(x).toHaveCount(n), and the
+ * same with .not or expect.soft.
+ */
+function presenceSubject(x: Node): Node | undefined {
+  if (x.type !== "CallExpression" || (x.callee.type !== "MemberExpression" && x.callee.type !== "OptionalMemberExpression")) return undefined;
+  if (memberName(x.callee as Node) !== "toHaveCount" && (x.arguments as Node[]).some((a) => !isTimeoutOptionNode(a))) return undefined;
+  let base = x.callee.object as Node;
+  if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
+  if (base.type !== "CallExpression" || !base.arguments[0]) return undefined;
+  const fn = base.callee as Node;
+  const isExpect = (fn.type === "Identifier" && fn.name === "expect") || ((fn.type === "MemberExpression" || fn.type === "OptionalMemberExpression") && (fn.object as Node).type === "Identifier" && (fn.object as { name: string }).name === "expect" && memberName(fn) === "soft");
+  return isExpect ? (base.arguments[0] as Node) : undefined;
+}
+
+/**
+ * The fields a file checks by presence on another object, such as toast in
+ * expect(pages.loginPage.toast).toBeVisible(): a fix may not change the
+ * locator a page object keeps in that field (fixSkeleton's pinnedFields).
+ */
+export function presenceCheckedFields(text: string, file: string): string[] {
+  const ast = parseCode(text, file);
+  if (!ast) return [];
+  const out = new Set<string>();
+  walkAst(ast, (x) => {
+    const subject = presenceSubject(x);
+    const path = subject ? pathOfExpr(subject) : undefined;
+    if (path?.includes(".")) out.add(path.slice(path.lastIndexOf(".") + 1));
+  });
+  return [...out].sort();
+}
+
 /**
  * The shape of a file for comparing a fix with the code before it (S2-8): a
  * fix may change which element is picked (LOC) and add waits, and nothing
@@ -259,14 +308,15 @@ function readNames(n: Node, into: Set<string>): void {
  * expected value passed to a page object, a removed check or a new return is
  * a different skeleton.
  */
-export function fixSkeleton(text: string, file: string): FixSkeleton | undefined {
+export function fixSkeleton(text: string, file: string, pinnedFields: ReadonlySet<string> = new Set()): FixSkeleton | undefined {
   const ast = parseCode(text, file);
   if (!ast || ((ast as unknown as { errors?: unknown[] }).errors ?? []).length) return undefined;
   const tokens: FixSkeleton["tokens"] = [];
   const locatorNames = new Set<string>();
   const locatorCode = new Set<string>();
-  const isLocatorCall = (n: Node) => (n.type === "CallExpression" || n.type === "OptionalCallExpression") && LOCATOR_METHODS.has(memberName(n.callee as Node) ?? (n.callee.type === "Identifier" ? n.callee.name : ""));
-  const isTimeoutOption = (n: Node) => n.type === "ObjectExpression" && n.properties.length > 0 && n.properties.every((p) => p.type === "ObjectProperty" && ["timeout", "intervals"].includes(p.key.type === "Identifier" ? p.key.name : (literalString(p.key as Node) ?? "")));
+  const isLocatorCall = isLocatorCallNode;
+  const isTimeoutOption = isTimeoutOptionNode;
+  const pathOf = pathOfExpr;
   const flat = (n: Node): string => {
     const out: string[] = [];
     emit(n, (t) => out.push(t.t));
@@ -304,23 +354,15 @@ export function fixSkeleton(text: string, file: string): FixSkeleton | undefined
     const c = (s as { expression: { argument: Node } }).expression.argument as Node & { arguments: Node[] };
     for (const a of c.arguments) plainOnly(a);
   };
-  /** a.b, a["b"], this.b: the path an expression reads, or undefined when it isn't one. */
-  const pathOf = (n: Node): string | undefined => {
-    if (n.type === "Identifier") return n.name;
-    if (n.type === "ThisExpression") return "this";
-    if (n.type === "TSNonNullExpression" || n.type === "TSAsExpression") return pathOf(n.expression as Node);
-    if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
-      const o = pathOf(n.object as Node);
-      const k = !n.computed && n.property.type === "Identifier" ? n.property.name : literalString(n.property as Node);
-      return o !== undefined && k !== undefined ? `${o}.${k}` : undefined;
-    }
-    return undefined;
-  };
   // Locators held in a variable or a field: const label = page.getByText(s); this.label = page.getByText(s).
   const held = new Map<string, Node>();
+  /** Every locator held under a name: a name declared twice (in two tests) pins both. */
+  const heldAll = new Map<string, Node[]>();
   walkAst(ast, (x) => {
     const keep = (name: string | undefined, init: Node | null | undefined) => {
-      if (name && init && isLocatorCall(init)) held.set(name, init);
+      if (!name || !init || !isLocatorCall(init)) return;
+      held.set(name, init);
+      heldAll.set(name, [...(heldAll.get(name) ?? []), init]);
     };
     if (x.type === "VariableDeclarator" && x.id.type === "Identifier") keep(x.id.name, x.init as Node | null);
     if (x.type === "AssignmentExpression") keep(pathOf(x.left as Node), x.right as Node);
@@ -359,32 +401,40 @@ export function fixSkeleton(text: string, file: string): FixSkeleton | undefined
       if (same) locatorCode.add(`${src(n)} (the element is picked by the value it is checked against)`);
     }
   };
-  // expect(locator).toBeVisible(): with no expected value, the element picked is what the check checks, so its texts stay.
+  // expect(locator).toBeVisible(): with no expected value, the element picked is what the check checks, so its locator stays
+  // exactly as it was: every text, variable and option. A wait for an element the next statements act on isn't such a check.
+  const norm = (x: Node) => src(x).replace(/\s+/g, " ");
+  const waitsForAction = new Set<Node>();
+  walkAst(ast, (x) => {
+    for (const k of ["body", "consequent"]) {
+      const body = (x as unknown as Record<string, unknown>)[k];
+      if (!Array.isArray(body)) continue;
+      body.forEach((st: Node, i: number) => {
+        if (!st || typeof st !== "object" || !isWait(st)) return;
+        const call = (st as { expression: { argument: Node } }).expression.argument;
+        const subject = presenceSubject(call);
+        if (!subject) return;
+        const later = (body.slice(i + 1) as Node[]).map(norm).join("\n");
+        const path = pathOf(subject);
+        const used = path !== undefined && !isLocatorCall(subject) ? new RegExp(`(^|[^\\w$.])${path.replace(/[.$]/g, "\\$&")}(?![\\w$])`).test(later) : later.includes(norm(subject));
+        if (used) waitsForAction.add(call);
+      });
+    }
+  });
   const checkedByPresence = new Set<Node>();
   walkAst(ast, (x) => {
-    if (x.type !== "CallExpression" || (x.callee.type !== "MemberExpression" && x.callee.type !== "OptionalMemberExpression")) return;
-    if ((x.arguments as Node[]).some((a) => !isTimeoutOption(a))) return;
-    let base = x.callee.object as Node;
-    if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
-    if (base.type !== "CallExpression" || base.callee.type !== "Identifier" || base.callee.name !== "expect" || !base.arguments[0]) return;
-    const subject = base.arguments[0] as Node;
-    const picked = isLocatorCall(subject) ? subject : held.get(pathOf(subject) ?? "");
-    if (picked) checkedByPresence.add(picked);
+    const subject = presenceSubject(x);
+    if (!subject || waitsForAction.has(x)) return;
+    if (isLocatorCall(subject)) return void checkedByPresence.add(subject);
+    for (const n of heldAll.get(pathOf(subject) ?? "") ?? []) checkedByPresence.add(n);
   });
-  const textsOf = (n: Node) => {
-    const out: string[] = [];
-    walkAst(n, (x) => {
-      const t = literalString(x);
-      if (t !== undefined) out.push(JSON.stringify(t));
-      if (x.type === "RegExpLiteral") out.push(`/${x.pattern}/${x.flags}`);
-    });
-    return out.join(" ");
-  };
+  // A page object's field another file checks by presence.
+  for (const [name, nodes] of heldAll) if (name.startsWith("this.") && pinnedFields.has(name.slice(5))) for (const n of nodes) checkedByPresence.add(n);
   function emit(n: Node, push: (t: { t: string; wait: boolean }) => void): void {
     checksItself(n);
     if (isLocatorCall(n)) {
       plainOnly(n);
-      push({ t: checkedByPresence.has(n) ? `LOC ${textsOf(n)}` : "LOC", wait: false });
+      push({ t: checkedByPresence.has(n) ? `LOC ${norm(n)}` : "LOC", wait: false });
       return;
     }
     const rec = n as unknown as Record<string, unknown>;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
-import type { SavedProfile, TestRunOutcome, TestSelection } from "../src/data/index.js";
+import { ProfileError, type SavedProfile, type TestRunOutcome, type TestSelection } from "../src/data/index.js";
 import { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugWorkflow, roleOf, type DebugDeps, type RunAttempt } from "../src/workflows/index.js";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
@@ -72,7 +72,7 @@ describe("debug workflow (S3-3)", () => {
     editTestFiles: async (_r, _t, _f, e) => {
       edits.push(e);
       for (const x of e) {
-        if (sha(files.get(x.path)!) !== x.sha256) throw new Error(`${x.path} changed since it was read`);
+        if (sha(files.get(x.path)!) !== x.sha256) throw new ProfileError(`${x.path} changed since it was read`);
         files.set(x.path, x.content);
       }
       return { status: "done", written: e.map((x) => ({ path: x.path, sha256: sha(x.content) })) };
@@ -104,7 +104,10 @@ describe("debug workflow (S3-3)", () => {
     expect(apply.context).toContain("+  await page.getByRole('button', { name: 'Save draft' }).click();");
     expect((await report(first.runId)).status).toBe("proposed");
     expect(edits).toEqual([]);
-    expect((await e.approval(first.runId, "apply-1"))?.question).toMatch(/Write this change to 1 file\(s\) of your repo \(\+1 −1 lines\): tests\/a\.spec\.ts\?/);
+    const question = (await e.approval(first.runId, "apply-1"))?.question ?? "";
+    expect(question).toMatch(/Write this change to 1 file\(s\) of your repo \(\+1 −1 lines\): tests\/a\.spec\.ts\?/);
+    // The prompt itself shows the diff: with an IDE prompt, it is all the person may see.
+    expect(question).toContain("+  await page.getByRole('button', { name: 'Save draft' }).click();");
     await expect(e.submit(first.runId, "apply-1", { apply: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
 
     outcomes.push(done(result("passed")), done({ ...result("passed"), runs: 2 }));
@@ -173,6 +176,33 @@ describe("debug workflow (S3-3)", () => {
     await expect(e.start("debug", { grep: "a", tag: "@b" })).rejects.toThrow();
   });
 
+  it("reports a data failure without changing test data", async () => {
+    const e = engine();
+    const first = await e.start("debug", { files: ["tests/a.spec.ts"] });
+    outcomes.push(done(result("failed")));
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
+    expect((await e.submit(first.runId, "fix-1", { failures: [{ test: TITLE, kind: "data", reason: "the name is taken" }] })).next.kind).toBe("done");
+    expect(await report(first.runId)).toMatchObject({ status: "data", stoppedOn: [{ kind: "data" }] });
+    expect(edits).toEqual([]);
+  });
+
+  it("calls a run of only skipped tests no-tests, and a failing test skipped after a fix not fixed", async () => {
+    const e = engine();
+    const skipped = await e.start("debug", { tag: "@smoke" });
+    outcomes.push(done(result("skipped")));
+    await e.submit(skipped.runId, "run", { run: true }, { byPerson: true });
+    expect(await report(skipped.runId)).toMatchObject({ status: "no-tests", reason: "every selected test was skipped" });
+
+    const tripped = await e.start("debug", { files: ["tests/a.spec.ts"] });
+    outcomes.push(done(result("failed"), result("passed", "", "TC-ABC-1-002 other")));
+    await e.submit(tripped.runId, "run", { run: true }, { byPerson: true });
+    await e.submit(tripped.runId, "fix-1", FIX);
+    outcomes.push(done(result("skipped"), result("passed", "", "TC-ABC-1-002 other")));
+    await e.submit(tripped.runId, "apply-1", { apply: true }, { byPerson: true });
+    expect(await report(tripped.runId)).toMatchObject({ status: "gave-up", reason: expect.stringContaining("doesn't run any more after the fix") });
+    expect(ran).toHaveLength(3);
+  });
+
   it("runs again for a flake, and gives up after the last round", async () => {
     const e = engine();
     const first = await e.start("debug", { files: ["tests/a.spec.ts"], fixRounds: 1 });
@@ -183,16 +213,19 @@ describe("debug workflow (S3-3)", () => {
     expect(ran).toHaveLength(2);
   });
 
-  it("doesn't write a file that changed since it was read, and keeps the step open", async () => {
+  it("doesn't write a file that changed since it was read, and proposes again from the file as it is", async () => {
     const e = engine();
     const first = await e.start("debug", { files: ["tests/a.spec.ts"] });
     outcomes.push(done(result("failed")));
     await e.submit(first.runId, "run", { run: true }, { byPerson: true });
     await e.submit(first.runId, "fix-1", FIX);
     files.set("tests/a.spec.ts", `${SPEC}// edited by hand\n`);
-    await expect(e.submit(first.runId, "apply-1", { apply: true }, { byPerson: true })).rejects.toThrow(/changed since it was read/);
+    const next = (await e.submit(first.runId, "apply-1", { apply: true }, { byPerson: true })).next;
     expect(files.get("tests/a.spec.ts")).toBe(`${SPEC}// edited by hand\n`);
-    expect((await report(first.runId)).status).toBe("proposed");
+    expect(await report(first.runId)).toMatchObject({ status: "failing", rounds: 1, reason: expect.stringMatching(/wasn't written: .*changed since it was read/) });
+    expect(next.stepId).toBe("fix-2");
+    expect(next.context).toContain("// edited by hand");
+    expect(ran).toHaveLength(1);
   });
 });
 
@@ -227,9 +260,45 @@ test('${TITLE}', async ({ page }) => {
     expect(visible(shownCheck.replace("getByText('Saved')", "getByText('Error')"))).toMatch(/changes more than locators and waits/);
     expect(visible(shownCheck.replace("getByText(/Saved/)", "getByRole('status').getByText(/Saved/)"))).toMatch(/changes more than locators and waits/);
     expect(visible(shownCheck.replace("name: 'Save' }", "name: 'Save draft' }"))).toBe("");
+    // A masked value only where the file holds it: the snapshot's name may be another file's.
+    expect(kinds({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [{ path: "tests/a.spec.ts", content: SPEC.replace("name: 'Save' }", "name: '<PERSON_2>' }") }] }).join()).toMatch(/holds <PERSON_2>, which this file doesn't hold/);
+    expect(kinds({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [{ path: "tests/a.spec.ts", content: SPEC.replace("name: 'Save' }", "name: '<PERSON_1>' }") }] })).toEqual([]);
+    // A selector fix sends the fix; test data isn't changed by debug.
+    expect(kinds({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [] }).join()).toMatch(/send the fix/);
+    expect(kinds({ failures: [{ test: TITLE, kind: "data", reason: "r" }], files: [{ path: "tests/test-data/a.json", content: '{"name":"Bob"}' }] }).join()).toMatch(/doesn't change test data yet/);
     // Each failure classified once; the skipped test isn't one.
     expect(kinds({ failures: [], files: [] }).join()).toMatch(/say what kind of failure/);
     expect(kinds({ failures: [{ test: TITLE, kind: "flake", reason: "r" }, { test: "TC-ABC-1-009 later", kind: "flake", reason: "r" }], files: [] }).join()).toMatch(/isn't a failure of the last run/);
+  });
+
+  it("keeps a presence check's element as it was, wherever its locator is written", () => {
+    const spec = (body: string) => `import { test, expect } from '@playwright/test';\n\ntest('${TITLE}', async ({ page, pages }) => {\n${body}\n});\n`;
+    const verdict = (before: string, after: string) =>
+      checkDebugFix({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [{ path: "tests/a.spec.ts", content: after }] }, last, [{ path: "tests/a.spec.ts", content: before }])
+        .map((x) => x.message)
+        .join();
+    const refused = /changes more than locators and waits/;
+    const row = spec("  await expect(page.getByRole('row').filter({ hasText: name })).toBeVisible();");
+    expect(verdict(row, row.replace(".filter({ hasText: name })", ""))).toMatch(refused);
+    const exact = spec("  await expect(page.getByText('Saved', { exact: true }).nth(1)).toBeVisible();");
+    expect(verdict(exact, exact.replace(", { exact: true }", ""))).toMatch(refused);
+    expect(verdict(exact, exact.replace(".nth(1)", ".first()"))).toMatch(refused);
+    const soft = spec("  await expect.soft(page.getByText('Saved')).toBeVisible();");
+    expect(verdict(soft, soft.replace("'Saved'", "'Error'"))).toMatch(refused);
+    const none = spec("  await page.getByRole('button').click();\n  await expect(page.getByText('Error')).toHaveCount(0);");
+    expect(verdict(none, none.replace("'Error'", "'Nope'"))).toMatch(refused);
+    // The same name in two tests: both stay.
+    const twice = `import { test, expect } from '@playwright/test';\n\ntest('${TITLE}', async ({ page }) => {\n  const msg = page.getByText('A');\n  await page.getByRole('button').click();\n  await expect(msg).toBeVisible();\n});\n\ntest('other', async ({ page }) => {\n  const msg = page.getByText('B');\n  await msg.click();\n});\n`;
+    expect(verdict(twice, twice.replace("getByText('A')", "getByText('Z')"))).toMatch(refused);
+    // A wait for the element the next statement acts on is a wait: its locator may change with the action's.
+    const waited = spec("  await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();\n  await page.getByRole('button', { name: 'Save' }).click();");
+    expect(verdict(waited, waited.replaceAll("name: 'Save' }", "name: 'Save draft' }"))).toBe("");
+    // A page object's field a shown spec checks by presence stays too.
+    const checks = { path: "tests/a.spec.ts", content: spec("  await pages.loginPage.signIn();\n  await expect(pages.loginPage.toast).toBeVisible();") };
+    const page = "export class LoginPage {\n  constructor(private page: any) {}\n  toast = this.page.getByText('Welcome');\n  button = this.page.getByRole('button', { name: 'Sign in' });\n  async signIn() {\n    await this.button.click();\n  }\n}\n";
+    const pageFix = (after: string) => checkDebugFix({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [{ path: "src/pages/login-page.ts", content: after }] }, { ...last, tests: [{ ...last.tests[0]!, failure: { message: "x", at: { file: "src/pages/login-page.ts", line: 3 } } }] }, [checks, { path: "src/pages/login-page.ts", content: page }]).map((x) => x.message).join();
+    expect(pageFix(page.replace("'Welcome'", "'Error'"))).toMatch(refused);
+    expect(pageFix(page.replace("name: 'Sign in' }", "name: 'Log in' }"))).toBe("");
   });
 
   it("names each file's part from its path", () => {
