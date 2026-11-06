@@ -10,7 +10,8 @@ import type { ModelDriver, ModelRequest, ModelResponse } from "../llm/index.js";
  * For the `scripts` workflow (S2-10) it writes one spec for the stand-in
  * app's Submit for Approval, and, when that test fails on the app's seeded
  * bug, first tries to make it pass by changing what it expects (which the
- * fix checks must refuse), then reports the defect.
+ * fix checks must refuse), then reports the defect. For `debug` (S3-10) it
+ * does the same on the hand-written test of the harness's own repo.
  *
  * It proves the pipeline masks what it sends, not that answers are any good:
  * the quality numbers come from runs with a real model.
@@ -31,7 +32,9 @@ export class FixtureDriver implements ModelDriver {
               ? draft(contextText(request))
               : step === "fix"
                 ? fix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
-                : undefined;
+                : /^fix-\d+$/.test(step)
+                  ? debugFix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
+                  : undefined;
     if (answer === undefined) throw new Error(`The fixture model can't answer step ${request.schemaName ?? "(unnamed)"}`);
     return { text: JSON.stringify(answer), model: "fixture" };
   }
@@ -182,5 +185,26 @@ function fix(context: string, refusal: string | undefined) {
   return {
     failures: titles.map((test) => ({ test, kind: "selector", reason: "The status shows another word" })),
     files: [{ path: FIXTURE_SPEC, content: `${code.replace(/toContainText\('Submitted'\)/g, "toContainText('Rejected')")}\n` }],
+  };
+}
+
+/**
+ * A `debug` fix round (S3-10), on the person's own test: the same tempting
+ * fix first (expect what the app shows, which the checks must refuse), then
+ * the defect. The failing tests are the "### title" lines followed by their
+ * "file:line, failed" line.
+ */
+function debugFix(context: string, refusal: string | undefined) {
+  const failures = context.slice(context.indexOf("## Fix round"), context.indexOf("## The test files involved"));
+  const titles = [...failures.matchAll(/^### (.+)\n\S+:\d+, (?:failed|flaky)/gm)].map((m) => m[1]!);
+  if (/^### Errors outside the tests/m.test(failures)) titles.push("(the run)");
+  if (!titles.length) throw new Error("The fixture model found no failures in the context");
+  if (refusal !== undefined && !/changes more than locators and waits/.test(refusal)) throw new Error(`The fixture model's tempting fix was refused for another reason: ${refusal.slice(0, 300)}`);
+  if (refusal !== undefined) return { failures: titles.map((test) => ({ test, kind: "defect", reason: "The request shows another status than Submitted after Submit for Approval" })), files: [] };
+  const spec = /^### (\S+\.spec\.ts) \(spec\)\n\n```ts\n([^]*?)\n```/m.exec(context);
+  if (!spec) throw new Error("The fixture model found no spec in the context");
+  return {
+    failures: titles.map((test) => ({ test, kind: "selector", reason: "The status shows another word" })),
+    files: [{ path: spec[1]!, content: `${spec[2]!.replace(/toContainText\('Submitted'\)/g, "toContainText('Rejected')")}\n` }],
   };
 }
