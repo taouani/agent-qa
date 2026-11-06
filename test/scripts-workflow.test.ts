@@ -510,6 +510,12 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect((await stop.e.submit(stop.runId, "fix_2", { failures: [], retry: false })).next.kind).toBe("done");
     expect((await runs.readArtifact(stop.runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "environment", reason: `the environment: ${TITLE}: sign-in failed: SF_CLIENT_ID is not set` });
     expect(stop.data.testRuns).toHaveLength(1);
+    // With two rounds there is no fix round left after a retry: it ends at once.
+    const two = await written(undefined, { fixRounds: 2 });
+    two.data.results.push(fail());
+    await two.e.submit(two.runId, "run", { run: true }, { byPerson: true });
+    expect((await two.e.submit(two.runId, "fix_1", env)).next.kind).toBe("done");
+    expect((await runs.readArtifact(two.runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "environment" });
     const last = await written(undefined, { fixRounds: 1 });
     last.data.results.push(fail());
     await last.e.submit(last.runId, "run", { run: true }, { byPerson: true });

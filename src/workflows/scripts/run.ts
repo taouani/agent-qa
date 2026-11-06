@@ -384,6 +384,8 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
         const last = state.attempts.at(-1)!;
         const round = (ctx.batch ?? 0) + 1;
         const failed = failing(last);
+        // This round's fix is in already (a stop halfway): any answer is taken, and the owed run happens.
+        if (state.rounds >= round) return `Fix round ${round} is applied already, but its run didn't happen. Submit any answer (for example the same one again): the owed run happens, and nothing is changed.`;
         if (state.waiting)
           return [
             `## The run waits for the environment (fix round ${round} of ${state.fixRounds})`,
@@ -393,8 +395,6 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
             "Tell the user what failed and that nothing in the tests is changed for it. Ask them to fix it (for example a missing value in .env, a user's access, or the app being down) and to tell you when it's done. Wait for their answer.",
             "Then submit retry: true, with no failures and no files: the tests run again. Submit retry: false if they want to stop, or if nobody can be asked (an unattended run): the run ends as environment.",
           ].join("\n");
-        // This round's fix is in already (a stop halfway): any answer is taken, and the owed run happens.
-        if (state.rounds >= round) return `Fix round ${round} is applied already, but its run didn't happen. Submit any answer (for example the same one again): the owed run happens, and nothing is changed.`;
         return [
           `## Fix round ${round} of ${state.fixRounds}: run ${state.attempts.length} (${last.kind}) in ${state.folder}`,
           `${last.tests.filter((t) => t.outcome === "passed").length} passed, ${failed.length} failed or flaky.${last.timedOut ? " The run timed out." : ""}`,
@@ -442,6 +442,8 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
         if (state.status !== "failing") return;
         if (state.waiting) {
           const { waiting, stoppedOn, ...rest } = state;
+          // No retry said (a resend of the answer that started the wait): keep waiting, the next round asks.
+          if (out.retry === undefined) return;
           if (!out.retry) return save(ctx, { ...rest, status: "environment", reason: `the environment: ${one(waiting.reason)}`, ...(stoppedOn ? { stoppedOn } : {}) });
           // The person fixed it: the same files run again, and the round counts as used.
           return save(ctx, await runAndJudge(ctx, { ...rest, rounds: round }, [], stoppedOn ?? [], round));
@@ -449,14 +451,14 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
         if (state.rounds < round) {
           const classified = out.failures.map((f) => ({ test: f.test, kind: f.kind, reason: f.reason }));
           const stop = out.failures.find((f) => STOPS.has(f.kind));
-          // The environment, with a round left: wait for the person to fix it instead of ending the run.
-          if (stop?.kind === "environment" && !out.failures.some((f) => f.kind === "defect") && round < state.fixRounds) {
+          // The environment, with a round left for the retry and one more for a fix after it: wait for the person to fix it instead of ending the run.
+          if (stop?.kind === "environment" && !out.failures.some((f) => f.kind === "defect") && round + 1 < state.fixRounds) {
             return save(ctx, { ...state, rounds: round, waiting: { reason: `${one(stop.test)}: ${one(stop.reason)}` }, stoppedOn: classified });
           }
           if (stop) {
             const defect = out.failures.find((f) => f.kind === "defect");
             if (defect) return save(ctx, { ...state, rounds: round, status: "defect", reason: `a real defect: ${one(defect.test)}: ${one(defect.reason)}`, stoppedOn: classified });
-            return save(ctx, { ...state, rounds: round, status: stop.kind === "defect" ? "defect" : "environment", reason: `${stop.kind === "defect" ? "a real defect" : "the environment"}: ${one(stop.test)}: ${one(stop.reason)}`, stoppedOn: classified });
+            return save(ctx, { ...state, rounds: round, status: "environment", reason: `the environment: ${one(stop.test)}: ${one(stop.reason)}`, stoppedOn: classified });
           }
           let files = state.files;
           if (out.files.length) {
