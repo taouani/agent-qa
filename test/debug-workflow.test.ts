@@ -39,6 +39,7 @@ describe("debug workflow (S3-3)", () => {
   let outcomes: TestRunOutcome[];
   const ran: TestSelection[] = [];
   const edits: Array<ReadonlyArray<{ path: string; content: string; sha256: string }>> = [];
+  const prs: Array<{ folder: string; files: ReadonlyArray<{ path: string; sha256: string; gitBlob?: string | undefined }>; title: string; body: string; draft: boolean }> = [];
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "agent-qa-debug-"));
     runs = new RunStore(dir);
@@ -46,6 +47,7 @@ describe("debug workflow (S3-3)", () => {
     outcomes = [];
     ran.length = 0;
     edits.length = 0;
+    prs.length = 0;
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
@@ -76,6 +78,11 @@ describe("debug workflow (S3-3)", () => {
         files.set(x.path, x.content);
       }
       return { status: "done", written: e.map((x) => ({ path: x.path, sha256: sha(x.content) })) };
+    },
+    pullRequestReadiness: async () => ({ ready: false, reason: "pull requests are opened from CI only (agent-qa run --ci)" }),
+    openPullRequest: async (_r, _t, folder, pr) => {
+      prs.push({ folder, ...pr });
+      return { status: "done", number: 7, url: "https://github.com/o/r/pull/7", base: "main", branch: "agent-qa/x", draft: pr.draft, created: true };
     },
     ...over,
   });
@@ -119,6 +126,30 @@ describe("debug workflow (S3-3)", () => {
     expect(r.proposal).toBeUndefined();
     expect(r.attempts.map((a) => a.kind)).toEqual(["run", "run", "stability"]);
     expect(await readFile(join(dir, first.runId, "debug-report.md"), "utf8")).toContain("round 1: tests/a.spec.ts (+1 −1)");
+  });
+
+  it("in CI, opens the changes as a pull request: each file once, checked against its blob before the first change", async () => {
+    const base = fake();
+    const e = engine({
+      ...base,
+      editTestFiles: async (...a) => ({ ...(await base.editTestFiles(...a)), pullRequest: true }),
+      pullRequestReadiness: async () => ({ ready: true, repo: "o/r" }),
+    });
+    const first = await e.start("debug", { files: ["tests/a.spec.ts"], stabilityRuns: 1 });
+    outcomes.push(done(result("failed")));
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
+    await e.submit(first.runId, "fix-1", FIX);
+    outcomes.push(done(result("failed", "TimeoutError: locator.click: Timeout 5000ms exceeded.")));
+    await e.submit(first.runId, "apply-1", { apply: true }, { byPerson: true });
+    const again = FIXED.replace("  await page.getByRole('button', { name: 'Save draft' }).click();", "  await expect(page.getByRole('button', { name: 'Save draft' })).toBeEnabled();\n  await page.getByRole('button', { name: 'Save draft' }).click();");
+    await e.submit(first.runId, "fix-2", { failures: [{ test: TITLE, kind: "timing", reason: "the button is disabled at first" }], files: [{ path: "tests/a.spec.ts", content: again }] });
+    outcomes.push(done(result("passed")), done(result("passed")));
+    const pr = (await e.submit(first.runId, "apply-2", { apply: true }, { byPerson: true })).next;
+    expect(pr.stepId).toBe("pr");
+    expect(pr.context).toContain("Before run 2: TC-ABC-1-001 saves a request for <PERSON_1>: selector");
+    expect((await e.submit(first.runId, "pr", { open: true })).next.kind).toBe("done");
+    expect(prs).toEqual([{ folder: ".", files: [{ path: "tests/a.spec.ts", sha256: sha(again), gitBlob: `blob-${sha(SPEC).slice(0, 8)}` }], title: "Agent-QA: fix 1 test file(s) (debug passed)", body: expect.stringContaining("**passed**"), draft: false }]);
+    expect((await report(first.runId)).pr).toEqual({ status: "opened", number: 7, url: "https://github.com/o/r/pull/7", branch: "agent-qa/x", draft: false });
   });
 
   it("reports a defect or a broken environment, and changes nothing for it", async () => {

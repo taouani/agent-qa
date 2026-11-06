@@ -46,5 +46,5 @@ export { MAX_SCRIPT_CASES, scriptsInputSchema, scriptsWorkflow, withHelper } fro
 export type { ScriptsDeps, ScriptsInputs } from "./scripts/workflow.js";
 export { runTestsInputSchema, runTestsWorkflow, statusOf, TEST_RUN_ARTIFACT, testRunSchema } from "./run-tests/workflow.js";
 export type { RunTestsDeps, RunTestsInputs, TestRun } from "./run-tests/workflow.js";
-export { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugFixSchema, debugInputSchema, debugReportSchema, debugWorkflow, roleOf } from "./debug/workflow.js";
+export { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugFixSchema, debugPrBody, debugInputSchema, debugReportSchema, debugWorkflow, roleOf } from "./debug/workflow.js";
 export type { DebugDeps, DebugFix, DebugInputs, DebugReport } from "./debug/workflow.js";
