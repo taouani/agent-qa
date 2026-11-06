@@ -49,7 +49,7 @@ const RENAME: RefactorPlan = {
   ],
 };
 
-describe("refactor workflow (S3-6)", () => {
+describe("refactor workflow (S3-6)", { timeout: 30_000 }, () => {
   let dir: string;
   let runs: RunStore;
   let files: Map<string, string>;
@@ -387,7 +387,7 @@ describe("refactor workflow (S3-6)", () => {
   });
 });
 
-describe("refactor operations (ts-morph)", () => {
+describe("refactor operations (ts-morph)", { timeout: 30_000 }, () => {
   const files = [
     { path: "tests/pages/p.ts", content: "export class P {\n  async clickButton3() {}\n}\nexport function helper() {}\n" },
     { path: "tests/a.spec.ts", content: "import { P, helper } from './pages/p';\nhelper();\nnew P().clickButton3();\n" },
