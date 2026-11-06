@@ -118,7 +118,14 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
   };
   const soleReturns = new Set<Node>();
   walkAst(ast, (n) => {
-    if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") && n.body.type === "BlockStatement" && n.body.body.length === 1 && n.body.body[0]!.type === "ReturnStatement") soleReturns.add(n.body.body[0] as Node);
+    if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") && n.body.type === "BlockStatement" && n.body.body.length === 1 && n.body.body[0]!.type === "ReturnStatement") {
+      // Not when it hands back a function: a check inside one never runs.
+      let fn = false;
+      walkAst(n.body.body[0] as Node, (x) => {
+        if (x.type === "ArrowFunctionExpression" || x.type === "FunctionExpression") fn = true;
+      });
+      if (!fn) soleReturns.add(n.body.body[0] as Node);
+    }
   });
   const nameOf = (n: Node): string | undefined => (n.type === "Identifier" ? n.name : memberName(n));
   walkAst(ast, (n) => {
@@ -618,39 +625,52 @@ export function codeLiterals(text: string, file: string): string[] | undefined {
 export const MAX_REACH = 20_000;
 const MAX_REACH_VISITS = 300_000;
 const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeParameters", "implements", "decorators"]);
+const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration", "ClassMethod", "ClassPrivateMethod", "ObjectMethod"]);
+
+interface Env {
+  vars: Map<string, { node: Node; env: Env }>;
+  parent?: Env;
+}
 
 /**
  * What each test reaches (S3-6), by its title: the names of the calls its
  * body makes (`a:` for each call awaited) and the values it holds, in the
- * order they come, with every declaration it reads by name across the files
- * (a page object's method, a helper, a constant, a locator) expanded where it
- * is read, not where it is declared. A refactor may move what a test does
- * into a page object or a helper, never leave out an action, an await or a
- * value, nor change their order: the test's list before is a subsequence of
- * its list after. A function written in the test but not passed to a call
- * reaches nothing until it is called. Names are matched by text, not by
- * symbol; several declarations of one name expand in the order of their
- * text, so moving one between files changes nothing. `complete` is false
- * when the test was too large to follow.
+ * order they run. A name declared in the test (or a function it is in)
+ * stands for its own value; a called function's or method's parameters
+ * stand for the call's arguments, read where the parameter is read; any
+ * other name (a page object's method, a helper, a constant in another file)
+ * expands every declaration of it across the files, each text once, in the
+ * order of their text. A beforeEach of the test's describe block, or of its
+ * file, comes first. A function written in the test but not called reaches
+ * nothing; a locator declared reaches nothing until it is read.
+ *
+ * A refactor may move what a test does into a page object, a helper, a
+ * fixture or a beforeEach, never leave out an action, an await or a value,
+ * nor change their order: the test's list before is a subsequence of its
+ * list after. `complete` is false when the test was too large to follow.
  */
 export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, { reach: Set<string>; order: string[]; complete: boolean }> {
-  const decls = new Map<string, Array<{ text: string; node: Node }>>();
-  const tests: Array<{ title: string; file: string; body: Node[] }> = [];
-  const hooks = new Map<string, Node[]>();
+  /** By name: the node a read reaches, and the function (params and body) a call runs. */
+  const decls = new Map<string, Array<{ text: string; node: Node; fn?: Node; getter?: boolean }>>();
+  const tests: Array<{ title: string; at: number; file: string; body: Node[] }> = [];
+  const hooks: Array<{ file: string; from: number; to: number; fn: Node }> = [];
   for (const f of files) {
     const ast = parseCode(f.content, f.path);
     if (!ast) continue;
-    const declare = (name: string | undefined, body: Node | null | undefined) => {
-      if (name && body) decls.set(name, [...(decls.get(name) ?? []), { text: f.content.slice(body.start ?? 0, body.end ?? 0), node: body }]);
+    const textOf = (n: Node) => f.content.slice(n.start ?? 0, n.end ?? 0);
+    const declare = (name: string | undefined, node: Node | null | undefined, whole?: Node) => {
+      if (!name || !node) return;
+      const fn = FUNCTIONS.has(node.type) ? node : undefined;
+      decls.set(name, [...(decls.get(name) ?? []), { text: textOf(whole ?? node), node, ...(fn ? { fn } : {}), ...(whole?.type === "ClassMethod" && whole.kind === "get" ? { getter: true } : {}) }]);
     };
     const keyName = (k: Node) => (k.type === "Identifier" ? k.name : k.type === "PrivateName" ? k.id.name : literalString(k));
+    const describes: Array<[number, number]> = [];
+    const found: Array<{ at: number; fn: Node }> = [];
     walkAst(ast, (n) => {
-      if (n.type === "VariableDeclarator") {
-        if (n.id.type === "Identifier") declare(n.id.name, n.init);
-        else walkAst(n.id as Node, (x) => x.type === "Identifier" && declare(x.name, n.init));
-      } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n.value as Node | null);
-      else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n.body);
-      else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n.body);
+      if (n.type === "VariableDeclarator" && n.id.type === "Identifier") declare(n.id.name, n.init);
+      else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n.value as Node | null);
+      else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n, n);
+      else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n);
       else if (n.type === "ObjectProperty" && !n.shorthand) declare(keyName(n.key as Node), n.value as Node);
       else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n.right);
       else if (n.type === "CallExpression") {
@@ -659,13 +679,19 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         const name = callee.type === "Identifier" ? callee.name : memberName(callee);
         const objName = isMember ? (callee.object.type === "Identifier" ? callee.object.name : memberName(callee.object as Node)) : undefined;
         const title = n.arguments[0] ? literalString(n.arguments[0] as Node) : undefined;
-        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) tests.push({ title, file: f.path, body: n.arguments.slice(1) as Node[] });
-        // A hook runs before each test of its file: setup may move into one.
-        if (objName === "test" && (name === "beforeEach" || name === "beforeAll")) hooks.set(f.path, [...(hooks.get(f.path) ?? []), ...(n.arguments.filter((a) => a.type === "ArrowFunctionExpression" || a.type === "FunctionExpression") as Node[])]);
+        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) {
+          tests.push({ title, at: n.start ?? 0, file: f.path, body: n.arguments.slice(1) as Node[] });
+          if (objName === "test" && name === "describe") describes.push([n.start ?? 0, n.end ?? 0]);
+        }
+        // beforeEach runs before each test of its describe block (of the file, at the top). beforeAll runs once: nothing moves into it.
+        if (objName === "test" && name === "beforeEach") for (const a of n.arguments) if (a.type === "ArrowFunctionExpression" || a.type === "FunctionExpression") found.push({ at: n.start ?? 0, fn: a as Node });
       }
     });
+    for (const h of found) {
+      const inside = describes.filter(([a, b]) => a < h.at && h.at < b).sort((x, y) => x[1] - x[0] - (y[1] - y[0]))[0];
+      hooks.push({ file: f.path, from: inside?.[0] ?? 0, to: inside?.[1] ?? Infinity, fn: h.fn });
+    }
   }
-  // One expansion for each text: the same `const request = new RequestPage(page)` in ten tests is one declaration, ordered by its text.
   for (const [name, d] of decls) {
     const seen = new Set<string>();
     decls.set(name, d.filter((x) => !seen.has(x.text) && seen.add(x.text)).sort((x, y) => (x.text < y.text ? -1 : x.text > y.text ? 1 : 0)));
@@ -679,48 +705,104 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
   for (const t of tests) {
     const order: string[] = [];
     let visits = 0;
-    const expanding = new Set<string>();
+    const running = new Set<Node>();
     const full = () => order.length >= MAX_REACH || visits >= MAX_REACH_VISITS;
-    const follow = (name: string) => {
-      if (expanding.has(name) || full()) return;
-      expanding.add(name);
-      for (const d of decls.get(name) ?? []) visit(d.node, true);
-      expanding.delete(name);
+    const root: Env = { vars: new Map() };
+    const lookup = (env: Env | undefined, name: string): { node: Node; env: Env } | undefined => {
+      for (let e = env; e; e = e.parent) if (e.vars.has(name)) return e.vars.get(name);
+      return undefined;
     };
-    const visit = (n: Node, runs: boolean): void => {
+    /** Runs a function: its parameters stand for the arguments, read in the caller's scope. */
+    const call = (fn: Node, args: readonly Node[], caller: Env, outer: Env) => {
+      if (running.has(fn) || full()) return;
+      running.add(fn);
+      const env: Env = { vars: new Map(), parent: outer };
+      const params = (fn as unknown as { params?: Node[] }).params ?? [];
+      params.forEach((p, i) => {
+        const id = p.type === "AssignmentPattern" ? (p.left as Node) : p.type === "TSParameterProperty" ? (p.parameter as Node) : p;
+        const arg = args[i] as Node | undefined;
+        if (id.type === "Identifier" && arg) env.vars.set(id.name, { node: arg, env: caller });
+        else if (id.type === "AssignmentPattern" && id.left.type === "Identifier" && arg) env.vars.set(id.left.name, { node: arg, env: caller });
+      });
+      const body = (fn as unknown as { body: Node }).body;
+      visit(body, env, false);
+      running.delete(fn);
+    };
+    /** A name read by a call (with its arguments) or not (args undefined). */
+    const reach = (name: string, env: Env, args: readonly Node[] | undefined, runs: boolean, local: boolean) => {
+      if (full()) return;
+      const b = local ? lookup(env, name) : undefined;
+      if (b) {
+        if (running.has(b.node)) return;
+        if (FUNCTIONS.has(b.node.type)) {
+          if (args) call(b.node, args, env, b.env);
+          else if (runs) visit(b.node, b.env, true);
+          return;
+        }
+        running.add(b.node);
+        visit(b.node, b.env, runs);
+        running.delete(b.node);
+        return;
+      }
+      for (const d of decls.get(name) ?? []) {
+        if (d.fn) {
+          if (args) call(d.fn, args, env, root);
+          else if (d.getter || runs) call(d.fn, [], env, root);
+        } else if (!running.has(d.node)) {
+          running.add(d.node);
+          visit(d.node, root, runs);
+          running.delete(d.node);
+        }
+      }
+    };
+    const visit = (n: Node, env: Env, runs: boolean): void => {
       if (full()) return;
       visits++;
-      // A function that is neither passed to a call nor read by name never runs here.
-      if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") && !runs) return;
-      // A class's methods and a declared function are reached by their names, where they are called.
+      if (n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") {
+        // A function that is neither passed to a call nor called by name never runs here; one that does sees the scope it was written in.
+        if (!runs) return;
+        const inner: Env = { vars: new Map(), parent: env };
+        return visit(n.body as Node, inner, false);
+      }
       if (n.type === "ClassBody" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "FunctionDeclaration") return;
-      // A declared value is reached where it is read (a locator built does nothing); one awaited, or a wait started early (waitForResponse, waitForEvent), runs here too.
-      if (n.type === "VariableDeclarator") return n.init && (n.init.type === "AwaitExpression" || /^waitFor/.test(callName(n.init as Node) ?? "")) ? visit(n.init as Node, false) : undefined;
+      if (n.type === "VariableDeclarator") {
+        if (n.id.type === "Identifier" && n.init) env.vars.set(n.id.name, { node: n.init as Node, env });
+        else if (n.init) walkAst(n.id as Node, (x) => x.type === "Identifier" && env.vars.set(x.name, { node: n.init as Node, env }));
+        // A value declared is reached where it is read (a locator built does nothing); one awaited, or a wait started early, runs here too.
+        if (n.init && (n.init.type === "AwaitExpression" || /^waitFor/.test(callName(n.init as Node) ?? ""))) visit(n.init as Node, env, false);
+        return;
+      }
       if (n.type === "AwaitExpression") {
-        const arg = n.argument as Node;
-        if (arg.type === "CallExpression" || arg.type === "OptionalCallExpression") {
-          const name = callName(arg);
-          if (name) order.push(`a:${name}`);
-        }
-        return visit(arg, false);
+        const name = callName(n.argument as Node);
+        if (name) order.push(`a:${name}`);
+        return visit(n.argument as Node, env, false);
       }
       if (n.type === "CallExpression" || n.type === "OptionalCallExpression" || n.type === "NewExpression") {
         const name = callName(n);
         if (name) order.push(`c:${name}`);
-        visit(n.callee as Node, false);
-        for (const a of n.arguments) visit(a as Node, true);
+        const c = n.callee as Node;
+        const args = n.arguments as Node[];
+        if (c.type === "Identifier") reach(c.name, env, args, true, true);
+        else if (c.type === "MemberExpression" || c.type === "OptionalMemberExpression") {
+          visit(c.object as Node, env, false);
+          if (c.computed) visit(c.property as Node, env, false);
+          const m = memberName(c);
+          if (m) reach(m, env, args, true, false);
+        } else visit(c, env, false);
+        // The arguments as written too, so a value passed but never read is still reached.
+        for (const a of args) visit(a, env, true);
         return;
       }
-      if (n.type === "Identifier") return follow(n.name);
+      if (n.type === "Identifier") return reach(n.name, env, undefined, runs, true);
       if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
-        visit(n.object as Node, false);
-        if (n.computed) visit(n.property as Node, false);
+        visit(n.object as Node, env, false);
+        if (n.computed) visit(n.property as Node, env, false);
         const m = memberName(n);
-        if (m) follow(m);
+        if (m) reach(m, env, undefined, runs, false);
         return;
       }
       if ((n.type === "ObjectProperty" || n.type === "ObjectMethod") && !n.computed) {
-        if (n.type === "ObjectProperty") visit(n.value as Node, false);
+        if (n.type === "ObjectProperty") visit(n.value as Node, env, false);
         return;
       }
       if (n.type === "StringLiteral") return void order.push(`s:${n.value}`);
@@ -731,11 +813,12 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         if (SKIP_KEYS.has(k) || TYPE_KEYS.has(k)) continue;
         const v = rec[k];
         if (Array.isArray(v)) {
-          for (const c of v) if (c && typeof c === "object" && typeof (c as Node).type === "string") visit(c as Node, false);
-        } else if (v && typeof v === "object" && typeof (v as Node).type === "string") visit(v as Node, false);
+          for (const c of v) if (c && typeof c === "object" && typeof (c as Node).type === "string") visit(c as Node, env, false);
+        } else if (v && typeof v === "object" && typeof (v as Node).type === "string") visit(v as Node, env, false);
       }
     };
-    for (const b of [...(hooks.get(t.file) ?? []), ...t.body]) visit(b, true);
+    for (const h of hooks) if (h.file === t.file && h.from < t.at && t.at < h.to) visit(h.fn, root, true);
+    for (const b of t.body) visit(b, root, true);
     const prev = out.get(t.title);
     const all = [...(prev?.order ?? []), ...order];
     out.set(t.title, { reach: new Set(all), order: all, complete: (prev?.complete ?? true) && !full() });

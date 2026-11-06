@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
-import { applyRefactor, dependentSpecs, ProfileError, type FrameworkProfile, type SavedProfile, type TypeDiagnostic } from "../src/data/index.js";
+import { applyRefactor, dependentSpecs, ProfileError, scanGeneratedCode, type FrameworkProfile, type SavedProfile, type TypeDiagnostic } from "../src/data/index.js";
 import { AUDIT_ARTIFACT, checkRefactored, REFACTOR_REPORT_ARTIFACT, refactorWorkflow, simulatePlan, type Audit, type RefactorDeps, type RefactorPlan } from "../src/workflows/index.js";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
@@ -527,6 +527,30 @@ test('T1', async ({ page }) => {
         edit("tests/a.spec.ts", "test('T3', async ({ page }) => {\n  const request = new RequestPage(page);\n", "test('T3', async ({ page, requestPage: request }) => {\n"),
       ]),
     ).toEqual([]);
+  });
+
+  it("refuses swapped targets and values, and setup moved where it doesn't run before the test", () => {
+    const head = "import { expect, test } from '@playwright/test';\n";
+    const spec = `${head}test('T1', async ({ page }) => {\n  await page.goto('/form');\n  await page.getByLabel('User').fill('ann');\n  await page.getByLabel('City').fill('Paris');\n  await page.getByRole('button', { name: 'Submit' }).click();\n  await page.getByRole('button', { name: 'Reset' }).click();\n});\ntest.describe('D', () => {\n  test('T2', async ({ page }) => {\n    const save = page.getByRole('button', { name: 'Cancel' });\n    await save.click();\n  });\n});\n`;
+    const before = new Map([["t.spec.ts", spec]]);
+    const check = (after: string) => checkRefactored(before, new Map([["t.spec.ts", after]]), []).join(" | ");
+    expect(check(spec.replace("{ name: 'Submit' }).click();\n  await page.getByRole('button', { name: 'Reset' })", "{ name: 'Reset' }).click();\n  await page.getByRole('button', { name: 'Submit' })"))).toMatch(/out of its order/);
+    expect(check(spec.replace("fill('ann');\n  await page.getByLabel('City').fill('Paris')", "fill('Paris');\n  await page.getByLabel('City').fill('ann')"))).toMatch(/out of its order/);
+    // A beforeEach inside another describe block doesn't run before T1; a beforeAll runs once.
+    expect(check(spec.replace("  await page.goto('/form');\n", "").replace("test.describe('D', () => {\n", "test.describe('D', () => {\n  test.beforeEach(async ({ page }) => {\n    await page.goto('/form');\n  });\n"))).toMatch(/T1" no longer reaches/);
+    expect(check(spec.replace("  await page.goto('/form');\n", "").replace("test('T1'", "test.beforeAll(async ({ page }) => {\n  await page.goto('/form');\n});\ntest('T1'"))).toMatch(/T1" no longer reaches/);
+    // Another test's local of the same name is its own.
+    const page = "export class P {\n  constructor(private readonly page: any) {}\n  get save() {\n    return this.page.getByRole('button', { name: 'Save' });\n  }\n}\n";
+    const two = `${head}import { P } from './p';\ntest('T3', async ({ page }) => {\n  const save = page.getByRole('button', { name: 'Save' });\n  await save.click();\n});\ntest('T6', async ({ page }) => {\n  const save = page.getByRole('button', { name: 'Cancel' });\n  await save.click();\n});\n`;
+    const b2 = new Map([["p.ts", "export class P {\n  constructor(private readonly page: any) {}\n}\n"], ["t.spec.ts", two]]);
+    const a2 = new Map([["p.ts", page], ["t.spec.ts", two.replace("  const save = page.getByRole('button', { name: 'Save' });\n  await save.click();", "  await new P(page).save.click();")]]);
+    expect(checkRefactored(b2, a2, [])).toEqual([]);
+  });
+
+  it("counts a single return as no branch only when it hands back no function", () => {
+    const scan = (body: string) => scanGeneratedCode(`class P {\n  ${body}\n}\n`, "p.ts").branches;
+    expect(scan("get go() { return this.page.getByRole('button'); }")).toBe(0);
+    expect(scan("expectSaved() { return () => expect(this.page.getByText('Saved')).toBeVisible(); }")).toBe(1);
   });
 
   it("keeps a wait started before an action in its place", () => {
