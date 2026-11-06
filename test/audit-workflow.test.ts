@@ -46,6 +46,7 @@ const OUT: AuditOutput = {
     { key: "locator-order", area: "locators", title: "No locator order", severity: "low", impact: "medium", risk: "low", effort: 1, problem: "CSS ids and XPath next to roles", good: "One order: role, label, test id", evidence: [{ path: "tests/pages/request-page.ts", line: 4 }] },
   ],
   notAssessed: ["Whether tests share accounts: no sign-in code in the sample"],
+  areasNotAssessed: ["scalability", "locators"],
 };
 
 describe("audit workflow (S3-5)", () => {
@@ -64,6 +65,8 @@ describe("audit workflow (S3-5)", () => {
       ["test-data/requests.json", '{ "name": "<PERSON_1>" }\n'],
       ["playwright.config.ts", "export default {};\n"],
       ["package.json", "{}\n"],
+      ["tests/global-setup.ts", "export default async () => {};\n"],
+      ["test-data/users.csv", "name\n"],
       ["README.md", "# suite\n"],
     ]);
     reads.length = 0;
@@ -93,13 +96,15 @@ describe("audit workflow (S3-5)", () => {
     // Configs are never read; the sign-in file is refused and said so.
     expect(reads).not.toContain("playwright.config.ts");
     expect(reads).not.toContain("package.json");
-    expect(context).toContain("Entry points (configs are never read): package.json, playwright.config.ts");
+    expect(context).toContain("Entry points (configs, package.json and global setup are never read): package.json, playwright.config.ts, tests/global-setup.ts");
+    expect(reads).not.toContain("tests/global-setup.ts");
     expect(context).toMatch(/rule:fixed-wait: Fixed waits, 12 in 12 file\(s\)/);
     expect(context).toMatch(/rule:xpath: XPath locators, 1 in 1 file\(s\)/);
     expect(context).toContain("tests/auth.setup.ts: tests/auth.setup.ts is a sign-in file");
     // The sample: the fixture, the largest files, then ten specs drawn; the eleventh and twelfth spec left out.
     const shown = [...context.matchAll(/^### (\S+)\n\((\w+), ([^)]+)\)/gm)].map((m) => [m[1], m[2], m[3]]);
-    expect(shown).toContainEqual(["tests/fixtures.ts", "fixture", "every fixture"]);
+    expect(shown).toContainEqual(["tests/fixtures.ts", "fixture", "a fixture"]);
+    expect(reads).not.toContain("test-data/users.csv");
     expect(shown).toContainEqual(["test-data/requests.json", "data", "drawn"]);
     expect(shown.filter((s) => s[1] === "spec")).toHaveLength(12);
 
@@ -113,7 +118,10 @@ describe("audit workflow (S3-5)", () => {
     ]);
     expect(a.findings[0]).toMatchObject({ area: "waits", effort: 12, occurrences: 12 });
     expect(a.counts).toEqual({ critical: 0, high: 1, medium: 2, low: 1 });
+    // Fixed waits in 12 files weigh twice; an area with findings is scored even when listed as not assessed; one without has no score.
+    expect(a.scores.find((s) => s.area === "waits")).toEqual({ area: "waits", score: 6, findings: 1 });
     expect(a.scores.find((s) => s.area === "locators")).toEqual({ area: "locators", score: 8.5, findings: 2 });
+    expect(a.scores.find((s) => s.area === "scalability")).toEqual({ area: "scalability", score: null, findings: 0 });
     expect(a.inventory.roles.find((r) => r.role === "spec")).toEqual({ role: "spec", files: 12, lines: 12 * 8 });
     expect(a.inventory.unread).toEqual(["tests/auth.setup.ts: tests/auth.setup.ts is a sign-in file: Agent-QA never reads it"]);
     expect(a.notAssessed).toContain("Whether tests share accounts: no sign-in code in the sample");
@@ -121,6 +129,7 @@ describe("audit workflow (S3-5)", () => {
     expect(md).toContain("### AF-003: Specs pick elements themselves");
     expect(md).toContain("after AF-002");
     expect(md).toContain("- Not read: tests/auth.setup.ts");
+    expect(md).toContain("| scalability | not assessed | 0 |");
   });
 
   it("refuses evidence outside the sample, unknown or circular dependencies, and keys used twice", () => {
@@ -145,7 +154,11 @@ describe("audit workflow (S3-5)", () => {
       ["AF-001", "a", []],
       ["AF-002", "c", ["AF-001"]],
     ]);
-    expect(scoreAreas([{ area: "waits", severity: "critical" }, { area: "waits", severity: "critical" }, { area: "waits", severity: "high" }]).find((s) => s.area === "waits")!.score).toBe(0);
+    const m = { source: "model" as const, effort: 1 };
+    expect(scoreAreas([{ ...m, area: "waits", severity: "critical" }, { ...m, area: "waits", severity: "critical" }, { ...m, area: "waits", severity: "high" }]).find((s) => s.area === "waits")!.score).toBe(0);
+    // A scan finding in 40 files weighs four times, never more.
+    expect(scoreAreas([{ source: "rule", effort: 40, area: "waits", severity: "medium" }]).find((s) => s.area === "waits")!.score).toBe(6);
+    expect(scoreAreas([{ source: "rule", effort: 400, area: "waits", severity: "medium" }]).find((s) => s.area === "waits")!.score).toBe(6);
   });
 
   it("gives each file a role from the profile, then its name", () => {
@@ -161,5 +174,7 @@ describe("audit workflow (S3-5)", () => {
     expect(auditRoleOf("playwright.config.ts", undefined)).toBe("config");
     expect(auditRoleOf("types/global.d.ts", undefined)).toBe("config");
     expect(auditRoleOf(".env.local", undefined)).toBe("config");
+    expect(auditRoleOf("tests/global-setup.ts", undefined)).toBe("config");
+    expect(auditRoleOf("test-data/users.csv", undefined)).toBe("other");
   });
 });

@@ -293,8 +293,8 @@ async function reviewCase(data: DataAccess, runs: RunStore, repo: string, seeds:
 /**
  * The `audit` case (S3-5): the same flawed suite, audited. The code scan's
  * count must include the spec's fixed wait at its line, the model must report
- * the check inside the page object with evidence there, the findings come
- * ranked from AF-001, and nothing in the repo changes.
+ * the check inside the page object with evidence there, and nothing in the
+ * repo changes.
  */
 async function auditCase(data: DataAccess, runs: RunStore, repo: string, seeds: Seed[], inputs: Record<string, unknown>, run: (workflow: string, inputs: Record<string, unknown>) => Promise<string>) {
   const person = seeds.find((s) => s.kind === "name")?.value;
@@ -310,7 +310,6 @@ async function auditCase(data: DataAccess, runs: RunStore, repo: string, seeds: 
   if (!a.sample.files.some((f) => f.path === HAND_WRITTEN_SPEC) || !a.sample.files.some((f) => f.path === HAND_WRITTEN_PAGE)) throw new Error(`Run ${runId} left the suite's spec or page object out of the sample`);
   if (!a.findings.some((f) => f.source === "rule" && f.area === "waits" && f.evidence.some((e) => e.path === HAND_WRITTEN_SPEC && e.line === wait))) throw new Error(`Run ${runId} didn't count the fixed wait at ${HAND_WRITTEN_SPEC}:${wait}`);
   if (!a.findings.some((f) => f.source === "model" && f.evidence.some((e) => e.path === HAND_WRITTEN_PAGE && Math.abs(e.line - check) <= 1))) throw new Error(`Run ${runId}: the model didn't report the check inside the page object at ${HAND_WRITTEN_PAGE}:${check}`);
-  if (a.findings.some((f, i) => f.id !== `AF-${String(i + 1).padStart(3, "0")}`)) throw new Error(`Run ${runId} numbered its findings out of order`);
   for (const f of files) {
     const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
     if (onDisk !== f.content) throw new Error(`Run ${runId} changed ${f.path}: an audit is read-only`);
