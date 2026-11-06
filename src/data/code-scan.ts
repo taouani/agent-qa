@@ -530,7 +530,10 @@ export function checkDependencies(text: string, file: string, seed: Iterable<str
   walkAst(ast, (n) => {
     if (n.type === "VariableDeclarator") {
       if (n.id.type === "Identifier") declare(n.id.name, n, n.init);
-      else walkAst(n.id as Node, (x) => x.type === "Identifier" && declare(x.name, n, n.init));
+      else
+        walkAst(n.id as Node, (x) => {
+          if (x.type === "Identifier") declare(x.name, n, n.init);
+        });
     } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n, n.value as Node | null);
     else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n, n.body);
     else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n, n.body);
@@ -550,7 +553,13 @@ export function checkDependencies(text: string, file: string, seed: Iterable<str
   });
   if (expand) {
     const queue = [...names];
-    while (queue.length) for (const d of decls.get(queue.pop()!) ?? []) for (const r of d.reads) if (!names.has(r)) names.add(r), queue.push(r);
+    while (queue.length)
+      for (const d of decls.get(queue.pop()!) ?? [])
+        for (const r of d.reads)
+          if (!names.has(r)) {
+            names.add(r);
+            queue.push(r);
+          }
   }
   const declarations = [...names].flatMap((name) => (decls.get(name) ?? []).map((d) => `${name}\u0000${d.source}`)).sort();
   return { names: [...names].sort(), declarations };
