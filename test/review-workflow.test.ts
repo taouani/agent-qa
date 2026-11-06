@@ -149,7 +149,22 @@ describe("review workflow (S3-4)", () => {
     expect(one({ old: "<PERSON_1>", new: "x" })).toMatch(/more than once/);
     expect(one(WAIT_FIX, "tests/other.spec.ts")).toMatch(/isn't one of the files shown/);
     expect(checkReview({ findings: [{ path: "tests/submit.spec.ts", line: 99, severity: "low", kind: "other", problem: "p", why: "w" }] }, shown).errors[0]!.message).toMatch(/has 11 lines/);
-    expect(one({ old: "  await expect(page.getByRole('status')).toHaveText('Submitted');\n", new: "" })).toMatch(/removes a check/);
+    expect(one({ old: "  await expect(page.getByRole('status')).toHaveText('Submitted');\n", new: "" })).toMatch(/removes or changes a check/);
+    // A check that still counts but no longer checks what it did.
+    const status = "  await expect(page.getByRole('status')).toHaveText('Submitted');\n";
+    for (const swap of [
+      "  await expect(page.getByRole('status')).toHaveText('Rejected');\n",
+      "  await expect(page.getByRole('status')).not.toHaveText('Submitted');\n",
+      "  expect(true).toBe(true);\n",
+    ])
+      expect(one({ old: status, new: swap }), swap).toMatch(/removes or changes a check/);
+    for (const swap of [
+      "  try {\n  await expect(page.getByRole('status')).toHaveText('Submitted');\n  } catch {}\n",
+      "  if (Date.now() < 0) await expect(page.getByRole('status')).toHaveText('Submitted');\n",
+      "  return;\n" + status,
+    ])
+      expect(one({ old: status, new: swap }), swap).toMatch(/adds a branch/);
+    expect(one({ old: status, new: "  await expect(page.getByRole('status')).toHaveText('Submitted', { timeout: 600000 });\n" })).toMatch(/lengthens a timeout/);
     expect(one({ old: "await expect(page.getByRole('status'))", new: "await expect.soft(page.getByRole('status'))" })).toMatch(/makes a check soft/);
     expect(one({ old: "await request.submit();", new: "await request.submit();\n  await page.waitForTimeout(500);" })).toMatch(/adds what the review reports \(uses a fixed wait/);
     expect(one({ old: "test('submits", new: "test.skip('submits" })).toMatch(/adds what the review reports|title/);
@@ -184,6 +199,39 @@ describe("review workflow (S3-4)", () => {
     expect(files.get("tests/submit.spec.ts")).toBe(`${SPEC}// edited\n`);
   });
 
+  it("checks the whole folder's types, and writes nothing when the promised type check can't run", async () => {
+    const seen: unknown[] = [];
+    // A fix that breaks a file it didn't change (a renamed method's caller) is caught: the check covers every file.
+    const caller = (f: ReadonlyArray<{ content: string }>) => (f.some((x) => x.content.includes("toBeHidden")) ? [{ file: "tests/other.spec.ts", line: 3, code: 2339, message: "Property 'open' does not exist." }] : []);
+    let e = engine(
+      fake({
+        typeCheck: async (_r, _t, f, _a, o) => {
+          seen.push(o);
+          return { status: "done", diagnostics: caller(f) };
+        },
+      }),
+    );
+    const broken = await e.start("review", { paths: ["tests/submit.spec.ts"] });
+    await e.submit(broken.runId, "review", { findings: [OUT.findings[0]!] });
+    await e.submit(broken.runId, "apply", { apply: true }, { byPerson: true });
+    expect(await report(broken.runId)).toMatchObject({ status: "type-errors", typeErrors: [{ file: "tests/other.spec.ts" }] });
+    expect(seen[0]).toMatchObject({ everyFile: true });
+
+    e = engine(fake({ typeCheck: async () => ({ status: "unavailable", reason: "the repo's TypeScript failed (Error)" }) }));
+    const crashed = await e.start("review", { paths: ["tests/submit.spec.ts"] });
+    await e.submit(crashed.runId, "review", { findings: [OUT.findings[0]!] });
+    await e.submit(crashed.runId, "apply", { apply: true }, { byPerson: true });
+    expect(await report(crashed.runId)).toMatchObject({ status: "unchecked", reason: expect.stringContaining("TypeScript failed") });
+    expect(edits).toEqual([]);
+
+    // No type check to run, as the question said: written, and the record says so.
+    e = engine(fake({ typeCheckReadiness: async () => ({ ready: false, reason: "TypeScript isn't installed in the repo" }) }));
+    const plain = await e.start("review", { paths: ["tests/submit.spec.ts"] });
+    await e.submit(plain.runId, "review", { findings: [OUT.findings[0]!] });
+    await e.submit(plain.runId, "apply", { apply: true }, { byPerson: true });
+    expect(await report(plain.runId)).toMatchObject({ status: "fixed", unchecked: "TypeScript isn't installed in the repo" });
+  });
+
   it("records a review without fixes, and refuses paths that aren't reviewable code", async () => {
     const e = engine();
     const first = await e.start("review", { paths: ["tests/submit.spec.ts"] });
@@ -191,6 +239,7 @@ describe("review workflow (S3-4)", () => {
     expect(await report(first.runId)).toMatchObject({ status: "reviewed", counts: { high: 1, medium: 1 } });
     await expect(e.start("review", { paths: ["tests/notes.md"] })).rejects.toThrow(/isn't test code/);
     await expect(e.start("review", { paths: ["src/**/*.ts"] })).rejects.toThrow(/no test code matches/);
+    await expect(e.start("review", { paths: Array.from({ length: 21 }, (_, i) => `tests/t${i}.spec.ts`) })).rejects.toThrow(/21 files named: a review reads at most 20/);
     // A file named outright must be readable: the review stops at its first step.
     const auth = await e.start("review", { paths: ["tests/auth.setup.ts"] }).catch((error: Error) => error);
     expect(String(auth)).toMatch(/sign-in file/);

@@ -38,6 +38,19 @@ describe("type check with the repo's TypeScript", () => {
     expect(typeCheckFiles(ts, dir, [{ path: "tests/d.ts", content: "const = 1;\n" }])[0]).toMatchObject({ file: "tests/d.ts", line: 1 });
   }, 30_000); // Four full compiles: the Windows runner hit 5 s.
 
+  it("with everyFile, reports the errors a change makes in the files that import it", async () => {
+    await writeFile(join(dir, "src", "uses-page.ts"), "import { RequestPage } from './pages/request-page';\nexport const run = (p: RequestPage) => p.fill('a', 'b');\n");
+    // fill renamed: the page object itself is fine, its caller isn't.
+    const renamed = { path: "src/pages/request-page.ts", content: PAGE.replace("fill", "enter") };
+    expect(typeCheckFiles(ts, dir, [renamed])).toEqual([]);
+    const all = typeCheckFiles(ts, dir, [renamed], { everyFile: true });
+    expect(all.map((d) => [d.file, d.line, d.code])).toEqual([
+      ["src/broken.ts", 1, 2322],
+      ["src/uses-page.ts", 2, 2339],
+    ]);
+    expect(typeCheckFiles(ts, dir, [renamed], { everyFile: true, limit: 1 })).toHaveLength(1);
+  }, 30_000);
+
   it("sees the repo's global declarations, and refuses a tsconfig it can't use as is", async () => {
     await writeFile(join(dir, "src", "globals.ts"), "export {};\ndeclare global { function sfLogin(role: string): Promise<void>; }\n");
     expect(typeCheckFiles(ts, dir, [{ path: "tests/g.ts", content: "export const g = () => sfLogin('x');\n" }])).toEqual([]);

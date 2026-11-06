@@ -11,7 +11,7 @@ export { MAX_SNAPSHOT_CHARS, maskAriaSnapshot, maskTitle } from "./snapshot.js";
 export type { BrowserAction, BrowserTarget } from "../connectors/index.js";
 /** Key names the explorer presses: never free text. */
 export { KEY as PRESS_KEY } from "../connectors/index.js";
-export type { SalesforceSession, TypeDiagnostic } from "../connectors/index.js";
+export type { SalesforceSession, TypeCheckOptions, TypeDiagnostic } from "../connectors/index.js";
 export {
   commandList,
   describeProfile,

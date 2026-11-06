@@ -279,6 +279,8 @@ async function reviewCase(data: DataAccess, runs: RunStore, repo: string, seeds:
   if (!r.findings.some((f) => f.source === "rule" && f.kind === "fixed-wait" && f.path === HAND_WRITTEN_SPEC && f.line === wait)) throw new Error(`Run ${runId} didn't report the fixed wait at ${HAND_WRITTEN_SPEC}:${wait}`);
   if (!r.findings.some((f) => f.source === "model" && f.path === HAND_WRITTEN_PAGE && Math.abs(f.line - check) <= 1)) throw new Error(`Run ${runId}: the model didn't report the check inside the page object at ${HAND_WRITTEN_PAGE}:${check}`);
   if (r.changes.length || r.status === "fixed") throw new Error(`Run ${runId} wrote a fix without the person's yes`);
+  // The fixture proposes a fix: the unattended run must have asked and recorded no, not proposed nothing.
+  if (r.status !== "declined" || !r.proposal) throw new Error(`Run ${runId} ended ${r.status}: the fixture's fix should have been proposed and declined`);
   for (const f of files) {
     const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
     if (onDisk !== f.content) throw new Error(`Run ${runId} changed ${f.path}`);
