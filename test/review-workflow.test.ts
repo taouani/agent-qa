@@ -176,6 +176,14 @@ describe("review workflow (S3-4)", () => {
     expect(via(held, { old: "const expected = 'Submitted'", new: "const expected = 'Rejected'" })).toMatch(/changes expected, which a check reads/);
     expect(via(held, { old: "  await page.waitForTimeout(100);\n", new: "  expected = 'Rejected';\n" })).toMatch(/which a check reads/);
     expect(via(page, { old: "getByRole('status')", new: "getByRole('heading')" })).toMatch(/changes status, which a check reads/);
+    // An option key a checked locator uses ({ name }) pins no other locator; a fixed wait can leave a method a check calls.
+    const po = { path: "tests/pages/q.ts", content: "export class Q {\n  constructor(private readonly page: Page) {}\n  details() { return this.page.getByRole('button', { name: 'Details' }); }\n  submitButton() { return this.page.getByRole('button', { name: 'Submit' }); }\n  async status() {\n    await this.page.waitForTimeout(500);\n    return this.page.getByRole('status');\n  }\n}\n" };
+    const qs = { path: "tests/q.spec.ts", content: "test('q', async ({ page }) => {\n  const q = new Q(page);\n  await expect(q.details()).toBeVisible();\n  await expect(await q.status()).toHaveText('Done');\n});\n" };
+    const onQ = (fix: { old: string; new: string }) => checkReview({ findings: [{ path: po.path, line: 2, severity: "low", kind: "other", problem: "p", why: "w", fix }] }, [po, qs]).errors.map((x) => x.message).join();
+    expect(onQ({ old: "{ name: 'Submit' }", new: "{ name: 'Submit', exact: true }" })).toBe("");
+    expect(onQ({ old: "    await this.page.waitForTimeout(500);\n", new: "" })).toBe("");
+    expect(onQ({ old: "{ name: 'Details' }", new: "{ name: 'More' }" })).toMatch(/changes details, which a check reads/);
+    expect(onQ({ old: "getByRole('status')", new: "getByRole('alert')" })).toMatch(/changes status, which a check reads/);
     // What no check reads can change.
     expect(via(page, { old: "getByRole('link')", new: "getByRole('link', { name: 'Open' })" })).toBe("");
     expect(via(held, { old: "  await page.waitForTimeout(100);\n", new: "  await expect(toast).toBeAttached();\n" })).toBe("");

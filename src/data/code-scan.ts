@@ -510,10 +510,30 @@ export function onlyWaitsAdded(before: FixSkeleton, after: FixSkeleton): boolean
 export function checkDependencies(text: string, file: string, seed: Iterable<string> = [], expand = true): { names: string[]; declarations: string[] } {
   const ast = parseCode(text, file);
   if (!ast) return { names: [...seed].sort(), declarations: [] };
-  const source = (n: Node) => text.slice(n.start ?? 0, n.end ?? 0).replace(/\s+/g, " ").trim();
+  // A fixed wait taken out of a method a check calls changes nothing the check checks: the waits are left out of the source compared.
+  const waits: Array<[number, number]> = [];
+  walkAst(ast, (n) => {
+    if (n.type !== "ExpressionStatement") return;
+    const e = (n.expression.type === "AwaitExpression" ? n.expression.argument : n.expression) as Node;
+    if (e.type === "CallExpression" && memberName(e.callee as Node) === "waitForTimeout") waits.push([n.start ?? 0, n.end ?? 0]);
+  });
+  const source = (n: Node) => {
+    let out = "";
+    let at = n.start ?? 0;
+    for (const [a, b] of waits)
+      if (a >= at && b <= (n.end ?? 0)) {
+        out += text.slice(at, a);
+        at = b;
+      }
+    return (out + text.slice(at, n.end ?? 0)).replace(/\s+/g, " ").trim();
+  };
   const reads = (n: Node | null | undefined, into: Set<string>) => {
     if (!n) return;
+    const keys = new Set<Node>();
     walkAst(n, (x) => {
+      // An option's key ({ name: 'Details' }) is no name the check reads: only its value is.
+      if ((x.type === "ObjectProperty" || x.type === "ObjectMethod") && !x.computed) keys.add(x.key as Node);
+      if (keys.has(x)) return;
       if (x.type === "Identifier") into.add(x.name);
       else if ((x.type === "MemberExpression" || x.type === "OptionalMemberExpression") && memberName(x)) into.add(memberName(x)!);
     });
