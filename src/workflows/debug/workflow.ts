@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { unifiedDiff, diffStats, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
-import { fixSkeleton, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
+import { fixSkeleton, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
 import { hasSelection, selectionFields, selectionOf } from "../run-tests/workflow.js";
 import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
 import type { FileRole } from "../scripts/artifact.js";
@@ -79,6 +79,11 @@ export const debugReportSchema = z
     changes: z.array(z.object({ round: z.number(), path: z.string(), sha256: z.string(), gitBlob: z.string(), added: z.number(), removed: z.number() }).strict()),
     /** In CI the changes are in the job's checkout: they leave only as a pull request. */
     pullRequest: z.literal(true).optional(),
+    /** In CI: the pull request the changes left in, or why they didn't. */
+    pr: z
+      .object({ status: z.enum(["opened", "declined"]), reason: z.string().optional(), number: z.number().optional(), url: z.string().optional(), branch: z.string().optional(), draft: z.boolean().optional() })
+      .strict()
+      .optional(),
   })
   .strict();
 export type DebugReport = z.infer<typeof debugReportSchema>;
@@ -128,11 +133,46 @@ export const debugFixSchema = z
   .strict();
 export type DebugFix = z.infer<typeof debugFixSchema>;
 
+const prSchema = z.object({ open: z.boolean().describe("true to open the pull request") }).strict();
+
+/** Each changed file once: its bytes now (the last round's sha256) and its blob on the base (the first round's). */
+export function leaving(r: Pick<DebugReport, "changes">): Array<{ path: string; sha256: string; gitBlob: string }> {
+  const out = new Map<string, { path: string; sha256: string; gitBlob: string }>();
+  for (const c of r.changes) out.set(c.path, { path: c.path, sha256: c.sha256, gitBlob: out.get(c.path)?.gitBlob ?? c.gitBlob });
+  return [...out.values()];
+}
+
+const cell = (s: string) => one(s).replace(/\|/g, "\\|").slice(0, 300);
+
+/** The pull request's description: what failed, what kind, what changed, and how the tests ran after. Masked text only. */
+export function debugPrBody(runId: string, r: DebugReport): string {
+  const last = r.attempts.at(-1);
+  return [
+    `Agent-QA debugged failing tests (run \`${runId}\`) and changed ${leaving(r).length} test file(s) after the person reviewed each diff.`,
+    "",
+    "## Result",
+    "",
+    `**${r.status}**${r.reason ? `: ${one(r.reason)}` : ""} (${r.rounds} fix round(s)).`,
+    ...(r.stoppedOn ?? []).map((c) => `- ${cell(c.test)}: **${c.kind}** (${cell(c.reason)})`),
+    ...(last?.tests.length ? ["", "| Test | Outcome |", "|---|---|", ...last.tests.map((t) => `| ${cell(t.title)} | ${t.outcome}${t.runs > 1 ? ` (${t.runs - t.failedRuns}/${t.runs} passed)` : ""} |`)] : []),
+    "",
+    "## Failures and fixes",
+    "",
+    ...r.attempts.flatMap((a, i) => a.classified.map((c) => `- Before run ${i + 1}: ${cell(c.test)}: ${c.kind} (${cell(c.reason)})`)),
+    "",
+    "## Files",
+    "",
+    ...r.changes.map((c) => `- round ${c.round}: \`${c.path}\` (+${c.added} −${c.removed})`),
+    "",
+    "Fixes were limited to locators and waits: no check, title or feature file changed. Review that each check still checks what its test says before merging.",
+  ].join("\n");
+}
+
 const runSchema = z.object({ run: z.boolean().describe("true only if the user agreed to run these tests, and to have changes proposed for review") }).strict();
 const applySchema = z.object({ apply: z.boolean().describe("true only if the user saw the diff and agreed to write it to their repo") }).strict();
 
 export interface DebugDeps {
-  data: Pick<ProfileData, "savedProfile"> & SuiteData & TestFilesData & Pick<RequirementsData, "maskTexts">;
+  data: Pick<ProfileData, "savedProfile"> & SuiteData & TestFilesData & Pick<RequirementsData, "maskTexts"> & Pick<ScriptsData, "pullRequestReadiness" | "openPullRequest">;
   runs: Pick<RunStore, "readArtifact" | "writeArtifact">;
 }
 
@@ -385,6 +425,40 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
     },
   });
 
+  /** In CI the changed files are in the job's checkout: they leave only as a pull request (S2-9), a draft unless every test passed. */
+  const prStep: StepDefinition<DebugInputs, z.infer<typeof prSchema>> = {
+    id: "pr",
+    kind: "confirm",
+    outputSchema: prSchema,
+    when: async (ctx) => {
+      const s = await read(ctx);
+      return !!s && s.pullRequest === true && s.changes.length > 0 && s.status !== "failing" && s.status !== "proposed" && !s.pr;
+    },
+    // In CI the policy sends test code out as a pull request without asking: the person's yes was each apply (--accept apply-1…).
+    answers: { yes: { open: true }, no: { open: false }, unattended: { open: true } },
+    approval: {
+      question: async (ctx) => {
+        const s = (await read(ctx))!;
+        const ready = await deps.data.pullRequestReadiness();
+        if (!ready.ready) return `No pull request can be opened (${ready.reason}): the changes stay in this checkout only. Submit any answer to finish.`;
+        return `Open a pull request on ${ready.repo} with the changes to ${leaving(s).length} file(s) (debug ${s.status})? It is a draft unless every test passed and stayed stable.`;
+      },
+    },
+    instructions: () => "Ask whether to open a pull request with the changed test files. Submit open: true only if the user said yes.",
+    context: async (ctx) => debugPrBody(ctx.runId, (await read(ctx))!),
+    onAccept: async (ctx, out) => {
+      const s = await read(ctx);
+      if (!s || s.pr) return;
+      const ready = await deps.data.pullRequestReadiness();
+      if (!ready.ready) return void (await save(ctx, { ...s, pr: { status: "declined", reason: `no pull request could be opened: ${ready.reason}` } }));
+      if (!out.open) return void (await save(ctx, { ...s, pr: { status: "declined", reason: "the pull request was declined" } }));
+      const files = leaving(s);
+      const r = await deps.data.openPullRequest(ctx.runId, ctx.runId, s.folder, { files, title: `Agent-QA: fix ${files.length} test file(s) (debug ${s.status})`, body: debugPrBody(ctx.runId, s), draft: s.status !== "passed" });
+      if (r.status !== "done") return void (await save(ctx, { ...s, pr: { status: "declined", reason: "the policy said no to opening the pull request" } }));
+      await save(ctx, { ...s, pr: { status: "opened", number: r.number, url: r.url, branch: r.branch, draft: r.draft } });
+    },
+  };
+
   const rounds = Array.from({ length: MAX_FIX_ROUNDS }, (_, i) => i + 1);
   return {
     id: "debug",
@@ -425,6 +499,7 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
         },
       } satisfies StepDefinition<DebugInputs, z.infer<typeof runSchema>>,
       ...rounds.flatMap((r) => [fixStep(r), applyStep(r)]),
+      prStep,
     ],
   };
 }
