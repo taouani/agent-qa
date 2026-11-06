@@ -68,7 +68,7 @@ export function createMcpServer(engine: WorkflowEngine, options: McpServerOption
         ...step,
         instructions:
           step.instructions +
-          `\n\nDon't ask in chat: Agent-QA asks the user directly in a prompt from this IDE. Call workflow_submit for this step now with output ${JSON.stringify(step.approval.yes)}; the user's own answer replaces it.`,
+          `\n\nDon't ask in chat: Agent-QA asks the user itself, in a prompt from this IDE. Call workflow_submit for this step now with output ${JSON.stringify(step.approval.yes)}. That submit is not an approval: it opens the prompt, and only the user's own answer there counts (No, or closing the prompt, is recorded as no).`,
       };
     }
     if (step.kind === "generate") served.set(step.runId, { stepId: step.stepId, attempt: step.attempt, promptChars: step.instructions.length + step.context.length });

@@ -480,6 +480,49 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect(r.attempts.at(-1)).toMatchObject({ kind: "stability", unavailable: true });
   });
 
+  it("waits for the person to fix the environment, then runs the same files again", async () => {
+    const { e, data, runId } = await written();
+    data.results.push(fail("ConfigurationError: SF_CLIENT_ID is not set"), pass());
+    await e.submit(runId, "run", { run: true }, { byPerson: true });
+    const env = { failures: [{ test: TITLE, kind: "environment", reason: "sign-in failed: SF_CLIENT_ID is not set" }] };
+    const wait = (await e.submit(runId, "fix_1", env)).next;
+    expect(wait).toMatchObject({ stepId: "fix_2" });
+    expect(wait.context).toContain("The run waits for the environment");
+    expect(wait.context).toContain("SF_CLIENT_ID is not set");
+    const waiting = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!;
+    expect(waiting.data).toMatchObject({ status: "failing", rounds: 1, waiting: { reason: `${TITLE}: sign-in failed: SF_CLIENT_ID is not set` } });
+    expect(SCRIPTS_RUN_ARTIFACT.render!(waiting.data)).toContain("# Generated tests: waiting for the environment");
+    // Only a retry answer, nothing else.
+    expect((await e.submit(runId, "fix_2", { failures: [{ test: TITLE, kind: "selector", reason: "x" }], retry: true })).status).toBe("rejected");
+    expect((await e.submit(runId, "fix_2", { failures: [] })).status).toBe("rejected");
+    expect((await e.submit(runId, "fix_2", { failures: [], retry: true })).next.kind).toBe("done");
+    const r = (await runs.readArtifact(runId, SCRIPTS_RUN_ARTIFACT))!.data;
+    expect(r).toMatchObject({ status: "passed", rounds: 2 });
+    expect(r.waiting).toBeUndefined();
+    expect(r.attempts.map((a) => [a.kind, a.classified.map((c) => c.kind)])).toEqual([["run", []], ["run", ["environment"]], ["stability", []]]);
+    expect(data.replaced).toEqual([]);
+
+    // No retry: the run ends as environment. On the last round it ends at once.
+    const stop = await written();
+    stop.data.results.push(fail());
+    await stop.e.submit(stop.runId, "run", { run: true }, { byPerson: true });
+    await stop.e.submit(stop.runId, "fix_1", env);
+    expect((await stop.e.submit(stop.runId, "fix_2", { failures: [], retry: false })).next.kind).toBe("done");
+    expect((await runs.readArtifact(stop.runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "environment", reason: `the environment: ${TITLE}: sign-in failed: SF_CLIENT_ID is not set` });
+    expect(stop.data.testRuns).toHaveLength(1);
+    // With two rounds there is no fix round left after a retry: it ends at once.
+    const two = await written(undefined, { fixRounds: 2 });
+    two.data.results.push(fail());
+    await two.e.submit(two.runId, "run", { run: true }, { byPerson: true });
+    expect((await two.e.submit(two.runId, "fix_1", env)).next.kind).toBe("done");
+    expect((await runs.readArtifact(two.runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "environment" });
+    const last = await written(undefined, { fixRounds: 1 });
+    last.data.results.push(fail());
+    await last.e.submit(last.runId, "run", { run: true }, { byPerson: true });
+    expect((await last.e.submit(last.runId, "fix", env)).next.kind).toBe("done");
+    expect((await runs.readArtifact(last.runId, SCRIPTS_RUN_ARTIFACT))!.data).toMatchObject({ status: "environment" });
+  });
+
   it("stops on a real defect and changes nothing", async () => {
     const { e, data, runId } = await written();
     data.results.push(fail("Error: expect(locator).toHaveText(expected)\nExpected: was created\nReceived: Something went wrong"));
