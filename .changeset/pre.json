@@ -5,6 +5,25 @@
     "sf-agent-qa": "1.0.0"
   },
   "changesets": [
+    "docs-slice2",
+    "explore-workflow",
+    "explorer-browser",
+    "framework-profile",
+    "harness-runnable-rate",
+    "harness-seeded-defect",
+    "harness-stand-in-app",
+    "live-check-hints",
+    "npm-provenance",
+    "salesforce-jwt",
+    "salesforce-pack",
+    "scaffold-new-repo",
+    "scripts-checks",
+    "scripts-ci-pull-request",
+    "scripts-environment-wait",
+    "scripts-run-fix",
+    "scripts-typecheck",
+    "scripts-workflow",
+    "scripts-write",
     "v2-alpha"
   ]
 }
