@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
 import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
@@ -251,6 +251,57 @@ const AUTH_PATH = /(^|\/)(\.auth|auth|\.?sessions?|storage-?state[^/]*)(\/|$)|st
 /** The largest test file read for an edit. */
 const MAX_TEST_FILE_BYTES = 200_000;
 
+/** Running a part of the repo's own suite (S3-2): tests Agent-QA didn't write. */
+export interface SuiteData {
+  /** Whether tests could run at all (the policy, the profile's test command). */
+  testRunReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }>;
+  /**
+   * The Playwright arguments that select a part of the repo's own suite
+   * (S3-2), checked without running anything, for the person's question:
+   * spec or feature paths (a spec may name a line), a title text, a tag, a
+   * project, or the failed and flaky tests of an earlier JSON report in the
+   * folder. At least one of files, grep, tag or failedIn.
+   */
+  selectTests(tokensRun: string, folder: string, selection: TestSelection): Promise<SelectedTests>;
+  /**
+   * Runs a part of the repo's suite (S3-2) as runGeneratedTests runs
+   * generated tests: the profile's generate command first, then its test
+   * command with the selection, the JSON reporter and no retries, through
+   * `Policy.guard` (target commands) with the person's yes. Everything that
+   * comes back is masked.
+   */
+  runTests(runId: string, tokensRun: string, folder: string, selection: TestSelection, approved: boolean): Promise<TestRunOutcome>;
+}
+
+/** Which part of the repo's own suite to run (S3-2). */
+export interface TestSelection {
+  /** Spec or feature paths from the profile's folder; a spec may end with :line. */
+  files?: string[] | undefined;
+  /** Text in the tests' titles (plain text, not a pattern). */
+  grep?: string | undefined;
+  /** A tag, such as @smoke. */
+  tag?: string | undefined;
+  /** A Playwright project of the repo's config. */
+  project?: string | undefined;
+  /** A Playwright JSON report in the folder: its failed and flaky tests run again. */
+  failedIn?: string | undefined;
+  repeatEach?: number | undefined;
+  /** 1 by default (a sandbox's data and limits), at most 4. */
+  workers?: number | undefined;
+}
+
+/** What a selection runs: the test command's added arguments, and the tests taken from a report. */
+export interface SelectedTests {
+  command: string[];
+  args: string[];
+  /** From `failedIn`: the failed and flaky tests found, masked. */
+  fromReport?: Array<{ title: string; file: string; line: number }> | undefined;
+}
+
+/** At most this many tests from a report: more is a whole suite, not a part of it. */
+export const MAX_REPORT_TESTS = 200;
+const MAX_REPORT_BYTES = 50_000_000;
+
 export type PullRequestOutcome = { status: "done"; number: number; url: string; base: string; branch: string; draft: boolean; created: boolean } | { status: "declined" };
 
 /** A generated test as the run saw it, masked. */
@@ -338,7 +389,7 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, TestFilesData, SalesforceData, ExplorerData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SuiteData, TestFilesData, SalesforceData, ExplorerData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
@@ -526,6 +577,114 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (request.files.length === 0) throw new ProfileError("there are no tests to run");
     for (const f of request.files) if (!isPlainRelativePath(f) || isProtectedPath(f)) throw new ProfileError(`${f} isn't a generated test file`);
     const repeat = Math.min(Math.max(Math.trunc(request.repeatEach ?? 1), 1), 10);
+    // playwright-bdd runs the specs it generated from the features: they are found by the feature's name.
+    // Playwright reads file arguments as patterns: the dots are escaped, so ABC-1.feature doesn't also match ABC-1xfeature.
+    const filters = saved.kind === "playwright-bdd" ? request.files.map((f) => (f.endsWith(".feature") ? posixBase(f).replace(/[.+]/g, "\\$&") : f)) : request.files;
+    const args = ["--reporter=json", "--retries=0", "--workers=1", ...(repeat > 1 ? [`--repeat-each=${repeat}`] : []), ...filters];
+    return this.runTestCommand(runId, tokensRun, saved, args, repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests");
+  }
+
+  async selectTests(tokensRun: string, folder: string, selection: TestSelection): Promise<SelectedTests> {
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run again`);
+    if (!saved.commands?.test) throw new ProfileError("the reviewed profile has no test command");
+    const sel = selection;
+    if (!sel.files?.length && sel.grep === undefined && sel.tag === undefined && sel.failedIn === undefined) throw new ProfileError("pick the tests to run: files, a title text (grep), a tag, or a report's failures (failedIn)");
+    if (sel.grep !== undefined && sel.tag !== undefined) throw new ProfileError("pick a title text or a tag, not both: Playwright takes one --grep");
+    const args = ["--reporter=json", "--retries=0"];
+    const workers = Math.trunc(sel.workers ?? 1);
+    if (workers < 1 || workers > 4) throw new ProfileError("workers is 1 to 4");
+    args.push(`--workers=${workers}`);
+    const repeat = Math.trunc(sel.repeatEach ?? 1);
+    if (repeat < 1 || repeat > 10) throw new ProfileError("repeatEach is 1 to 10");
+    if (repeat > 1) args.push(`--repeat-each=${repeat}`);
+    if (sel.project !== undefined) {
+      if (!/^[\p{L}\p{N}_.-]{1,80}$/u.test(sel.project)) throw new ProfileError("a project name is letters, digits, _, . and -");
+      args.push(`--project=${sel.project}`);
+    }
+    // Plain text, as a pattern that matches only itself: the regex characters a title can hold here are escaped.
+    if (sel.grep !== undefined) {
+      if (!/^[\p{L}\p{N}_@=:,./ -]{1,200}$/u.test(sel.grep) || !sel.grep.trim()) throw new ProfileError("a title text is letters, digits, spaces and _@=:,./- (at most 200)");
+      args.push(`--grep=${sel.grep.replace(/[.]/g, "\\.")}`);
+    }
+    if (sel.tag !== undefined) {
+      if (!/^@[\p{L}\p{N}_:.-]{1,100}$/u.test(sel.tag)) throw new ProfileError("a tag starts with @, then letters, digits, _, :, . or -");
+      // An argument can't hold a pattern's ( ) ! safely on Windows: @smoke also picks @smoke-slow, as Playwright's own --grep does.
+      args.push(`--grep=${sel.tag.replace(/[.]/g, "\\.")}`);
+    }
+    const bdd = saved.kind === "playwright-bdd";
+    const filters: string[] = [];
+    for (const f of sel.files ?? []) {
+      const m = /^(.*?)(?::(\d{1,6}))?$/.exec(f)!;
+      const path = m[1]!;
+      if (!isPlainRelativePath(path) || isProtectedPath(path) || !/\.(?:[cm]?[jt]sx?|feature)$/i.test(path)) throw new ProfileError(`${f} isn't a spec or feature file of the folder`);
+      if (path.endsWith(".feature") && m[2] !== undefined) throw new ProfileError(`${f}: a feature runs whole (its line isn't the generated test's)`);
+      // As runGeneratedTests: playwright-bdd's tests are found by the feature's name, dots escaped.
+      filters.push(bdd && path.endsWith(".feature") ? posixBase(path).replace(/[.+]/g, "\\$&") : f);
+    }
+    let fromReport: SelectedTests["fromReport"];
+    if (sel.failedIn !== undefined) {
+      const picked = await this.failedInReport(tokensRun, saved.folder, sel.failedIn);
+      fromReport = picked.shown;
+      filters.push(...picked.filters);
+    }
+    // Every filter is checked as the command will be, before anything is asked.
+    const all = [...args, ...filters];
+    checkHostCommand({ command: saved.commands.test, args: all, purpose: "run a part of the suite", cwd: saved.folder }, commandList(saved.commands));
+    return { command: saved.commands.test, args: all, ...(fromReport ? { fromReport } : {}) };
+  }
+
+  async runTests(runId: string, tokensRun: string, folder: string, selection: TestSelection, approved: boolean): Promise<TestRunOutcome> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved?.commands?.test) return { status: "unavailable", reason: "the reviewed profile has no test command" };
+    const picked = await this.selectTests(tokensRun, folder, selection);
+    const what = selection.failedIn !== undefined ? `run again the ${picked.fromReport?.length ?? 0} test(s) that failed in ${selection.failedIn}` : "run a part of the repo's tests";
+    return this.runTestCommand(runId, tokensRun, saved, picked.args, what);
+  }
+
+  /** The failed and flaky tests of a Playwright JSON report in the folder, as file:line filters. */
+  private async failedInReport(tokensRun: string, folder: string, report: string): Promise<{ filters: string[]; shown: NonNullable<SelectedTests["fromReport"]> }> {
+    if (!isPlainRelativePath(report) || !report.toLowerCase().endsWith(".json") || isProtectedPath(report)) throw new ProfileError(`${report} isn't a JSON report in the folder`);
+    const boundary = await realpathAsync(hostCwd(this.options.root, folder));
+    const full = resolvePath(boundary, report);
+    const info = await lstat(full).catch(() => undefined);
+    if (!info?.isFile()) throw new ProfileError(`${report} isn't a plain file in ${folder}`);
+    const real = join(await realpathAsync(dirname(full)), basename(full));
+    const rel = relativePath(boundary, real);
+    if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) throw new ProfileError(`${report} is outside ${folder}`);
+    const bytes = await readPlainFile(real, MAX_REPORT_BYTES);
+    if (!bytes) throw new ProfileError(`${report} isn't a plain file of at most ${MAX_REPORT_BYTES / 1_000_000} MB`);
+    let parsed;
+    let testDir = "";
+    try {
+      const json = JSON.parse(bytes.toString("utf8")) as { config?: { rootDir?: unknown; configFile?: unknown } };
+      // Paths as the report gives them, from its rootDir (the test folder): it may come from another machine (CI).
+      const root = typeof json.config?.rootDir === "string" ? json.config.rootDir : boundary;
+      parsed = parsePlaywrightReport(json, root);
+      // The test folder from the config's folder, so a filter names tests/a.spec.ts, not any a.spec.ts.
+      const unix = (p: string) => p.replace(/\\/g, "/");
+      if (typeof json.config?.configFile === "string" && typeof json.config.rootDir === "string") {
+        const up = posix.relative(posix.dirname(unix(json.config.configFile)), unix(json.config.rootDir));
+        if (up && !up.startsWith("..") && !posix.isAbsolute(up) && isPlainRelativePath(up)) testDir = `${up}/`;
+      }
+    } catch {
+      throw new ProfileError(`${report} isn't a Playwright JSON report`);
+    }
+    const failed = parsed.tests.filter((t) => t.outcome === "failed" || t.outcome === "flaky").map((t) => ({ ...t, file: `${testDir}${t.file}` }));
+    if (failed.length === 0) throw new ProfileError(`${report} has no failed or flaky test`);
+    if (failed.length > MAX_REPORT_TESTS) throw new ProfileError(`${report} has ${failed.length} failed tests: over ${MAX_REPORT_TESTS}, pick a part (files, grep or a tag)`);
+    const filters = [...new Set(failed.map((t) => `${t.file}:${t.line}`))];
+    for (const f of filters) if (!isPlainRelativePath(f.replace(/:\d+$/, ""))) throw new ProfileError(`${report} names a test outside the folder (${f.slice(0, 80)})`);
+    const { service } = await this.run(tokensRun);
+    const shown = failed.map((t) => ({ title: service.maskText(t.title, "test.title").slice(0, 300), file: t.file, line: t.line }));
+    await service.saveVault();
+    return { filters, shown };
+  }
+
+  /** Runs the profile's generate command (bddgen), then its test command with `args`, and reads the report back masked. */
+  private async runTestCommand(runId: string, tokensRun: string, saved: SavedProfile, args: string[], purpose: string): Promise<TestRunOutcome> {
     const dir = hostCwd(this.options.root, saved.folder);
     const { service, vault } = await this.run(tokensRun);
     // What the app showed (an error's received text, a page snapshot): the vault's known values first, then the detectors, then cut.
@@ -533,7 +692,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const mask = (text: string, field: string, max: number) => echo.detect(local(plain(text), dir), field).slice(0, max);
     const tail = (r: HostCommandOutcome) => (r.stderr.trim() || r.stdout.trim()).slice(-3000);
     let durationMs = 0;
-    if (saved.commands.generate) {
+    if (saved.commands?.generate) {
       const g = await this.runProfileCommand(runId, tokensRun, { command: saved.commands.generate, purpose: "turn the feature files into tests" }, true, false);
       if (g.status !== "done") return { status: "declined" };
       durationMs += g.result.durationMs;
@@ -542,11 +701,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         return { status: "done", exitCode: g.result.exitCode, timedOut: g.result.timedOut, durationMs, tests: [], errors: [`${saved.commands.generate.join(" ")} failed: ${tail(g.result)}`] };
       }
     }
-    // playwright-bdd runs the specs it generated from the features: they are found by the feature's name.
-    // Playwright reads file arguments as patterns: the dots are escaped, so ABC-1.feature doesn't also match ABC-1xfeature.
-    const filters = saved.kind === "playwright-bdd" ? request.files.map((f) => (f.endsWith(".feature") ? posixBase(f).replace(/[.+]/g, "\\$&") : f)) : request.files;
-    const args = ["--reporter=json", "--retries=0", "--workers=1", ...(repeat > 1 ? [`--repeat-each=${repeat}`] : []), ...filters];
-    const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands.test, args, purpose: repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests" }, true, true);
+    const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands!.test!, args, purpose }, true, true);
     if (t.status !== "done") return { status: "declined" };
     durationMs += t.result.durationMs;
     const base = { status: "done" as const, exitCode: t.result.exitCode, timedOut: t.result.timedOut, durationMs };

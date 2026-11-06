@@ -27,7 +27,7 @@ export const DEFAULT_FIX_ROUNDS = 3;
 export const MAX_FIX_ROUNDS = 5;
 export const DEFAULT_STABILITY_RUNS = 3;
 
-const testRowSchema = z
+export const testRowSchema = z
   .object({
     title: z.string(),
     tags: z.array(z.string()),
