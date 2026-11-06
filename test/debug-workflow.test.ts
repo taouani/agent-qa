@@ -72,7 +72,7 @@ describe("debug workflow (S3-3)", () => {
     editTestFiles: async (_r, _t, _f, e) => {
       edits.push(e);
       for (const x of e) {
-        if (sha(files.get(x.path)!) !== x.sha256) throw new ProfileError(`${x.path} changed since it was read`);
+        if (sha(files.get(x.path)!) !== x.sha256) throw new ProfileError(`${x.path} changed since Agent-QA read it: it is never overwritten. Nothing was changed.`);
         files.set(x.path, x.content);
       }
       return { status: "done", written: e.map((x) => ({ path: x.path, sha256: sha(x.content) })) };
@@ -222,7 +222,7 @@ describe("debug workflow (S3-3)", () => {
     files.set("tests/a.spec.ts", `${SPEC}// edited by hand\n`);
     const next = (await e.submit(first.runId, "apply-1", { apply: true }, { byPerson: true })).next;
     expect(files.get("tests/a.spec.ts")).toBe(`${SPEC}// edited by hand\n`);
-    expect(await report(first.runId)).toMatchObject({ status: "failing", rounds: 1, reason: expect.stringMatching(/wasn't written: .*changed since it was read/) });
+    expect(await report(first.runId)).toMatchObject({ status: "failing", rounds: 1, reason: expect.stringMatching(/wasn't written: .*changed since Agent-QA read it/) });
     expect(next.stepId).toBe("fix-2");
     expect(next.context).toContain("// edited by hand");
     expect(ran).toHaveLength(1);
@@ -266,6 +266,9 @@ test('${TITLE}', async ({ page }) => {
     // A selector fix sends the fix; test data isn't changed by debug.
     expect(kinds({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [] }).join()).toMatch(/send the fix/);
     expect(kinds({ failures: [{ test: TITLE, kind: "data", reason: "r" }], files: [{ path: "tests/test-data/a.json", content: '{"name":"Bob"}' }] }).join()).toMatch(/doesn't change test data yet/);
+    // A selector failure next to a defect: the defect stops the run, so no fix is sent.
+    const two: RunAttempt = { ...last, tests: [...last.tests, { ...result("failed", "Expected: Saved", "TC-ABC-1-002 other"), tags: [] }] };
+    expect(checkDebugFix({ failures: [{ test: TITLE, kind: "selector", reason: "r" }, { test: "TC-ABC-1-002 other", kind: "defect", reason: "r" }], files: [] }, two, shown)).toEqual([]);
     // Each failure classified once; the skipped test isn't one.
     expect(kinds({ failures: [], files: [] }).join()).toMatch(/say what kind of failure/);
     expect(kinds({ failures: [{ test: TITLE, kind: "flake", reason: "r" }, { test: "TC-ABC-1-009 later", kind: "flake", reason: "r" }], files: [] }).join()).toMatch(/isn't a failure of the last run/);
@@ -293,12 +296,18 @@ test('${TITLE}', async ({ page }) => {
     // A wait for the element the next statement acts on is a wait: its locator may change with the action's.
     const waited = spec("  await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();\n  await page.getByRole('button', { name: 'Save' }).click();");
     expect(verdict(waited, waited.replaceAll("name: 'Save' }", "name: 'Save draft' }"))).toBe("");
+    // Only an action on that element makes it a wait: a mention isn't one.
+    const logged = spec("  await expect(page.getByText('Saved')).toBeVisible();\n  console.log(page.getByText('Saved'));");
+    expect(verdict(logged, logged.replaceAll("'Saved'", "'Error'"))).toMatch(refused);
     // A page object's field a shown spec checks by presence stays too.
     const checks = { path: "tests/a.spec.ts", content: spec("  await pages.loginPage.signIn();\n  await expect(pages.loginPage.toast).toBeVisible();") };
     const page = "export class LoginPage {\n  constructor(private page: any) {}\n  toast = this.page.getByText('Welcome');\n  button = this.page.getByRole('button', { name: 'Sign in' });\n  async signIn() {\n    await this.button.click();\n  }\n}\n";
     const pageFix = (after: string) => checkDebugFix({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [{ path: "src/pages/login-page.ts", content: after }] }, { ...last, tests: [{ ...last.tests[0]!, failure: { message: "x", at: { file: "src/pages/login-page.ts", line: 3 } } }] }, [checks, { path: "src/pages/login-page.ts", content: page }]).map((x) => x.message).join();
     expect(pageFix(page.replace("'Welcome'", "'Error'"))).toMatch(refused);
     expect(pageFix(page.replace("name: 'Sign in' }", "name: 'Log in' }"))).toBe("");
+    // A check that isn't on an element (toBeTruthy) pins no field.
+    const truthy = { path: "tests/a.spec.ts", content: spec("  await pages.loginPage.signIn();\n  expect(res.button).toBeTruthy();") };
+    expect(checkDebugFix({ failures: [{ test: TITLE, kind: "selector", reason: "r" }], files: [{ path: "src/pages/login-page.ts", content: page.replace("name: 'Sign in' }", "name: 'Log in' }") }] }, { ...last, tests: [{ ...last.tests[0]!, failure: { message: "x", at: { file: "src/pages/login-page.ts", line: 4 } } }] }, [truthy, { path: "src/pages/login-page.ts", content: page }])).toEqual([]);
   });
 
   it("names each file's part from its path", () => {

@@ -268,6 +268,11 @@ function pathOfExpr (n: Node): string | undefined {
 const isLocatorCallNode = (n: Node) => (n.type === "CallExpression" || n.type === "OptionalCallExpression") && LOCATOR_METHODS.has(memberName(n.callee as Node) ?? (n.callee.type === "Identifier" ? n.callee.name : ""));
 const isTimeoutOptionNode = (n: Node) => n.type === "ObjectExpression" && n.properties.length > 0 && n.properties.every((p) => p.type === "ObjectProperty" && ["timeout", "intervals"].includes(p.key.type === "Identifier" ? p.key.name : (literalString(p.key as Node) ?? "")));
 
+/** A locator's matchers that check the element itself (toHaveCount: how many there are). */
+const PRESENCE_MATCHERS = new Set(["toBeVisible", "toBeHidden", "toBeAttached", "toBeEnabled", "toBeDisabled", "toBeChecked", "toBeEditable", "toBeEmpty", "toBeFocused", "toBeInViewport", "toHaveCount"]);
+/** What a test does to an element: a wait before one of these on the same element is a wait, not a check. */
+const ACTIONS = "click|dblclick|fill|press|pressSequentially|type|check|uncheck|setChecked|selectOption|setInputFiles|hover|focus|tap|dragTo|clear|selectText|scrollIntoViewIfNeeded|dispatchEvent|blur";
+
 /**
  * The subject of a check whose element is what it checks: expect(x).toBeVisible()
  * (any matcher without an expected value), expect(x).toHaveCount(n), and the
@@ -275,7 +280,9 @@ const isTimeoutOptionNode = (n: Node) => n.type === "ObjectExpression" && n.prop
  */
 function presenceSubject(x: Node): Node | undefined {
   if (x.type !== "CallExpression" || (x.callee.type !== "MemberExpression" && x.callee.type !== "OptionalMemberExpression")) return undefined;
-  if (memberName(x.callee as Node) !== "toHaveCount" && (x.arguments as Node[]).some((a) => !isTimeoutOptionNode(a))) return undefined;
+  const matcher = memberName(x.callee as Node) ?? "";
+  if (!PRESENCE_MATCHERS.has(matcher)) return undefined;
+  if (matcher !== "toHaveCount" && (x.arguments as Node[]).some((a) => !isTimeoutOptionNode(a))) return undefined;
   let base = x.callee.object as Node;
   if ((base.type === "MemberExpression" || base.type === "OptionalMemberExpression") && memberName(base) === "not") base = base.object as Node;
   if (base.type !== "CallExpression" || !base.arguments[0]) return undefined;
@@ -416,7 +423,9 @@ export function fixSkeleton(text: string, file: string, pinnedFields: ReadonlySe
         if (!subject) return;
         const later = (body.slice(i + 1) as Node[]).map(norm).join("\n");
         const path = pathOf(subject);
-        const used = path !== undefined && !isLocatorCall(subject) ? new RegExp(`(^|[^\\w$.])${path.replace(/[.$]/g, "\\$&")}(?![\\w$])`).test(later) : later.includes(norm(subject));
+        // Acted on: a later statement calls an action on that same element (an inline copy of the locator, or the variable holding it).
+        const element = path !== undefined && !isLocatorCall(subject) ? `(^|[^\\w$.])${path.replace(/[.$]/g, "\\$&")}` : norm(subject).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+        const used = new RegExp(`${element}\\s*\\.\\s*(?:${ACTIONS})\\s*\\(`).test(later);
         if (used) waitsForAction.add(call);
       });
     }

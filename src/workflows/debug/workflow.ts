@@ -100,7 +100,7 @@ function renderReport(r: DebugReport): string {
     for (const t of a.tests.filter((x) => x.outcome !== "passed")) lines.push(`- ${t.outcome}: ${one(t.title)} (${t.file}:${t.line})${t.failure ? `: ${one(t.failure.message.split("\n")[0] ?? "")}` : ""}`);
     for (const e of a.errors) lines.push(`- error: ${one(e.split("\n")[0] ?? "")}`);
   });
-  if (r.proposal) lines.push("", `## ${r.status === "declined" ? "The change you declined" : "The proposed change"} (round ${r.proposal.round})`, "", fence(r.proposal.diff, "diff"));
+  if (r.proposal) lines.push("", `## ${r.proposal.written ? "The change written" : r.status === "declined" ? "The change you declined" : "The proposed change"} (round ${r.proposal.round})`, "", fence(r.proposal.diff, "diff"));
   return `${lines.join("\n")}\n`;
 }
 
@@ -218,7 +218,11 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
     }
     if (lost(last).length && last.kind === "stability") return { ...state, attempts, status: "gave-up", reason: `a test that failed doesn't run in the stability runs: ${lost(last).slice(0, 3).map(one).join("; ")}` };
     if (passedAll(last)) return { ...state, attempts, status: "passed", reason: last.kind === "stability" ? `every test passed, then ${state.stabilityRuns} more time(s) in a row` : "every test passed" };
-    if (round < state.fixRounds) return { ...state, attempts, status: "failing" };
+    if (round < state.fixRounds) {
+      const next: DebugReport = { ...state, attempts, status: "failing" };
+      delete next.reason;
+      return next;
+    }
     const flaky = last.tests.some((t) => t.outcome === "flaky") || (last.kind === "stability" && last.tests.some((t) => t.outcome === "failed"));
     return flaky
       ? { ...state, attempts, status: "unstable", reason: `some tests pass only some of the time, after ${state.fixRounds} fix round(s)` }
@@ -270,6 +274,7 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
       const { files, left } = await shownFiles(ctx, state);
       return [
         `## Fix round ${round} of ${state.fixRounds}: run ${state.attempts.length} (${last.kind}) in ${state.folder}`,
+        ...(state.reason ? [`Note: ${one(state.reason)}`] : []),
         `${last.tests.filter((t) => t.outcome === "passed").length} passed, ${failed.length} failed or flaky.${last.timedOut ? " The run timed out." : ""}`,
         ...(last.errors.length ? ["", "### Errors outside the tests (classify them as the test \"(the run)\")", ...last.errors.map((e) => fence(e, "text"))] : []),
         ...failed.flatMap((t) => [
@@ -358,7 +363,8 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
         try {
           w = await deps.data.editTestFiles(ctx.runId, ctx.runId, state.folder, p.files.map((f) => ({ path: f.path, content: f.content, sha256: f.sha256 })), true);
         } catch (error) {
-          if (!(error instanceof ProfileError)) throw error;
+          // Only a refusal before any write: a failed write that couldn't be put back leaves the step open, its message naming what is left.
+          if (!(error instanceof ProfileError) || !/changed since Agent-QA read it|masking token/.test(error.message)) throw error;
           // The change can't be applied as it is (a file changed since it was read): nothing was written; the next round proposes again from the files as they are now.
           const rest: DebugReport = { ...state };
           delete rest.proposal;
@@ -428,7 +434,8 @@ export function checkDebugFix(out: DebugFix, last: RunAttempt, files: ReadonlyAr
   const errors = checkFix(out, withoutSkipped(last), files.map((f) => ({ ...f, role: roleOf(f.path) })), scanWith(files), "isn't one of the files shown: only those can change");
   const kinds = new Set(out.failures.map((f) => f.kind));
   if (kinds.has("data") && out.files.length) errors.push({ path: "$.files", message: "debug reports a data failure, it doesn't change test data yet: send no files" });
-  if (!kinds.has("data") && (kinds.has("selector") || kinds.has("timing")) && out.files.length === 0) errors.push({ path: "$.files", message: "send the fix for the selector or timing failure, or say it is a flake" });
+  const stops = kinds.has("data") || kinds.has("defect") || kinds.has("environment");
+  if (!stops && (kinds.has("selector") || kinds.has("timing")) && out.files.length === 0) errors.push({ path: "$.files", message: "send the fix for the selector or timing failure, or say it is a flake" });
   // Only the tokens the file itself holds: editTestFiles puts back no other (a name from the snapshot is often another file's).
   const shown = new Map(files.map((f) => [f.path, new Set(f.content.match(TOKENS) ?? [])]));
   out.files.forEach((f, i) => {
