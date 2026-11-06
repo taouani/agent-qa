@@ -82,7 +82,7 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
       if (!scripts && !debug) return await runCase(options, runs, config, context, app);
       const modules = nodeModulesOf(options.playwrightFolder);
       // The test imports @playwright/test, as a repo's tests do.
-      if (!existsSync(join(modules, "@playwright", "test", "package.json"))) throw new Error(`a scripts case runs its test with @playwright/test: ${modules} has none (npm install @playwright/test there)`);
+      if (!existsSync(join(modules, "@playwright", "test", "package.json"))) throw new Error(`a ${context.case.workflow} case runs its test with @playwright/test: ${modules} has none (npm install @playwright/test there)`);
       // A bootstrap DataAccess only makes the scratch folder (through the policy layer); the case runs in it.
       const boot = new DataAccess({ root: options.runsDir, store: runs, config, mode: "ide", audit: new MemoryAuditSink() });
       return await boot.withScratchRepo(SCRATCH_AUDIT_ID, (repo) => runCase(options, runs, config, context, app, repo), modules);
@@ -159,6 +159,10 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   }
 }
 
+/** The failure the seeded bug makes: the status check expected Submitted and read Rejected. Any other failure (no browser, no app, no record) proves nothing. */
+const SEEDED_FAILURE = /toContainText[^]*Submitted[^]*Rejected/;
+const seededBugFailed = (tests: ReadonlyArray<{ outcome: string; failure?: { message: string } | undefined }>) => tests.length > 0 && tests.every((t) => t.outcome === "failed" && SEEDED_FAILURE.test(t.failure?.message ?? ""));
+
 /** The audit record's run for the scratch repo: no run of the store owns it. */
 const SCRATCH_AUDIT_ID = "harness-scratch-repo";
 
@@ -213,7 +217,7 @@ async function scriptsCase(data: DataAccess, runs: RunStore, app: StandInApp, re
   if (!result || !drafted) throw new Error(`Run ${runId} wrote and ran no tests`);
   const tests = result.data.attempts[0]?.tests ?? [];
   if (result.data.status !== "defect") throw new Error(`Run ${runId} ended ${result.data.status}${result.data.reason ? ` (${result.data.reason})` : ""}, not as a reported defect`);
-  if (!tests.length || tests.some((t) => t.outcome !== "failed")) throw new Error(`Run ${runId}: the generated tests didn't all fail on the seeded bug${result.data.attempts[0]?.errors[0] ? ` (${result.data.attempts[0].errors[0].slice(0, 400)})` : ""}`);
+  if (!seededBugFailed(tests)) throw new Error(`Run ${runId}: the generated tests didn't all fail on the seeded bug${result.data.attempts[0]?.errors[0] ? ` (${result.data.attempts[0].errors[0].slice(0, 400)})` : ""}`);
   // The test as written: a defect is reported, never "fixed" by changing what the test expects.
   // (Byte for byte: the fixture's spec holds no masked tokens, so writing it unmasks nothing.)
   const written = drafted.data.files.find((f) => f.path === FIXTURE_SPEC)?.content;
@@ -238,7 +242,7 @@ async function debugCase(data: DataAccess, runs: RunStore, app: StandInApp, repo
   const r = report.data;
   if (r.status !== "defect") throw new Error(`Run ${runId} ended ${r.status}${r.reason ? ` (${r.reason})` : ""}, not as a reported defect`);
   const tests = r.attempts[0]?.tests ?? [];
-  if (!tests.length || tests.some((t) => t.outcome !== "failed")) throw new Error(`Run ${runId}: the hand-written test didn't fail on the seeded bug${r.attempts[0]?.errors[0] ? ` (${r.attempts[0].errors[0].slice(0, 400)})` : ""}`);
+  if (!seededBugFailed(tests)) throw new Error(`Run ${runId}: the hand-written test didn't fail on the seeded bug${tests[0]?.failure ? ` (${tests[0].failure.message.slice(0, 400)})` : r.attempts[0]?.errors[0] ? ` (${r.attempts[0].errors[0].slice(0, 400)})` : ""}`);
   if (r.attempts.length !== 1 || r.changes.length || r.proposal) throw new Error(`Run ${runId} proposed or wrote a change instead of reporting the defect`);
   for (const f of files) {
     const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
