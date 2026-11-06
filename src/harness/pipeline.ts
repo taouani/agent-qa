@@ -6,7 +6,7 @@ import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, t
 import { DataAccess, openRepoBrowser, type JiraCollection, type JiraInput, type JiraIssue, type OpenBrowser } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { DEBUG_REPORT_ARTIFACT, debugWorkflow, EXPLORATION_ARTIFACT, exploreWorkflow, FINDINGS_ARTIFACT, reviewWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import { AUDIT_ARTIFACT, auditWorkflow, DEBUG_REPORT_ARTIFACT, debugWorkflow, EXPLORATION_ARTIFACT, exploreWorkflow, FINDINGS_ARTIFACT, reviewWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
 import type { Seed, SyntheticTicket } from "./cases.js";
 import { FIXTURE_SPEC } from "./fixture-driver.js";
 import { HAND_WRITTEN_PAGE, HAND_WRITTEN_SPEC, handWrittenSuite } from "./hand-written.js";
@@ -71,8 +71,8 @@ export function maskedPipeline(options: MaskedPipelineOptions): Pipeline {
   const runs = new RunStore(options.runsDir);
   const config = harnessConfig(options.config);
   return async (context) => {
-    if (context.case.workflow === "review") {
-      // No browser and no packages: a review reads the code, and the harness never says yes to its fixes.
+    if (context.case.workflow === "review" || context.case.workflow === "audit") {
+      // No browser and no packages: a review or an audit reads the code, and the harness never says yes to a fix.
       const boot = new DataAccess({ root: options.runsDir, store: runs, config, mode: "ide", audit: new MemoryAuditSink() });
       return boot.withScratchRepo(SCRATCH_AUDIT_ID, (repo) => runCase(options, runs, config, context, undefined, repo));
     }
@@ -126,7 +126,8 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
     .register(exploreWorkflow({ data, runs }))
     .register(scriptsWorkflow({ data, runs }))
     .register(debugWorkflow({ data, runs }))
-    .register(reviewWorkflow({ data, runs }));
+    .register(reviewWorkflow({ data, runs }))
+    .register(auditWorkflow({ data, runs }));
 
   const run = async (workflow: string, inputs: Record<string, unknown>) => {
     let step: Step = await engine.start(workflow, inputs);
@@ -152,6 +153,7 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   };
   try {
     if (repo && c.workflow === "review") return await reviewCase(data, runs, repo, seeds, c.inputs, run);
+    if (repo && c.workflow === "audit") return await auditCase(data, runs, repo, seeds, c.inputs, run);
     if (!app) return { runId: await run(c.workflow, c.inputs) };
     if (repo && c.workflow === "debug") return await debugCase(data, runs, app, repo, seeds, c.inputs, run);
     if (repo) return await scriptsCase(data, runs, app, repo, c.inputs, run);
@@ -284,6 +286,33 @@ async function reviewCase(data: DataAccess, runs: RunStore, repo: string, seeds:
   for (const f of files) {
     const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
     if (onDisk !== f.content) throw new Error(`Run ${runId} changed ${f.path}`);
+  }
+  return { runId };
+}
+
+/**
+ * The `audit` case (S3-5): the same flawed suite, audited. The code scan's
+ * count must include the spec's fixed wait at its line, the model must report
+ * the check inside the page object with evidence there, and nothing in the
+ * repo changes.
+ */
+async function auditCase(data: DataAccess, runs: RunStore, repo: string, seeds: Seed[], inputs: Record<string, unknown>, run: (workflow: string, inputs: Record<string, unknown>) => Promise<string>) {
+  const person = seeds.find((s) => s.kind === "name")?.value;
+  if (!person) throw new Error("an audit case needs a seeded name: its test opens that person's request");
+  const files = handWrittenSuite(person, true);
+  await data.scaffoldRepo("harness", ".", "playwright", () => standInRepo("http://127.0.0.1:9", files), [["npx", "playwright", "test"]], true);
+  const runId = await run("audit", inputs);
+  const a = (await runs.readArtifact(runId, AUDIT_ARTIFACT))?.data;
+  if (!a) throw new Error(`Run ${runId} recorded no audit`);
+  const at = (path: string, text: string) => files.find((f) => f.path === path)!.content.split("\n").findIndex((l) => l.includes(text)) + 1;
+  const wait = at(HAND_WRITTEN_SPEC, "waitForTimeout");
+  const check = at(HAND_WRITTEN_PAGE, "await expect(");
+  if (!a.sample.files.some((f) => f.path === HAND_WRITTEN_SPEC) || !a.sample.files.some((f) => f.path === HAND_WRITTEN_PAGE)) throw new Error(`Run ${runId} left the suite's spec or page object out of the sample`);
+  if (!a.findings.some((f) => f.source === "rule" && f.area === "waits" && f.evidence.some((e) => e.path === HAND_WRITTEN_SPEC && e.line === wait))) throw new Error(`Run ${runId} didn't count the fixed wait at ${HAND_WRITTEN_SPEC}:${wait}`);
+  if (!a.findings.some((f) => f.source === "model" && f.evidence.some((e) => e.path === HAND_WRITTEN_PAGE && Math.abs(e.line - check) <= 1))) throw new Error(`Run ${runId}: the model didn't report the check inside the page object at ${HAND_WRITTEN_PAGE}:${check}`);
+  for (const f of files) {
+    const onDisk = await readFile(join(repo, f.path), "utf8").catch(() => undefined);
+    if (onDisk !== f.content) throw new Error(`Run ${runId} changed ${f.path}: an audit is read-only`);
   }
   return { runId };
 }

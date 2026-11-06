@@ -34,6 +34,8 @@ export class FixtureDriver implements ModelDriver {
                 ? fix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
                 : step === "review"
                   ? review(contextText(request))
+                  : step === "audit"
+                  ? audit(contextText(request))
                   : /^fix-\d+$/.test(step)
                   ? debugFix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
                   : undefined;
@@ -230,4 +232,20 @@ function review(context: string) {
     if (wait) findings.push({ path: f.path, line: lines.indexOf(wait) + 1, severity: "high", kind: "fixed-wait", problem: "Waits a fixed second before submitting", why: "Slow when the page is ready, flaky when it isn't", fix: { old: `${wait}\n`, new: "" } });
   }
   return { findings };
+}
+
+/**
+ * An `audit` (S3-5): the check inside the page object, as a layering
+ * finding with its evidence; the fixed wait is the scan's to count.
+ */
+function audit(context: string) {
+  const files = [...context.matchAll(/^### (\S+)\n\((\w+), [^)]+\)\n\n```\w+\n([^]*?)\n```/gm)].map((m) => ({ path: m[1]!, role: m[2]!, content: m[3]! }));
+  if (!files.length) throw new Error("The fixture model found no sample in the audit's context");
+  const findings = [];
+  for (const f of files.filter((x) => x.role === "page" || /export class/.test(x.content))) {
+    const at = f.content.split("\n").findIndex((l) => l.includes("await expect("));
+    if (at >= 0)
+      findings.push({ key: "checks-in-page-objects", area: "layering", title: "Page objects check the app", severity: "medium", impact: "medium", risk: "low", effort: 1, problem: "A page object holds a check, so a spec doesn't show what it checks", good: "Page objects act and return locators; specs check", evidence: [{ path: f.path, line: at + 1 }] });
+  }
+  return { findings, notAssessed: ["Scalability: the sample has one spec"] };
 }
