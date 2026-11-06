@@ -2,8 +2,9 @@ import { assertGrant, type WriteGrant } from "../core/index.js";
 import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 
 /**
- * GitHub's REST API for one thing (S2-9): a branch, one commit of new files
- * on it, and a pull request from it. Nothing is pushed with git and nothing
+ * GitHub's REST API for one thing (S2-9): a branch, one commit on it (new
+ * files, and since S3-1 changes to existing test files), and a pull request
+ * from it. Nothing is pushed with git and nothing
  * touches the base branch: CI's files leave only as a pull request.
  */
 
@@ -23,8 +24,12 @@ export interface PullRequestFiles {
   base?: string | undefined;
   /** The new branch, e.g. agent-qa/scripts-<run>. */
   branch: string;
-  /** Paths from the repo root, with forward slashes, and their text. Every one must be new on the base branch. */
-  files: ReadonlyArray<{ path: string; content: string }>;
+  /**
+   * Paths from the repo root, with forward slashes, and their text. A file
+   * with `base` (the git blob id it was read as) changes that file, which the
+   * base branch must still hold; any other file must be new there.
+   */
+  files: ReadonlyArray<{ path: string; content: string; base?: string | undefined }>;
   message: string;
   title: string;
   body: string;
@@ -115,30 +120,59 @@ export class GitHubClient {
   }
 
   /**
-   * Refuses a path that is taken on the base, in any case (a Windows or macOS
-   * checkout can't hold both), or that runs through a file there. From the
-   * whole tree when GitHub sends it whole, else one path at a time.
+   * Checks each file against the base's tree and gives its mode. A new file
+   * must not be taken there in any case (a Windows or macOS checkout can't
+   * hold both) nor run through a file. A changed file must be there as a
+   * plain blob holding exactly what Agent-QA read (`base`), and keeps its
+   * mode. From the whole tree when GitHub sends it whole, else folder by
+   * folder.
    */
-  private async assertNew(files: ReadonlyArray<{ path: string }>, tree: string, baseHead: string, base: string): Promise<void> {
+  private async checkBase(files: PullRequestFiles["files"], tree: string, base: string): Promise<string[]> {
     const answer = obj(await this.http.get(this.path(`/git/trees/${tree}`), { query: { recursive: 1 } }));
-    const entries = Array.isArray(answer.tree) ? answer.tree.map(obj) : [];
-    if (answer.truncated !== true) {
-      const taken = new Map(entries.map((e) => [String(e.path).toLowerCase(), e.type]));
-      for (const f of files) {
+    const whole = answer.truncated !== true;
+    const all = Array.isArray(answer.tree) ? answer.tree.map(obj) : [];
+    const exact = new Map(all.map((e) => [String(e.path), e]));
+    const folded = new Map(all.map((e) => [String(e.path).toLowerCase(), e.type]));
+    const modes: string[] = [];
+    for (const f of files) {
+      if (f.base !== undefined) {
+        const e = whole ? exact.get(f.path) : await this.entryAt(tree, f.path);
+        if (!e || e.type !== "blob") throw new Error(`${f.path} isn't on ${base} any more: run again on the current code`);
+        if (e.mode !== "100644" && e.mode !== "100755") throw new Error(`${f.path} isn't a plain file on ${base}`);
+        if (e.sha !== f.base) throw new Error(`${f.path} changed on ${base} since Agent-QA read it: run again on the current code`);
+        modes.push(String(e.mode));
+        continue;
+      }
+      if (whole) {
         const parts = f.path.toLowerCase().split("/");
-        if (taken.has(parts.join("/"))) throw new Error(`${f.path} exists on ${base}: Agent-QA only adds new files`);
+        if (folded.has(parts.join("/"))) throw new Error(`${f.path} exists on ${base}: a new file must not be there yet`);
         for (let i = 1; i < parts.length; i++) {
-          const t = taken.get(parts.slice(0, i).join("/"));
+          const t = folded.get(parts.slice(0, i).join("/"));
           if (t !== undefined && t !== "tree") throw new Error(`${f.path} runs through a file on ${base}`);
         }
-      }
-      return;
+      } else if (await this.entryAt(tree, f.path)) throw new Error(`${f.path} exists on ${base}: a new file must not be there yet`);
+      modes.push("100644");
     }
-    for (const f of files) if (await this.exists(f.path, baseHead)) throw new Error(`${f.path} exists on ${base}: Agent-QA only adds new files`);
+    return modes;
   }
 
-  private async tree(grant: WriteGrant, baseTree: string, files: ReadonlyArray<{ path: string; content: string }>): Promise<string> {
-    const body = { base_tree: baseTree, tree: files.map((f) => ({ path: f.path, mode: "100644", type: "blob", content: f.content })) };
+  /** The entry at a path of a tree, one folder at a time (when the whole tree is too large to send). */
+  private async entryAt(tree: string, path: string): Promise<Raw | undefined> {
+    let at = tree;
+    const parts = path.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const listed = obj(await this.http.get(this.path(`/git/trees/${at}`)));
+      const e = (Array.isArray(listed.tree) ? listed.tree.map(obj) : []).find((x) => x.path === parts[i]);
+      if (!e) return undefined;
+      if (i === parts.length - 1) return e;
+      if (e.type !== "tree" || !str(e.sha)) throw new Error(`${path} runs through a file`);
+      at = str(e.sha)!;
+    }
+    return undefined;
+  }
+
+  private async tree(grant: WriteGrant, baseTree: string, files: PullRequestFiles["files"], modes: string[]): Promise<string> {
+    const body = { base_tree: baseTree, tree: files.map((f, i) => ({ path: f.path, mode: modes[i] ?? "100644", type: "blob", content: f.content })) };
     const tree = str(obj(await this.http.request(this.path("/git/trees"), { method: "POST", grant, body })).sha);
     if (!tree) throw this.bad("POST", "/git/trees", "no tree");
     return tree;
@@ -157,10 +191,10 @@ export class GitHubClient {
   }
 
   /**
-   * One commit of new files on a new branch, and a pull request from it. Run
-   * again for the same branch (a stop halfway), it takes the branch when its
-   * one commit adds exactly these files to a commit of the base, and the pull
-   * request already open from it into the same base.
+   * One commit of these files on a new branch, and a pull request from it.
+   * Run again for the same branch (a stop halfway), it takes the branch when
+   * its one commit writes exactly these files over a commit of the base, and
+   * the pull request already open from it into the same base.
    */
   async openPullRequest(grant: WriteGrant, pr: PullRequestFiles): Promise<OpenedPullRequest> {
     assertGrant(grant, "testCode");
@@ -177,13 +211,13 @@ export class GitHubClient {
       const tip = await this.commit(existing);
       const parent = tip.parents.length === 1 ? tip.parents[0]! : undefined;
       const onBase = parent !== undefined && ["ahead", "identical"].includes(String(obj(await this.http.get(this.path(`/compare/${parent}...${baseHead}`))).status));
-      if (!onBase || (await this.tree(grant, (await this.commit(parent)).tree, pr.files)) !== tip.tree) {
+      const parentTree = onBase ? (await this.commit(parent)).tree : undefined;
+      if (!parentTree || (await this.tree(grant, parentTree, pr.files, await this.checkBase(pr.files, parentTree, base))) !== tip.tree) {
         throw new Error(`the branch ${pr.branch} exists with other commits or files: delete it on GitHub, then run again`);
       }
     } else {
       const baseTree = (await this.commit(baseHead)).tree;
-      await this.assertNew(pr.files, baseTree, baseHead, base);
-      const tree = await this.tree(grant, baseTree, pr.files);
+      const tree = await this.tree(grant, baseTree, pr.files, await this.checkBase(pr.files, baseTree, base));
       const commit = str(obj(await this.http.request(this.path("/git/commits"), { method: "POST", grant, body: { message: pr.message, tree, parents: [baseHead] } })).sha);
       if (!commit) throw this.bad("POST", "/git/commits", "no commit");
       await this.http.request(this.path("/git/refs"), { method: "POST", grant, body: { ref: `refs/heads/${pr.branch}`, sha: commit } });
