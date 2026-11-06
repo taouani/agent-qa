@@ -547,6 +547,21 @@ test('T1', async ({ page }) => {
     expect(checkRefactored(b2, a2, [])).toEqual([]);
   });
 
+  it("runs a callback only where it runs, scopes describe variants, and reads destructured values and defaults", () => {
+    const head = "import { test } from '@playwright/test';\n";
+    const po = "export class P {\n  constructor(private readonly page: any) {}\n  async submit() { await this.page.getByRole('button', { name: 'Submit' }).click(); }\n  async later(fn: () => Promise<void>) {}\n  async now(fn: () => Promise<void>) { await fn(); }\n  async open(path = '/requests') { await this.page.goto(path); }\n}\n";
+    const spec = `${head}import { P } from './p';\nconst data = { username: 'ann', password: 'pw' };\ntest('T1', async ({ page }) => {\n  const request = new P(page);\n  await page.goto('/requests');\n  const { username, password } = data;\n  await page.getByLabel('User').fill(username);\n  await page.getByLabel('Password').fill(password);\n  await request.submit();\n});\ntest.describe.serial('S', () => {\n  test('T2', async ({ page }) => {\n    await page.goto('/other');\n  });\n});\n`;
+    const before = new Map([["p.ts", po], ["t.spec.ts", spec]]);
+    const check = (after: string) => checkRefactored(before, new Map([["p.ts", po], ["t.spec.ts", after]]), []).join(" | ");
+    expect(check(spec.replace("  await request.submit();", "  await Promise.all([].map(async () => { await request.submit(); }));"))).toMatch(/T1" no longer reaches/);
+    expect(check(spec.replace("  await request.submit();", "  await request.later(async () => { await request.submit(); });"))).toMatch(/T1" no longer reaches/);
+    expect(check(spec.replace("  await request.submit();", "  await request.now(async () => { await request.submit(); });"))).toBe("");
+    expect(check(spec.replace("  await page.goto('/requests');\n", "").replace("test.describe.serial('S', () => {\n", "test.describe.serial('S', () => {\n  test.beforeEach(async ({ page }) => {\n    await page.goto('/requests');\n  });\n"))).toMatch(/T1" no longer reaches/);
+    expect(check(spec.replace("fill(username);\n  await page.getByLabel('Password').fill(password)", "fill(password);\n  await page.getByLabel('Password').fill(username)"))).toMatch(/out of its order/);
+    // A default parameter stands for the value the test held.
+    expect(check(spec.replace("  await page.goto('/requests');\n", "  await request.open();\n"))).toBe("");
+  });
+
   it("counts a single return as no branch only when it hands back no function", () => {
     const scan = (body: string) => scanGeneratedCode(`class P {\n  ${body}\n}\n`, "p.ts").branches;
     expect(scan("get go() { return this.page.getByRole('button'); }")).toBe(0);

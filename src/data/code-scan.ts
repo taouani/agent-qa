@@ -121,8 +121,11 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
     if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") && n.body.type === "BlockStatement" && n.body.body.length === 1 && n.body.body[0]!.type === "ReturnStatement") {
       // Not when it hands back a function: a check inside one never runs.
       let fn = false;
+      const passed = new Set<Node>();
       walkAst(n.body.body[0] as Node, (x) => {
-        if (x.type === "ArrowFunctionExpression" || x.type === "FunctionExpression") fn = true;
+        // expect.poll(() => …), test.step('…', async () => …): run by the call they are passed to.
+        if ((x.type === "CallExpression" || x.type === "OptionalCallExpression") && RUNNERS.has((x.callee.type === "Identifier" ? x.callee.name : memberName(x.callee as Node)) ?? "")) for (const a of x.arguments) passed.add(a as Node);
+        if ((x.type === "ArrowFunctionExpression" || x.type === "FunctionExpression") && !passed.has(x)) fn = true;
       });
       if (!fn) soleReturns.add(n.body.body[0] as Node);
     }
@@ -625,11 +628,40 @@ export function codeLiterals(text: string, file: string): string[] | undefined {
 export const MAX_REACH = 20_000;
 const MAX_REACH_VISITS = 300_000;
 const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeParameters", "implements", "decorators"]);
+/** Calls known to run the function passed to them (Playwright's, and a promise's then and finally); any other call may never run it. */
+const RUNNERS = new Set(["test", "describe", "serial", "parallel", "step", "beforeEach", "afterEach", "beforeAll", "afterAll", "expect", "poll", "toPass", "then", "finally"]);
 const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration", "ClassMethod", "ClassPrivateMethod", "ObjectMethod"]);
 
+interface Binding {
+  node: Node;
+  env: Env;
+  /** Destructured: the property (or index) of node the name stands for. */
+  prop?: string;
+}
 interface Env {
-  vars: Map<string, { node: Node; env: Env }>;
+  vars: Map<string, Binding>;
   parent?: Env;
+}
+
+/** The names a destructuring pattern binds, each to its value's property: `{ user, city: town }` binds user to .user and town to .city. */
+function bindPattern(p: Node, value: Node, env: Env, into: Env): void {
+  if (p.type === "Identifier") return void into.vars.set(p.name, { node: value, env });
+  if (p.type === "AssignmentPattern") return bindPattern(p.left as Node, value, env, into);
+  if (p.type === "ObjectPattern")
+    for (const q of p.properties) {
+      if (q.type !== "ObjectProperty" || q.computed) continue;
+      const key = q.key.type === "Identifier" ? q.key.name : literalString(q.key as Node);
+      const target = (q.value.type === "AssignmentPattern" ? q.value.left : q.value) as Node;
+      if (key && target.type === "Identifier") into.vars.set(target.name, { node: value, env, prop: key });
+      else walkAst(target, (x) => x.type === "Identifier" && into.vars.set(x.name, { node: value, env }));
+    }
+  else if (p.type === "ArrayPattern")
+    p.elements.forEach((e, i) => {
+      const target = (e?.type === "AssignmentPattern" ? e.left : e) as Node | null;
+      if (target?.type === "Identifier") into.vars.set(target.name, { node: value, env, prop: String(i) });
+      else if (target) walkAst(target, (x) => x.type === "Identifier" && into.vars.set(x.name, { node: value, env }));
+    });
+  else walkAst(p, (x) => x.type === "Identifier" && into.vars.set(x.name, { node: value, env }));
 }
 
 /**
@@ -679,9 +711,11 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         const name = callee.type === "Identifier" ? callee.name : memberName(callee);
         const objName = isMember ? (callee.object.type === "Identifier" ? callee.object.name : memberName(callee.object as Node)) : undefined;
         const title = n.arguments[0] ? literalString(n.arguments[0] as Node) : undefined;
-        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || (objName === "test" && name === "describe"))) {
+        // test.describe, test.describe.serial, .parallel, .only…: a block of its own.
+        const isDescribe = /^test\.describe(?:\.|$)/.test(pathOfExpr(callee) ?? "");
+        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || isDescribe)) {
           tests.push({ title, at: n.start ?? 0, file: f.path, body: n.arguments.slice(1) as Node[] });
-          if (objName === "test" && name === "describe") describes.push([n.start ?? 0, n.end ?? 0]);
+          if (isDescribe) describes.push([n.start ?? 0, n.end ?? 0]);
         }
         // beforeEach runs before each test of its describe block (of the file, at the top). beforeAll runs once: nothing moves into it.
         if (objName === "test" && name === "beforeEach") for (const a of n.arguments) if (a.type === "ArrowFunctionExpression" || a.type === "FunctionExpression") found.push({ at: n.start ?? 0, fn: a as Node });
@@ -708,7 +742,7 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
     const running = new Set<Node>();
     const full = () => order.length >= MAX_REACH || visits >= MAX_REACH_VISITS;
     const root: Env = { vars: new Map() };
-    const lookup = (env: Env | undefined, name: string): { node: Node; env: Env } | undefined => {
+    const lookup = (env: Env | undefined, name: string): Binding | undefined => {
       for (let e = env; e; e = e.parent) if (e.vars.has(name)) return e.vars.get(name);
       return undefined;
     };
@@ -719,10 +753,11 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       const env: Env = { vars: new Map(), parent: outer };
       const params = (fn as unknown as { params?: Node[] }).params ?? [];
       params.forEach((p, i) => {
-        const id = p.type === "AssignmentPattern" ? (p.left as Node) : p.type === "TSParameterProperty" ? (p.parameter as Node) : p;
+        const id = p.type === "TSParameterProperty" ? (p.parameter as Node) : p;
         const arg = args[i] as Node | undefined;
-        if (id.type === "Identifier" && arg) env.vars.set(id.name, { node: arg, env: caller });
-        else if (id.type === "AssignmentPattern" && id.left.type === "Identifier" && arg) env.vars.set(id.left.name, { node: arg, env: caller });
+        // An argument given stands for the parameter, read in the caller's scope; else its default, in the function's.
+        if (arg) bindPattern(id.type === "AssignmentPattern" ? (id.left as Node) : id, arg, caller, env);
+        else if (id.type === "AssignmentPattern") bindPattern(id.left as Node, id.right as Node, env, env);
       });
       const body = (fn as unknown as { body: Node }).body;
       visit(body, env, false);
@@ -732,6 +767,23 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
     const reach = (name: string, env: Env, args: readonly Node[] | undefined, runs: boolean, local: boolean) => {
       if (full()) return;
       const b = local ? lookup(env, name) : undefined;
+      if (b?.prop !== undefined) {
+        // A destructured name: the matching property or element of its value, or a read of that property.
+        const v = b.node;
+        const hit = v.type === "ObjectExpression" ? v.properties.find((q) => q.type === "ObjectProperty" && !q.computed && (q.key.type === "Identifier" ? q.key.name : literalString(q.key as Node)) === b.prop) : v.type === "ArrayExpression" ? v.elements[Number(b.prop)] : undefined;
+        const node = (hit && hit.type === "ObjectProperty" ? hit.value : hit) as Node | undefined | null;
+        if (node && !running.has(node)) {
+          running.add(node);
+          visit(node, b.env, runs);
+          running.delete(node);
+        } else if (!hit && !running.has(v)) {
+          running.add(v);
+          visit(v, b.env, false);
+          running.delete(v);
+          reach(b.prop, env, args, runs, false);
+        }
+        return;
+      }
       if (b) {
         if (running.has(b.node)) return;
         if (FUNCTIONS.has(b.node.type)) {
@@ -766,8 +818,7 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       }
       if (n.type === "ClassBody" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "FunctionDeclaration") return;
       if (n.type === "VariableDeclarator") {
-        if (n.id.type === "Identifier" && n.init) env.vars.set(n.id.name, { node: n.init as Node, env });
-        else if (n.init) walkAst(n.id as Node, (x) => x.type === "Identifier" && env.vars.set(x.name, { node: n.init as Node, env }));
+        if (n.init) bindPattern(n.id as Node, n.init as Node, env, env);
         // A value declared is reached where it is read (a locator built does nothing); one awaited, or a wait started early, runs here too.
         if (n.init && (n.init.type === "AwaitExpression" || /^waitFor/.test(callName(n.init as Node) ?? ""))) visit(n.init as Node, env, false);
         return;
@@ -789,8 +840,9 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
           const m = memberName(c);
           if (m) reach(m, env, args, true, false);
         } else visit(c, env, false);
-        // The arguments as written too, so a value passed but never read is still reached.
-        for (const a of args) visit(a, env, true);
+        // The arguments as written too, so a value passed but never read is still reached; a function passed runs only if the call is one known to run it.
+        const runner = RUNNERS.has(name ?? "") || /^test\.describe(?:\.|$)/.test(pathOfExpr(c) ?? "");
+        for (const a of args) visit(a, env, runner);
         return;
       }
       if (n.type === "Identifier") return reach(n.name, env, undefined, runs, true);
