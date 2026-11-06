@@ -608,16 +608,22 @@ export function codeLiterals(text: string, file: string): string[] | undefined {
   return out.sort();
 }
 
+/** The most calls and values a test's reach lists in order: past it, only the set is compared. */
+export const MAX_REACH = 20_000;
+const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeParameters", "implements", "decorators"]);
+
 /**
  * What each test reaches (S3-6), by its title: the names of the calls its
- * body makes and the values it holds, and those of every declaration it
- * reads by name across the files (a page object's method, a helper, a
- * constant), followed as far as they go. A refactor may move what a test
- * does into a page object or a helper, never leave out an action or a value:
- * each test reaches at least what it reached before. Names are matched by
- * text, not by symbol, so the set is wide, never narrow.
+ * body makes and the values it holds, in the order they come, with every
+ * declaration it reads by name across the files (a page object's method, a
+ * helper, a constant) expanded where it is read. A refactor may move what a
+ * test does into a page object or a helper, never leave out an action or a
+ * value, nor change their order: the test's list before is a subsequence of
+ * its list after. A function written in the test but not passed to a call
+ * reaches nothing until it is called. Names are matched by text, not by
+ * symbol. `complete` is false when a list reached MAX_REACH.
  */
-export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, Set<string>> {
+export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, { reach: Set<string>; order: string[]; complete: boolean }> {
   const decls = new Map<string, Node[]>();
   const declare = (name: string | undefined, body: Node | null | undefined) => {
     if (name && body) decls.set(name, [...(decls.get(name) ?? []), body]);
@@ -636,7 +642,6 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n.body);
       else if (n.type === "ObjectProperty") declare(keyName(n.key as Node), n.value as Node);
       else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n.right);
-      else if (n.type === "ClassDeclaration" && n.id) declare(n.id.name, n.body);
       else if (n.type === "CallExpression") {
         const callee = n.callee as Node;
         const isMember = callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression";
@@ -647,31 +652,60 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       }
     });
   }
-  const out = new Map<string, Set<string>>();
+  const out = new Map<string, { reach: Set<string>; order: string[]; complete: boolean }>();
   for (const t of tests) {
-    const reach = out.get(t.title) ?? new Set<string>();
-    const seen = new Set<string>();
-    const queue = [...t.body];
+    const order: string[] = [];
+    const expanding = new Set<string>();
     const follow = (name: string) => {
-      if (seen.has(name)) return;
-      seen.add(name);
-      queue.push(...(decls.get(name) ?? []));
+      if (expanding.has(name) || order.length >= MAX_REACH) return;
+      expanding.add(name);
+      for (const d of decls.get(name) ?? []) visit(d, true);
+      expanding.delete(name);
     };
-    while (queue.length) {
-      walkAst(queue.pop()!, (x) => {
-        if (x.type === "CallExpression" || x.type === "OptionalCallExpression" || x.type === "NewExpression") {
-          const c = x.callee as Node;
-          const name = c.type === "Identifier" ? c.name : memberName(c);
-          if (name) reach.add(`c:${name}`);
-        }
-        if (x.type === "Identifier") follow(x.name);
-        else if ((x.type === "MemberExpression" || x.type === "OptionalMemberExpression") && memberName(x)) follow(memberName(x)!);
-        else if (x.type === "StringLiteral") reach.add(`s:${x.value}`);
-        else if (x.type === "NumericLiteral") reach.add(`n:${x.value}`);
-        else if (x.type === "TemplateElement") reach.add(`s:${x.value.cooked ?? x.value.raw}`);
-      });
-    }
-    out.set(t.title, reach);
+    const visit = (n: Node, runs: boolean): void => {
+      if (order.length >= MAX_REACH) return;
+      // A function that is neither passed to a call nor read by name never runs here.
+      if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") && !runs) return;
+      // A class's methods and a declared function are reached by their names, where they are called.
+      if (n.type === "ClassBody" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "FunctionDeclaration") return;
+      // A declared name reaches nothing until it is read: only the value runs here.
+      if (n.type === "VariableDeclarator") return n.init ? visit(n.init as Node, false) : undefined;
+      if (n.type === "CallExpression" || n.type === "OptionalCallExpression" || n.type === "NewExpression") {
+        const c = n.callee as Node;
+        const name = c.type === "Identifier" ? c.name : memberName(c);
+        if (name) order.push(`c:${name}`);
+        visit(c, false);
+        for (const a of n.arguments) visit(a as Node, true);
+        return;
+      }
+      if (n.type === "Identifier") return follow(n.name);
+      if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
+        visit(n.object as Node, false);
+        if (n.computed) visit(n.property as Node, false);
+        const m = memberName(n);
+        if (m) follow(m);
+        return;
+      }
+      if ((n.type === "ObjectProperty" || n.type === "ObjectMethod") && !n.computed) {
+        if (n.type === "ObjectProperty") visit(n.value as Node, false);
+        return;
+      }
+      if (n.type === "StringLiteral") return void order.push(`s:${n.value}`);
+      if (n.type === "NumericLiteral") return void order.push(`n:${n.value}`);
+      if (n.type === "TemplateElement") return void order.push(`s:${n.value.cooked ?? n.value.raw}`);
+      const rec = n as unknown as Record<string, unknown>;
+      for (const k of Object.keys(rec)) {
+        if (SKIP_KEYS.has(k) || TYPE_KEYS.has(k)) continue;
+        const v = rec[k];
+        if (Array.isArray(v)) {
+          for (const c of v) if (c && typeof c === "object" && typeof (c as Node).type === "string") visit(c as Node, false);
+        } else if (v && typeof v === "object" && typeof (v as Node).type === "string") visit(v as Node, false);
+      }
+    };
+    for (const b of t.body) visit(b, true);
+    const prev = out.get(t.title);
+    const all = [...(prev?.order ?? []), ...order];
+    out.set(t.title, { reach: new Set(all), order: all, complete: (prev?.complete ?? true) && order.length < MAX_REACH });
   }
   return out;
 }

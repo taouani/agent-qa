@@ -211,6 +211,40 @@ describe("refactor workflow (S3-6)", () => {
     expect(files.get("tests/c.spec.ts")).toContain("page.reload()");
   });
 
+  it("keeps the person's choice of tasks on a retry, and writes nothing more when the retry says no", async () => {
+    let fail = true;
+    const base = fake();
+    const e = engine({
+      ...base,
+      editTestFiles: async (...a) => {
+        if (fail) {
+          fail = false;
+          throw new Error("the process stopped");
+        }
+        return base.editTestFiles(...a);
+      },
+    });
+    const first = await e.start("refactor", { auditRun: "audit-run", findings: ["AF-001"] });
+    await e.submit(first.runId, "plan", TWO);
+    await expect(e.submit(first.runId, "apply", { apply: true, tasks: ["T-1"] }, { byPerson: true })).rejects.toThrow(/stopped/);
+    expect((await report(first.runId)).chosen).toEqual(["T-1"]);
+    // Nothing was written; the retry, sent without the person, says no.
+    await e.submit(first.runId, "apply", { apply: false });
+    const r = await report(first.runId);
+    expect(r).toMatchObject({ status: "stopped", reason: expect.stringContaining("the retry said no") });
+    expect(r.tasks.map((t) => t.status)).toEqual(["skipped", "skipped"]);
+    expect(files.get("tests/c.spec.ts")).toBe(OTHER);
+    expect(files.get("tests/pages/request-page.ts")).toBe(PAGE);
+    // A retry that says yes to everything still writes only what the person chose.
+    fail = true;
+    const second = await e.start("refactor", { auditRun: "audit-run", findings: ["AF-001"] });
+    await e.submit(second.runId, "plan", TWO);
+    await expect(e.submit(second.runId, "apply", { apply: true, tasks: ["T-1"] }, { byPerson: true })).rejects.toThrow(/stopped/);
+    await e.submit(second.runId, "apply", { apply: true }, { byPerson: true });
+    expect((await report(second.runId)).tasks.map((t) => t.status)).toEqual(["applied", "skipped"]);
+    expect(files.get("tests/c.spec.ts")).toBe(OTHER);
+  });
+
   it("finds a task's files written before a stop, and puts back the rest on a retry of the rollback", async () => {
     outcomes = ["failed"];
     let stopRemove = true;
@@ -423,6 +457,13 @@ test('T1', async ({ page }) => {
     expect(verdict([edit(spec, "expect(request.error()).toBeHidden()", "expect(page.getByText(toast)).toBeHidden()")])).toMatch(/changes what the tests check/);
     expect(verdict([edit(po, "getByRole('region', { name: 'Details' })", "getByRole('region')")])).toMatch(/changes details|"Details"/);
     expect(verdict([edit(po, "getByRole('button', { name: 'Submit' })", "getByRole('button')")])).toMatch(/no longer reaches "Submit"|takes out "Submit"/);
+    // An action put in a function nothing calls, moved after the checks, or no longer awaited.
+    expect(verdict([edit(spec, "  await request.submit();\n", "  const later = () => request.submit();\n")])).toMatch(/no longer reaches submit\(\)/);
+    expect(verdict([edit(spec, "  await request.submit();\n", ""), edit(spec, "  await expect(request.error()).toBeHidden();\n", "  await expect(request.error()).toBeHidden();\n  await request.submit();\n")])).toMatch(/out of its order/);
+    expect(verdict([edit(spec, "  await request.submit();", "  void request.submit();")])).toMatch(/adds void/);
+    expect(verdict([edit(spec, "  await request.submit();", "  request.submit();")])).toMatch(/awaits less/);
+    // Two page-object methods trading bodies.
+    expect(verdict([edit(po, "  async submit() { await this.page.getByRole('button', { name: 'Submit' }).click(); }", "  async submit() { await this.page.locator('#notes').fill('Late'); }"), edit("tests/a.spec.ts", "  await page.locator('#notes').fill('Late');", "  await page.getByRole('button', { name: 'Submit' }).click();")])).toMatch(/out of its order/);
   });
 
   it("refuses a rename that could make a reference read something else", () => {
