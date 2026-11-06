@@ -112,6 +112,22 @@ describe.skipIf(!playwrightFolder)("browser leak gate (real Chromium on the stan
     expect(JSON.stringify(art)).not.toMatch(/Quillfeather|m\.quillfeather@example\.com|DE89 3704/);
   }, 180_000);
 
+  it.skipIf(!hasTestPackage && !process.env.AGENT_QA_PLAYWRIGHT_DIR)("debugs a hand-written test: reports the seeded bug as a defect, leaves the person's files as they were, and keeps them masked", async () => {
+    const c = DEFAULT_BROWSER_CASES.find((x) => x.workflow === "debug")!;
+    const report = await runHarness({ cases: [c], seeds: DEFAULT_SEEDS, pipeline: maskedPipeline({ runsDir: join(dir, "runs"), playwrightFolder: playwrightFolder! }), pipelineName: "masked", driver: new FixtureDriver() });
+    expect(report.cases[0], JSON.stringify(report.cases[0])).toMatchObject({ status: "pass", seededLeaks: [] });
+    // The tempting fix (refused), then the defect.
+    expect(report.cases[0]!.modelCalls).toBe(2);
+    const [run] = (await readdir(join(dir, "runs"))).filter((r) => existsSync(join(dir, "runs", r, "debug-report.json")));
+    const art = JSON.parse(await readFile(join(dir, "runs", run!, "debug-report.json"), "utf8"));
+    expect(art.data).toMatchObject({ status: "defect", rounds: 1, changes: [], stoppedOn: [{ test: "a submitted request shows as Submitted [chromium]", kind: "defect" }] });
+    expect(art.data.attempts).toHaveLength(1);
+    const failure = art.data.attempts[0].tests[0].failure;
+    expect(failure.message).toContain("Rejected");
+    expect(failure.message).toMatch(/<EMAIL_\d+>/);
+    expect(JSON.stringify(art)).not.toMatch(/Quillfeather|m\.quillfeather@example\.com|DE89 3704/);
+  }, 180_000);
+
   it("fails the gate when a page shows a value no detector knows", async () => {
     // Addresses have no detector yet: on a record page, outside a table, one reaches the model.
     // A canary for that known gap: when an address detector lands, this test must change to expect no leak.
