@@ -5,3 +5,4 @@ export * from "./engine/index.js";
 export * from "./config/index.js";
 export * from "./policy/index.js";
 export * from "./runs/index.js";
+export * from "./diff.js";

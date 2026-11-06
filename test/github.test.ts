@@ -5,15 +5,18 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GitHubClient } from "../src/connectors/index.js";
 import { configSchema, MemoryAuditSink, Policy, PolicyDenied, RunStore, type WriteGrant } from "../src/core/index.js";
-import { DataAccess, prBase, ProfileError } from "../src/data/index.js";
+import { DataAccess, gitBlobId, prBase, ProfileError } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 
 /** A GitHub API in memory: commits with trees and parents, branches and pull requests, with every call recorded. */
-function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]; status?: number } = {}) {
+function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]; blobs?: Record<string, { sha: string; mode: string }>; truncated?: boolean; status?: number } = {}) {
   const commits: Record<string, { tree: string; parents: string[] }> = { c0: { tree: "t0", parents: [] } };
-  const trees: Record<string, string[]> = { t0: start.files ?? [] };
+  const trees: Record<string, string[]> = { t0: [...(start.files ?? []), ...Object.keys(start.blobs ?? {})] };
+  const blobsAt: Record<string, Record<string, { sha: string; mode: string }> | undefined> = {};
+  let current = "t0";
+  const entry = (p: string) => ({ path: p, type: "blob", ...(blobsAt[current] ?? start.blobs)?.[p] });
   const branches: Record<string, string> = { main: "c0", ...start.branches };
   const pulls: Array<{ number: number; head: string; base: string; draft: boolean; body: string; title: string }> = [];
   const calls: string[] = [];
@@ -35,7 +38,18 @@ function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]
     const commit = /^\/git\/commits\/(.+)$/.exec(path);
     if (method === "GET" && commit) return json(200, { tree: { sha: commits[commit[1]!]!.tree }, parents: commits[commit[1]!]!.parents.map((sha) => ({ sha })) });
     const tree = /^\/git\/trees\/(.+)$/.exec(path);
-    if (method === "GET" && tree) return json(200, { truncated: false, tree: trees[tree[1]!]!.map((p) => ({ path: p, type: "blob" })) });
+    if (method === "GET" && tree) {
+      // A folder of a tree, as GitHub lists it without `recursive`: "<tree>::<folder>".
+      const [id, prefix = ""] = tree[1]!.split("::");
+      current = id!;
+      if (start.truncated && url.searchParams.get("recursive")) return json(200, { truncated: true, tree: [] });
+      if (!url.searchParams.get("recursive")) {
+        const below = trees[id!]!.filter((p) => p.startsWith(prefix ? `${prefix}/` : "")).map((p) => p.slice(prefix ? prefix.length + 1 : 0));
+        const names = [...new Set(below.map((p) => p.split("/")[0]!))];
+        return json(200, { tree: names.map((n) => (below.includes(n) ? { ...entry(prefix ? `${prefix}/${n}` : n), path: n } : { path: n, type: "tree", sha: `${id}::${prefix ? `${prefix}/` : ""}${n}` })) });
+      }
+      return json(200, { truncated: false, tree: trees[id!]!.map(entry) });
+    }
     const compare = /^\/compare\/(.+)\.\.\.(.+)$/.exec(path);
     if (method === "GET" && compare) return json(200, { status: compare[1] === compare[2] ? "identical" : ancestor(compare[1]!, compare[2]!) ? "ahead" : "diverged" });
     if (method === "GET" && path === "/pulls") {
@@ -74,7 +88,15 @@ function fakeGitHub(start: { branches?: Record<string, string>; files?: string[]
     trees[`tp${n}`] = [...trees[commits[branches[branch]!]!.tree]!, `other${n}.ts`];
     branches[branch] = c;
   };
-  return { fetch, branches, pulls, calls, posted, push };
+  /** Someone changes a file on a branch: a new commit whose tree holds another blob for it. */
+  const change = (branch: string, path: string, sha: string) => {
+    const c = `p${++n}`;
+    commits[c] = { tree: `tp${n}`, parents: [branches[branch]!] };
+    trees[`tp${n}`] = [...trees[commits[branches[branch]!]!.tree]!];
+    blobsAt[`tp${n}`] = { ...blobsAt[commits[branches[branch]!]!.tree], [path]: { sha, mode: "100644" } };
+    branches[branch] = c;
+  };
+  return { fetch, branches, pulls, calls, posted, push, change };
 }
 
 const ciGrant = async <T>(fn: (g: WriteGrant) => Promise<T>) => {
@@ -133,7 +155,7 @@ describe("GitHubClient", () => {
   it("refuses a file that exists on the base, a branch with other files, and a write without a grant", async () => {
     const gh = fakeGitHub({ files: ["tests/A.spec.ts", "tests/x"] });
     const client = new GitHubClient({ repo: "o/r", token: "tok", fetch: gh.fetch, retries: 0 });
-    await expect(ciGrant((g) => client.openPullRequest(g, { ...pr, base: "main" }))).rejects.toThrow(/tests\/a\.spec\.ts exists on main: Agent-QA only adds new files/);
+    await expect(ciGrant((g) => client.openPullRequest(g, { ...pr, base: "main" }))).rejects.toThrow(/tests\/a\.spec\.ts exists on main: a new file must not be there yet/);
     await expect(ciGrant((g) => client.openPullRequest(g, { ...pr, files: [{ path: "tests/x/b.ts", content: "" }] }))).rejects.toThrow(/runs through a file on main/);
     expect(gh.posted).toEqual([]);
 
@@ -145,6 +167,53 @@ describe("GitHubClient", () => {
     await expect(other.openPullRequest(undefined as unknown as WriteGrant, pr)).rejects.toBeInstanceOf(PolicyDenied);
     await expect(ciGrant((g) => other.openPullRequest(g, { ...pr, branch: "../x" }))).rejects.toThrow(/isn't a branch name/);
     expect(() => new GitHubClient({ repo: "nope", token: "t" })).toThrow(/owner\/name/);
+  });
+});
+
+describe("GitHubClient: changed files (S3-1)", () => {
+  const blob = "0123456789abcdef0123456789abcdef01234567";
+  const pr = { branch: "agent-qa/run-2", files: [{ path: "tests/a.spec.ts", content: "test('fixed')\n", base: blob }], message: "m", title: "t", body: "b", draft: true };
+
+  it("changes a file the base still holds as it was read, keeping its mode, from the whole tree or folder by folder", async () => {
+    for (const truncated of [false, true]) {
+      const gh = fakeGitHub({ blobs: { "tests/a.spec.ts": { sha: blob, mode: "100755" } }, truncated });
+      const client = new GitHubClient({ repo: "o/r", token: "tok", fetch: gh.fetch, retries: 0 });
+      expect(await ciGrant((g) => client.openPullRequest(g, pr))).toMatchObject({ number: 40, created: true });
+      expect(gh.posted[0]!.body).toMatchObject({ base_tree: "t0", tree: [{ path: "tests/a.spec.ts", mode: "100755", content: "test('fixed')\n" }] });
+      // Again for the same run: the branch's one commit writes these very files.
+      expect(await ciGrant((g) => client.openPullRequest(g, pr))).toMatchObject({ number: 40, created: false });
+    }
+  });
+
+  it("refuses a changed file the base no longer holds as read, a link, or one that is gone", async () => {
+    const cases: Array<[Record<string, { sha: string; mode: string }>, RegExp]> = [
+      [{ "tests/a.spec.ts": { sha: "f".repeat(40), mode: "100644" } }, /changed on main since Agent-QA read it/],
+      [{ "tests/a.spec.ts": { sha: blob, mode: "120000" } }, /isn't a plain file on main/],
+      [{ "tests/b.spec.ts": { sha: blob, mode: "100644" } }, /isn't on main any more/],
+    ];
+    for (const truncated of [false, true]) {
+      for (const [blobs, error] of cases) {
+        const gh = fakeGitHub({ blobs, truncated });
+        const client = new GitHubClient({ repo: "o/r", token: "tok", fetch: gh.fetch, retries: 0 });
+        await expect(ciGrant((g) => client.openPullRequest(g, pr))).rejects.toThrow(error);
+        expect(gh.posted).toEqual([]);
+      }
+    }
+    // A retry after the base changed the file since the first try: refused, not sent over the old version.
+    const moved = fakeGitHub({ blobs: { "tests/a.spec.ts": { sha: blob, mode: "100644" } } });
+    const retry = new GitHubClient({ repo: "o/r", token: "tok", fetch: moved.fetch, retries: 0 });
+    await ciGrant(async (g) => {
+      const tree = (await retry.http.request<{ sha: string }>("/repos/o/r/git/trees", { method: "POST", grant: g, body: { base_tree: "t0", tree: [{ path: "tests/a.spec.ts", mode: "100644", type: "blob", content: "test('fixed')\n" }] } })).sha;
+      const c = (await retry.http.request<{ sha: string }>("/repos/o/r/git/commits", { method: "POST", grant: g, body: { message: "m", tree, parents: ["c0"] } })).sha;
+      await retry.http.request("/repos/o/r/git/refs", { method: "POST", grant: g, body: { ref: "refs/heads/agent-qa/run-2", sha: c } });
+    });
+    moved.change("main", "tests/a.spec.ts", "e".repeat(40));
+    await expect(ciGrant((g) => retry.openPullRequest(g, pr))).rejects.toThrow(/changed on main since Agent-QA read it/);
+
+    // A new file is still checked folder by folder when the tree is too large.
+    const gh = fakeGitHub({ blobs: { "tests/a.spec.ts": { sha: blob, mode: "100644" } }, truncated: true });
+    const client = new GitHubClient({ repo: "o/r", token: "tok", fetch: gh.fetch, retries: 0 });
+    await expect(ciGrant((g) => client.openPullRequest(g, { ...pr, files: [{ path: "tests/a.spec.ts", content: "x" }] }))).rejects.toThrow(/exists on main: a new file must not be there yet/);
   });
 });
 
@@ -190,6 +259,21 @@ describe("DataAccess: pull requests from CI", () => {
     expect(gh.pulls[0]!.body).not.toContain("jane.doe@example.com");
     expect(gh.pulls[0]!.body).not.toMatch(/@team|!\[x\]|<PERSON_1>/);
     expect(gh.pulls[0]!.body).toContain("\\<PERSON_1\\>");
+  });
+
+  it("sends a changed test file with the blob it was read as, and refuses a bad blob id", async () => {
+    const blob = gitBlobId(Buffer.from("test('a')\n"));
+    const gh = fakeGitHub({ blobs: { "e2e/tests/a.spec.ts": { sha: blob, mode: "100644" } } });
+    const { d } = data({ github: gh });
+    const [read] = await d.readTestFiles("r", "r", ".", ["tests/a.spec.ts"]);
+    expect(read!.gitBlob).toBe(blob);
+    const edit = await d.editTestFiles("r", "r", ".", [{ path: "tests/a.spec.ts", content: "test('fixed')\n", sha256: read!.sha256 }], true);
+    if (edit.status !== "done") throw new Error("declined");
+    expect(edit.pullRequest).toBe(true);
+    const r = await d.openPullRequest("r", "r", ".", { files: edit.written.map((w) => ({ ...w, gitBlob: read!.gitBlob })), title: "t", body: "b", draft: true });
+    expect(r).toMatchObject({ status: "done", number: 40 });
+    expect(gh.posted[0]!.body).toMatchObject({ tree: [{ path: "e2e/tests/a.spec.ts", mode: "100644", content: "test('fixed')\n" }] });
+    await expect(d.openPullRequest("r2", "r", ".", { files: edit.written.map((w) => ({ ...w, gitBlob: "nope" })), title: "t", body: "b", draft: true })).rejects.toThrow(/not a git blob id/);
   });
 
   it("goes into the branch the job's code came from", () => {

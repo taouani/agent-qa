@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, replaceCreatedRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -25,6 +25,7 @@ import { listFolderFiles, type FolderListing } from "./profile-scan.js";
 import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
 import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
+import { isIgnored, loadIgnoreRules } from "./gitignore.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -189,12 +190,66 @@ export interface ScriptsData {
   /**
    * Opens a pull request (S2-9) with files this run wrote in CI's checkout,
    * each read back and checked against what Agent-QA wrote (`sha256`): one
-   * commit of new files on a new branch `agent-qa/<run>`, through
+   * commit on a new branch `agent-qa/<run>`, through
    * `Policy.guard` (target testCode, which in CI only ever leaves as a pull
-   * request). The title and body are masked again before they leave.
+   * request). A file with a `gitBlob` (from `readTestFiles`) changes an
+   * existing file, and the base must still hold that blob; any other file
+   * must be new. The title and body are masked again before they leave.
    */
-  openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome>;
+  openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string; gitBlob?: string | undefined }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome>;
 }
+
+/**
+ * Reading and changing test files Agent-QA didn't write (S3-1): `debug`,
+ * `review` fixes and `refactor` work on the person's own tests. Only test
+ * code in the reviewed profile's folder: never a config, `package.json`,
+ * `.env`, the profile or a tooling folder.
+ */
+export interface TestFilesData {
+  /**
+   * Existing files of the profile's folder (paths relative to it), masked
+   * with `tokensRun`'s vault, each with the sha256 of its real bytes (what
+   * `editTestFiles` checks) and its git blob id (what a pull request checks
+   * on the base). A file is refused when its masked text wouldn't give back
+   * exactly its bytes, so an edit can never change a value it didn't see.
+   */
+  readTestFiles(runId: string, tokensRun: string, folder: string, paths: readonly string[]): Promise<TestFileRead[]>;
+  /**
+   * Replaces existing test files with the person's reviewed edits, through
+   * `Policy.guard` (target testCode): the masked content gets its real values
+   * back from `tokensRun`'s vault, and each file is replaced only while it
+   * still holds the bytes that were read (`sha256`). All or none: a failure
+   * puts back the ones already replaced. Call it only with the person's yes,
+   * after they saw the whole diff. In CI the files change in the job's own
+   * checkout and leave only through `openPullRequest`.
+   */
+  editTestFiles(runId: string, tokensRun: string, folder: string, edits: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<EditFilesOutcome>;
+}
+
+/** A test file as a model may see it. */
+export interface TestFileRead {
+  path: string;
+  /** Masked. */
+  content: string;
+  /** Of the real bytes. */
+  sha256: string;
+  /** git's blob id of the real bytes. */
+  gitBlob: string;
+}
+
+/** done: each file and the sha256 of what it holds now, for `openPullRequest`. */
+export type EditFilesOutcome = { status: "done"; written: Array<{ path: string; sha256: string }>; pullRequest?: true } | { status: "declined" };
+
+/** The test files `editTestFiles` changes: code and Gherkin, and JSON only as test data (below). */
+const TEST_FILE = /\.(?:[cm]?[jt]sx?|feature|json)$/i;
+/** JSON is changed only in a test data folder: elsewhere it is mostly some tool's config. */
+const TEST_DATA_DIR = /(^|\/)(test-?data|data|fixtures?|mocks?)\//i;
+/** Tool configs at any depth (a monorepo's packages have their own): they run code or steer a tool. */
+const TOOL_CONFIG = /(^|\/)([^/]*\.config\.[^/]+|\.[^/]*rc(\.[^/]+)?|[^/]*rc\.(json|ya?ml|[cm]?[jt]s))$/i;
+/** Session state (Playwright's storageState) and other auth files: live credentials, never shown to a model. */
+const AUTH_PATH = /(^|\/)(\.auth|auth|\.?sessions?|storage-?state[^/]*)(\/|$)|storage-?state[^/]*\.json$/i;
+/** The largest test file read for an edit. */
+const MAX_TEST_FILE_BYTES = 200_000;
 
 export type PullRequestOutcome = { status: "done"; number: number; url: string; base: string; branch: string; draft: boolean; created: boolean } | { status: "declined" };
 
@@ -283,7 +338,7 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SalesforceData, ExplorerData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, TestFilesData, SalesforceData, ExplorerData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
@@ -585,6 +640,136 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return { status: "done", written: outcome.value.paths, ...(outcome.value.via === "pull-request" ? { pullRequest: true as const } : {}) };
   }
 
+  async readTestFiles(runId: string, tokensRun: string, folder: string, paths: readonly string[]): Promise<TestFileRead[]> {
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run the workflow again`);
+    if (paths.length === 0) throw new ProfileError("there are no files to read");
+    if (paths.length > 50) throw new ProfileError("at most 50 files are read at once");
+    await this.checkTestPaths(folder, paths);
+    const boundary = await realpathAsync(hostCwd(this.options.root, folder));
+    const { vault, service } = await this.run(tokensRun);
+    const restore = restorer((t) => vault.valueOf(t));
+    const out: TestFileRead[] = [];
+    for (const path of paths) {
+      const bytes = await this.readTestFile(boundary, folder, path);
+      const text = bytes.toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(bytes) || text.includes("\u0000")) throw new ProfileError(`${path} isn't UTF-8 text`);
+      // Playwright's storageState under another name: live session cookies.
+      if (/"cookies"\s*:/.test(text) && /"origins"\s*:/.test(text)) throw new ProfileError(`${path} looks like a saved browser session: Agent-QA never reads it`);
+      const content = service.maskText(text, "repo.file");
+      // What an edit sends back gets its values from the vault: that must give these very bytes again.
+      if (restore(content) !== text) throw new ProfileError(`${path} can't be masked and put back exactly (it holds text that looks like a masking token): Agent-QA doesn't change it`);
+      out.push({ path, content, sha256: createHash("sha256").update(bytes).digest("hex"), gitBlob: gitBlobId(bytes) });
+    }
+    await service.saveVault();
+    return out;
+  }
+
+  async editTestFiles(runId: string, tokensRun: string, folder: string, edits: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<EditFilesOutcome> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run the workflow again`);
+    if (edits.length === 0) throw new ProfileError("there are no files to change");
+    await this.checkTestPaths(folder, edits.map((e) => e.path));
+    for (const e of edits) if (!/^[0-9a-f]{64}$/.test(e.sha256)) throw new ProfileError(`${e.path}: no record of what Agent-QA read`);
+    const { vault, service } = await this.run(tokensRun);
+    const restore = restorer((t) => vault.valueOf(t));
+    const boundary = await realpathAsync(hostCwd(this.options.root, folder));
+    const files: Array<{ path: string; content: string; sha256: string }> = [];
+    for (const e of edits) {
+      // The file as it is now, masked again: an edit may only keep the tokens that file holds, never bring
+      // in a value of the run's other sources (a requirement's email) the person saw only as a token.
+      const bytes = await this.readTestFile(boundary, folder, e.path);
+      const now = bytes.toString("utf8");
+      const shown = new Set(service.maskText(now, "repo.file").match(TOKEN_IN_TEXT) ?? []);
+      const foreign = [...new Set(e.content.match(TOKEN_IN_TEXT) ?? [])].filter((t) => !shown.has(t) || vault.valueOf(t) === undefined);
+      if (foreign.length) throw new ProfileError(`${e.path} holds ${foreign.length} masking token(s) the file didn't hold (${foreign.slice(0, 3).join(", ")}): an edit only keeps the tokens it was shown in that file`);
+      const content = restore(e.content);
+      // Changed since the read, unless it already holds this very edit (a retry after a stop halfway).
+      if (createHash("sha256").update(bytes).digest("hex") !== e.sha256 && now !== content) throw new ProfileError(`${e.path} changed since Agent-QA read it: it is never overwritten. Nothing was changed.`);
+      files.push({ path: e.path, content, sha256: e.sha256 });
+    }
+    const summary = service.maskText(`Change ${files.length} existing test file(s) in ${folder}: ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    await service.saveVault();
+    const root = hostCwd(this.options.root);
+    const sha = (t: string) => createHash("sha256").update(t).digest("hex");
+    let outcome;
+    try {
+      outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
+        // In CI the grant is for the job's own checkout: the files leave it only as a pull request.
+        const done: Array<{ path: string; before: string; after: string }> = [];
+        try {
+          for (const f of files) {
+            // A file that already holds the edit (a retry after a stop halfway) is left as it is.
+            const r = await replaceRepoFile(grant, this.options.root, f.path, f.content, f.sha256, folder);
+            if (r.status === "replaced") done.push({ path: f.path, before: r.before, after: f.content });
+          }
+        } catch (error) {
+          // All or none: what this call replaced gets its earlier bytes back.
+          const left: string[] = [];
+          for (const d of done.reverse()) await replaceRepoFile(grant, this.options.root, d.path, d.before, sha(d.after), folder).catch(() => left.push(d.path));
+          throw new WriteFailed(error, left);
+        }
+        return { via: grant.via };
+      });
+    } catch (error) {
+      if (!(error instanceof WriteFailed)) throw error;
+      await service.saveVault();
+      const cause = error.cause as NodeJS.ErrnoException | undefined;
+      const said = cause instanceof Error ? cause.message : String(cause);
+      const label = cause?.code ?? (cause instanceof Error ? cause.name : "Error");
+      const why = cause instanceof PolicyDenied || said.startsWith(`${label}:`) ? said : `${label}: ${said}`;
+      const left = error.left.length ? ` Agent-QA could not put back: ${error.left.join(", ")}.` : " Nothing was changed.";
+      throw new ProfileError(service.maskText(local(`the change could not be written (${why}).${left}`, root), "write.error").slice(0, 800));
+    }
+    if (outcome.status !== "done") return { status: "declined" };
+    return { status: "done", written: files.map((f) => ({ path: f.path, sha256: sha(f.content) })), ...(outcome.value.via === "pull-request" ? { pullRequest: true as const } : {}) };
+  }
+
+  /**
+   * Paths of test files Agent-QA may read for an edit and change: plain, test
+   * code by their extension (JSON only in a test data folder), never a
+   * project file, a tool's config at any depth, an auth or session file, or a
+   * file git ignores (local state, secrets), each once.
+   */
+  private async checkTestPaths(folder: string, paths: readonly string[]): Promise<void> {
+    const repoRoot = (await gitRoot(this.options.root)) ?? (await realpathAsync(this.options.root));
+    const inRepo = (p: string) => relativePath(repoRoot, resolvePath(this.options.root, folder, p)).split(/[\\/]/).join("/");
+    for (const p of paths) {
+      if (!isPlainRelativePath(p)) throw new ProfileError(`${p} isn't a plain relative path`);
+      const r = inRepo(p);
+      if (isProtectedPath(p) || isProtectedPath(r) || TOOL_CONFIG.test(r) || posixBase(p).toLowerCase() === PROFILE_FILE) throw new ProfileError(`${p} is a project file Agent-QA never changes`);
+      if (AUTH_PATH.test(r)) throw new ProfileError(`${p} looks like an auth or session file: Agent-QA never reads it`);
+      if (!TEST_FILE.test(p) || (/\.json$/i.test(p) && !TEST_DATA_DIR.test(r))) throw new ProfileError(`${p} isn't a test file Agent-QA changes (code, .feature, or .json in a test data folder)`);
+      if (hasToken(p)) throw new ProfileError(`${p} holds a masking token`);
+    }
+    if (new Set(paths.map((p) => p.normalize("NFC").toLowerCase())).size !== paths.length) throw new ProfileError("a file is listed twice");
+    const targets = paths.map(inRepo);
+    const rules = await loadIgnoreRules(repoRoot, targets);
+    const ignored = targets.filter((t) => isIgnored(rules, t));
+    if (ignored.length) throw new ProfileError(`${ignored.slice(0, 5).join(", ")}: git ignores it, so it is local state Agent-QA never reads`);
+  }
+
+  /**
+   * A test file's real bytes, read through no link: the file itself must be
+   * plain (O_NOFOLLOW where the system has it) and resolve inside the folder.
+   */
+  private async readTestFile(boundary: string, folder: string, path: string): Promise<Buffer> {
+    const full = resolvePath(boundary, path);
+    const info = await lstat(full).catch(() => undefined);
+    if (!info?.isFile()) throw new ProfileError(`${path} isn't a plain file in ${folder}`);
+    const real = join(await realpathAsync(dirname(full)), basename(full));
+    const rel = relativePath(boundary, real);
+    if (!rel || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) throw new ProfileError(`${path} is outside ${folder}`);
+    if (info.size > MAX_TEST_FILE_BYTES) throw new ProfileError(`${path} is over ${MAX_TEST_FILE_BYTES / 1000} KB: too large to change`);
+    // A link put in its place since the check: refused by the open itself.
+    const bytes = await readPlainFile(real, MAX_TEST_FILE_BYTES);
+    if (!bytes) throw new ProfileError(`${path} isn't a plain file in ${folder}`);
+    return bytes;
+  }
+
   async pullRequestReadiness(): Promise<{ ready: true; repo: string } | { ready: false; reason: string }> {
     if ((this.options.mode ?? "ide") !== "ci") return { ready: false, reason: "pull requests are opened from CI only (agent-qa run --ci)" };
     const git = (await this.configOrDefault()).git;
@@ -594,7 +779,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return { ready: true, repo: git.repo };
   }
 
-  async openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome> {
+  async openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string; gitBlob?: string | undefined }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome> {
     const ready = await this.pullRequestReadiness();
     if (!ready.ready) throw new ProfileError(ready.reason);
     const config = await this.configOrDefault();
@@ -603,11 +788,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed since the files were written (${folder} then, ${saved.folder} now): run scripts again`);
     if (pr.files.length === 0) throw new ProfileError("there are no files for a pull request");
+    // A changed file (S3-1) leaves only as editTestFiles could have written it.
+    const changed = pr.files.filter((f) => f.gitBlob !== undefined).map((f) => f.path);
+    if (changed.length) await this.checkTestPaths(folder, changed);
     const repoRoot = await gitRoot(this.options.root);
     if (!repoRoot) throw new ProfileError("the project folder isn't in a git checkout");
     // What leaves is what Agent-QA wrote: each file read back and checked, as a plain file where the person approved it.
     const boundary = await realpathAsync(resolvePath(this.options.root, folder));
-    const files: Array<{ path: string; content: string }> = [];
+    const files: Array<{ path: string; content: string; base?: string }> = [];
     for (const f of pr.files) {
       if (!isPlainRelativePath(f.path)) throw new ProfileError(`${f.path} isn't a plain relative path`);
       if (isProtectedPath(f.path)) throw new ProfileError(`${f.path} is a project file Agent-QA never writes`);
@@ -625,7 +813,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       const inRepo = relativePath(repoRoot, real).split(/[\\/]/).join("/");
       if (!inRepo || inRepo.startsWith("../") || isAbsolute(inRepo)) throw new ProfileError(`${f.path} is outside the git checkout`);
       if (isProtectedPath(inRepo) || hasToken(inRepo)) throw new ProfileError(`${inRepo} is a project file Agent-QA never writes`);
-      files.push({ path: inRepo, content });
+      if (f.gitBlob !== undefined && !/^[0-9a-f]{40}$/.test(f.gitBlob)) throw new ProfileError(`${f.path}: not a git blob id`);
+      // A changed file (S3-1) names the blob it was read as: the base must still hold it.
+      files.push({ path: inRepo, content, ...(f.gitBlob ? { base: f.gitBlob } : {}) });
     }
     const { service } = await this.run(tokensRun);
     const title = service.maskText(pr.title, "pr.title").replace(/\s+/g, " ").slice(0, 200);
@@ -1205,6 +1395,14 @@ class WriteFailed extends Error {
 }
 
 const posixBase = (p: string) => p.slice(p.lastIndexOf("/") + 1);
+
+/** A masking token in text, as the masker writes it. */
+const TOKEN_IN_TEXT = /<[A-Z][A-Z0-9_]*_\d+>/g;
+
+/** git's id for a blob of these bytes (SHA-1 object format). */
+export function gitBlobId(bytes: Buffer): string {
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
 
 /**
  * The branch a CI pull request goes into: the branch the job's code came
