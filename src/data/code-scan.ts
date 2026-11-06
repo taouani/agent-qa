@@ -608,31 +608,35 @@ export function codeLiterals(text: string, file: string): string[] | undefined {
   return out.sort();
 }
 
-/** The most calls and values a test's reach lists in order: past it, only the set is compared. */
+/** The most calls and values a test's reach lists in order, and the most nodes it visits: past either, the test is too large to check. */
 export const MAX_REACH = 20_000;
+const MAX_REACH_VISITS = 300_000;
 const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeParameters", "implements", "decorators"]);
 
 /**
  * What each test reaches (S3-6), by its title: the names of the calls its
- * body makes and the values it holds, in the order they come, with every
- * declaration it reads by name across the files (a page object's method, a
- * helper, a constant) expanded where it is read. A refactor may move what a
- * test does into a page object or a helper, never leave out an action or a
+ * body makes (`a:` for each call awaited) and the values it holds, in the
+ * order they come, with every declaration it reads by name across the files
+ * (a page object's method, a helper, a constant, a locator) expanded where it
+ * is read, not where it is declared. A refactor may move what a test does
+ * into a page object or a helper, never leave out an action, an await or a
  * value, nor change their order: the test's list before is a subsequence of
  * its list after. A function written in the test but not passed to a call
  * reaches nothing until it is called. Names are matched by text, not by
- * symbol. `complete` is false when a list reached MAX_REACH.
+ * symbol; several declarations of one name expand in the order of their
+ * text, so moving one between files changes nothing. `complete` is false
+ * when the test was too large to follow.
  */
 export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, { reach: Set<string>; order: string[]; complete: boolean }> {
-  const decls = new Map<string, Node[]>();
-  const declare = (name: string | undefined, body: Node | null | undefined) => {
-    if (name && body) decls.set(name, [...(decls.get(name) ?? []), body]);
-  };
-  const keyName = (k: Node) => (k.type === "Identifier" ? k.name : k.type === "PrivateName" ? k.id.name : literalString(k));
+  const decls = new Map<string, Array<{ text: string; node: Node }>>();
   const tests: Array<{ title: string; body: Node[] }> = [];
   for (const f of files) {
     const ast = parseCode(f.content, f.path);
     if (!ast) continue;
+    const declare = (name: string | undefined, body: Node | null | undefined) => {
+      if (name && body) decls.set(name, [...(decls.get(name) ?? []), { text: f.content.slice(body.start ?? 0, body.end ?? 0), node: body }]);
+    };
+    const keyName = (k: Node) => (k.type === "Identifier" ? k.name : k.type === "PrivateName" ? k.id.name : literalString(k));
     walkAst(ast, (n) => {
       if (n.type === "VariableDeclarator") {
         if (n.id.type === "Identifier") declare(n.id.name, n.init);
@@ -652,29 +656,45 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
       }
     });
   }
+  for (const d of decls.values()) d.sort((x, y) => (x.text < y.text ? -1 : x.text > y.text ? 1 : 0));
+  const callName = (n: Node): string | undefined => {
+    if (n.type !== "CallExpression" && n.type !== "OptionalCallExpression" && n.type !== "NewExpression") return undefined;
+    const c = n.callee as Node;
+    return c.type === "Identifier" ? c.name : memberName(c);
+  };
   const out = new Map<string, { reach: Set<string>; order: string[]; complete: boolean }>();
   for (const t of tests) {
     const order: string[] = [];
+    let visits = 0;
     const expanding = new Set<string>();
+    const full = () => order.length >= MAX_REACH || visits >= MAX_REACH_VISITS;
     const follow = (name: string) => {
-      if (expanding.has(name) || order.length >= MAX_REACH) return;
+      if (expanding.has(name) || full()) return;
       expanding.add(name);
-      for (const d of decls.get(name) ?? []) visit(d, true);
+      for (const d of decls.get(name) ?? []) visit(d.node, true);
       expanding.delete(name);
     };
     const visit = (n: Node, runs: boolean): void => {
-      if (order.length >= MAX_REACH) return;
+      if (full()) return;
+      visits++;
       // A function that is neither passed to a call nor read by name never runs here.
       if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") && !runs) return;
       // A class's methods and a declared function are reached by their names, where they are called.
       if (n.type === "ClassBody" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "FunctionDeclaration") return;
-      // A declared name reaches nothing until it is read: only the value runs here.
-      if (n.type === "VariableDeclarator") return n.init ? visit(n.init as Node, false) : undefined;
+      // A declared value is reached where it is read (a locator built does nothing); one awaited runs here too.
+      if (n.type === "VariableDeclarator") return n.init?.type === "AwaitExpression" ? visit(n.init as Node, false) : undefined;
+      if (n.type === "AwaitExpression") {
+        const arg = n.argument as Node;
+        if (arg.type === "CallExpression" || arg.type === "OptionalCallExpression") {
+          const name = callName(arg);
+          if (name) order.push(`a:${name}`);
+        }
+        return visit(arg, false);
+      }
       if (n.type === "CallExpression" || n.type === "OptionalCallExpression" || n.type === "NewExpression") {
-        const c = n.callee as Node;
-        const name = c.type === "Identifier" ? c.name : memberName(c);
+        const name = callName(n);
         if (name) order.push(`c:${name}`);
-        visit(c, false);
+        visit(n.callee as Node, false);
         for (const a of n.arguments) visit(a as Node, true);
         return;
       }
@@ -705,7 +725,7 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
     for (const b of t.body) visit(b, true);
     const prev = out.get(t.title);
     const all = [...(prev?.order ?? []), ...order];
-    out.set(t.title, { reach: new Set(all), order: all, complete: (prev?.complete ?? true) && order.length < MAX_REACH });
+    out.set(t.title, { reach: new Set(all), order: all, complete: (prev?.complete ?? true) && !full() });
   }
   return out;
 }

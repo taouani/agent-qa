@@ -453,15 +453,16 @@ test('T1', async ({ page }) => {
     expect(verdict([edit(spec, "  await request.submit();\n", "  await request.submit();\n  return;\n")])).toMatch(/adds a branch/);
     expect(verdict([edit(spec, "  await expect(request.error()).toBeHidden();", "  try { await expect(request.error()).toBeHidden(); } catch {}")])).toMatch(/adds a branch/);
     expect(verdict([edit(spec, "  await expect(request.details())", "  if (false) await expect(request.details())")])).toMatch(/adds a branch/);
-    expect(verdict([edit(spec, "  await request.submit();\n", "")])).toMatch(/no longer reaches submit\(\)/);
+    expect(verdict([edit(spec, "  await request.submit();\n", "")])).toMatch(/no longer reaches (await )?submit\(\)/);
     expect(verdict([edit(spec, "expect(request.error()).toBeHidden()", "expect(page.getByText(toast)).toBeHidden()")])).toMatch(/changes what the tests check/);
     expect(verdict([edit(po, "getByRole('region', { name: 'Details' })", "getByRole('region')")])).toMatch(/changes details|"Details"/);
     expect(verdict([edit(po, "getByRole('button', { name: 'Submit' })", "getByRole('button')")])).toMatch(/no longer reaches "Submit"|takes out "Submit"/);
     // An action put in a function nothing calls, moved after the checks, or no longer awaited.
-    expect(verdict([edit(spec, "  await request.submit();\n", "  const later = () => request.submit();\n")])).toMatch(/no longer reaches submit\(\)/);
+    expect(verdict([edit(spec, "  await request.submit();\n", "  const later = () => request.submit();\n")])).toMatch(/no longer reaches (await )?submit\(\)/);
     expect(verdict([edit(spec, "  await request.submit();\n", ""), edit(spec, "  await expect(request.error()).toBeHidden();\n", "  await expect(request.error()).toBeHidden();\n  await request.submit();\n")])).toMatch(/out of its order/);
-    expect(verdict([edit(spec, "  await request.submit();", "  void request.submit();")])).toMatch(/adds void/);
-    expect(verdict([edit(spec, "  await request.submit();", "  request.submit();")])).toMatch(/awaits less/);
+    expect(verdict([edit(spec, "  await request.submit();", "  void request.submit();")])).toMatch(/no longer reaches await submit\(\)/);
+    expect(verdict([edit(spec, "  await request.submit();", "  void(request.submit());\n  await request;")])).toMatch(/no longer reaches await submit\(\)/);
+    expect(verdict([edit(spec, "  await request.submit();", "  request.submit(); // await")])).toMatch(/no longer reaches await submit\(\)/);
     // Two page-object methods trading bodies.
     expect(verdict([edit(po, "  async submit() { await this.page.getByRole('button', { name: 'Submit' }).click(); }", "  async submit() { await this.page.locator('#notes').fill('Late'); }"), edit("tests/a.spec.ts", "  await page.locator('#notes').fill('Late');", "  await page.getByRole('button', { name: 'Submit' }).click();")])).toMatch(/out of its order/);
   });
@@ -469,6 +470,33 @@ test('T1', async ({ page }) => {
   it("refuses a rename that could make a reference read something else", () => {
     expect(verdict([{ op: "rename", path: "tests/a.spec.ts", symbol: "toast", to: "ok" }])).toMatch(/op: ok is already a name in tests\/a.spec.ts/);
     expect(verdict([{ op: "rename", path: "tests/pages/request-page.ts", within: "RequestPage", symbol: "error", to: "details" }])).toMatch(/op: RequestPage already has a member details/);
+  });
+
+  it("lets a locator declared in a test move into a page-object method, and a test declare a page object other tests do", () => {
+    const before = new Map([
+      ["tests/pages/request-page.ts", RP],
+      ["tests/a.spec.ts", "import { expect, test } from '@playwright/test';\nimport { RequestPage } from './pages/request-page';\ntest('T1', async ({ page }) => {\n  const request = new RequestPage(page);\n  await request.submit();\n});\ntest('T2', async ({ page }) => {\n  const save = page.getByRole('button', { name: 'Save' });\n  await page.getByLabel('Name').fill('Ann');\n  await save.click();\n  await expect(page.getByRole('status')).toHaveText('Saved');\n});\n"],
+    ]);
+    const ops = [
+      edit("tests/pages/request-page.ts", "  error(): Locator", "  async save() { await this.page.getByRole('button', { name: 'Save' }).click(); }\n  error(): Locator"),
+      edit("tests/a.spec.ts", "  const save = page.getByRole('button', { name: 'Save' });\n  await page.getByLabel('Name').fill('Ann');\n  await save.click();", "  const request = new RequestPage(page);\n  await page.getByLabel('Name').fill('Ann');\n  await request.save();"),
+    ];
+    const r = applyRefactor([...before].map(([path, content]) => ({ path, content })), ops);
+    expect(r.errors).toEqual([]);
+    expect(checkRefactored(before, r.files, r.created, ops)).toEqual([]);
+  });
+
+  it("follows the same declarations whatever the order of the files, and gives up on a test too large to follow", () => {
+    const po = (n: string) => `export class ${n} {\n  constructor(private readonly page: any) {}\n  async open() { await this.page.goto('/${n}'); }\n}\n`;
+    const spec = "import { test } from '@playwright/test';\ntest('t', async ({ page }) => {\n  await new A(page).open();\n});\n";
+    const one = new Map([["a.ts", po("A")], ["b.ts", po("B")], ["t.spec.ts", spec]]);
+    const two = new Map([["t.spec.ts", `${spec}// note\n`], ["b.ts", po("B")], ["a.ts", po("A")]]);
+    expect(checkRefactored(one, two, [])).toEqual([]);
+    const chain = ["const q0 = 'x';", ...Array.from({ length: 40 }, (_, i) => `const q${i + 1} = [q${i}, q${i}];`)].join("\n");
+    const big = new Map([["t.spec.ts", `import { test } from '@playwright/test';\n${chain}\ntest('t', async ({ page }) => {\n  await page.goto(String(q40));\n});\n`]]);
+    const started = Date.now();
+    expect(checkRefactored(big, new Map([["t.spec.ts", `${big.get("t.spec.ts")}// note\n`]]), []).join()).toMatch(/too large to follow/);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 
   it("lets a refactor rename what checks read and move actions into a page object", () => {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { diffStats, unifiedDiff, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
-import { applyRefactor, checkDependencies, codeLiterals, dependentSpecs, testReach, ProfileError, scanGeneratedCode, type FrameworkProfile, type ProfileData, type RefactorOp, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData } from "../../data/index.js";
+import { applyRefactor, checkDependencies, codeLiterals, dependentSpecs, MAX_REACH, testReach, ProfileError, scanGeneratedCode, type FrameworkProfile, type ProfileData, type RefactorOp, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData } from "../../data/index.js";
 import { AUDIT_ARTIFACT, auditRoleOf, type Audit } from "../audit/workflow.js";
 import { TOKEN } from "../scripts/checks.js";
 import { leaving, testFilesPrRecordSchema, testFilesPrStep } from "../shared/test-files-pr.js";
@@ -289,8 +289,11 @@ export function checkRefactored(before: ReadonlyMap<string, string>, after: Read
   const lost = extra(b.checks, a.checks);
   const added = extra(a.checks, b.checks);
   if (lost.length || added.length) errors.push(`the task changes what the tests check (${[...lost.map((c) => `- ${c}`), ...added.map((c) => `+ ${c}`)].slice(0, 3).join("; ")}): a check may move to another file as written, never change, and its element stays the same expression`);
-  const moved = extra(b.declarations, a.declarations);
-  const grown = extra(a.declarations, b.declarations);
+  // As sets: a declaration may be repeated (another test's `const request = new RequestPage(page)`) or a copy dropped, never changed.
+  const had = new Set(a.declarations);
+  const has = new Set(b.declarations);
+  const moved = [...had].filter((d) => !has.has(d));
+  const grown = [...has].filter((d) => !had.has(d));
   if (moved.length || grown.length) errors.push(`the task changes ${[...new Set([...moved, ...grown].map((d) => d.split("\u0000")[0]!))].slice(0, 3).join(", ")}, which a check reads: what a check reads stays as declared`);
   if (b.branches > a.branches) errors.push("the task adds a branch (if, ?:, &&, ||, ?., try, return, throw, a loop): a check behind one may never run");
   const timeouts = extra(a.timeouts, b.timeouts);
@@ -310,19 +313,19 @@ export function checkRefactored(before: ReadonlyMap<string, string>, after: Read
   const now = reachOf(after);
   for (const [title, r] of was) {
     const n = now.get(title);
+    if (!r.complete || (n && !n.complete)) {
+      errors.push(`the test "${title.slice(0, 80)}" is too large to follow (over ${MAX_REACH} calls and values reached): Agent-QA can't check the task keeps what it does`);
+      continue;
+    }
     const left = [...r.reach].filter((x) => !n?.reach.has(x));
-    const show = (x: string) => (x.startsWith("c:") ? `${x.slice(2)}()` : JSON.stringify(x.slice(2)).slice(0, 60));
-    if (left.length) errors.push(`the test "${title.slice(0, 80)}" no longer reaches ${left.slice(0, 3).map(show).join(", ")}: a refactor may move what a test does, never leave an action or a value out`);
-    else if (n && r.complete && n.complete) {
+    const show = (x: string) => (x.startsWith("a:") ? `await ${x.slice(2)}()` : x.startsWith("c:") ? `${x.slice(2)}()` : JSON.stringify(x.slice(2)).slice(0, 60));
+    if (left.length) errors.push(`the test "${title.slice(0, 80)}" no longer reaches ${left.slice(0, 3).map(show).join(", ")}: a refactor may move what a test does, never leave an action, an await or a value out`);
+    else if (n) {
       const at = outOfOrder(r.order, n.order);
       if (at !== undefined) errors.push(`the test "${title.slice(0, 80)}" reaches ${show(r.order[at]!)} out of its order: a refactor keeps the order of what a test does and checks`);
     }
     if (errors.length > 8) break;
   }
-  // An action no longer awaited can race the checks after it.
-  const count = (m: ReadonlyMap<string, string>, re: RegExp) => touched.reduce((k, p) => k + [...(m.get(p) ?? "").matchAll(re)].length, 0);
-  if (count(after, /\bvoid[ \t]+(?=[\w$(])/g) > count(base, /\bvoid[ \t]+(?=[\w$(])/g)) errors.push("the task adds void before an expression: an action not awaited can race the checks after it");
-  if (count(after, /\bawait\b/g) < count(base, /\bawait\b/g)) errors.push("the task awaits less than the code did: an action not awaited can race the checks after it");
   for (const [path, text] of after) {
     if (before.get(path) === text) continue;
     const had = new Set(created.includes(path) ? [] : (before.get(path)?.match(TOKENS) ?? []));
