@@ -129,6 +129,21 @@ export async function replaceRepoFile(grant: WriteGrant, root: string, path: str
 }
 
 /**
+ * Removes a file Agent-QA wrote (a refactor's new file, when its phase is
+ * rolled back, S3-6), only while it still holds exactly the bytes written:
+ * a file someone changed since stays. A file already gone counts as removed.
+ */
+export async function removeRepoFile(grant: WriteGrant, root: string, path: string, expectedSha256: string, within: string): Promise<{ status: "removed" | "gone" }> {
+  const { target } = await prepare(grant, root, path, within);
+  const current = await lstat(target).catch(() => undefined);
+  if (!current) return { status: "gone" };
+  if (!current.isFile()) throw new PolicyDenied("testCode", `${path} is not a plain file: only files Agent-QA wrote are removed`);
+  if (createHash("sha256").update(await readFile(target)).digest("hex") !== expectedSha256) throw new PolicyDenied("testCode", `${path} changed since Agent-QA wrote it: it is never removed`);
+  await rm(target);
+  return { status: "removed" };
+}
+
+/**
  * A file path in a new folder of the system's temp folder, for a command
  * Agent-QA runs to write its output to (Playwright's JSON report, S2-8): `run`
  * gets the path; the text is read back and the folder removed, whatever

@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -226,6 +226,13 @@ export interface TestFilesData {
    * checkout and leave only through `openPullRequest`.
    */
   editTestFiles(runId: string, tokensRun: string, folder: string, edits: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<EditFilesOutcome>;
+  /**
+   * Removes test files Agent-QA wrote (a refactor's new files, when its
+   * phase is rolled back, S3-6), through `Policy.guard` (target testCode),
+   * each only while it still holds the bytes written (`sha256`). A file
+   * someone changed since stays, and the error names it.
+   */
+  removeTestFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; sha256: string }>, approved: boolean): Promise<{ status: "done"; removed: string[] } | { status: "declined" }>;
 }
 
 /** A test file as a model may see it. */
@@ -917,6 +924,32 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     }
     if (outcome.status !== "done") return { status: "declined" };
     return { status: "done", written: files.map((f) => ({ path: f.path, sha256: sha(f.content) })), ...(outcome.value.via === "pull-request" ? { pullRequest: true as const } : {}) };
+  }
+
+  async removeTestFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; sha256: string }>, approved: boolean): Promise<{ status: "done"; removed: string[] } | { status: "declined" }> {
+    if (!approved) return { status: "declined" };
+    const saved = await this.savedProfile();
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run the workflow again`);
+    if (files.length === 0) return { status: "done", removed: [] };
+    await this.checkTestPaths(folder, files.map((f) => f.path));
+    for (const f of files) if (!/^[0-9a-f]{64}$/.test(f.sha256)) throw new ProfileError(`${f.path}: no record of what Agent-QA wrote`);
+    const { service } = await this.run(tokensRun);
+    const summary = service.maskText(`Remove ${files.length} file(s) Agent-QA wrote in ${folder}: ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    await service.saveVault();
+    let outcome;
+    try {
+      outcome = await this.policy(await this.configOrDefault()).guard({ target: "testCode", summary, runId }, async (grant) => {
+        const removed: string[] = [];
+        for (const f of files) if ((await removeRepoFile(grant, this.options.root, f.path, f.sha256, folder)).status === "removed") removed.push(f.path);
+        return removed;
+      });
+    } catch (error) {
+      if (!(error instanceof PolicyDenied)) throw error;
+      throw new ProfileError(service.maskText(local(`the files could not be removed (${error.message})`, hostCwd(this.options.root)), "write.error").slice(0, 800));
+    }
+    if (outcome.status !== "done") return { status: "declined" };
+    return { status: "done", removed: outcome.value };
   }
 
   /**

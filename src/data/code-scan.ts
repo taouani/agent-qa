@@ -584,3 +584,26 @@ export function checkDependencies(text: string, file: string, seed: Iterable<str
   const declarations = [...names].flatMap((name) => (decls.get(name) ?? []).map((d) => `${name}\u0000${d.source}`)).sort();
   return { names: [...names].sort(), declarations };
 }
+
+/**
+ * The string and number values a file's code holds (S3-6), template text
+ * included, module paths left out: a refactor moves code and renames it, but
+ * adds no value the folder didn't hold (an expected text, a selector, a
+ * timeout).
+ */
+export function codeLiterals(text: string, file: string): string[] | undefined {
+  const ast = parseCode(text, file);
+  if (!ast) return undefined;
+  const modulePaths = new Set<Node>();
+  const out: string[] = [];
+  walkAst(ast, (n) => {
+    if ((n.type === "ImportDeclaration" || n.type === "ExportAllDeclaration" || n.type === "ExportNamedDeclaration") && n.source) modulePaths.add(n.source as Node);
+    if (n.type === "CallExpression" && ((n.callee.type === "Identifier" && n.callee.name === "require") || n.callee.type === "Import") && n.arguments[0]) modulePaths.add(n.arguments[0] as Node);
+    if (n.type === "TSImportType" || n.type === "TSExternalModuleReference") walkAst(n as Node, (x) => x.type === "StringLiteral" && modulePaths.add(x));
+    if (modulePaths.has(n)) return;
+    if (n.type === "StringLiteral") out.push(`s:${n.value}`);
+    else if (n.type === "NumericLiteral") out.push(`n:${n.value}`);
+    else if (n.type === "TemplateElement") out.push(`s:${n.value.cooked ?? n.value.raw}`);
+  });
+  return out.sort();
+}
