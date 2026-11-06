@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { runHostCommand } from "../src/connectors/host.js";
 import { assertGrant, configSchema, MemoryAuditSink, RunStore, WorkflowEngine } from "../src/core/index.js";
 import { DataAccess, ProfileError } from "../src/data/index.js";
+import { fileFilter } from "../src/data/access.js";
+import { pathToFileURL } from "node:url";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 import { runTestsWorkflow, statusOf, TEST_RUN_ARTIFACT } from "../src/workflows/index.js";
 
@@ -48,7 +50,7 @@ describe("running a part of the repo's suite (S3-2)", () => {
     const d = data();
     // Each file from the folder's own name, dots escaped: Playwright reads it as a pattern on the whole path.
     const a = basename(dir);
-    expect((await d.selectTests("r", ".", { files: ["tests/a.spec.ts:12", "tests/b.spec.ts"], project: "chromium" })).args).toEqual(["--reporter=json", "--retries=0", "--workers=1", "--project=chromium", `${a}/tests/a\\.spec\\.ts:12`, `${a}/tests/b\\.spec\\.ts`]);
+    expect((await d.selectTests("r", ".", { files: ["tests/a.spec.ts:12", "tests/b.spec.ts"], project: "chromium" })).args).toEqual(["--reporter=json", "--retries=0", "--workers=1", "--project=chromium", `${fileFilter("tests/a.spec.ts", false, a)}:12`, fileFilter("tests/b.spec.ts", false, a)]);
     expect((await d.selectTests("r", ".", { grep: "TC-ABC-1.001 login", workers: 2, repeatEach: 3 })).args).toEqual(["--reporter=json", "--retries=0", "--workers=2", "--repeat-each=3", "--grep=TC-ABC-1\\.001 login"]);
     expect((await d.selectTests("r", ".", { tag: "@smoke" })).args).toContain("--grep=@smoke");
     const refused: Array<Parameters<DataAccess["selectTests"]>[2]> = [
@@ -74,7 +76,7 @@ describe("running a part of the repo's suite (S3-2)", () => {
   it("runs again an earlier report's failed tests, by file and line, with their titles masked", async () => {
     const d = data();
     const picked = await d.selectTests("r", ".", { failedIn: "last-run.json" });
-    expect(picked.args.slice(3)).toEqual([`${basename(dir)}/tests/a\\.spec\\.ts:6`, `${basename(dir)}/tests/a\\.spec\\.ts:10`]);
+    expect(picked.args.slice(3)).toEqual([`${fileFilter("tests/a.spec.ts", false, basename(dir))}:6`, `${fileFilter("tests/a.spec.ts", false, basename(dir))}:10`]);
     expect(picked.fromReport!.map((t) => t.line)).toEqual([6, 10]);
     expect(JSON.stringify(picked.fromReport)).not.toContain("jane.doe@example.com");
     const r = await d.runTests("r", "r", ".", { failedIn: "last-run.json" }, true);
@@ -93,7 +95,7 @@ describe("running a part of the repo's suite (S3-2)", () => {
     const e = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(runTestsWorkflow({ data: data(), runs }));
     const first = await e.start("run-tests", { failedIn: "last-run.json" });
     expect(first.stepId).toBe("run");
-    expect(first.context).toContain("tests/a\\.spec\\.ts:6");
+    expect(first.context).toContain(`${fileFilter("tests/a.spec.ts", false, basename(dir))}:6`);
     expect(first.context).not.toContain("jane.doe@example.com");
     // A model's yes isn't the person's.
     await expect(e.submit(first.runId, "run", { run: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
@@ -137,5 +139,24 @@ describe("running a part of the repo's suite (S3-2)", () => {
     expect(statusOf([{ outcome: "passed" }, { outcome: "flaky" }], [])).toBe("flaky");
     expect(statusOf([{ outcome: "passed" }, { outcome: "failed" }], [])).toBe("failed");
     expect(statusOf([{ outcome: "passed" }], [])).toBe("passed");
+  });
+});
+
+describe("file filters as Playwright reads them", () => {
+  // Playwright: new RegExp(filter, "gi") on the raw path, then on Windows on the file's URL too.
+  const picks = (filter: string, path: string, windows: boolean) => {
+    const re = new RegExp(filter, "gi");
+    return re.test(path) || (windows && new RegExp(filter, "gi").test(pathToFileURL(path, { windows: true }).href));
+  };
+  it("picks the file itself, on Linux and on Windows, with letters such as é", () => {
+    for (const [windows, root, s] of [[false, "/home/x/Prüfungen", "/"], [true, "C:\\x\\Prüfungen", "\\"]] as const) {
+      const f = fileFilter("tests/élève.spec.ts", false, "Prüfungen", windows ? "win32" : "linux");
+      expect(picks(f, `${root}${s}tests${s}élève.spec.ts`, windows)).toBe(true);
+      expect(picks(f, `${root}${s}tests${s}admin-élève.spec.ts`, windows)).toBe(false);
+      expect(picks(f, `${root}${s}other${s}tests${s}élève.spec.ts`, windows)).toBe(false);
+      const b = fileFilter("tests/features/connexion-élève.feature", true, "Prüfungen", windows ? "win32" : "linux");
+      expect(picks(b, `${root}${s}.features-gen${s}tests${s}features${s}connexion-élève.feature.spec.js`, windows)).toBe(true);
+      expect(picks(b, `${root}${s}.features-gen${s}admin-connexion-élève.feature.spec.js`, windows)).toBe(false);
+    }
   });
 });

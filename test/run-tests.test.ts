@@ -8,6 +8,7 @@ import type { runHostCommand } from "../src/connectors/host.js";
 import { assertGrant, configSchema, MemoryAuditSink, RunStore } from "../src/core/index.js";
 import { DataAccess, parsePlaywrightReport, ProfileError } from "../src/data/index.js";
 import { statusOf } from "../src/workflows/index.js";
+import { fileFilter } from "../src/data/access.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 
 // A real report from Playwright 1.49 (three tests: one passes, two fail), its folder written as /PROJECT.
@@ -80,7 +81,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const d = data();
     expect(await d.testRunReadiness("run-1")).toEqual({ ready: true });
     const r = await d.runGeneratedTests("run-1", "run-1", ".", { files: ["tests/a.spec.ts"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", `${basename(dir)}/tests/a\\.spec\\.ts`]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", fileFilter("tests/a.spec.ts", false, basename(dir))]]);
     // The report went to a temporary file, removed after.
     expect(ran[0]!.report).toBeDefined();
     expect(existsSync(ran[0]!.report!)).toBe(false);
@@ -105,7 +106,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const write = reply;
     reply = async (argv, file) => (argv.includes("bddgen") ? { exitCode: 0 } : write(argv, file));
     await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "./ABC-1\\.feature"]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", fileFilter("tests/features/ABC-1.feature", true, "")]]);
     ran.length = 0;
     reply = async () => ({ exitCode: 1, stderr: `Missing step definitions: When I pay jane.doe@example.com in ${dir}/tests/features/ABC-1.feature` });
     const r = await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);

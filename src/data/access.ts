@@ -312,7 +312,13 @@ const escapeRe = (p: string) => p.replace(/[.+]/g, "\\$&");
  * runs the specs bddgen made from a feature, found by the feature's name
  * after a "/" (bddgen may drop the feature's folders).
  */
-const fileFilter = (path: string, bdd: boolean, anchor: string) => (bdd && path.endsWith(".feature") ? `./${escapeRe(posixBase(path))}` : `${anchor}/${escapeRe(path)}`);
+export function fileFilter(path: string, bdd: boolean, anchor: string, platform: NodeJS.Platform = process.platform): string {
+  // On Windows the pattern meets the raw path, with backslashes: Playwright's other try, the file's URL, percent-encodes
+  // letters such as é, which no pattern here would match.
+  const sep = platform === "win32" ? "\\\\" : "/";
+  if (bdd && path.endsWith(".feature")) return `.${sep}${escapeRe(posixBase(path))}`;
+  return `${anchor}${sep}${escapeRe(path).split("/").join(sep)}`;
+}
 
 export type PullRequestOutcome = { status: "done"; number: number; url: string; base: string; branch: string; draft: boolean; created: boolean } | { status: "declined" };
 
@@ -704,7 +710,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (failed.length > MAX_REPORT_TESTS) throw new ProfileError(`${report} has ${failed.length} failed tests: over ${MAX_REPORT_TESTS}, pick a part (files, grep or a tag)`);
     for (const t of failed) if (!isPlainRelativePath(t.file)) throw new ProfileError(`${report} names a test outside the folder`);
     // From the folder itself, dots escaped: a file filter is a pattern on the whole path, so login.spec.ts alone would also pick admin-login.spec.ts.
-    const filters = [...new Set(failed.map((t) => `${anchor}/${escapeRe(t.file)}:${t.line}`))];
+    const filters = [...new Set(failed.map((t) => `${fileFilter(t.file, false, anchor)}:${t.line}`))];
     const { service } = await this.run(tokensRun);
     const shown = failed.map((t) => ({ title: service.maskText(t.title, "test.title").slice(0, 300), file: t.file, line: t.line }));
     await service.saveVault();
