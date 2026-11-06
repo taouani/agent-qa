@@ -197,7 +197,7 @@ const isGlob = (p: string) => /[*?]/.test(p);
 
 const TOKENS = new RegExp(TOKEN.source, "g");
 /** A timeout option or call with its value as written: timeout: 5 * 1000, setTimeout(60_000), test.setTimeout(LONG). */
-const TIMEOUTS = /\b(?:timeout\s*:|[sS]etTimeout\s*\()[^,)}\n]*/g;
+const TIMEOUTS = /\b(?:timeout\s*:|(?:[sS]et|waitFor)Timeout\s*\()[^,)}\n]*/g;
 
 /** The fixes applied to one file's masked text, in order; an error for each that doesn't apply. */
 function applyFixes(content: string, fixes: ReadonlyArray<{ at: number; fix: { old: string; new: string } }>, errors: OutputError[]): string {

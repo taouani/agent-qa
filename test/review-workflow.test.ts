@@ -182,6 +182,7 @@ describe("review workflow (S3-4)", () => {
     const onQ = (fix: { old: string; new: string }) => checkReview({ findings: [{ path: po.path, line: 2, severity: "low", kind: "other", problem: "p", why: "w", fix }] }, [po, qs]).errors.map((x) => x.message).join();
     expect(onQ({ old: "{ name: 'Submit' }", new: "{ name: 'Submit', exact: true }" })).toBe("");
     expect(onQ({ old: "    await this.page.waitForTimeout(500);\n", new: "" })).toBe("");
+    expect(onQ({ old: "waitForTimeout(500)", new: "waitForTimeout(500000)" })).toMatch(/adds or changes a timeout/);
     expect(onQ({ old: "{ name: 'Details' }", new: "{ name: 'More' }" })).toMatch(/changes details, which a check reads/);
     expect(onQ({ old: "getByRole('status')", new: "getByRole('alert')" })).toMatch(/changes status, which a check reads/);
     // What no check reads can change.
