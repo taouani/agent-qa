@@ -148,7 +148,7 @@ const cell = (s: string) => one(s).replace(/\|/g, "\\|").slice(0, 300);
 export function debugPrBody(runId: string, r: DebugReport): string {
   const last = r.attempts.at(-1);
   return [
-    `Agent-QA debugged failing tests (run \`${runId}\`) and changed ${leaving(r).length} test file(s) after the person reviewed each diff.`,
+    `Agent-QA debugged failing tests (run \`${runId}\`) and changed ${leaving(r).length} test file(s), each change approved by the person (in CI with --accept apply-N).`,
     "",
     "## Result",
     "",
@@ -404,7 +404,7 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
           w = await deps.data.editTestFiles(ctx.runId, ctx.runId, state.folder, p.files.map((f) => ({ path: f.path, content: f.content, sha256: f.sha256 })), true);
         } catch (error) {
           // Only a refusal before any write: a failed write that couldn't be put back leaves the step open, its message naming what is left.
-          if (!(error instanceof ProfileError) || !/changed since Agent-QA read it|masking token/.test(error.message)) throw error;
+          if (!(error instanceof ProfileError) || !/changed since Agent-QA read it|masking token/.test(error.message) || /could not put back/.test(error.message)) throw error;
           // The change can't be applied as it is (a file changed since it was read): nothing was written; the next round proposes again from the files as they are now.
           const rest: DebugReport = { ...state };
           delete rest.proposal;
