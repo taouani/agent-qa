@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { runHostCommand } from "../src/connectors/host.js";
 import { assertGrant, configSchema, MemoryAuditSink, RunStore, WorkflowEngine } from "../src/core/index.js";
@@ -46,7 +46,9 @@ describe("running a part of the repo's suite (S3-2)", () => {
 
   it("turns a selection into Playwright's arguments, checked before anything runs", async () => {
     const d = data();
-    expect((await d.selectTests("r", ".", { files: ["tests/a.spec.ts:12", "tests/b.spec.ts"], project: "chromium" })).args).toEqual(["--reporter=json", "--retries=0", "--workers=1", "--project=chromium", "tests/a.spec.ts:12", "tests/b.spec.ts"]);
+    // Each file from the folder's own name, dots escaped: Playwright reads it as a pattern on the whole path.
+    const a = basename(dir);
+    expect((await d.selectTests("r", ".", { files: ["tests/a.spec.ts:12", "tests/b.spec.ts"], project: "chromium" })).args).toEqual(["--reporter=json", "--retries=0", "--workers=1", "--project=chromium", `${a}/tests/a\\.spec\\.ts:12`, `${a}/tests/b\\.spec\\.ts`]);
     expect((await d.selectTests("r", ".", { grep: "TC-ABC-1.001 login", workers: 2, repeatEach: 3 })).args).toEqual(["--reporter=json", "--retries=0", "--workers=2", "--repeat-each=3", "--grep=TC-ABC-1\\.001 login"]);
     expect((await d.selectTests("r", ".", { tag: "@smoke" })).args).toContain("--grep=@smoke");
     const refused: Array<Parameters<DataAccess["selectTests"]>[2]> = [
@@ -61,6 +63,9 @@ describe("running a part of the repo's suite (S3-2)", () => {
       { files: ["tests/a.spec.ts"], workers: 9 },
       { failedIn: "nope.json" },
       { failedIn: "agent-qa.profile.json" },
+      { grep: "/x/" },
+      { grep: "C: drive" },
+      { files: Array.from({ length: 50 }, (_, i) => `tests/${"long-folder-name/".repeat(8)}case-${i}.spec.ts`) },
     ];
     for (const s of refused) await expect(d.selectTests("r", ".", s)).rejects.toBeInstanceOf(ProfileError);
     expect(ran).toEqual([]);
@@ -69,11 +74,11 @@ describe("running a part of the repo's suite (S3-2)", () => {
   it("runs again an earlier report's failed tests, by file and line, with their titles masked", async () => {
     const d = data();
     const picked = await d.selectTests("r", ".", { failedIn: "last-run.json" });
-    expect(picked.args.slice(3)).toEqual(["tests/a.spec.ts:6", "tests/a.spec.ts:10"]);
+    expect(picked.args.slice(3)).toEqual([`${basename(dir)}/tests/a\\.spec\\.ts:6`, `${basename(dir)}/tests/a\\.spec\\.ts:10`]);
     expect(picked.fromReport!.map((t) => t.line)).toEqual([6, 10]);
     expect(JSON.stringify(picked.fromReport)).not.toContain("jane.doe@example.com");
     const r = await d.runTests("r", "r", ".", { failedIn: "last-run.json" }, true);
-    expect(ran).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "tests/a.spec.ts:6", "tests/a.spec.ts:10"]]);
+    expect(ran).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", ...picked.args.slice(3)]]);
     if (r.status !== "done") throw new Error(r.status);
     expect(r.tests.map((t) => t.outcome)).toEqual(["passed", "failed", "failed"]);
     expect(JSON.stringify(r)).not.toContain("jane.doe@example.com");
@@ -88,7 +93,7 @@ describe("running a part of the repo's suite (S3-2)", () => {
     const e = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(runTestsWorkflow({ data: data(), runs }));
     const first = await e.start("run-tests", { failedIn: "last-run.json" });
     expect(first.stepId).toBe("run");
-    expect(first.context).toContain("tests/a.spec.ts:6");
+    expect(first.context).toContain("tests/a\\.spec\\.ts:6");
     expect(first.context).not.toContain("jane.doe@example.com");
     // A model's yes isn't the person's.
     await expect(e.submit(first.runId, "run", { run: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
@@ -110,7 +115,22 @@ describe("running a part of the repo's suite (S3-2)", () => {
     expect(ran).toHaveLength(1);
   });
 
+  it("keeps no title text unmasked: not in the command, the record or the step", async () => {
+    const runs = new RunStore(join(dir, "runs"));
+    const e = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(runTestsWorkflow({ data: data(), runs }));
+    const first = await e.start("run-tests", { grep: "jane.doe@example.com" });
+    expect(first.context).toMatch(/--grep=<EMAIL_\d+>/);
+    expect(JSON.stringify(await e.approval(first.runId, "run"))).not.toContain("jane");
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
+    // Playwright itself got the real text.
+    expect(ran.at(-1)).toContain("--grep=jane\\.doe@example\\.com");
+    const art = (await runs.readArtifact(first.runId, TEST_RUN_ARTIFACT))!.data;
+    expect(JSON.stringify(art)).not.toContain("jane");
+    expect(await readFile(join(dir, "runs", first.runId, "test-run.md"), "utf8")).not.toContain("jane");
+  });
+
   it("names the outcome from the tests", () => {
+    expect(statusOf([], ["Error: No tests found"])).toBe("no-tests");
     expect(statusOf([], [])).toBe("no-tests");
     expect(statusOf([{ outcome: "skipped" }], [])).toBe("no-tests");
     expect(statusOf([], ["boom"])).toBe("error");

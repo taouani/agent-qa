@@ -301,6 +301,18 @@ export interface SelectedTests {
 /** At most this many tests from a report: more is a whole suite, not a part of it. */
 export const MAX_REPORT_TESTS = 200;
 const MAX_REPORT_BYTES = 50_000_000;
+/** The added arguments' length, under cmd.exe's 8191 characters with the command and the folder. */
+const MAX_SELECTION_CHARS = 6_000;
+/** A path as a pattern that matches only itself (the characters a plain path can hold). */
+const escapeRe = (p: string) => p.replace(/[.+]/g, "\\$&");
+/**
+ * A file argument for Playwright, which reads it as a pattern on the whole
+ * path: from the folder's own name (`anchor`), dots escaped, so tests/a.spec.ts
+ * picks neither admin-a.spec.ts nor other/tests/a.spec.ts. playwright-bdd
+ * runs the specs bddgen made from a feature, found by the feature's name
+ * after a "/" (bddgen may drop the feature's folders).
+ */
+const fileFilter = (path: string, bdd: boolean, anchor: string) => (bdd && path.endsWith(".feature") ? `./${escapeRe(posixBase(path))}` : `${anchor}/${escapeRe(path)}`);
 
 export type PullRequestOutcome = { status: "done"; number: number; url: string; base: string; branch: string; draft: boolean; created: boolean } | { status: "declined" };
 
@@ -577,9 +589,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (request.files.length === 0) throw new ProfileError("there are no tests to run");
     for (const f of request.files) if (!isPlainRelativePath(f) || isProtectedPath(f)) throw new ProfileError(`${f} isn't a generated test file`);
     const repeat = Math.min(Math.max(Math.trunc(request.repeatEach ?? 1), 1), 10);
-    // playwright-bdd runs the specs it generated from the features: they are found by the feature's name.
-    // Playwright reads file arguments as patterns: the dots are escaped, so ABC-1.feature doesn't also match ABC-1xfeature.
-    const filters = saved.kind === "playwright-bdd" ? request.files.map((f) => (f.endsWith(".feature") ? posixBase(f).replace(/[.+]/g, "\\$&") : f)) : request.files;
+    const anchor = await this.filterAnchor(saved.folder);
+    const filters = request.files.map((f) => fileFilter(f, saved.kind === "playwright-bdd", anchor));
     const args = ["--reporter=json", "--retries=0", "--workers=1", ...(repeat > 1 ? [`--repeat-each=${repeat}`] : []), ...filters];
     return this.runTestCommand(runId, tokensRun, saved, args, repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests");
   }
@@ -606,6 +617,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     // Plain text, as a pattern that matches only itself: the regex characters a title can hold here are escaped.
     if (sel.grep !== undefined) {
       if (!/^[\p{L}\p{N}_@=:,./ -]{1,200}$/u.test(sel.grep) || !sel.grep.trim()) throw new ProfileError("a title text is letters, digits, spaces and _@=:,./- (at most 200)");
+      // What the command check reads as a path from the root, or Playwright as a /pattern/.
+      if (/^[/.]|^[A-Za-z]:/.test(sel.grep)) throw new ProfileError("a title text can't start with /, . or a drive letter and a colon (A:)");
       args.push(`--grep=${sel.grep.replace(/[.]/g, "\\.")}`);
     }
     if (sel.tag !== undefined) {
@@ -614,23 +627,25 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       args.push(`--grep=${sel.tag.replace(/[.]/g, "\\.")}`);
     }
     const bdd = saved.kind === "playwright-bdd";
+    const anchor = await this.filterAnchor(saved.folder);
     const filters: string[] = [];
     for (const f of sel.files ?? []) {
       const m = /^(.*?)(?::(\d{1,6}))?$/.exec(f)!;
       const path = m[1]!;
       if (!isPlainRelativePath(path) || isProtectedPath(path) || !/\.(?:[cm]?[jt]sx?|feature)$/i.test(path)) throw new ProfileError(`${f} isn't a spec or feature file of the folder`);
       if (path.endsWith(".feature") && m[2] !== undefined) throw new ProfileError(`${f}: a feature runs whole (its line isn't the generated test's)`);
-      // As runGeneratedTests: playwright-bdd's tests are found by the feature's name, dots escaped.
-      filters.push(bdd && path.endsWith(".feature") ? posixBase(path).replace(/[.+]/g, "\\$&") : f);
+      filters.push(`${fileFilter(path, bdd, anchor)}${m[2] !== undefined ? `:${m[2]}` : ""}`);
     }
     let fromReport: SelectedTests["fromReport"];
     if (sel.failedIn !== undefined) {
-      const picked = await this.failedInReport(tokensRun, saved.folder, sel.failedIn);
+      const picked = await this.failedInReport(tokensRun, saved.folder, sel.failedIn, anchor);
       fromReport = picked.shown;
       filters.push(...picked.filters);
     }
     // Every filter is checked as the command will be, before anything is asked.
     const all = [...args, ...filters];
+    // cmd.exe (npx on Windows) stops at 8191 characters: a selection stays well under it.
+    if (all.join(" ").length > MAX_SELECTION_CHARS) throw new ProfileError(`the selection is too long for one command (${filters.length} filters): pick a part of it`);
     checkHostCommand({ command: saved.commands.test, args: all, purpose: "run a part of the suite", cwd: saved.folder }, commandList(saved.commands));
     return { command: saved.commands.test, args: all, ...(fromReport ? { fromReport } : {}) };
   }
@@ -638,14 +653,26 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   async runTests(runId: string, tokensRun: string, folder: string, selection: TestSelection, approved: boolean): Promise<TestRunOutcome> {
     if (!approved) return { status: "declined" };
     const saved = await this.savedProfile();
-    if (!saved?.commands?.test) return { status: "unavailable", reason: "the reviewed profile has no test command" };
+    if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
+    if (!saved.commands?.test) return { status: "unavailable", reason: "the reviewed profile has no test command" };
     const picked = await this.selectTests(tokensRun, folder, selection);
     const what = selection.failedIn !== undefined ? `run again the ${picked.fromReport?.length ?? 0} test(s) that failed in ${selection.failedIn}` : "run a part of the repo's tests";
     return this.runTestCommand(runId, tokensRun, saved, picked.args, what);
   }
 
+  /**
+   * What a file filter starts with: the folder's own name, so tests/a.spec.ts
+   * matches <folder>/tests/a.spec.ts and no other folder's. Playwright also
+   * tests the patterns against the file's URL on Windows, so "/" works there.
+   * A name the command check can't take: any character, then "/".
+   */
+  private async filterAnchor(folder: string): Promise<string> {
+    const name = basename(await realpathAsync(hostCwd(this.options.root, folder)));
+    return /^[\p{L}\p{N}_-][\p{L}\p{N}_.-]{0,80}$/u.test(name) ? escapeRe(name) : ".";
+  }
+
   /** The failed and flaky tests of a Playwright JSON report in the folder, as file:line filters. */
-  private async failedInReport(tokensRun: string, folder: string, report: string): Promise<{ filters: string[]; shown: NonNullable<SelectedTests["fromReport"]> }> {
+  private async failedInReport(tokensRun: string, folder: string, report: string, anchor: string): Promise<{ filters: string[]; shown: NonNullable<SelectedTests["fromReport"]> }> {
     if (!isPlainRelativePath(report) || !report.toLowerCase().endsWith(".json") || isProtectedPath(report)) throw new ProfileError(`${report} isn't a JSON report in the folder`);
     const boundary = await realpathAsync(hostCwd(this.options.root, folder));
     const full = resolvePath(boundary, report);
@@ -675,8 +702,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const failed = parsed.tests.filter((t) => t.outcome === "failed" || t.outcome === "flaky").map((t) => ({ ...t, file: `${testDir}${t.file}` }));
     if (failed.length === 0) throw new ProfileError(`${report} has no failed or flaky test`);
     if (failed.length > MAX_REPORT_TESTS) throw new ProfileError(`${report} has ${failed.length} failed tests: over ${MAX_REPORT_TESTS}, pick a part (files, grep or a tag)`);
-    const filters = [...new Set(failed.map((t) => `${t.file}:${t.line}`))];
-    for (const f of filters) if (!isPlainRelativePath(f.replace(/:\d+$/, ""))) throw new ProfileError(`${report} names a test outside the folder (${f.slice(0, 80)})`);
+    for (const t of failed) if (!isPlainRelativePath(t.file)) throw new ProfileError(`${report} names a test outside the folder`);
+    // From the folder itself, dots escaped: a file filter is a pattern on the whole path, so login.spec.ts alone would also pick admin-login.spec.ts.
+    const filters = [...new Set(failed.map((t) => `${anchor}/${escapeRe(t.file)}:${t.line}`))];
     const { service } = await this.run(tokensRun);
     const shown = failed.map((t) => ({ title: service.maskText(t.title, "test.title").slice(0, 300), file: t.file, line: t.line }));
     await service.saveVault();

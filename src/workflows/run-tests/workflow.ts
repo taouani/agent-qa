@@ -83,6 +83,8 @@ const selectionOf = (i: RunTestsInputs): TestSelection => ({ files: i.files, gre
 /** The outcome of the tests, from their rows: a skipped test counts as not run. */
 export function statusOf(tests: Pick<MaskedTestResult, "outcome">[], errors: string[]): TestRun["status"] {
   if (tests.some((t) => t.outcome === "failed")) return "failed";
+  // Playwright's own word for a selection that matched nothing.
+  if (tests.length === 0 && errors.length > 0 && errors.every((e) => /No tests found/i.test(e))) return "no-tests";
   if (tests.every((t) => t.outcome === "skipped")) return errors.length ? "error" : "no-tests";
   if (errors.length) return "error";
   return tests.some((t) => t.outcome === "flaky") ? "flaky" : "passed";
@@ -97,10 +99,16 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
   // The run's own vault masks what it shows: titles from a report, errors.
   const picked = async (ctx: Ctx) => deps.data.selectTests(ctx.runId, await folder(), selectionOf(ctx.inputs));
   const where = (f: string) => (f === "." ? "the repo root" : f);
+  // The command as shown and kept: the title text masked before it was escaped (escaped, no detector would know it).
+  const shown = async (ctx: Ctx, p: Awaited<ReturnType<typeof picked>>) => {
+    const grep = ctx.inputs.grep !== undefined ? (await deps.data.maskTexts(ctx.runId, [ctx.inputs.grep], "run.grep"))[0]! : undefined;
+    const args = p.args.map((a) => (grep !== undefined && a.startsWith("--grep=") ? `--grep=${grep}` : a));
+    return deps.data.maskTexts(ctx.runId, [...p.command, ...args], "run.command");
+  };
   const describe = async (ctx: Ctx) => {
     const p = await picked(ctx);
     const report = p.fromReport ? ` (${p.fromReport.length} test(s) that failed in ${ctx.inputs.failedIn})` : "";
-    return `\`${[...p.command, ...p.args].join(" ")}\` in ${where(await folder())}${report}`;
+    return `\`${(await shown(ctx, p)).join(" ")}\` in ${where(await folder())}${report}`;
   };
   // What the run keeps of the person's own words: a title text can name someone.
   const maskedSelection = async (ctx: Ctx): Promise<TestRun["selection"]> => {
@@ -142,16 +150,17 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
           ].join("\n"),
         context: async (ctx) => {
           const p = await picked(ctx);
-          return [`Command: ${[...p.command, ...p.args].join(" ")} in ${where(await folder())}.`, ...(p.fromReport ? [`From ${ctx.inputs.failedIn}: ${p.fromReport.map((t) => `${t.title} (${t.file}:${t.line})`).join("; ")}`] : [])].join("\n");
+          return [`Command: ${(await shown(ctx, p)).join(" ")} in ${where(await folder())}.`, ...(p.fromReport ? [`From ${ctx.inputs.failedIn}: ${p.fromReport.map((t) => `${t.title} (${t.file}:${t.line})`).join("; ")}`] : [])].join("\n");
         },
         onAccept: async (ctx, out) => {
           // Run again after a stop halfway: the tests ran already, their record stands.
           if (await deps.runs.readArtifact(ctx.runId, TEST_RUN_ARTIFACT)) return;
           const f = await folder();
           const selection = await maskedSelection(ctx);
+          // A no is kept even when the selection no longer holds (the report was removed since).
+          if (!(out as z.infer<typeof runSchema>).run) return void (await save(ctx, { folder: f, command: [], selection, ...empty, status: "declined", reason: "the person said no to running the tests, or nobody was asked (an unattended run)" }));
           const p = await picked(ctx);
-          const base = { folder: f, command: await deps.data.maskTexts(ctx.runId, [...p.command, ...p.args], "run.command"), selection, ...(p.fromReport ? { fromReport: p.fromReport } : {}) };
-          if (!(out as z.infer<typeof runSchema>).run) return void (await save(ctx, { ...base, ...empty, status: "declined", reason: "the person said no to running the tests, or nobody was asked (an unattended run)" }));
+          const base = { folder: f, command: await shown(ctx, p), selection, ...(p.fromReport ? { fromReport: p.fromReport } : {}) };
           const ready = await deps.data.testRunReadiness(ctx.runId);
           if (!ready.ready) return void (await save(ctx, { ...base, ...empty, status: "unavailable", reason: ready.reason }));
           const r = await deps.data.runTests(ctx.runId, ctx.runId, f, selectionOf(ctx.inputs), true);

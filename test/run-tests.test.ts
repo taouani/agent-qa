@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { runHostCommand } from "../src/connectors/host.js";
 import { assertGrant, configSchema, MemoryAuditSink, RunStore } from "../src/core/index.js";
 import { DataAccess, parsePlaywrightReport, ProfileError } from "../src/data/index.js";
+import { statusOf } from "../src/workflows/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 
 // A real report from Playwright 1.49 (three tests: one passes, two fail), its folder written as /PROJECT.
@@ -79,7 +80,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const d = data();
     expect(await d.testRunReadiness("run-1")).toEqual({ ready: true });
     const r = await d.runGeneratedTests("run-1", "run-1", ".", { files: ["tests/a.spec.ts"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "tests/a.spec.ts"]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", `${basename(dir)}/tests/a\\.spec\\.ts`]]);
     // The report went to a temporary file, removed after.
     expect(ran[0]!.report).toBeDefined();
     expect(existsSync(ran[0]!.report!)).toBe(false);
@@ -104,7 +105,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const write = reply;
     reply = async (argv, file) => (argv.includes("bddgen") ? { exitCode: 0 } : write(argv, file));
     await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "ABC-1\\.feature"]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "./ABC-1\\.feature"]]);
     ran.length = 0;
     reply = async () => ({ exitCode: 1, stderr: `Missing step definitions: When I pay jane.doe@example.com in ${dir}/tests/features/ABC-1.feature` });
     const r = await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
@@ -214,6 +215,15 @@ describe.skipIf(!existsSync(CHROMIUM) || process.platform === "win32")("running 
       expect(await titles({ grep: "TC-X-1-001 ok" })).toEqual(["TC-X-1-001 ok"]);
       expect(await titles({ tag: "@smoke" })).toEqual(["not mine"]);
       expect(await titles({ files: ["tests/gen.spec.ts:3"] })).toEqual(["TC-X-1-002 bad"]);
+      // A file whose path ends like the chosen one's is not picked, nor a test of the same line there.
+      await mkdir(join(dir, "tests", "more", "tests"), { recursive: true });
+      await writeFile(join(dir, "tests", "more", "tests", "gen.spec.ts"), "import { test } from '@playwright/test';\ntest('elsewhere', async () => {});\ntest('elsewhere 3', async () => {});\n");
+      await writeFile(join(dir, "tests", "admin-gen.spec.ts"), "import { test } from '@playwright/test';\ntest('admin', async () => {});\ntest('admin 3', async () => {});\n");
+      expect(await titles({ files: ["tests/gen.spec.ts:3"] })).toEqual(["TC-X-1-002 bad"]);
+      expect(await titles({ failedIn: "last.json" })).toEqual(["TC-X-1-002 bad"]);
+      const none = await d.runTests("run-r", "run-r", ".", { grep: "zzz nothing" }, true);
+      if (none.status !== "done") throw new Error(none.status);
+      expect(statusOf(none.tests, none.errors)).toBe("no-tests");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
