@@ -12,8 +12,10 @@ import { generatedFileSchema, caseCodeSchema, type ScriptsDraft, type ScriptsDra
  * a flaky step, the environment, or a real defect in the app) and may change
  * only what that kind allows, in the files Agent-QA wrote: never the
  * scenarios, the test titles or the checks. A real defect or a broken
- * environment stops the loop and is reported, never "fixed" in the test. A
- * passing run is repeated to show the tests are stable.
+ * environment is reported, never "fixed" in the test: a defect stops the
+ * loop, and the environment pauses it until the person says it's fixed (or
+ * stops it, as an unattended run must). A passing run is repeated to show
+ * the tests are stable.
  */
 
 export const FAILURE_KINDS = ["selector", "timing", "data", "flake", "environment", "defect"] as const;
@@ -81,6 +83,8 @@ export const scriptsRunSchema = z
     rounds: z.number(),
     /** What the model said about the failures the loop stopped on (a defect, the environment). */
     stoppedOn: z.array(z.object({ test: z.string(), kind: z.enum(FAILURE_KINDS), reason: z.string() }).strict()).optional(),
+    /** The environment failed: the loop waits for the person to fix it (sign-in, the app, the network), then runs the tests again. */
+    waiting: z.object({ reason: z.string() }).strict().optional(),
     /** A fix written whose run hasn't happened yet: what it changed, and what the model said. */
     pending: z.object({ changed: z.array(z.string()), classified: z.array(z.object({ test: z.string(), kind: z.enum(FAILURE_KINDS), reason: z.string() }).strict()) }).strict().optional(),
   })
@@ -88,7 +92,10 @@ export const scriptsRunSchema = z
 export type ScriptsRun = z.infer<typeof scriptsRunSchema>;
 
 function renderRun(r: ScriptsRun): string {
-  const lines = [`# Generated tests: ${r.status}`, ...(r.reason ? ["", r.reason.replace(/\s+/g, " ")] : []), ...(r.stoppedOn ?? []).map((c) => `- ${c.test}: ${c.kind} (${c.reason.replace(/\s+/g, " ")})`), ""];
+  const lines = [
+    `# Generated tests: ${r.waiting ? "waiting for the environment" : r.status}`,
+    ...(r.waiting ? ["", `The tests run again once the environment is fixed: ${r.waiting.reason.replace(/\s+/g, " ")}`] : []),
+    ...(r.reason ? ["", r.reason.replace(/\s+/g, " ")] : []), ...(r.stoppedOn ?? []).map((c) => `- ${c.test}: ${c.kind} (${c.reason.replace(/\s+/g, " ")})`), ""];
   r.attempts.forEach((a, i) => {
     const count = (o: string) => a.tests.filter((t) => t.outcome === o).length;
     lines.push(`## Run ${i + 1} (${a.kind}${a.changed.length ? `, after fixing ${a.changed.join(", ")}` : ""})`, "", `${count("passed")} passed, ${count("failed")} failed, ${count("flaky")} flaky, ${count("skipped")} skipped.`);
@@ -123,6 +130,7 @@ export const fixSchema = z
       .default([])
       .describe("The generated files you change, whole. Only for selector, timing and data failures."),
     cases: z.array(caseCodeSchema).max(20).optional().describe("The case map again, only when a changed spec moved its test.step lines"),
+    retry: z.boolean().optional().describe("Only when the context says the run waits for the environment: true once the user says it's fixed; false to stop the run"),
   })
   .strict();
 export type FixOutput = z.infer<typeof fixSchema>;
@@ -365,7 +373,7 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
           "- timing: an element or state isn't ready yet. Wait for it with an expect(...) assertion or the pack's helpers; never a fixed wait.",
           "- data: the test data doesn't suit the app (a value too long, a duplicate name). Fix the test-data file.",
           "- flake: nothing in the code is wrong (it passed in another run): change nothing; the tests run again.",
-          "- environment: sign-in, the app, a user's access or the network failed. Change nothing: the run stops and the person is told.",
+          "- environment: sign-in, the app, a user's access or the network failed. Change nothing: the run waits for the user to fix it, or stops on the last round.",
           "- defect: the app does what the test case says it must not, or not what it says it must. Change nothing: the run stops and reports it. Never change a check so a defect passes.",
           "Submit only the files you change, whole. A code fix changes only which element a locator picks (getByRole, getByLabel, getByText, locator…, with plain values as arguments) and adds waits; every other value, call, branch and check stays exactly as it was. A fix never changes a feature or a test's title, never removes or softens a check (expect.soft), and never skips or marks a test as failing.",
           "When a changed spec moves its test.step lines, send the case map again in cases.",
@@ -376,6 +384,15 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
         const last = state.attempts.at(-1)!;
         const round = (ctx.batch ?? 0) + 1;
         const failed = failing(last);
+        if (state.waiting)
+          return [
+            `## The run waits for the environment (fix round ${round} of ${state.fixRounds})`,
+            "",
+            `The last run failed on the environment, not on the tests: ${one(state.waiting.reason)}`,
+            "",
+            "Tell the user what failed and that nothing in the tests is changed for it. Ask them to fix it (for example a missing value in .env, a user's access, or the app being down) and to tell you when it's done. Wait for their answer.",
+            "Then submit retry: true, with no failures and no files: the tests run again. Submit retry: false if they want to stop, or if nobody can be asked (an unattended run): the run ends as environment.",
+          ].join("\n");
         // This round's fix is in already (a stop halfway): any answer is taken, and the owed run happens.
         if (state.rounds >= round) return `Fix round ${round} is applied already, but its run didn't happen. Submit any answer (for example the same one again): the owed run happens, and nothing is changed.`;
         return [
@@ -400,6 +417,10 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
         // This round's fix is in already (a stop halfway): the answer is taken again, and only the owed run happens.
         if (state && state.rounds >= (ctx.batch ?? 0) + 1) return [];
         if (!state || state.status !== "failing") return [{ path: "$", message: "there is no failing run to fix" }];
+        if (state.waiting) {
+          if (out.failures.length || out.files.length) return [{ path: "$", message: "the run waits for the environment: send only retry (true once the user says it's fixed, false to stop), with no failures and no files" }];
+          return out.retry === undefined ? [{ path: "$.retry", message: "say retry: true once the user says the environment is fixed, or false to stop" }] : [];
+        }
         const found = checkFix(out, state.attempts.at(-1)!, state.files, h.scan);
         if (found.length || out.files.length === 0) return found;
         const fixed = new Map(out.files.map((f) => [f.path, f.content]));
@@ -419,10 +440,22 @@ export function runSteps<I>(h: RunHelpers<I>): StepDefinition<I, unknown>[] {
         const round = (ctx.batch ?? 0) + 1;
         let state = (await readRun(ctx))!;
         if (state.status !== "failing") return;
+        if (state.waiting) {
+          const { waiting, stoppedOn, ...rest } = state;
+          if (!out.retry) return save(ctx, { ...rest, status: "environment", reason: `the environment: ${one(waiting.reason)}`, ...(stoppedOn ? { stoppedOn } : {}) });
+          // The person fixed it: the same files run again, and the round counts as used.
+          return save(ctx, await runAndJudge(ctx, { ...rest, rounds: round }, [], stoppedOn ?? [], round));
+        }
         if (state.rounds < round) {
           const classified = out.failures.map((f) => ({ test: f.test, kind: f.kind, reason: f.reason }));
           const stop = out.failures.find((f) => STOPS.has(f.kind));
+          // The environment, with a round left: wait for the person to fix it instead of ending the run.
+          if (stop?.kind === "environment" && !out.failures.some((f) => f.kind === "defect") && round < state.fixRounds) {
+            return save(ctx, { ...state, rounds: round, waiting: { reason: `${one(stop.test)}: ${one(stop.reason)}` }, stoppedOn: classified });
+          }
           if (stop) {
+            const defect = out.failures.find((f) => f.kind === "defect");
+            if (defect) return save(ctx, { ...state, rounds: round, status: "defect", reason: `a real defect: ${one(defect.test)}: ${one(defect.reason)}`, stoppedOn: classified });
             return save(ctx, { ...state, rounds: round, status: stop.kind === "defect" ? "defect" : "environment", reason: `${stop.kind === "defect" ? "a real defect" : "the environment"}: ${one(stop.test)}: ${one(stop.reason)}`, stoppedOn: classified });
           }
           let files = state.files;

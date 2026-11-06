@@ -51,7 +51,7 @@ The `run` step is skipped when no files were written, when the profile has no te
    | `timing` | add a wait for an element or a state, never a fixed wait |
    | `data` | the test-data file, but never a value a check compares against |
    | `flake` | nothing: the tests run again (it still uses a fix round) |
-   | `environment` | nothing: the run stops (sign-in, the app or the network failed) |
+   | `environment` | nothing: the run waits while you fix it (sign-in, the app or the network failed), then runs the same files again; on the last round, or if you say stop, it ends as `environment` |
    | `defect` | nothing: the run stops and reports it |
 
    A fix never changes a feature file, a test's title, or a check. One that tries is refused and sent back; after three tries the run fails. Passing tests then run `stabilityRuns` more times. Everything is recorded in `scripts-run@1`. Its status is one of `passed`, `unstable` (passes only sometimes), `defect`, `environment`, `gave-up` (still failing after the last round) or `declined`.
