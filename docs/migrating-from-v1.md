@@ -15,7 +15,12 @@ v1 stays available and unchanged at tag `v1.0.0` on the [`v1` branch](https://gi
 | `common/discover-framework-profile` | `profile` workflow | Reads the repo's Playwright project without running it. You review it, and it is saved as `agent-qa.profile.json`: the only commands Agent-QA may run. In an empty folder it starts a new repo instead. See [profile.md](profile.md). |
 | `explore-ui` | `explore` workflow | Walks reviewed cases in a real browser on a sandbox, from masked pages. See [explore.md](explore.md). |
 | `generate-gherkin`, `generate-playwright-tests`, `debug-tests` | `scripts` workflow | One workflow: Gherkin scenarios and steps for a playwright-bdd repo, specs otherwise, then a run with strictly limited fixes. A real defect is reported, never fixed in the test. See [scripts.md](scripts.md). |
-| everything else | not yet | Commit analysis, test strategy, plan, charter and data, risk register, traceability, release notes, API tests, accessibility, Confluence publishing, the automation code review, and the framework audit and refactor commands are planned for later v2 releases. Keep using v1 for these. |
+| `debug-tests` (your own tests) | `debug` workflow | Runs your failing tests and proposes selector and wait fixes, each as a diff you approve. Defects, test data and the environment are reported, not fixed. See [debug.md](debug.md). |
+| `review-automation-code` | `review` workflow | Findings by severity on the files you name, with optional small fixes you approve as one diff. See [review.md](review.md). |
+| `audit-framework` | `audit` workflow | Read-only, with findings ranked by impact and risk, and a score per area. See [audit.md](audit.md). |
+| `refactor-framework` | `refactor` workflow | Plans phases from an audit and carries out one phase per run with ts-morph, type-checked, keeping what every test checks. See [refactor.md](refactor.md). |
+| API tests | `scripts` with `api: true` | Playwright `request` tests, no browser. See [scripts.md](scripts.md#api-tests). |
+| everything else | not yet | Commit analysis, test strategy, plan, charter and data, risk register, traceability, release notes, accessibility and Confluence publishing are planned for later v2 releases. Keep using v1 for these. |
 
 ## What changes
 
