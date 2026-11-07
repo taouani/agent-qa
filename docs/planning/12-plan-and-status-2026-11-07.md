@@ -73,9 +73,9 @@ Estimate from the final plan: 120–140 h. The BDD (Gherkin) output of `scripts`
 | `document` engine: strategy, plan, charter, risk register, test data, traceability, release notes | Not started | One engine, seven templates (decision F1) |
 | Confluence publish | Not started | Confluence is read-only today; it needs a write through the policy layer (`confluence` target already exists) |
 | `gherkin` workflow (stand-alone) | Partly done | `scripts` writes BDD scenarios and missing steps; a stand-alone "test cases to feature files" workflow is not built |
-| `commits` | Not started | Assumption: the v1 command that drafts commit messages from a diff; scope to confirm |
-| GitLab adapter (merge requests in CI) | Not started | `git.platform` already accepts `gitlab` and `azure-devops` in `src/core/config/schema.ts`; only GitHub has an adapter |
-| Azure DevOps adapter (pull requests in CI) | Not started | Same |
+| `commits` | Not started | Your answer, 7 Nov: two features from v1. (a) The diffs of PRs linked to a story as optional extra context in the requirements analysis, never a required input. (b) A technical release note for a fix version, built from the code that changed in its scope |
+| Azure DevOps adapter (pull requests in CI) | Not started | **First** (your choice, 7 Nov). `git.platform` already accepts `azure-devops` and `gitlab` in `src/core/config/schema.ts`; only GitHub has an adapter. Live check on a personal ADO org you will provide |
+| GitLab adapter (merge requests in CI) | Not started | Second. You will provide a test project |
 | Claude Code and Cursor setup in `init` | Not started | `init` writes `agent-qa.yaml`, `.gitignore` and one host config, VS Code's `.vscode/mcp.json` (`src/cli/setup-files.ts`) |
 | Headless CI drivers: Copilot CLI and Claude Code | Not started | The CLI runs with a model API key today |
 
@@ -129,17 +129,24 @@ Kept in [../backlog.md](../backlog.md):
 
 Moved out of the backlog: healing existing scripts became `debug` (slice 3).
 
-## 6. Inputs needed from you
+## 6. Your answers (7 Nov) and what is still open
 
-In order of importance:
+| # | Question | Answer |
+| --- | --- | --- |
+| 1 | Slice 3 live check and alpha.2 | You will finish it soon. It doesn't block slice 4. "Publish" merges the open release PR #67 ("Version Packages (alpha)") |
+| 2 | First git platform in slice 4 | Azure DevOps, then GitLab |
+| 3 | Test access | A personal Azure DevOps org (you will provide it; your company's ADO stays out of testing), a GitLab project and a Confluence space for testing. Claude Code and Cursor are on your laptop |
+| 4 | Document engine | All seven document types stay in 2.0.0, published to Confluence (my reading of your "yes" to both parts) |
+| 5 | `commits` | Two features: linked PR diffs as optional context for requirements, and a technical release note per fix version (see section 3) |
+| 6 | Model IDs | Not available yet. Not a blocker: the catalog stays as it is and doctor warns about models outside it. To confirm before 2.0.0 |
+| 7 | Clean-up pass before slice 4 | Yes: the open follow-ups (the slice 0 items in [10](10-plan-and-status-2026-11-04.md), the `--push-from` limits and similar small items) come first, about 6–10 h |
 
-1. **Finish the slice 3 live check** (the steps are in `slice3-live-check.md` in the project files), including the retest of #83 (debug timeout) and #86 (execution dates, screenshots). Then say "publish" for `2.0.0-alpha.2`: that merges the open release PR #67 ("Version Packages (alpha)").
-2. **Which git platform comes first in slice 4: Azure DevOps or GitLab?** The plan builds both. Assumption: your team uses Azure DevOps (your browser showed ADO pipelines and pull requests), which would make it the first.
-3. **Test access for slice 4:** an ADO project (and/or a GitLab project) where CI may open pull requests, a Confluence space where publishing is allowed, and Claude Code and Cursor installed on your machine.
-4. **Document engine scope:** are all seven document types still needed for 2.0.0, and should they publish to Confluence, or stay as files in the run folder plus markdown?
-5. **`commits`:** confirm what it should do, or drop it.
-6. **Model IDs:** confirm or correct the OpenAI, Google, Mistral and xAI model lists in `src/core/config/catalog.ts`.
-7. **Before slice 4, a short clean-up pass** on the open follow-ups (the slice 0 items in [10](10-plan-and-status-2026-11-04.md) and the `--push-from` limits)? Assumption: about 6–10 h.
+Still open: the live check (1), the ADO org and the GitLab and Confluence access (3), the model IDs (6).
+
+## Next steps
+
+1. The clean-up pass, one PR per item, as usual.
+2. A detailed slice 4 plan, with tasks, estimates and the decisions it needs from you, as for slices 1 to 3.
 
 ## 7. Schedule
 
