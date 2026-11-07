@@ -21,9 +21,12 @@ export interface VaultStorage {
 export interface KeyLockOptions {
   /** Folder of the lock file; default `~/.agent-qa` (created 0700), which only this user can write. */
   dir?: string;
-  /** How long to wait for another process; default 60 s, longer than `staleMs` so a crashed process's lock is taken over first. */
+  /** How long to wait for another process; default 4 min, longer than `staleMs` so a crashed process's lock is taken over first. */
   waitMs?: number;
-  /** A lock not refreshed for this long was left by a crash and is taken over; default 20 s. */
+  /**
+   * A lock that hasn't changed for this long while we watched was left by a crash and is taken over; default 3 min.
+   * Long, because the keychain calls are synchronous: while one waits on a prompt, the holder can't refresh its lock.
+   */
   staleMs?: number;
 }
 
@@ -35,21 +38,25 @@ export interface KeyLockOptions {
  * The lock holds a random token: it is refreshed while `fn` runs (a keychain
  * prompt can wait on the person), removed only by its owner, and a stale one
  * is taken over by renaming it away first, so two waiters can't both take it.
- * It is stale when its time is older than `staleMs`, or when it hasn't changed
- * for `staleMs` while we watched (which also covers a clock ahead of ours).
+ * It is stale when it hasn't changed for `staleMs` while we watched (its own
+ * time isn't trusted: a network home folder's clock can differ from ours).
+ * Left: three processes at a stale lock can still briefly both hold it; the
+ * key is read back after it is stored, so they still end up with one key.
  * If the lock folder can't be written, `fn` runs without the lock, as before
  * locking existed; the key is read back after it is stored either way.
  */
 export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: KeyLockOptions = {}): Promise<T> {
   const dir = options.dir ?? join(homedir(), ".agent-qa");
   const file = join(dir, "vault-key.lock");
-  const waitMs = options.waitMs ?? 60_000;
-  const staleMs = options.staleMs ?? 20_000;
+  const waitMs = options.waitMs ?? 240_000;
+  const staleMs = options.staleMs ?? 180_000;
   const token = randomBytes(16).toString("hex");
   const started = Date.now();
   let seen: { stamp: string; since: number } | undefined;
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    // mkdir's mode doesn't apply to a folder that already exists.
+    if (process.platform !== "win32") await chmod(dir, 0o700);
   } catch {
     return await fn();
   }
@@ -75,7 +82,7 @@ export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: 
     if (held) {
       const stamp = `${held.mtimeMs}:${held.content}`;
       if (seen?.stamp !== stamp) seen = { stamp, since: Date.now() };
-      if (Date.now() - held.mtimeMs > staleMs || Date.now() - seen.since > staleMs) {
+      if (Date.now() - seen.since > staleMs) {
         await takeOver(file, held.content);
         seen = undefined;
         continue;
