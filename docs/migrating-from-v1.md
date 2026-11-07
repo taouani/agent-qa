@@ -19,7 +19,7 @@ v1 stays available and unchanged at tag `v1.0.0` on the [`v1` branch](https://gi
 | `review-automation-code` | `review` workflow | Findings by severity on the files you name, with optional small fixes you approve as one diff. See [review.md](review.md). |
 | `audit-framework` | `audit` workflow | Read-only, with findings ranked by impact and risk, and a score per area. See [audit.md](audit.md). |
 | `refactor-framework` | `refactor` workflow | Plans phases from an audit and carries out one phase per run with ts-morph, type-checked, keeping what every test checks. See [refactor.md](refactor.md). |
-| API tests | `scripts` with `api: true` | Playwright `request` tests, no browser. See [scripts.md](scripts.md#api-tests). |
+| `generate-api-tests` | `scripts` with `api: true` | Playwright `request` tests, no browser. See [scripts.md](scripts.md#api-tests). |
 | everything else | not yet | Commit analysis, test strategy, plan, charter and data, risk register, traceability, release notes, accessibility and Confluence publishing are planned for later v2 releases. Keep using v1 for these. |
 
 ## What changes

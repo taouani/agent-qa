@@ -66,7 +66,7 @@ With `api: true`, `scripts` writes Playwright `request` tests for the cases that
 agent-qa run scripts --input '{"testCasesRun":"<run id>","api":true,"cases":["TC-ABC-1-004"]}' --accept typecheck,review,run
 ```
 
-Each test sends to a path under the config's `baseURL` (Salesforce: `/services/data/vNN.0/…`). It checks the status, then the body field by field, and deletes the records it creates. The repo's own API fixture or request context authenticates it. If your repo has none, the draft's notes say that the request fixture needs its auth, for example `extraHTTPHeaders` in the config. On top of the checks above, the server refuses a draft that:
+Each test sends to a path under the config's `baseURL` (Salesforce: `/services/data/vNN.0/…`). It checks the status, then the body field by field. The model is told to delete the records a test creates, but nothing checks that it does. The repo's own API fixture or request context authenticates it. If your repo has none, the draft's notes say that the request fixture needs its auth, for example `extraHTTPHeaders` in the config. On top of the checks above, the server refuses a draft that:
 
 - uses `page`, `context` or `browser`, a locator, `goto`, `newPage`, a browser type, or a launch;
 - sends to anything but a path written where it's sent (a string or template starting with `/` and its first segment). This also refuses a full or protocol-relative URL anywhere, a backslash, a `baseURL` of its own, and the global `fetch`;

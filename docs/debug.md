@@ -30,7 +30,7 @@ The failure kinds are the ones in [scripts.md](scripts.md), with one difference:
 | `environment` | reported: sign-in, the app or the network failed |
 | `defect` | reported: the app does what the test says it must not |
 
-A fix changes only files the model was shown, meaning the failing specs and the files their errors point at, up to 10. It never changes a feature file, a test's title or a check, never adds a branch or a timeout, and never removes or softens a check. A check whose element is read through a page object stays pinned to that element. A file that changed since Agent-QA read it is never overwritten. The model sees masked text only, and the write puts the real values back.
+A fix changes only files the model was shown, meaning the failing specs and the files their errors point at, up to 10. It never changes a feature file, a test's title or a check, never adds a branch or a fixed wait, and never removes or softens a check. A wait or an action may get a longer timeout. A check whose element is read through a page object stays pinned to that element. A file that changed since Agent-QA read it is never overwritten. The model sees masked text only, and the write puts the real values back.
 
 After the last fix the tests run `stabilityRuns` more times. Everything is kept in `debug-report@1`. Its status is one of `passed`, `nothing-to-fix` (everything passed the first time), `unstable`, `defect`, `environment`, `data`, `gave-up`, `declined`, `no-tests` or `unavailable`.
 

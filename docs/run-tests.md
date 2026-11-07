@@ -32,18 +32,18 @@ A selection Playwright can't take stops the run before anything is asked.
 
 ## Recording in Xray
 
-The `xray` step comes after a run in which some test ran, when `agent-qa.yaml` has an `xray` section and `policy.writes.xray` isn't `deny`. Before asking, it:
+The `xray` step comes after a run in which some test ran. It needs `xray` and `atlassian` sections in `agent-qa.yaml` (cases are found by label through Jira), and `policy.writes.xray` not set to `deny`. Before asking, it:
 
 1. finds each test's case by the TC id in its title or tags (`TC-ABC-1-001`), and that case's Xray test by its `agent-qa:TC-ID` label, the one a `test-cases` push sets;
 2. reads back from Xray the newest Agent-QA Test Execution of the same selection, so this works in CI too, where `.agent-qa/runs/` is new each time;
-3. shows you each result and what changed: now failing, now passing, still failing, not in the last one, skipped now, not run now.
+3. shows you each result and what changed: now failing, now passing, still failing, before neither passed nor failed (such as `TODO`), not in the last one, skipped now, not run now.
 
 Each case gets one result. If any of its tests failed (another project, a repeat), it is `FAILED`, with where it failed and the first line of the masked error. A flaky case is `PASSED`, with a comment saying it passed on a retry. Skipped tests, tests with no TC id, and cases that were never pushed aren't recorded, and the step says which.
 
-On your yes, Agent-QA records a new Test Execution, labelled `agent-qa`, `agent-qa:exec:<hash of the selection>` and `agent-qa:run:<hash of the run id>`. The selection's text never shows in a label. A retry after a stop finds the run's own label and doesn't record it twice. If Jira or Xray can't be read, nothing is recorded and the run still finishes. Everything is kept in `xray-execution@1`, with status `recorded`, `declined`, `nothing` (no case of the run is in Xray) or `unavailable`.
+On your yes, Agent-QA records a new Test Execution, labelled `agent-qa`, `agent-qa:exec:<hash of the selection>` and `agent-qa:run:<hash of the run id>`. The selection's text never shows in a label. A retry after a stop finds the run's own label and doesn't record it twice. If Jira or Xray can't be read before the question, nothing is recorded and the run still finishes. A failure while recording, after your yes, leaves the step open to run again. Everything is kept in `xray-execution@1`, with status `recorded`, `declined`, `nothing` (no case of the run is in Xray) or `unavailable`.
 
 What goes to Xray is masked text: a comment holds tokens such as `<PERSON_1>` as they are, even with `masking.restoreOnWrite`.
 
-In CI, accept the step (`--accept run,xray`) and allow the write with `policy.writes.xray: allow`, because `ask` is denied when nobody can be asked.
+In CI, set `policy.writes.xray: allow` and accept the step (`--accept run,xray`). With `ask`, the step is skipped altogether in CI, because nobody can be asked, so `--accept xray` alone does nothing.
 
 **Not yet checked against a live Xray** (assumptions): that Xray returns Test Executions in the JQL's `ORDER BY created DESC` order, and that the start and finish dates are kept when the issue fields come in the multipart `info` part.
