@@ -94,6 +94,13 @@ export const configSchema = z
         priorities: z.object({ P1: z.string().min(1), P2: z.string().min(1), P3: z.string().min(1), P4: z.string().min(1) }).partial().strict().optional(),
         /** Jira link type from each test to its requirement. Default "Test" (tests / is tested by). */
         linkType: z.string().min(1).max(100).default("Test"),
+        /**
+         * Attach Playwright's failure screenshots to the failed tests of a
+         * Test Execution (Tarek, 7 Nov 2026). Off by default: a screenshot
+         * can't be masked, so what the page showed (names, record data) goes
+         * to Xray as it is.
+         */
+        attachScreenshots: z.boolean().default(false),
       })
       .strict()
       .optional(),

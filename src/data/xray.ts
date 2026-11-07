@@ -115,7 +115,7 @@ export interface ExecutionRow {
   failedRuns: number;
   startedAt?: string | undefined;
   durationMs?: number | undefined;
-  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined } | undefined;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; screenshot?: string | undefined } | undefined;
 }
 
 export interface ExecutionResult {
@@ -127,6 +127,8 @@ export interface ExecutionResult {
   /** When the case's tests started and ended (ISO), from the report. */
   start?: string;
   finish?: string;
+  /** A failed case's failure screenshot, from the framework folder (masked path): sent only with xray.attachScreenshots. */
+  screenshot?: string;
   /** Its status in the last execution with the same label, when it was in it. */
   before?: string;
 }
@@ -147,6 +149,8 @@ export interface XrayExecutionPlan {
   notInXray: string[];
   /** Skipped tests: not run, so not recorded. */
   skipped: number;
+  /** Failed results whose screenshot goes too (xray.attachScreenshots); 0 when it is off. Each must still be there when recorded. */
+  screenshots?: number;
   /**
    * failing: PASSED before, FAILED now; other: before neither PASSED nor
    * FAILED (TODO, ABORTED…), as "TC-ID (was X)"; skippedNow: in the last one,
@@ -198,7 +202,7 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     const comment = failed
       ? failureComment(r)
       : r.outcome === "flaky"
-        ? `Flaky: failed ${r.failedRuns} of ${r.runs} run(s), passed on a retry (${r.file}:${r.line}).${r.failure ? `\n\n${failureComment(r)}` : ""}`.slice(0, MAX_COMMENT)
+        ? `Flaky: failed ${r.failedRuns} of ${r.runs} run(s), passed on a retry (${r.file}:${r.line}).${r.failure ? `\n\nThe failed run: ${failureComment(r)}` : ""}`.slice(0, MAX_COMMENT)
         : undefined;
     // A case's dates span all its tests (projects, repeats).
     const at = r.startedAt !== undefined ? Date.parse(r.startedAt) : NaN;
@@ -210,7 +214,7 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     const prev = byCase.get(id);
     if (prev?.status === "FAILED" && !failed) continue;
     if (prev && !failed && !comment) continue;
-    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment } : {}) });
+    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment } : {}), ...(failed && r.failure?.screenshot ? { screenshot: r.failure.screenshot } : {}) });
   }
   for (const [id, r] of byCase) {
     const span = spans.get(id);

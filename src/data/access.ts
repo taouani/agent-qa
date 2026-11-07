@@ -1,10 +1,11 @@
-import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath, sep } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import {
   commandList,
   findProjectFolder,
@@ -373,7 +374,7 @@ export interface MaskedTestResult {
   failedRuns: number;
   startedAt?: string | undefined;
   durationMs?: number | undefined;
-  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined } | undefined;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined; screenshot?: string | undefined } | undefined;
 }
 
 export type TestRunOutcome =
@@ -604,7 +605,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     // Only one recorded in this project counts (the config may have changed since others).
     const last = previous.find((p) => p.project === xray.projectKey);
     const { results: withBefore, changes } = executionChanges(now, last, skippedKeys);
-    return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes };
+    const screenshots = xray.attachScreenshots ? withBefore.filter((r) => r.status === "FAILED" && r.screenshot).length : 0;
+    return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes, ...(screenshots ? { screenshots } : {}) };
   }
 
   async recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean) {
@@ -614,14 +616,65 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const client = await this.xrayClient(config);
     if (!client.importExecution) throw new Error("this Xray client can't record Test Executions");
     const failed = plan.results.filter((r) => r.status === "FAILED").length;
-    const summary = `Record ${plan.results.length} test result(s) (${failed} failed) as a Test Execution in Xray project ${plan.project}`;
+    // Screenshots only when agent-qa.yaml asks for them: they can't be masked.
+    // Only what the person was told about: the plan they saw counted them, and the setting is still on.
+    const shots = config.xray?.attachScreenshots && plan.screenshots ? await this.failureScreenshots(runId, plan) : new Map<string, XrayEvidence>();
+    const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
       client.importExecution!(
-        { project: plan.project, summary: info.summary.slice(0, 255), description: info.description, labels: ["agent-qa", plan.label, runLabel], startedAt: info.startedAt, finishedAt: info.finishedAt, tests: plan.results.map((r) => ({ testKey: r.xrayKey, status: r.status, ...(r.comment ? { comment: r.comment } : {}), ...(r.start ? { start: new Date(r.start) } : {}), ...(r.finish ? { finish: new Date(r.finish) } : {}) })) },
+        {
+          project: plan.project,
+          summary: info.summary.slice(0, 255),
+          description: info.description,
+          labels: ["agent-qa", plan.label, runLabel],
+          startedAt: info.startedAt,
+          finishedAt: info.finishedAt,
+          tests: plan.results.map((r) => ({
+            testKey: r.xrayKey,
+            status: r.status,
+            ...(r.comment ? { comment: r.comment } : {}),
+            ...(r.start ? { start: new Date(r.start) } : {}),
+            ...(r.finish ? { finish: new Date(r.finish) } : {}),
+            ...(shots.has(r.tcId) ? { evidence: [shots.get(r.tcId)!] } : {}),
+          })),
+        },
         grant,
       ),
     );
     return outcome.status === "done" ? { status: "done" as const, key: outcome.value.key } : { status: "declined" as const };
+  }
+
+  /**
+   * The failed cases' screenshots, as Xray evidence by TC id. Each handle
+   * names an output folder inside the reviewed profile's folder (its tokens
+   * restored with the run's vault) and the hash of the image's path in it:
+   * the folder is searched for that PNG or JPEG, at most 5 MB each and 10 MB
+   * in all. One that is gone or too big is left out.
+   */
+  private async failureScreenshots(runId: string, plan: XrayExecutionPlan): Promise<Map<string, XrayEvidence>> {
+    const out = new Map<string, XrayEvidence>();
+    const saved = await this.savedProfile();
+    if (!saved) return out;
+    const dir = hostCwd(this.options.root, saved.folder);
+    const { vault } = await this.run(runId);
+    const restore = restorer((t) => vault.valueOf(t));
+    let total = 0;
+    const found = new Map<string, Map<string, string>>();
+    for (const r of plan.results) {
+      if (r.status !== "FAILED" || !r.screenshot) continue;
+      const cut = r.screenshot.lastIndexOf("#");
+      const outDir = restore(r.screenshot.slice(0, cut));
+      if (cut < 0 || !isPlainRelativePath(outDir)) continue;
+      if (!found.has(outDir)) found.set(outDir, await imagesIn(resolvePath(dir, outDir)));
+      const rel = found.get(outDir)!.get(r.screenshot.slice(cut + 1));
+      if (!rel) continue;
+      const type = /\.png$/i.test(rel) ? "image/png" : "image/jpeg";
+      const data = await readBytesInside(dir, resolvePath(dir, outDir, rel), MAX_SCREENSHOT_BYTES);
+      if (!data || total + data.length > MAX_SCREENSHOTS_BYTES) continue;
+      total += data.length;
+      out.set(r.tcId, { data: data.toString("base64"), filename: `${r.tcId}${type === "image/png" ? ".png" : ".jpg"}`, contentType: type });
+    }
+    return out;
   }
 
   async runCommand(runId: string, request: HostCommandRequest, approved: boolean) {
@@ -844,6 +897,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       const why = t.result.timedOut ? ` (the run was stopped after ${Math.round(t.result.durationMs / 60_000)} minutes)` : "";
       return { ...base, tests: [], errors: [`no test report came back${why}: ${tail(t.result) || "no output"}`] };
     }
+    // A screenshot as a handle, never its path: Playwright names the folder after the test's title
+    // (jane-doe-example-com), which the detectors don't recognise. "<output folder>#<hash of the path in it>".
+    const screenshotOf = (shot: { outputDir: string; path: string } | undefined) => {
+      if (!shot) return undefined;
+      const out = relativePath(dir, shot.outputDir).split(sep).join("/");
+      if (!isPlainRelativePath(out)) return undefined;
+      return `${echo.detect(out, "test.screenshot")}#${screenshotHash(relativePath(shot.outputDir, shot.path))}`;
+    };
     const tests: MaskedTestResult[] = [];
     for (const x of parsed.tests) {
       const raw = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
@@ -867,6 +928,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
                 snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
                 at: x.failure.at,
                 snapshot,
+                ...(screenshotOf(x.failure.screenshot) ? { screenshot: screenshotOf(x.failure.screenshot)! } : {}),
               },
             }
           : {}),
@@ -1757,6 +1819,53 @@ async function gitRoot(dir: string): Promise<string | undefined> {
     at = up;
   }
   return undefined;
+}
+
+const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+/** In all, per execution: as base64 in one JSON body, about 13.5 MB. */
+const MAX_SCREENSHOTS_BYTES = 10 * 1024 * 1024;
+/** Files looked at in an output folder, to find screenshots by their hash. */
+const MAX_OUTPUT_FILES = 20_000;
+
+/** A screenshot's handle: the hash of its path in the output folder, forward slashes. */
+const screenshotHash = (rel: string) => sha256(rel.split(sep).join("/")).slice(0, 32);
+
+/** The PNG and JPEG files in an output folder, by the hash of their path in it (links not followed). */
+async function imagesIn(folder: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let seen = 0;
+  const walk = async (rel: string, depth: number): Promise<void> => {
+    if (depth > 8 || seen > MAX_OUTPUT_FILES) return;
+    const entries = await readdir(join(folder, rel), { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (++seen > MAX_OUTPUT_FILES) return;
+      const path = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(path, depth + 1);
+      else if (e.isFile() && /\.(png|jpe?g)$/i.test(e.name)) out.set(screenshotHash(path), path);
+    }
+  };
+  await walk("", 0);
+  return out;
+}
+
+/** A file's bytes, only when it is inside `folder` (links followed) and at most `max` bytes. */
+async function readBytesInside(folder: string, path: string, max: number): Promise<Buffer | undefined> {
+  try {
+    const real = await realpathAsync(path);
+    const rel = relativePath(await realpathAsync(folder), real);
+    if (rel === "" || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) return undefined;
+    if (!(await stat(real)).isFile()) return undefined;
+    // At most max + 1 bytes are read, whatever the file grew to since: more than max is too big.
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of createReadStream(real, { start: 0, end: max })) {
+      chunks.push(chunk as Buffer);
+      size += (chunk as Buffer).length;
+    }
+    return size > max ? undefined : Buffer.concat(chunks);
+  } catch {
+    return undefined;
+  }
 }
 
 /** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */

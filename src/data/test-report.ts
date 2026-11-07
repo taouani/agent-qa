@@ -56,7 +56,9 @@ export interface ReportedTest {
   startedAt?: string | undefined;
   durationMs?: number | undefined;
   /** The first failure: its message (with the call log), the code around it, and where. */
-  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined } | undefined;
+  failure?:
+    | { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined; screenshot?: { outputDir: string; path: string } | undefined }
+    | undefined;
 }
 
 export interface ParsedReport {
@@ -93,6 +95,16 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
       ? path
       : undefined;
   };
+  /** Playwright's own failure screenshot: an image attachment named "screenshot", in a project's output folder. */
+  const screenshotFile = (attachments: ReadonlyArray<z.infer<typeof attachment>> | undefined) => {
+    const a = attachments?.find((x) => x.name === "screenshot" && /^image\/(png|jpeg)$/.test(x.contentType ?? "") && typeof x.path === "string" && /\.(png|jpe?g)$/i.test(x.path));
+    if (!a?.path) return undefined;
+    const outputDir = outputs.find((d) => {
+      const rel = relative(d, a.path!);
+      return rel !== "" && !isAbsolute(rel) && !rel.split(sep).includes("..");
+    });
+    return outputDir ? { outputDir, path: a.path } : undefined;
+  };
   const tests: ReportedTest[] = [];
   const walk = (s: Suite, titles: string[]) => {
     // The file's own suite is titled with the file name: left out of the title.
@@ -122,6 +134,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
                   snippet: err?.snippet ? plain(err.snippet) : undefined,
                   at: err?.location ? { file: fromFolder(err.location.file, folder, base), line: err.location.line } : undefined,
                   snapshotPath: snapshotFile(context?.path),
+                  screenshot: screenshotFile(first.attachments),
                   snapshot: context?.body !== undefined && context.contentType?.startsWith("text/") ? Buffer.from(context.body, "base64").toString("utf8") : undefined,
                 },
               }

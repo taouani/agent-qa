@@ -37,6 +37,15 @@ export interface XrayExecutionResult {
   comment?: string;
   start?: Date;
   finish?: Date;
+  /** Files attached to the test run, such as a failure screenshot. */
+  evidence?: XrayEvidence[];
+}
+
+export interface XrayEvidence {
+  /** Base64. */
+  data: string;
+  filename: string;
+  contentType: string;
 }
 
 export interface XrayExecutionInput {
@@ -211,6 +220,7 @@ export class XrayClient {
         ...(t.finish ? { finish: xrayDate(t.finish) } : {}),
         status: t.status,
         ...(t.comment ? { comment: t.comment } : {}),
+        ...(t.evidence?.length ? { evidence: t.evidence.map((e) => ({ data: e.data, filename: e.filename, contentType: e.contentType })) } : {}),
       })),
     };
     const info = { fields: { project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
