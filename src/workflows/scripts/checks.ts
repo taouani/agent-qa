@@ -160,7 +160,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
     const scan = scanGeneratedCode(f.content, f.path);
     if (f.role === "spec") specs.set(f.path, scan);
     if (ctx.api && (f.role === "spec" || f.role === "steps")) {
-      const a = apiTestProblems(f.content, f.path);
+      const a = apiTestProblems(f.content, f.path, new Set(draft.files.map((x) => x.path)));
       for (const m of a.problems) err(`${at}.content`, m);
       sends += a.sends;
     }

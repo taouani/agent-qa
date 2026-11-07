@@ -299,4 +299,23 @@ test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
     expect(problems(wrap("const ctx = await request.newContext();\nawait ctx.post('/x');")).sends).toBe(1);
     expect(problems("import type { APIRequestContext } from '@playwright/test';\nexport async function make(c: APIRequestContext) { return c.post('/x'); }\n").sends).toBe(1);
   });
+  it("refuses a path that still names a host, and follows a context through aliases, casts and this file's helpers (B1, second review)", () => {
+    for (const body of [
+      "await request.get('/\\\\api.example.com/v1/x');",
+      "const h = '/api.example.com';\nawait request.get(`/${h}/v1/x`);",
+      "const r = request;\nconst url = ['https:', '', 'api.example.com'].join('/');\nawait r.get(url);",
+      "const url = atob('x');\nawait (request as any).get(url);",
+      "const send = (c: any, u: string) => c.get(u);\nawait send(request, atob('x'));",
+      "function send(c: any, u: string) { return c.post(u); }\nawait send(request, atob('x'));",
+    ]) expect(msgs(wrap(body)), body).toMatch(/backslash|first segment written out|built elsewhere/);
+    expect(problems(wrap("await request.get(`/services/data/v62.0/sobjects/Account/${'id'}`);"))).toEqual({ problems: [], sends: 1 });
+    // A function another generated file declares can't be followed; the repo's own helpers can be called.
+    const draft = new Set(["tests/api/helpers.ts", "tests/api/x.spec.ts"]);
+    const imp = (from: string) => `import { make } from '${from}';\n${wrap("await make(request);")}`;
+    expect(apiTestProblems(imp("./helpers.js"), "tests/api/x.spec.ts", draft).problems.join()).toMatch(/another generated file declares/);
+    expect(apiTestProblems(imp("../../src/api/helpers"), "tests/api/x.spec.ts", draft).problems).toEqual([]);
+    // A browser fixture taken apart inside the body.
+    expect(msgs(wrap("const { page: p } = fx;\nawait p.evaluate(() => 1);", "fx"))).toMatch(/not page/);
+  });
 });
+

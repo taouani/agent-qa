@@ -929,9 +929,13 @@ const FULL_URL = /^\s*(?:[a-z][a-z0-9+.-]*:)?\/\//i;
  * OAuth path, an Authorization header, a secret or password key). `sends`
  * counts the requests sent on a request context: the request fixture, a
  * fixture the test destructures, a context from newContext, or a parameter
- * typed APIRequestContext. One message each, with its line.
+ * typed APIRequestContext, an alias or cast of one, or a parameter of a
+ * function in this file that is given one. A context may go to the repo's
+ * own helpers (the person's files), but not to a function another generated
+ * file declares, whose sends this check can't follow. One message each,
+ * with its line.
  */
-export function apiTestProblems(text: string, file: string): { problems: string[]; sends: number } {
+export function apiTestProblems(text: string, file: string, draftPaths: ReadonlySet<string> = new Set()): { problems: string[]; sends: number } {
   const ast = parseCode(text, file);
   if (!ast) return { problems: [], sends: 0 };
   const out: string[] = [];
@@ -939,6 +943,13 @@ export function apiTestProblems(text: string, file: string): { problems: string[
   const keyName = (p: Node): string | undefined =>
     (p.type === "ObjectProperty" || p.type === "ObjectMethod" || p.type === "ClassProperty") && !p.computed ? (p.key.type === "Identifier" ? p.key.name : literalString(p.key as Node)) : undefined;
   const isFn = (n: Node | undefined): n is Node => !!n && (n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression");
+  // Paths through casts, parentheses and awaits: (request as any) is request.
+  const bare = (x: Node): Node => {
+    let y = x;
+    while (y.type === "TSAsExpression" || y.type === "TSSatisfiesExpression" || y.type === "TSNonNullExpression" || y.type === "TSTypeAssertion" || y.type === "ParenthesizedExpression" || y.type === "AwaitExpression")
+      y = (y.type === "AwaitExpression" ? y.argument : y.expression) as Node;
+    return y;
+  };
   // The callbacks that get fixtures, and the request contexts sends go through.
   const callbacks = new Set<Node>();
   const contexts = new Set(["request"]);
@@ -962,6 +973,12 @@ export function apiTestProblems(text: string, file: string): { problems: string[
     if (first?.type === "Identifier") {
       const param = first.name;
       walkAst(fn.body as Node, (m) => {
+        if (m.type === "VariableDeclarator" && m.id.type === "ObjectPattern" && m.init && bare(m.init as Node).type === "Identifier" && (bare(m.init as Node) as { name: string }).name === param)
+          for (const p of m.id.properties) {
+            const key = keyName(p as Node);
+            if (key && BROWSER.has(key)) out.push(`${at(p as Node)}: an API test takes the request fixture, not ${key}: it drives no browser`);
+            else if (p.type === "ObjectProperty" && p.value.type === "Identifier") contexts.add(p.value.name);
+          }
         if ((m.type === "MemberExpression" || m.type === "OptionalMemberExpression") && m.object.type === "Identifier" && m.object.name === param) {
           const key = memberName(m);
           if (key && BROWSER.has(key)) out.push(`${at(m)}: an API test takes the request fixture, not ${key}: it drives no browser`);
@@ -970,22 +987,61 @@ export function apiTestProblems(text: string, file: string): { problems: string[
       });
     }
   }
+  // Functions this file declares, by name, and names imported from other generated files.
+  const declared = new Map<string, Node>();
+  const fromDraft = new Set<string>();
+  const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
+  const resolve = (from: string): string[] => {
+    const parts = (dir ? `${dir}/${from}` : from).split("/");
+    const outParts: string[] = [];
+    for (const x of parts) {
+      if (x === "..") outParts.pop();
+      else if (x !== "." && x !== "") outParts.push(x);
+    }
+    const base = outParts.join("/").replace(/\.[cm]?js$/, "");
+    return [base, ...[".ts", ".js", ".mts", ".cts", "/index.ts", "/index.js"].map((e) => base + e)];
+  };
   walkAst(ast, (n) => {
-    if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && n.init) {
-      let init = n.init as Node;
-      if (init.type === "AwaitExpression") init = init.argument as Node;
-      if ((init.type === "CallExpression" || init.type === "OptionalCallExpression") && memberName(init.callee as Node) === "newContext") contexts.add(n.id.name);
-    }
-    if (n.type === "Identifier" && n.typeAnnotation?.type === "TSTypeAnnotation") {
-      const t = n.typeAnnotation.typeAnnotation;
-      if (t.type === "TSTypeReference" && t.typeName.type === "Identifier" && t.typeName.name === "APIRequestContext") contexts.add(n.name);
-    }
+    if (n.type === "FunctionDeclaration" && n.id) declared.set(n.id.name, n);
+    if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && isFn(n.init as Node | undefined)) declared.set(n.id.name, n.init as Node);
+    if (n.type === "ImportDeclaration" && n.source.value.startsWith(".") && resolve(n.source.value).some((c) => draftPaths.has(c)))
+      for (const sp of n.specifiers) fromDraft.add(sp.local.name);
   });
+  const isContext = (x: Node): boolean => {
+    const y = bare(x);
+    return (y.type === "Identifier" && contexts.has(y.name)) || ((y.type === "MemberExpression" || y.type === "OptionalMemberExpression") && y.object.type === "ThisExpression" && contexts.has(memberName(y) ?? ""));
+  };
+  for (let size = -1; size !== contexts.size; ) {
+    size = contexts.size;
+    walkAst(ast, (n) => {
+      if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && n.init) {
+        const init = bare(n.init as Node);
+        if ((init.type === "CallExpression" || init.type === "OptionalCallExpression") && memberName(init.callee as Node) === "newContext") contexts.add(n.id.name);
+        if (isContext(init)) contexts.add(n.id.name);
+      }
+      if (n.type === "AssignmentExpression" && n.left.type === "Identifier" && isContext(n.right as Node)) contexts.add(n.left.name);
+      if (n.type === "Identifier" && n.typeAnnotation?.type === "TSTypeAnnotation") {
+        const t = n.typeAnnotation.typeAnnotation;
+        if (t.type === "TSTypeReference" && t.typeName.type === "Identifier" && t.typeName.name === "APIRequestContext") contexts.add(n.name);
+      }
+      // A function of this file given a context: its parameter is one.
+      if ((n.type === "CallExpression" || n.type === "OptionalCallExpression") && n.callee.type === "Identifier") {
+        const fn = declared.get(n.callee.name);
+        if (fn && (fn.type === "FunctionDeclaration" || fn.type === "ArrowFunctionExpression" || fn.type === "FunctionExpression"))
+          n.arguments.forEach((a, i) => {
+            const param = fn.params[i];
+            const id = param?.type === "AssignmentPattern" ? param.left : param;
+            if (isContext(a as Node) && id?.type === "Identifier") contexts.add(id.name);
+          });
+      }
+    });
+  }
   let sends = 0;
   walkAst(ast, (n) => {
     // Strings: no host, no OAuth.
     const pieces = n.type === "StringLiteral" ? [n.value] : n.type === "TemplateLiteral" ? n.quasis.map((q) => q.value.cooked ?? q.value.raw) : [];
     for (const s of pieces) {
+      if (s.includes("\\")) out.push(`${at(n)}: a backslash: a URL counts it as a slash, so it can name another host; write paths with / only`);
       if (FULL_URL.test(s) || /:\/\//.test(s)) out.push(`${at(n)}: a full URL: send to a path (/services/data/…), the config's baseURL gives the host`);
       if (/\/services\/oauth2\//i.test(s)) out.push(`${at(n)}: an OAuth path: the repo's auth fixture signs in, never test code`);
     }
@@ -998,7 +1054,9 @@ export function apiTestProblems(text: string, file: string): { problems: string[
     }
     if ((n.type === "MemberExpression" || n.type === "OptionalMemberExpression") && BROWSER_TYPES.has(memberName(n) ?? "")) out.push(`${at(n)}: ${memberName(n)} is a browser: an API test drives none`);
     if (n.type !== "CallExpression" && n.type !== "OptionalCallExpression") return;
-    const callee = n.callee as Node;
+    const callee = bare(n.callee as Node);
+    if (callee.type === "Identifier" && fromDraft.has(callee.name) && n.arguments.some((a) => isContext(a as Node)))
+      out.push(`${at(n)}: passes the request context to ${callee.name}, which another generated file declares: send in this file, so each request's path is checked`);
     if (callee.type === "Identifier" && callee.name === "fetch") return void out.push(`${at(n)}: the global fetch skips the config: send with the request fixture`);
     if (callee.type !== "MemberExpression" && callee.type !== "OptionalMemberExpression") return;
     const m = memberName(callee);
@@ -1006,13 +1064,12 @@ export function apiTestProblems(text: string, file: string): { problems: string[
     if (callee.object.type === "Identifier" && GLOBALS.has(callee.object.name) && m === "fetch") return void out.push(`${at(n)}: the global fetch skips the config: send with the request fixture`);
     if (LOCATOR_METHODS.has(m) && m !== "filter" && m !== "first" && m !== "last" && m !== "and" && m !== "or" && m !== "nth") out.push(`${at(n)}: ${m}() picks an element: an API test checks responses, not pages`);
     if (BROWSER_CALLS.has(m)) out.push(`${at(n)}: ${m}() drives a browser: an API test sends requests only`);
-    const target = callee.object as Node;
-    const onContext = (target.type === "Identifier" && contexts.has(target.name)) || (target.type === "MemberExpression" && target.object.type === "ThisExpression" && contexts.has(memberName(target) ?? ""));
-    if (API_METHODS.has(m) && onContext && n.arguments.length > 0) {
+    if (API_METHODS.has(m) && isContext(callee.object as Node) && n.arguments.length > 0) {
       sends++;
       const url = n.arguments[0] as Node;
       const path = url.type === "StringLiteral" ? url.value : url.type === "TemplateLiteral" ? (url.quasis[0]?.value.cooked ?? "") : undefined;
-      if (path === undefined || !path.startsWith("/")) out.push(`${at(n)}: ${m}() sends to ${path === undefined ? "a URL built elsewhere" : "a URL that isn't a path"}: write the path where it's sent, as a string or template starting with /, so the config's baseURL gives the host`);
+      // The first segment written out: "/" followed by ${…} or a second slash could name a host.
+      if (path === undefined || !/^\/[A-Za-z0-9_~.-]/.test(path)) out.push(`${at(n)}: ${m}() sends to ${path === undefined ? "a URL built elsewhere" : "a URL that isn't a path with its first segment written out"}: write the path where it's sent, as a string or template starting with /, so the config's baseURL gives the host`);
     }
   });
   return { problems: [...new Set(out)], sends };
