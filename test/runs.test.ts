@@ -163,6 +163,22 @@ describe("RunStore", () => {
     await expect(store.update("2026-01-01-none-aaaa", { status: "done" })).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("gives a claim to one holder at a time, across store instances", async () => {
+    const a = new RunStore(root, { now, random: fixed });
+    const b = new RunStore(root, { now, random: fixed });
+    const run = await a.create({ workflow: "w", context: "c", host: "cli", driver: "api" });
+    const [first, second] = await Promise.all([a.claim(run.id, "xray-push", "run-a"), b.claim(run.id, "xray-push", "run-b")]);
+    expect([first, second].filter((x) => x === undefined)).toHaveLength(1);
+    const holder = first === undefined ? "run-a" : "run-b";
+    expect(await a.claim(run.id, "xray-push", holder)).toBeUndefined();
+    await a.release(run.id, "xray-push", "someone-else");
+    expect(await b.claim(run.id, "xray-push", "run-c")).toBe(holder);
+    await b.release(run.id, "xray-push", holder);
+    expect(await b.claim(run.id, "xray-push", "run-c")).toBeUndefined();
+    await expect(a.claim(run.id, "../x", "h")).rejects.toMatchObject({ code: "UNSAFE_ID" });
+    await expect(a.claim("2026-01-01-none-aaaa", "xray-push", "h")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("appends log events and rejects unsafe ids", async () => {
     const store = new RunStore(root, { now, random: fixed });
     const run = await store.create({ workflow: "w", context: "c", host: "cli", driver: "api" });

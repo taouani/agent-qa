@@ -102,7 +102,7 @@ These are known, and each is written up in [../backlog.md](../backlog.md), the u
 
 - **Rerun matching of test cases is a title heuristic** (`sameCheck` in `src/workflows/test-cases/workflow.ts`). You see every update next to its old title before the push.
 - **Reusing an earlier analysis** (#81) compares the input only, not the prompt template's version, so an analysis made with older templates is still offered (`docs/requirements.md`).
-- **`--push-from`:** two pushes started at the same moment from two terminals aren't stopped; a partly failed push can't be retried this way; the "already pushed" check looks at the newest 200 runs only; the vault check is stricter than it needs to be when `restoreOnWrite` is off.
+- **`--push-from`:** the four limits found in review were closed in the clean-up pass. Left: a push claim left by a crash isn't taken over automatically; the error names the file to delete.
 - **Xray Test Executions:** the rerun diff needs the run folder kept between CI jobs; an `uncertain` recording is never sent again and needs a manual look in Xray.
 - **Screenshots in Xray:** one per case, even when the case ran in several projects; the count in the question can be higher than what is sent (a file gone, or over the 10 MB limit), never lower; the handle kept in the run folder is an unsalted hash of the path.
 - **Test runs:** a test that hangs until the 15-minute stop shows as skipped, and a smaller `globalTimeout` in your Playwright config is replaced by ours.

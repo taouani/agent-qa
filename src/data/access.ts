@@ -66,6 +66,8 @@ export interface XrayData {
    * write policy doesn't deny Xray in this mode. False without a config.
    */
   xrayEnabled(): Promise<boolean>;
+  /** Whether `masking.restoreOnWrite` is on, so a push needs the tokens run's vault. True when the config can't be read. */
+  restoresOnWrite?(): Promise<boolean>;
   /**
    * Tests earlier pushes created for these issues, for a rerun to reuse their
    * ids: per issue, each test's TC id, Xray key, masked title and covered
@@ -511,6 +513,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     }
     await service.saveVault();
     return out;
+  }
+
+  async restoresOnWrite(): Promise<boolean> {
+    try {
+      return (await this.loadConfig()).masking.restoreOnWrite;
+    } catch {
+      return true;
+    }
   }
 
   async xrayEnabled(): Promise<boolean> {

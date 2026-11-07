@@ -200,7 +200,13 @@ function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: M
   return numberOf(c.id) <= highest ? [{ path: `${at}.id`, message: `numbers up to ${highest} belong to earlier tests (see existingTests): number new cases from ${next}` }] : [];
 }
 
-export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData; runs: RequirementsDeps["runs"] & Partial<Pick<RunStore, "list" | "manifest">> };
+export type TestCasesDeps = RequirementsDeps & {
+  data: RequirementsData & XrayData;
+  runs: RequirementsDeps["runs"] & Partial<Pick<RunStore, "list" | "manifest" | "claim" | "release" | "claimFile">>;
+};
+
+/** The claim a run takes on the reviewed cases' run while it pushes them, so two processes don't push them at once. */
+const PUSH_CLAIM = "xray-push";
 
 /** Runs searched for an earlier analysis of the same input: the newest this many. */
 const MAX_REUSE_RUNS = 200;
@@ -347,18 +353,30 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     if (!art) throw new Error(`Run ${casesRunOf(ctx)} has no test-cases@1`);
     return art;
   }
-  /** The run, other than `self`, that already pushed these reviewed cases (that run itself, or a casesRun run), among the newest runs. */
-  const pushedBy = async (casesRun: string, self?: string): Promise<string | undefined> => {
-    const ids = deps.runs.list ? (await deps.runs.list()).slice(-MAX_REUSE_RUNS) : [];
+  /**
+   * Earlier pushes of these reviewed cases (by that run itself, or by casesRun
+   * runs), other than `self`'s, in every run: `done` is one with no failed
+   * case, `partial` the newest that had failures (a new push may retry it:
+   * cases are found again by their TC id, so they are updated, not duplicated).
+   */
+  const pushesOf = async (casesRun: string, self?: string): Promise<{ done?: string; partial?: { run: string; failed: number } }> => {
+    const ids = deps.runs.list ? await deps.runs.list() : [];
+    let partial: { run: string; failed: number } | undefined;
     for (const id of new Set([casesRun, ...ids])) {
       if (id === self) continue;
       const push = await deps.runs.readArtifact(id, XRAY_PUSH_ARTIFACT).catch(() => undefined);
-      if (push?.data.testCases.run === casesRun) return id;
+      if (push?.data.testCases.run !== casesRun) continue;
+      if (push.data.counts.failed === 0) return { done: id };
+      partial = { run: id, failed: push.data.counts.failed };
     }
-    return undefined;
+    return partial ? { partial } : {};
   };
-  const fromLine = async (ctx: Ctx) =>
-    ctx.inputs.casesRun === undefined ? "" : `These are the cases reviewed in run ${ctx.inputs.casesRun} (${(await reviewedOf(ctx)).createdAt.slice(0, 10)}), not pushed then. `;
+  const fromLine = async (ctx: Ctx) => {
+    if (ctx.inputs.casesRun === undefined) return "";
+    const { partial } = await pushesOf(ctx.inputs.casesRun, ctx.runId);
+    const retry = partial ? `run ${partial.run} pushed them, but ${partial.failed} case(s) failed: this push sends them all again (cases already in Xray are updated)` : "not pushed then";
+    return `These are the cases reviewed in run ${ctx.inputs.casesRun} (${(await reviewedOf(ctx)).createdAt.slice(0, 10)}), ${retry}. `;
+  };
   const planOf = async (ctx: Ctx) => deps.data.xrayPlan((await reviewedOf(ctx)).data.cases);
 
   return {
@@ -381,10 +399,12 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
       if (manifest?.status !== "done") {
         return refuse(`Run ${inputs.casesRun} isn't finished${manifest ? ` (${manifest.status})` : ""}: if it waits at its push, resume it instead (--resume ${inputs.casesRun})`);
       }
-      const by = await pushedBy(inputs.casesRun);
-      if (by) return refuse(`The reviewed cases of run ${inputs.casesRun} were already pushed to Xray, by run ${by}: see its xray-push.md`);
+      const { done } = await pushesOf(inputs.casesRun);
+      if (done) return refuse(`The reviewed cases of run ${inputs.casesRun} were already pushed to Xray, by run ${done}: see its xray-push.md`);
       const tokensRun = art.data.requirements.run;
-      if (TOKEN_TEST.test(JSON.stringify(art.data.cases)) && !(await deps.data.hasVault(tokensRun))) {
+      // The vault is needed only to restore real values (restoreOnWrite); otherwise tokens are pushed as they are.
+      const restores = deps.data.restoresOnWrite ? await deps.data.restoresOnWrite() : true;
+      if (restores && TOKEN_TEST.test(JSON.stringify(art.data.cases)) && !(await deps.data.hasVault(tokensRun))) {
         return refuse(`The token vault of run ${tokensRun} has expired or was deleted, so the real values of these cases can't be restored: write the cases again from the key`);
       }
       return inputs;
@@ -631,28 +651,45 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         onAccept: async (ctx, push: Push) => {
           if (!push.approve) return;
           // Another run may have pushed the same reviewed cases while this question waited.
-          const by = await pushedBy(casesRunOf(ctx), ctx.runId);
-          if (by) throw new Error(`These reviewed cases were already pushed to Xray, by run ${by}, so they aren't pushed again: submit approve: false to end this run`);
-          const art = await reviewedOf(ctx);
-          const outcome = await deps.data.pushToXray(ctx.runId, await requirementsRunOf(ctx), art.data.cases, true);
-          if (outcome.status !== "done") return;
-          const { project, jobs, results } = outcome.result;
-          const count = (action: string) => results.filter((r) => r.action === action).length;
-          const data: XrayPush = {
-            testCases: { run: casesRunOf(ctx), sourceHash: art.sourceHash },
-            project,
-            jobs,
-            results,
-            counts: { created: count("created"), updated: count("updated"), failed: count("failed") },
-          };
-          await deps.runs.writeArtifact(ctx.runId, XRAY_PUSH_ARTIFACT, data, {
-            inputs: [{ kind: "artifact", ref: `${casesRunOf(ctx)}/test-cases`, hash: art.sourceHash }],
-            templateVersion: TEST_CASES_TEMPLATE_VERSION,
-          });
+          const casesRun = casesRunOf(ctx);
+          // Claimed across processes, then checked: another run may have pushed the same reviewed cases while this question waited.
+          const holder = deps.runs.claim ? await deps.runs.claim(casesRun, PUSH_CLAIM, ctx.runId) : undefined;
+          if (holder) {
+            const file = deps.runs.claimFile ? ` If it isn't running, delete ${deps.runs.claimFile(casesRun, PUSH_CLAIM)} and submit again.` : "";
+            throw new Error(`Run ${holder} is pushing these reviewed cases to Xray now, so they aren't pushed twice: wait for it, then submit again.${file}`);
+          }
+          try {
+            // Resumed after a crash between the push and the saved answer: this run already pushed them.
+            if ((await deps.runs.readArtifact(ctx.runId, XRAY_PUSH_ARTIFACT).catch(() => undefined))?.data.counts.failed === 0) return;
+            const { done } = await pushesOf(casesRun, ctx.runId);
+            if (done) throw new Error(`These reviewed cases were already pushed to Xray, by run ${done}, so they aren't pushed again: submit approve: false to end this run`);
+            await pushCases(ctx, casesRun);
+          } finally {
+            await deps.runs.release?.(casesRun, PUSH_CLAIM, ctx.runId);
+          }
         },
       },
     ],
   };
+
+  async function pushCases(ctx: Ctx, casesRun: string): Promise<void> {
+    const art = await reviewedOf(ctx);
+    const outcome = await deps.data.pushToXray(ctx.runId, await requirementsRunOf(ctx), art.data.cases, true);
+    if (outcome.status !== "done") return;
+    const { project, jobs, results } = outcome.result;
+    const count = (action: string) => results.filter((r) => r.action === action).length;
+    const data: XrayPush = {
+      testCases: { run: casesRun, sourceHash: art.sourceHash },
+      project,
+      jobs,
+      results,
+      counts: { created: count("created"), updated: count("updated"), failed: count("failed") },
+    };
+    await deps.runs.writeArtifact(ctx.runId, XRAY_PUSH_ARTIFACT, data, {
+      inputs: [{ kind: "artifact", ref: `${casesRun}/test-cases`, hash: art.sourceHash }],
+      templateVersion: TEST_CASES_TEMPLATE_VERSION,
+    });
+  }
 
   async function inputsOf(ctx: Ctx, art: Artifact<RequirementsArtifact>): Promise<InputRef[]> {
     return [{ kind: "artifact", ref: `${await requirementsRunOf(ctx)}/requirements`, hash: art.sourceHash }];
