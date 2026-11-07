@@ -34,6 +34,13 @@ Found in the PR #75 review (7 Nov 2026). In API tests, a request context may onl
 - A context reached inside the repo's own fixture or helper (`sfApi.raw.get(url)`) is the person's code and isn't followed.
 - Fixtures other than `request` may be the repo's API fixture or plain test data, so their non-send members are read as usual (`testData.name`). Only a send on them is path-checked.
 
+## Xray Test Execution limits
+
+From the PR #76 review (7 Nov 2026), not yet checked against a live Xray:
+- The newest Test Execution is taken to be the first that `getTestExecutions` returns for a JQL ending `ORDER BY created DESC`. If Xray doesn't keep that order, the comparison may be with an older execution.
+- The start and finish dates go in the Xray JSON `info` part. In a multipart import the issue fields come from the `info` part, and some instances keep the dates in custom fields.
+- A retry within seconds of a stop may not find the run's own label yet, because Jira's search index lags, and could record the run twice.
+
 ## Done or moved into a slice
 
 ### Healing existing scripts
