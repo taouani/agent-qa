@@ -352,6 +352,7 @@ describe("test-cases workflow", () => {
 
     async function reviewed() {
       const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
+      if (first.stepId === "reuse") await xrayEngine.submit(first.runId, "reuse", { reuse: false });
       await xrayEngine.submit(first.runId, "analyze", good);
       await xrayEngine.submit(first.runId, "cases", cases);
       const after = await xrayEngine.submit(first.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-003", decision: "dropped" }] });
@@ -489,7 +490,7 @@ describe("test-cases workflow", () => {
       expect(later.context).toContain(`These are the cases reviewed in run ${earlier}`);
       expect(later.context).toContain("not pushed then");
       expect(later.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
-      expect(await xrayEngine.approval(later.runId, "push")).toMatchObject({ question: "Push 3 reviewed test case(s) to Xray project QA? 2 new, 1 updated." });
+      expect((await xrayEngine.approval(later.runId, "push"))!.question).toMatch(new RegExp(`^These are the cases reviewed in run ${earlier} \\(\\d{4}-\\d\\d-\\d\\d\\), not pushed then\\. Push 3 reviewed test case\\(s\\) to Xray project QA\\? 2 new, 1 updated\\.$`));
       const done = await xrayEngine.submit(later.runId, "push", { approve: true });
       expect(done.next.kind).toBe("done");
       // Real values come back from the earlier run's vault; Jira isn't read and no case is written again.
@@ -502,18 +503,28 @@ describe("test-cases workflow", () => {
       // The earlier run stays as it finished.
       expect(await readFile(join(dir, "runs", earlier, "run.json"), "utf8")).toBe(before);
       expect(await runs.readArtifact(earlier, XRAY_PUSH_ARTIFACT)).toBeUndefined();
-      // Once pushed, another push of the same cases says it updates the same tests.
-      const again = await xrayEngine.start("test-cases", { casesRun: earlier });
-      expect(again.context).toContain("already pushed once");
+      // Once pushed, the same reviewed cases are never pushed again.
+      await expect(xrayEngine.start("test-cases", { casesRun: earlier })).rejects.toThrow(`already pushed to Xray, by run ${later.runId}`);
       const third = await xrayEngine.start("test-cases", { casesRun: later.runId }).catch((e: Error) => e);
       expect(String(third)).toContain("has no reviewed test cases");
     });
 
-    it("says an earlier run already pushed its cases", async () => {
-      const { runId: earlier } = await reviewed();
-      await xrayEngine.submit(earlier, "push", { approve: true });
-      const later = await xrayEngine.start("test-cases", { casesRun: earlier });
-      expect(later.context).toContain("already pushed once: a yes pushes them again, updating the same tests");
+    it("pushes the same reviewed cases once: not from a run still open at its push, not twice", async () => {
+      const { runId: open } = await reviewed();
+      await expect(xrayEngine.start("test-cases", { casesRun: open })).rejects.toThrow(`isn't finished (running): if it waits at its push, resume it instead (--resume ${open})`);
+      await xrayEngine.submit(open, "push", { approve: true });
+      await expect(xrayEngine.start("test-cases", { casesRun: open })).rejects.toThrow(`already pushed to Xray, by run ${open}`);
+
+      const { runId: declined } = await reviewed();
+      await xrayEngine.submit(declined, "push", { approve: false });
+      const a = await xrayEngine.start("test-cases", { casesRun: declined });
+      const b = await xrayEngine.start("test-cases", { casesRun: declined });
+      expect(sent).toHaveLength(1);
+      await xrayEngine.submit(a.runId, "push", { approve: true });
+      expect(sent).toHaveLength(2);
+      await expect(xrayEngine.submit(b.runId, "push", { approve: true })).rejects.toThrow(`already pushed to Xray, by run ${a.runId}`);
+      expect(sent).toHaveLength(2);
+      expect((await xrayEngine.submit(b.runId, "push", { approve: false })).next.kind).toBe("done");
     });
 
     it("refuses casesRun without reviewed cases", async () => {

@@ -34,7 +34,9 @@ In the CLI, the push takes a terminal answer or `--accept push`. `--yes` never p
 
 ### Pushing later, after a no
 
-A run whose push you declined is finished, and stays as it finished. To push its reviewed cases later, start a new `test-cases` run with `{"casesRun": "<run id>"}` (CLI: `agent-qa run test-cases --push-from <run id> --accept push`). It reads no Jira and asks the model for nothing: it goes straight to the push of that run's `test-cases@1`, with that run's vault for the real values, and asks for your yes the same way. The new run's `xray-push@1` names the earlier run as its source. If these cases were pushed already (by that run or a later one), the question says so: a yes updates the same tests. The earlier run's vault must still hold the values (30 days).
+A run whose push you declined is finished, and stays as it finished. To push its reviewed cases later, start a new `test-cases` run with `{"casesRun": "<run id>"}` (CLI: `agent-qa run test-cases --push-from <run id> --accept push`). It reads no Jira and asks the model for nothing: it goes straight to the push of that run's `test-cases@1` and asks for your yes the same way, naming the run the cases come from. The real values come from the vault of the run that analyzed the requirements (the same run, unless it started from `requirementsRun` or reused an analysis), which must still hold them (30 days). The new run's `xray-push@1` names the earlier run as its source.
+
+Reviewed cases are pushed once. `casesRun` is refused for a run that isn't finished (one waiting at its push: resume it instead) and for cases some run already pushed. If two such runs wait at the push, the second yes is refused.
 
 ## Behind a corporate proxy
 

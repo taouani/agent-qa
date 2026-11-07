@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Artifact, InputRef, OutputError, RunStore, StepContext, WorkflowDefinition } from "../../core/index.js";
+import { EngineError, type Artifact, type InputRef, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
 import type { ExistingTest, RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
 import { analyzeStep, inputFingerprint, jiraInputOf, relatedFeaturesOf, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
@@ -26,19 +26,22 @@ import {
  *    last batch writes `test-cases-draft@1` for the reviewer.
  * 3. Review (confirm, decision 2): the user keeps, edits or drops cases; the
  *    core writes `test-cases@1` with each case's review and the kept rate.
- *
- * With `casesRun` (Tarek, 7 Nov 2026), a new run goes straight to the push of
- * an earlier run's reviewed test-cases@1, with that run's vault: the way to
- * push cases whose push was declined. The earlier run stays as it finished.
  * 4. Push (confirm, S1-10; only with an `xray` section the policy doesn't
  *    deny): the user says whether to push the reviewed cases to Xray. The
  *    data layer writes through `Policy.guard`; the core writes `xray-push@1`.
+ *
+ * With `casesRun` (Tarek, 7 Nov 2026), a new run goes straight to the push of
+ * an earlier, finished run's reviewed test-cases@1 that no run pushed, with
+ * the vault of that run's requirements run: the way to push cases whose push
+ * was declined. The earlier run stays as it finished. Every push first checks
+ * that no other run pushed the same reviewed cases, so they go out once.
  */
 
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const TOKEN = /<[A-Z][A-Z0-9_]*_\d+>/g;
 const SEALED = /^<INPUT_\d+>$/;
+const TOKEN_TEST = /<[A-Z][A-Z0-9_]*_\d+>/;
 /** Issues per cases batch: enough context per answer, small enough for one model answer. */
 export const ISSUES_PER_BATCH = 4;
 const MAX_CASES_PER_ISSUE = 30;
@@ -197,7 +200,7 @@ function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: M
   return numberOf(c.id) <= highest ? [{ path: `${at}.id`, message: `numbers up to ${highest} belong to earlier tests (see existingTests): number new cases from ${next}` }] : [];
 }
 
-export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData; runs: RequirementsDeps["runs"] & Partial<Pick<RunStore, "list">> };
+export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData; runs: RequirementsDeps["runs"] & Partial<Pick<RunStore, "list" | "manifest">> };
 
 /** Runs searched for an earlier analysis of the same input: the newest this many. */
 const MAX_REUSE_RUNS = 200;
@@ -344,29 +347,46 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     if (!art) throw new Error(`Run ${casesRunOf(ctx)} has no test-cases@1`);
     return art;
   }
-  /** Whether a run (that one, or a later casesRun run) already pushed these reviewed cases: among the newest runs. */
-  const pushedBefore = async (casesRun: string): Promise<boolean> => {
+  /** The run, other than `self`, that already pushed these reviewed cases (that run itself, or a casesRun run), among the newest runs. */
+  const pushedBy = async (casesRun: string, self?: string): Promise<string | undefined> => {
     const ids = deps.runs.list ? (await deps.runs.list()).slice(-MAX_REUSE_RUNS) : [];
     for (const id of new Set([casesRun, ...ids])) {
+      if (id === self) continue;
       const push = await deps.runs.readArtifact(id, XRAY_PUSH_ARTIFACT).catch(() => undefined);
-      if (push?.data.testCases.run === casesRun) return true;
+      if (push?.data.testCases.run === casesRun) return id;
     }
-    return false;
+    return undefined;
   };
+  const fromLine = async (ctx: Ctx) =>
+    ctx.inputs.casesRun === undefined ? "" : `These are the cases reviewed in run ${ctx.inputs.casesRun} (${(await reviewedOf(ctx)).createdAt.slice(0, 10)}), not pushed then. `;
   const planOf = async (ctx: Ctx) => deps.data.xrayPlan((await reviewedOf(ctx)).data.cases);
 
   return {
     id: "test-cases",
     description:
-      "Write test cases (TC-{KEY}-{NNN}, P1-P4, steps, criteria covered) for a Jira issue, a JQL filter or an earlier requirements run, then let the user review them into test-cases@1.",
+      "Write test cases (TC-{KEY}-{NNN}, P1-P4, steps, criteria covered) for a Jira issue, a JQL filter or an earlier requirements run, then let the user review them into test-cases@1 and push them to Xray. With casesRun, push the reviewed cases of an earlier run whose push was declined.",
     inputSchema: testCasesInputSchema,
     prepareInputs: async (runId, inputs) => {
       if (inputs.casesRun === undefined) return sealJiraInputs(deps, runId, inputs);
-      // Checked before the run exists, so a wrong id leaves no run behind.
+      // Checked before the run exists, so a wrong id leaves no run behind; a wrong id is bad input (CLI exit 2).
+      const refuse = (message: string): never => {
+        throw new EngineError("INVALID_INPUTS", message);
+      };
       const art = await deps.runs.readArtifact(inputs.casesRun, TEST_CASES_ARTIFACT).catch(() => undefined);
-      if (!art) throw new Error(`Run ${inputs.casesRun} has no reviewed test cases (test-cases@1): give the id of a test-cases run whose review was approved`);
-      if (art.data.cases.length === 0) throw new Error(`Run ${inputs.casesRun} kept no test cases in its review: there is nothing to push`);
-      if (!(await deps.data.xrayEnabled())) throw new Error("casesRun pushes reviewed cases to Xray, but agent-qa.yaml has no xray section (or the policy denies Xray)");
+      if (!art) return refuse(`Run ${inputs.casesRun} has no reviewed test cases (test-cases@1): give the id of a test-cases run whose review was approved`);
+      if (art.data.cases.length === 0) return refuse(`Run ${inputs.casesRun} kept no test cases in its review: there is nothing to push`);
+      if (!(await deps.data.xrayEnabled())) return refuse("casesRun pushes reviewed cases to Xray, but agent-qa.yaml has no xray section (or the policy denies Xray)");
+      // Only a finished run: one still open at its push would push the same cases itself.
+      const manifest = deps.runs.manifest ? await deps.runs.manifest(inputs.casesRun) : undefined;
+      if (manifest?.status !== "done") {
+        return refuse(`Run ${inputs.casesRun} isn't finished${manifest ? ` (${manifest.status})` : ""}: if it waits at its push, resume it instead (--resume ${inputs.casesRun})`);
+      }
+      const by = await pushedBy(inputs.casesRun);
+      if (by) return refuse(`The reviewed cases of run ${inputs.casesRun} were already pushed to Xray, by run ${by}: see its xray-push.md`);
+      const tokensRun = art.data.requirements.run;
+      if (TOKEN_TEST.test(JSON.stringify(art.data.cases)) && !(await deps.data.hasVault(tokensRun))) {
+        return refuse(`The token vault of run ${tokensRun} has expired or was deleted, so the real values of these cases can't be restored: write the cases again from the key`);
+      }
       return inputs;
     },
     steps: [
@@ -586,7 +606,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         approval: {
           question: async (ctx) => {
             const plan = await planOf(ctx);
-            return `Push ${plan.create + plan.update} reviewed test case(s) to Xray project ${plan.project}? ${plan.create} new, ${plan.update} updated.`;
+            return `${await fromLine(ctx)}Push ${plan.create + plan.update} reviewed test case(s) to Xray project ${plan.project}? ${plan.create} new, ${plan.update} updated.`;
           },
         },
         // No test-cases@1 when the user stopped the review; nothing to push when they dropped every case.
@@ -605,16 +625,14 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             const before = update && was.has(c.id) ? ` (was: ${was.get(c.id)})` : "";
             return `${c.id} | ${c.priority} | ${update ? `updates ${update}${before}` : "new"} | ${c.title}`;
           });
-          const from =
-            ctx.inputs.casesRun === undefined
-              ? []
-              : (await pushedBefore(ctx.inputs.casesRun))
-                ? [`These are the cases reviewed in run ${ctx.inputs.casesRun} (${(await reviewedOf(ctx)).createdAt.slice(0, 10)}), already pushed once: a yes pushes them again, updating the same tests.`]
-                : [`These are the cases reviewed in run ${ctx.inputs.casesRun} (${(await reviewedOf(ctx)).createdAt.slice(0, 10)}), not pushed then.`];
-          return [...from, `Push to Xray project ${plan.project}: ${plan.create} new, ${plan.update} updated.`, ...lines].join("\n");
+          const from = await fromLine(ctx);
+          return [...(from ? [from.trim()] : []), `Push to Xray project ${plan.project}: ${plan.create} new, ${plan.update} updated.`, ...lines].join("\n");
         },
         onAccept: async (ctx, push: Push) => {
           if (!push.approve) return;
+          // Another run may have pushed the same reviewed cases while this question waited.
+          const by = await pushedBy(casesRunOf(ctx), ctx.runId);
+          if (by) throw new Error(`These reviewed cases were already pushed to Xray, by run ${by}, so they aren't pushed again: submit approve: false to end this run`);
           const art = await reviewedOf(ctx);
           const outcome = await deps.data.pushToXray(ctx.runId, await requirementsRunOf(ctx), art.data.cases, true);
           if (outcome.status !== "done") return;
