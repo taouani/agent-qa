@@ -49,13 +49,15 @@ export const testRowSchema = z
     /** When it started (ISO) and how long it ran: the Xray test run's dates. */
     startedAt: z.string().optional(),
     durationMs: z.number().optional(),
+    /** Playwright's screenshot of the test, as a handle (masked output folder # hash): sent to Xray only with xray.attachScreenshots. */
+    screenshot: z.string().optional(),
     failure: z
       .object({
         message: z.string(),
         snippet: z.string().optional(),
         at: z.object({ file: z.string(), line: z.number() }).strict().optional(),
         snapshot: z.string().optional(),
-        /** Playwright's failure screenshot, from the framework folder: sent to Xray only with xray.attachScreenshots. */
+        /** Runs before 2.0.0-alpha.2 kept a failure's screenshot here; read, no longer written. */
         screenshot: z.string().optional(),
       })
       .strict()

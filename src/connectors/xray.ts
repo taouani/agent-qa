@@ -18,6 +18,9 @@ import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } fr
 /** A date as Xray JSON's examples write it: seconds and an offset, no milliseconds (2026-11-07T20:00:13+00:00). */
 export const xrayDate = (d: Date): string => `${d.toISOString().slice(0, 19)}+00:00`;
 
+/** A Jira date field's value: the UTC day, or Jira's own date-time form (2026-11-07T20:00:13.000+0000). */
+export const jiraDate = (d: Date, type: "date" | "datetime"): string => (type === "date" ? d.toISOString().slice(0, 10) : `${d.toISOString().slice(0, 23)}+0000`);
+
 export const XRAY_CLOUD_URL = "https://xray.cloud.getxray.app";
 const AUTH_PATH = "/api/v2/authenticate";
 const BULK_PATH = "/api/v2/import/test/bulk";
@@ -37,7 +40,7 @@ export interface XrayExecutionResult {
   comment?: string;
   start?: Date;
   finish?: Date;
-  /** Files attached to the test run, such as a failure screenshot. */
+  /** Files attached to the test run, such as its screenshot. */
   evidence?: XrayEvidence[];
 }
 
@@ -55,6 +58,8 @@ export interface XrayExecutionInput {
   labels: string[];
   startedAt: Date;
   finishedAt: Date;
+  /** More Jira fields of the Test Execution, by custom field id: its start and end dates. */
+  fields?: Record<string, string>;
   tests: XrayExecutionResult[];
 }
 
@@ -223,7 +228,9 @@ export class XrayClient {
         ...(t.evidence?.length ? { evidence: t.evidence.map((e) => ({ data: e.data, filename: e.filename, contentType: e.contentType })) } : {}),
       })),
     };
-    const info = { fields: { project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
+    for (const id of Object.keys(input.fields ?? {})) if (!/^customfield_\d+$/.test(id)) throw new Error("Not a Jira custom field id");
+    // Xray ignores the results' own dates in this import: the execution's are Jira fields.
+    const info = { fields: { ...input.fields, project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
     const boundary = `agent-qa-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
     const part = (name: string, value: unknown) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${name}.json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(value)}\r\n`;
     const body = `${part("results", results)}${part("info", info)}--${boundary}--\r\n`;

@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath, sep } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -374,7 +374,9 @@ export interface MaskedTestResult {
   failedRuns: number;
   startedAt?: string | undefined;
   durationMs?: number | undefined;
-  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined; screenshot?: string | undefined } | undefined;
+  /** Playwright's screenshot of the test, as a handle: "<masked output folder>#<hash of its path>". */
+  screenshot?: string | undefined;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined } | undefined;
 }
 
 export type TestRunOutcome =
@@ -605,7 +607,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     // Only one recorded in this project counts (the config may have changed since others).
     const last = previous.find((p) => p.project === xray.projectKey);
     const { results: withBefore, changes } = executionChanges(now, last, skippedKeys);
-    const screenshots = xray.attachScreenshots ? withBefore.filter((r) => r.status === "FAILED" && r.screenshot).length : 0;
+    const screenshots = xray.attachScreenshots ? withBefore.filter((r) => r.screenshot).length : 0;
     return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes, ...(screenshots ? { screenshots } : {}) };
   }
 
@@ -618,7 +620,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const failed = plan.results.filter((r) => r.status === "FAILED").length;
     // Screenshots only when agent-qa.yaml asks for them: they can't be masked.
     // Only what the person was told about: the plan they saw counted them, and the setting is still on.
-    const shots = config.xray?.attachScreenshots && plan.screenshots ? await this.failureScreenshots(runId, plan) : new Map<string, XrayEvidence>();
+    const shots = config.xray?.attachScreenshots && plan.screenshots ? await this.caseScreenshots(runId, plan) : new Map<string, XrayEvidence>();
+    const when = config.xray?.executionDates;
+    const dates = when?.start || when?.end
+      ? { ...(when.start ? { [when.start.field]: jiraDate(info.startedAt, when.start.type) } : {}), ...(when.end ? { [when.end.field]: jiraDate(info.finishedAt, when.end.type) } : {}) }
+      : undefined;
     const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
       client.importExecution!(
@@ -629,6 +635,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           labels: ["agent-qa", plan.label, runLabel],
           startedAt: info.startedAt,
           finishedAt: info.finishedAt,
+          ...(dates ? { fields: dates } : {}),
           tests: plan.results.map((r) => ({
             testKey: r.xrayKey,
             status: r.status,
@@ -645,13 +652,13 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   /**
-   * The failed cases' screenshots, as Xray evidence by TC id. Each handle
+   * The cases' screenshots, passed or failed, as Xray evidence by TC id. Each handle
    * names an output folder inside the reviewed profile's folder (its tokens
    * restored with the run's vault) and the hash of the image's path in it:
    * the folder is searched for that PNG or JPEG, at most 5 MB each and 10 MB
    * in all. One that is gone or too big is left out.
    */
-  private async failureScreenshots(runId: string, plan: XrayExecutionPlan): Promise<Map<string, XrayEvidence>> {
+  private async caseScreenshots(runId: string, plan: XrayExecutionPlan): Promise<Map<string, XrayEvidence>> {
     const out = new Map<string, XrayEvidence>();
     const saved = await this.savedProfile();
     if (!saved) return out;
@@ -661,7 +668,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     let total = 0;
     const found = new Map<string, Map<string, string>>();
     for (const r of plan.results) {
-      if (r.status !== "FAILED" || !r.screenshot) continue;
+      if (!r.screenshot) continue;
       const cut = r.screenshot.lastIndexOf("#");
       const outDir = restore(r.screenshot.slice(0, cut));
       if (cut < 0 || !isPlainRelativePath(outDir)) continue;
@@ -921,6 +928,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         runs: x.runs,
         failedRuns: x.failedRuns,
         ...(x.startedAt !== undefined ? { startedAt: x.startedAt, durationMs: x.durationMs ?? 0 } : {}),
+        ...(screenshotOf(x.screenshot) ? { screenshot: screenshotOf(x.screenshot)! } : {}),
         ...(x.failure
           ? {
               failure: {
@@ -928,7 +936,6 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
                 snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
                 at: x.failure.at,
                 snapshot,
-                ...(screenshotOf(x.failure.screenshot) ? { screenshot: screenshotOf(x.failure.screenshot)! } : {}),
               },
             }
           : {}),
