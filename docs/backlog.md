@@ -41,11 +41,13 @@ From the PR #76 review (7 Nov 2026):
 - The rerun comparison comes from the local run folder (Tarek's choice, 7 Nov 2026). In CI it needs the folder kept between jobs; a shared Xray read-back could be added later if teams ask for it.
 - An `uncertain` recording (import failed or cut off) is never sent again and never used as a comparison; the person checks Xray by the `agent-qa:run:` label. No automatic check yet.
 - The screenshot handle is an unsalted hash of the file's path in the output folder.
+- One screenshot per case, even when the case ran in several projects. The count in the question can be higher than what is sent (a file gone, or over the 10 MB limit), never lower.
 
 ## Pushing reviewed cases later (`--push-from`)
 
 From the PR #82 review (7 Nov 2026):
-- Two runs pushing the same cases from two terminals at the same moment aren't stopped; the check runs inside one process.
+- Two runs pushing the same cases from two terminals at the same moment aren't stopped: the check and the push aren't atomic across processes.
+- The "already pushed" check looks at the newest 200 runs only.
 - A push that partly failed can't be retried with `--push-from`, because the cases count as pushed.
 - The vault check refuses an expired vault even when `restoreOnWrite` is off and the vault isn't needed.
 
@@ -54,6 +56,10 @@ From the PR #82 review (7 Nov 2026):
 From the PR #83 review (7 Nov 2026):
 - A test that hangs until the 15-minute `--global-timeout` shows as skipped, not failed.
 - A smaller `globalTimeout` in the repo's Playwright config is replaced by Agent-QA's.
+
+## Long runs inside an MCP call
+
+From the PR #55 review (5 Nov 2026): a long test run inside one MCP `workflow_submit` can hit the host's own timeout. Agent-QA sends progress only when the host gives a progress token.
 
 ## Done or moved into a slice
 
