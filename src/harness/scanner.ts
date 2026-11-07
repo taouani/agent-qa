@@ -65,10 +65,15 @@ export function variants(text: string): string[] {
     .replace(/\\u([0-9a-f]{4})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
   if (unescaped !== text) out.push(unescaped);
   for (const run of text.match(/[A-Za-z0-9+/_-]{16,}={0,2}/g) ?? []) {
-    const decoded = Buffer.from(run.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-    // Keep it only if it decodes to mostly readable text.
-    const readable = decoded.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, "");
-    if (decoded.length >= 8 && readable.length / decoded.length > 0.9) out.push(decoded);
+    // Base64 can start mid-run (a prefix glued on, such as "token=" without its "="): each of the four alignments is tried.
+    for (let skip = 0; skip < 4; skip++) {
+      const decoded = Buffer.from(run.slice(skip).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+      // Keep it if it decodes to mostly readable text; else its readable stretches of 8 or more
+      // (characters glued on after the base64 decode to a garbage tail).
+      const readable = decoded.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, "");
+      if (decoded.length >= 8 && readable.length / decoded.length > 0.9) out.push(decoded);
+      else for (const stretch of decoded.match(/[\p{L}\p{N}\p{P}\p{Zs}]{8,}/gu) ?? []) out.push(stretch);
+    }
   }
   return out;
 }

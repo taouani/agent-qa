@@ -24,7 +24,7 @@ const HEX64 = /^[0-9a-f]{64}$/;
 
 function checkId(runId: string): string {
   if (!SAFE_ID.test(runId) || runId.includes("..") || runId.endsWith(".") || WINDOWS_RESERVED.test(runId)) {
-    throw new RunStoreError(`Unsafe run id: ${runId}`);
+    throw new RunStoreError(`Unsafe run id: ${runId}`, [], "UNSAFE_ID");
   }
   return runId;
 }
@@ -38,10 +38,18 @@ function checkArtifact(spec: { name: string; schema: string }): void {
   }
 }
 
+/**
+ * NOT_FOUND: no such run (or its run.json is gone); EXISTS: the run folder is
+ * taken; UNSAFE_ID: a run id that could leave the runs folder; INVALID: a file
+ * that doesn't match its schema, or names another run or workflow.
+ */
+export type RunStoreErrorCode = "NOT_FOUND" | "EXISTS" | "UNSAFE_ID" | "INVALID";
+
 export class RunStoreError extends Error {
   constructor(
     message: string,
     readonly errors: Array<{ path: string; message: string }> = [],
+    readonly code: RunStoreErrorCode = "INVALID",
   ) {
     super(message);
     this.name = "RunStoreError";
@@ -265,7 +273,7 @@ export class RunStore {
         await mkdir(this.dir(id));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST" && !init.id && attempt < 5) continue;
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new RunStoreError(`Run folder already exists: ${id}`);
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new RunStoreError(`Run folder already exists: ${id}`, [], "EXISTS");
         throw error;
       }
       const manifest: RunManifest = {
@@ -323,7 +331,7 @@ export class RunStore {
   ): Promise<RunManifest> {
     return this.locked(runId, async () => {
       const current = await this.manifest(runId);
-      if (!current) throw new RunStoreError(`Run not found: ${runId}`);
+      if (!current) throw new RunStoreError(`Run not found: ${runId}`, [], "NOT_FOUND");
       const next: RunManifest = { ...current, ...patch };
       if (patch.status && TERMINAL.has(patch.status) && !current.endedAt) next.endedAt = this.now().toISOString();
       if (patch.status && !TERMINAL.has(patch.status)) delete next.endedAt;
@@ -353,7 +361,7 @@ export class RunStore {
 
     return this.locked(runId, async () => {
       const manifest = await this.manifest(runId);
-      if (!manifest) throw new RunStoreError(`Run not found: ${runId}`);
+      if (!manifest) throw new RunStoreError(`Run not found: ${runId}`, [], "NOT_FOUND");
       const artifact: Artifact<T> = {
         schema: spec.schema,
         runId,
@@ -392,7 +400,7 @@ export class RunStore {
     });
     if (valid.length === 0) return;
     await this.locked(runId, async () => {
-      if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`);
+      if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`, [], "NOT_FOUND");
       await mkdir(join(this.dir(runId), "steps"), { recursive: true });
       const file = join(this.dir(runId), "steps", "usage.jsonl");
       // After a torn write (no final newline), start on a new line so this entry stays readable.
@@ -441,7 +449,7 @@ export class RunStore {
 
   /** Append one event to the run's `log.jsonl`. Events hold masked text only. */
   async log(runId: string, event: Record<string, unknown>): Promise<void> {
-    if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`);
+    if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`, [], "NOT_FOUND");
     await appendFile(join(this.dir(runId), "log.jsonl"), JSON.stringify({ ...event, at: this.now().toISOString() }) + "\n", "utf8");
   }
 
@@ -473,7 +481,7 @@ export class RunStore {
     };
     const syncStatus = async (state: RunState) => {
       const manifest = await this.manifest(state.runId);
-      if (!manifest) throw new RunStoreError(`run.json is missing for ${state.runId}`);
+      if (!manifest) throw new RunStoreError(`run.json is missing for ${state.runId}`, [], "NOT_FOUND");
       if (manifest.workflow !== state.workflowId) {
         throw new RunStoreError(`Run ${state.runId} belongs to workflow ${manifest.workflow}, not ${state.workflowId}`);
       }

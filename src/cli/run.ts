@@ -171,7 +171,11 @@ export async function runCommand(opts: RunOptions): Promise<number> {
     try {
       workflowId = opts.resume ? (await engine.status(opts.resume)).workflowId : opts.workflow!;
     } catch (error) {
-      if (error instanceof RunStoreError) throw new SetupError(`can't resume ${opts.resume}: ${error.message}`);
+      if (error instanceof RunStoreError) {
+        const why = error.code === "NOT_FOUND" ? `no run ${opts.resume} in this project's run folder (check the id, or AGENT_QA_RUNS_DIR)` : error.message;
+        throw new SetupError(`can't resume ${opts.resume}: ${why}`);
+      }
+      if (error instanceof EngineError && error.code === "RUN_NOT_FOUND") throw new SetupError(`can't resume ${opts.resume}: no run ${opts.resume} in this project's run folder, or it has no saved steps (check the id, or AGENT_QA_RUNS_DIR)`);
       throw error;
     }
     if (!opts.driver && !config.models && engine.usesModel(workflowId)) throw new SetupError("agent-qa.yaml has no models section: set models.default, e.g. anthropic:<model-id>");

@@ -14,4 +14,4 @@ export {
 } from "./store.js";
 export { buildCost, COST_ARTIFACT, costSchema, recordUsage, renderCost } from "./cost.js";
 export type { Cost } from "./cost.js";
-export type { Artifact, ArtifactSpec, InputRef, RunInit, RunManifest, RunManifestStatus, RunStoreOptions, UsageEntry } from "./store.js";
+export type { Artifact, ArtifactSpec, InputRef, RunInit, RunManifest, RunManifestStatus, RunStoreErrorCode, RunStoreOptions, UsageEntry } from "./store.js";

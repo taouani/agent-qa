@@ -86,6 +86,7 @@ describe("RunStore", () => {
     const second = await store.create({ workflow: "w", context: "c", host: "cli", driver: "api" });
     expect(second.id).not.toBe(first.id);
     await expect(store.create({ workflow: "w", context: "c", host: "cli", driver: "api", id: first.id })).rejects.toThrow(/already exists/);
+    await expect(store.create({ workflow: "w", context: "c", host: "cli", driver: "api", id: first.id })).rejects.toMatchObject({ code: "EXISTS" });
   });
 
   it("writes a valid artifact with its markdown view and records it in run.json", async () => {
@@ -159,6 +160,7 @@ describe("RunStore", () => {
     expect(done).toMatchObject({ model: "openai:x", parentRuns: ["2026-11-19-c-aaaa"], endedAt: "2026-11-20T23:59:00.000Z" });
     expect(done.artifacts).toHaveLength(1);
     await expect(store.update("2026-01-01-none-aaaa", { status: "done" })).rejects.toThrow(/Run not found/);
+    await expect(store.update("2026-01-01-none-aaaa", { status: "done" })).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("appends log events and rejects unsafe ids", async () => {
@@ -175,6 +177,7 @@ describe("RunStore", () => {
     await expect(store.log("2026-01-01-none-aaaa", { event: "x" })).rejects.toThrow(/Run not found/);
     expect(await store.list()).toEqual([run.id]);
     expect(() => store.dir("../x")).toThrow(/Unsafe run id/);
+    expect(() => store.dir("../x")).toThrow(expect.objectContaining({ code: "UNSAFE_ID" }));
     for (const id of ["CON", "nul.txt", "abc.", "x".repeat(81)]) expect(() => store.dir(id)).toThrow(/Unsafe run id/);
     await expect(store.manifest("a/../../b")).rejects.toThrow(/Unsafe run id/);
   });
