@@ -81,7 +81,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const d = data();
     expect(await d.testRunReadiness("run-1")).toEqual({ ready: true });
     const r = await d.runGeneratedTests("run-1", "run-1", ".", { files: ["tests/a.spec.ts"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", `--global-timeout=${TEST_RUN_TIMEOUT_MS}`, "--reporter=json", "--retries=0", "--workers=1", fileFilter("tests/a.spec.ts", false, basename(dir))]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", fileFilter("tests/a.spec.ts", false, basename(dir)), `--global-timeout=${TEST_RUN_TIMEOUT_MS}`]]);
     // The report went to a temporary file, removed after.
     expect(ran[0]!.report).toBeDefined();
     expect(existsSync(ran[0]!.report!)).toBe(false);
@@ -106,7 +106,7 @@ describe("DataAccess: running and fixing generated tests", () => {
     const write = reply;
     reply = async (argv, file) => (argv.includes("bddgen") ? { exitCode: 0 } : write(argv, file));
     await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);
-    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", `--global-timeout=${TEST_RUN_TIMEOUT_MS}`, "--reporter=json", "--retries=0", "--workers=1", fileFilter("tests/features/ABC-1.feature", true, "")]]);
+    expect(ran.map((x) => x.argv)).toEqual([["npx", "bddgen"], ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", fileFilter("tests/features/ABC-1.feature", true, ""), `--global-timeout=${TEST_RUN_TIMEOUT_MS}`]]);
     ran.length = 0;
     reply = async () => ({ exitCode: 1, stderr: `Missing step definitions: When I pay jane.doe@example.com in ${dir}/tests/features/ABC-1.feature` });
     const r = await d.runGeneratedTests("run-2", "run-2", ".", { files: ["tests/features/ABC-1.feature"] }, true);

@@ -41,7 +41,9 @@ export const MAX_OUTPUT_BYTES = 256 * 1024;
  * (Tarek's debug run, 7 Nov 2026: five tests each hung until their 3-minute
  * timeout, and the run was killed at 15 minutes with nothing to read).
  */
-export const TEST_RUN_TIMEOUT_MS = DEFAULT_TIMEOUT_MS - 2 * 60_000;
+export const TEST_RUN_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+/** The kill limit of such a run: room after Playwright's limit for teardown (fixtures, globalTeardown, a logout) and the report. */
+export const TEST_RUN_KILL_MS = TEST_RUN_TIMEOUT_MS + 5 * 60_000;
 
 /** Flags a workflow may add, by prefix: the ones the run-and-fix loop needs. Values are checked like paths, and reporters by name. */
 export const ALLOWED_FLAGS = ["--reporter=", "--retries=", "--workers=", "--grep=", "--grep-invert=", "--project=", "--repeat-each=", "--max-failures=", "--timeout=", "--global-timeout=", "--tags="];
