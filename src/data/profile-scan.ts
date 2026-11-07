@@ -73,6 +73,13 @@ export interface RepoScan {
 
 const posix = (path: string) => path.split(sep).join("/");
 
+/** Every file under `root` (posix paths from it), without following links, skipping SKIP_DIRS, at most `limit`. */
+export function listRepoFiles(root: string, limit = MAX_FILES): string[] {
+  const files: string[] = [];
+  walk(root, root, files, limit);
+  return files;
+}
+
 /** Every file under `dir`, without following links, skipping SKIP_DIRS. */
 function walk(root: string, dir: string, out: string[], limit: number): boolean {
   let entries: string[];

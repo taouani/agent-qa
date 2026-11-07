@@ -241,7 +241,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         summary: r.summary,
         ...(parent ? { parent: `${parent.key}: ${parent.summary}` } : {}),
         description: clip(r.description, MAX_DESCRIPTION),
-        acceptanceCriteria: r.acceptanceCriteria.map((ac) => `${ac.id}: ${ac.text}`),
+        // A criterion borrowed from a repo feature says so: the case checks a guess, not the story.
+        acceptanceCriteria: r.acceptanceCriteria.map((ac) => `${ac.id}: ${ac.text}${ac.from ? ` (inferred from the repo's ${ac.from}, not written in the issue)` : ""}`),
         ...(r.openQuestions.length ? { openQuestions: r.openQuestions } : {}),
         ...(Object.keys(r.extraFields).length ? { extraFields: r.extraFields } : {}),
         // Criterion numbers of an earlier run are left out: they can mean other criteria now.

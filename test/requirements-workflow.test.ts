@@ -226,3 +226,58 @@ describe("projectRoot", () => {
     expect(projectRoot("/cwd", {})).toBe("/cwd");
   });
 });
+
+describe("requirements workflow: related features of the repo (live check, 7 Nov 2026)", () => {
+  const write = async (path: string, text: string) => {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dir, path, ".."), { recursive: true });
+    await writeFile(join(dir, path), text);
+  };
+
+  it("offers related feature files, masked, only for issues with no criteria, and labels criteria taken from them", async () => {
+    await write("tests/features/escalation-email.feature", "Feature: Email the owner when a case is escalated\n  Scenario: Marguerite Quillfeather gets the email\n    Then the owner receives an email within 5 minutes\n");
+    await write("tests/features/login.feature", "Feature: Login\n  Scenario: Sign in\n");
+    await write("node_modules/pkg/x.feature", "Feature: Email owner escalated\n");
+    const first = await engine.start("requirements", { key: "ABC-1" });
+    const ctx = JSON.parse(first.context!.slice(first.context!.indexOf("{"))) as { issues: Array<{ key: string; relatedFeatures?: Array<{ path: string; text: string }> }> };
+    expect(ctx.issues.find((i) => i.key === "ABC-1")!.relatedFeatures).toBeUndefined();
+    const related = ctx.issues.find((i) => i.key === "ABC-2")!.relatedFeatures!;
+    expect(related.map((f) => f.path)).toEqual(["tests/features/escalation-email.feature"]);
+    expect(related[0]!.text).toContain("<PERSON_1>");
+    for (const s of SECRETS) expect(first.context, s).not.toContain(s);
+    expect(first.instructions).toMatch(/don't read the repository or other files yourself/);
+
+    const from = "tests/features/escalation-email.feature";
+    const answer = (f: string) => ({
+      issues: [good.issues[0], { ...good.issues[1], inferredCriteria: ["The owner gets an email when a case is escalated", { text: "The email arrives within 5 minutes", from: f }] }],
+    });
+    const wrong = await engine.submit(first.runId, "analyze", answer("tests/features/login.feature"));
+    expect(wrong).toMatchObject({ status: "rejected", errors: [{ path: "$.issues.1.inferredCriteria.1.from", message: expect.stringContaining("isn't one of ABC-2's relatedFeatures") }] });
+    expect((await engine.submit(first.runId, "analyze", answer(from))).next.kind).toBe("done");
+    const task = (await runs.readArtifact(first.runId, REQUIREMENTS_ARTIFACT))!.data.requirements[1]!;
+    expect(task.acceptanceCriteria).toEqual([
+      { id: "AC1", text: "The owner gets an email when a case is escalated", origin: "inferred" },
+      { id: "AC2", text: "The email arrives within 5 minutes", origin: "inferred", from },
+    ]);
+    const md = await readFile(join(dir, "runs", first.runId, "requirements.md"), "utf8");
+    expect(md).toContain(`**AC2** (inferred from repo: ${from}): The email arrives within 5 minutes`);
+  });
+});
+
+describe("relatedFeatures", () => {
+  it("puts a file naming the key first, then files sharing at least two title words, at most three", async () => {
+    const { relatedFeatures } = await import("../src/data/index.js");
+    const files = [
+      { path: "tests/features/refund-above-store-limit.feature", text: "Feature: Create approval request for Refund above store limit\n  Scenario: listed under Returns\n" },
+      { path: "tests/features/SFSC-3168-refund.feature", text: "Feature: something\n" },
+      { path: "tests/features/tagged.feature", text: "@TC-SFSC-3168-002\nFeature: other\n" },
+      { path: "tests/features/near.feature", text: "@TC-SFSC-31680-001\nFeature: Refund\n" },
+      { path: "tests/features/login.feature", text: "Feature: Login with store user\n" },
+    ];
+    const found = relatedFeatures({ key: "SFSC-3168", summary: "Refund blow store limit in InStroe app" }, files);
+    expect(found.map((f) => f.path)).toEqual(["tests/features/SFSC-3168-refund.feature", "tests/features/tagged.feature", "tests/features/refund-above-store-limit.feature"]);
+    expect(relatedFeatures({ key: "ABC-9", summary: "<PERSON_1> logs in" }, files)).toEqual([]);
+    const big = relatedFeatures({ key: "X-1", summary: "refund store" }, [{ path: "a.feature", text: `Feature: refund store\n${"x".repeat(7000)}` }]);
+    expect(big[0]!.text).toMatch(/\[cut: \d+ more characters\]$/);
+  });
+});

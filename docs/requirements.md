@@ -1,0 +1,14 @@
+# Requirements analysis
+
+The `requirements` workflow, and the first step of `test-cases` when it starts from a `key` or `jql`, reads the Jira issue with its children, linked issues and Confluence pages, masks it, and asks the model for a quality score, the gaps, open questions, and, for an issue with no acceptance criteria, proposed criteria. The result is `requirements@1` (`requirements.json` and `requirements.md` in the run folder).
+
+## Criteria for an issue that has none
+
+When an issue has no acceptance criteria, the criteria are inferred. Two sources are allowed:
+
+- **the issue itself**: its summary, description and linked pages. These show as `(inferred)`.
+- **related feature files of the repo**: at most three `.feature` files, found with no model. A file that names the issue key (in its path, a tag such as `@TC-ABC-12-001`, or its text) comes first, then the files whose feature and scenario titles share at least two words with the issue's summary. They are read from the reviewed profile's folder (`agent-qa.profile.json`), or the project folder without one, skipping `node_modules`, `.features-gen` and other build folders, and masked like Jira text. Criteria taken from them show as `(inferred from repo: <path>)`, and `from` holds the path in `requirements@1`.
+
+A related feature often describes a neighbouring process (for example "refund above store limit" for a "refund below store limit" story). The model is told to ask in the open questions where they may differ instead of copying limits, approvers or messages. Check criteria inferred from the repo with the story's author before trusting the cases written from them: `test-cases` tells the model they aren't written in the issue.
+
+The context is the same in an IDE and in CI. The host model (Copilot's, for example) is told to use only that context and not to read the repository itself, so two runs on the same story and repo see the same files.
