@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scanSource } from "../src/data/index.js";
+import { apiTestProblems, scanSource } from "../src/data/index.js";
 import { checkDraft, lightningHelpersSource, scriptsDraftSchema, type CheckContext, type ScriptsDraft } from "../src/workflows/index.js";
 
 const step = (action: string, expected: string) => ({ action, data: "", expected });
@@ -238,3 +238,109 @@ test.describe('TC-ABC-1-001 Create an approval request', () => {
     });
   });
 });
+
+describe("API test checks (S3-8)", () => {
+  const spec = `import { test, expect } from '@playwright/test';
+
+test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
+  await test.step('1. Sign in', async () => {});
+  await test.step('2. Create a request', async () => {
+    const res = await request.post('/services/data/v62.0/sobjects/Approval__c', { data: { Reason__c: 'Restock' } });
+    expect(res.status()).toBe(201);
+  });
+});
+`;
+  const plain = { ...profile, kind: "playwright" as const, steps: [], features: [] };
+  const d = (content: string) => scriptsDraftSchema.parse({ files: [{ path: "tests/api/abc-1.spec.ts", role: "spec", content }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/api/abc-1.spec.ts", line: 4 }, { step: 2, file: "tests/api/abc-1.spec.ts", line: 5 }] }] });
+  it("accepts a request test, and refuses one that drives a browser or sends nothing", () => {
+    expect(check(d(spec), { profile: plain, api: true })).toEqual([]);
+    // The same code is a fine UI-less spec when api isn't asked for.
+    expect(check(d(spec), { profile: plain })).toEqual([]);
+    expect(check(d(spec.replace("async ({ request })", "async ({ page })")), { profile: plain, api: true }).map((e) => e.message).join()).toMatch(/not page/);
+    expect(check(d(spec.replace("request.post(", "request.post(`https://x.my.salesforce.com${''}` + ")), { profile: plain, api: true }).map((e) => e.message).join()).toMatch(/full URL|org URL/);
+  });
+  const problems = (code: string) => apiTestProblems(code, "tests/api/x.spec.ts");
+  const msgs = (code: string) => problems(code).problems.join("\n");
+  const wrap = (body: string, params = "{ request }") => `import { test, expect } from '@playwright/test';\ntest('t', async (${params}) => {\n${body}\n});\n`;
+  it("refuses every way to another host: full URLs in any string, a variable URL, a baseURL of its own, the global fetch (B1)", () => {
+    expect(problems(wrap("await request.get('/services/data/v62.0/limits');"))).toEqual({ problems: [], sends: 1 });
+    for (const body of [
+      "const host = 'https://evil.example';\nawait request.get(`${host}/x`);",
+      "await request.get(`${'h'}/x`);",
+      "const url = '/x';\nawait request.get(url);",
+      "await request.get('//evil.example/x');",
+      "await request.get(`https://evil.example/${1}`);",
+      "test.use({ baseURL: '/x' });",
+      "const api = await request.newContext({ baseURL: process.env.X });",
+      "await fetch('/x');",
+      "await globalThis.fetch('/x');",
+    ]) expect(msgs(wrap(body)), body).toMatch(/full URL|isn't a path|built elsewhere|baseURL of its own|global fetch/);
+  });
+  it("refuses a browser however it's reached, and doesn't refuse a helper's own page parameter (M1, M2)", () => {
+    for (const [code, re] of [
+      ["import { chromium } from 'playwright';\n", /chromium is a browser/],
+      [wrap("const b = await playwright.webkit.launch();"), /webkit is a browser|launch\(\) drives/],
+      [wrap("await f.page.goto('/');", "f"), /not page/],
+      [wrap("const p = await x.newPage();"), /newPage\(\) drives/],
+      ["import { test as base } from '@playwright/test';\nexport const test = base.extend({ thing: async ({ page }, use) => use(page) });\n", /not page/],
+      ["import { createBdd } from 'playwright-bdd';\nconst { Given } = createBdd();\nGiven('x', async ({ context }) => {});\n", /not context/],
+    ] as const) expect(msgs(code), code).toMatch(re);
+    expect(msgs("export function helper({ page }: { page: unknown }) { return page; }\n")).toBe("");
+  });
+  it("refuses credentials in test code (M3), and counts only sends on a request context (low)", () => {
+    for (const body of [
+      "await request.post('/services/oauth2/token');",
+      "await request.get('/x', { headers: { Authorization: 'Bearer x' } });",
+      "await request.get('/x', { headers: { 'authorization': 'x' } });",
+      "await request.post('/x', { form: { client_secret: 'x', grant_type: 'password' } });",
+    ]) expect(msgs(wrap(body)), body).toMatch(/OAuth path|handles credentials/);
+    expect(problems(wrap("const m = new Map();\nm.get('k');\nresponse.headers().get;")).sends).toBe(0);
+    expect(problems(wrap("await api.get('/x');", "{ api }")).sends).toBe(1);
+    expect(problems(wrap("const ctx = await request.newContext();\nawait ctx.post('/x');")).sends).toBe(1);
+    expect(problems("import type { APIRequestContext } from '@playwright/test';\nexport async function make(c: APIRequestContext) { return c.post('/x'); }\n").sends).toBe(1);
+  });
+  it("refuses a path that still names a host, and follows a context through aliases, casts and this file's helpers (B1, second review)", () => {
+    for (const body of [
+      "await request.get('/\\\\api.example.com/v1/x');",
+      "const h = '/api.example.com';\nawait request.get(`/${h}/v1/x`);",
+      "const r = request;\nconst url = ['https:', '', 'api.example.com'].join('/');\nawait r.get(url);",
+      "const url = atob('x');\nawait (request as any).get(url);",
+      "const send = (c: any, u: string) => c.get(u);\nawait send(request, atob('x'));",
+      "function send(c: any, u: string) { return c.post(u); }\nawait send(request, atob('x'));",
+    ]) expect(msgs(wrap(body)), body).toMatch(/backslash|first segment written out|built elsewhere/);
+    expect(problems(wrap("await request.get(`/services/data/v62.0/sobjects/Account/${'id'}`);"))).toEqual({ problems: [], sends: 1 });
+    // A function another generated file declares can't be followed; the repo's own helpers can be called.
+    const draft = new Set(["tests/api/helpers.ts", "tests/api/x.spec.ts"]);
+    const imp = (from: string) => `import { make } from '${from}';\n${wrap("await make(request);")}`;
+    expect(apiTestProblems(imp("./helpers.js"), "tests/api/x.spec.ts", draft).problems.join()).toMatch(/another generated file declares/);
+    expect(apiTestProblems(imp("../../src/api/helpers"), "tests/api/x.spec.ts", draft).problems).toEqual([]);
+    // A browser fixture taken apart inside the body.
+    expect(msgs(wrap("const { page: p } = fx;\nawait p.evaluate(() => 1);", "fx"))).toMatch(/not page/);
+  });
+  it("refuses a request context handed on in any way it can't follow (B1, third review)", () => {
+    const u = "const u = ['https:', '', 'api.example.com', 'v1'].join('/');\n";
+    for (const body of [
+      "const api = { r: request };\nawait api.r.get(u);",
+      "const [r] = [request];\nawait r.get(u);",
+      "const g = request.get.bind(request);\nawait g(u);",
+      "await request.get.call(request, u);",
+      "await Reflect.apply(request.get, request, [u]);",
+      "class W { constructor(private r: any) {} go(x: string) { return this.r.get(x); } }\nawait new W(request).go(u);",
+      "const h = { send: (c: any, x: string) => c.get(x) };\nawait h.send(request, u);",
+      "await Promise.all([request].map((c) => c.get(u)));",
+      "const s = (...a: any[]) => a[0].get(a[1]);\nawait s(request, u);",
+      "const o = { request };\nawait o.request.get(u);",
+    ]) expect(msgs(wrap(u + body)), body).toMatch(/hands on the request context|built elsewhere/);
+    // What tests do with it stays fine: send, dispose, the repo's helpers, a fixture's use, this file's functions, this.<ctx>.
+    expect(problems(`import { test as base } from '@playwright/test';\nimport { createRecord } from '../../src/api/records';\nimport type { APIRequestContext } from '@playwright/test';\nexport const test = base.extend({ api: async ({ request }, use) => { await use(request); } });\ntest('t', async ({ request, playwright }) => {\n  await createRecord(request, 'Account');\n  const ctx = await playwright.request.newContext();\n  await ctx.get('/x');\n  await ctx.dispose();\n  const send = (c: typeof request) => c.post('/y');\n  await send(request);\n});\nclass Client { constructor(private api: APIRequestContext) {} list() { return this.api.get('/z'); } }\n`).problems).toEqual([]);
+    expect(problems(wrap("await fx.request.get('/x');", "fx"))).toEqual({ problems: [], sends: 1 });
+    // Fourth review: arguments, a this alias, a package that calls a method by name.
+    expect(msgs(wrap("function f(c: any) { return arguments[0].get(atob('x')); }\nawait f(request);"))).toMatch(/arguments hides/);
+    expect(msgs(wrap("const o: any = { init() { this.r = request; } };\no.init();\nawait o.r.get(atob('x'));"))).toMatch(/hands on the request context \(assignment\)/);
+    expect(msgs(`import _ from 'lodash';\n${wrap("await _.invoke(request, 'get', atob('x'));")}`)).toMatch(/hands on the request context \(an argument to invoke\)/);
+    expect(apiTestProblems(`import { createRecord } from '@api/records';\n${wrap("await createRecord(request, 'Account');")}`, "tests/api/x.spec.ts", new Set(), ["@api/*"]).problems).toEqual([]);
+    expect(problems(wrap("const res = await request.post('/x', { data: { Name: testData.name } });\nexpect((await res.json()).Name).toBe(testData.name);", "{ request, testData }"))).toEqual({ problems: [], sends: 1 });
+    expect(msgs(wrap("const g = sfApi.get;\nawait g(atob('x'));", "{ sfApi }"))).toMatch(/hands on the request context \(\.get\)/);
+  });
+});
+

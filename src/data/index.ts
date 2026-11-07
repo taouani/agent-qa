@@ -33,7 +33,7 @@ export {
 } from "./profile.js";
 export type { FrameworkProfile, ProfileCommands, SavedProfile } from "./profile.js";
 export { AUTH_PATH, listFolderFiles, LOCATOR_FORMS, MAX_LISTED_FILES, scanFeature, scanRepo, scanSource } from "./profile-scan.js";
-export { checkDependencies, codeLiterals, fixSkeleton, MAX_REACH, onlyWaitsAdded, presenceCheckedFields, scanGeneratedCode, testReach, type FixSkeleton } from "./code-scan.js";
+export { apiTestProblems, checkDependencies, codeLiterals, fixSkeleton, MAX_REACH, onlyWaitsAdded, presenceCheckedFields, scanGeneratedCode, testReach, type FixSkeleton } from "./code-scan.js";
 export type { CodeFinding, CodeScan } from "./code-scan.js";
 export type { FolderListing, LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
 export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";

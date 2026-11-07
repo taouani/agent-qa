@@ -2,7 +2,7 @@ import { z } from "zod";
 import { unifiedDiff, diffStats, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
 import { fixSkeleton, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
 import { hasSelection, selectionFields, selectionOf } from "../run-tests/workflow.js";
-import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
+import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, UI_KINDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
 import type { FileRole } from "../scripts/artifact.js";
 import { TOKEN } from "../scripts/checks.js";
 import { leaving, testFilesPrRecordSchema, testFilesPrStep } from "../shared/test-files-pr.js";
@@ -116,7 +116,7 @@ export const debugFixSchema = z
         z
           .object({
             test: z.string().max(2000).describe("The failing test's title, exactly as the context shows it"),
-            kind: z.enum(FAILURE_KINDS).describe("selector: a locator finds nothing or the wrong element; timing: a wait is missing or too short; data: the test data is wrong for the app; flake: it passed in another run with no change; environment: sign-in, the app or the network is down or misconfigured; defect: the app does something its test says it must not"),
+            kind: z.enum(UI_KINDS).describe("selector: a locator finds nothing or the wrong element; timing: a wait is missing or too short; data: the test data is wrong for the app; flake: it passed in another run with no change; environment: sign-in, the app or the network is down or misconfigured; defect: the app does something its test says it must not"),
             reason: z.string().min(1).max(500).describe("What the error, the code and the page snapshot show"),
           })
           .strict(),
