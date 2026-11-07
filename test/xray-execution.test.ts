@@ -121,13 +121,13 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     });
     const rows = [row("TC-ABC-1-001 a", "failed"), row("TC-ABC-1-002 b", "passed"), row("TC-ABC-1-009 c", "passed")];
     const previous = { project: "QA", key: "QA-80", created: "2026-11-06T09:00:00.000Z", statuses: { "QA-1": "PASSED" } };
-    const plan = await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", previous);
+    const plan = await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", [{ ...previous, project: "OLD", key: "OLD-5" }, previous]);
     expect(plan).toMatchObject({ project: "QA", label: "agent-qa:exec:abc", previous: { key: "QA-80", created: "2026-11-06T09:00:00.000Z" }, notInXray: ["TC-ABC-1-009 c"], changes: { failing: ["TC-ABC-1-001"], added: ["TC-ABC-1-002"] } });
-    // An execution in another project (the config changed since) is no comparison.
-    const other = await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", { ...previous, project: "OLD" });
+    // Only another project's execution (the config changed since) is no comparison.
+    const other = await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", [{ ...previous, project: "OLD" }]);
     expect(other.previous).toBeUndefined();
     expect(other.changes).toMatchObject({ failing: [], added: [] });
-    expect((await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", undefined)).previous).toBeUndefined();
+    expect((await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", [])).previous).toBeUndefined();
     const info = { summary: "s", description: "d", startedAt: new Date(0), finishedAt: new Date(1000) };
     expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, false)).toEqual({ status: "declined" });
     expect(recorded).toEqual([]);
@@ -148,8 +148,9 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
       testRunReadiness: async () => ({ ready: true }),
       runTests: async () => ({ status: "done", exitCode: 1, timedOut: false, durationMs: 60_000, errors: [], tests: [row("TC-ABC-1-001 a", "failed", { failure: { message: "Error: boom" } }), row("TC-ABC-1-002 b", "passed"), row("other", "skipped")] }),
       xrayEnabled: async () => true,
-      xrayExecutionPlan: async (rows: readonly ExecutionRow[], label: string, previous: PreviousExecution | undefined): Promise<XrayExecutionPlan> => {
+      xrayExecutionPlan: async (rows: readonly ExecutionRow[], label: string, candidates: readonly PreviousExecution[]): Promise<XrayExecutionPlan> => {
         plans.push(label);
+        const previous = candidates.find((c) => c.project === "QA");
         previouses.push(previous);
         const { results, notInXray, skipped, skippedKeys } = executionResults(rows, new Map([["TC-ABC-1-001", "QA-1"], ["TC-ABC-1-002", "QA-2"]]));
         const c = executionChanges(results, previous, skippedKeys);
@@ -204,6 +205,23 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     await e.submit(other.runId, "run", { run: true }, { byPerson: true });
     expect(previouses.at(-1)).toBeUndefined();
     expect(records).toHaveLength(2);
+  });
+
+  it("compares with the newest run recorded in the configured project, even when another project's is newer (review)", async () => {
+    const { e, plans, previouses } = engineWith();
+    const first = await e.start("run-tests", { tag: "@smoke" });
+    await e.submit(first.runId, "run", { run: true }, { byPerson: true });
+    const label = plans[0]!;
+    const none = { notInXray: [], skipped: 0, changes: { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] } };
+    const older = (await runs.create({ workflow: "run-tests", context: "old", host: "cli", driver: "api" })).id;
+    await runs.writeArtifact(older, XRAY_EXECUTION_ARTIFACT, { status: "recorded", key: "QA-70", project: "QA", label, results: [{ tcId: "TC-ABC-1-001", xrayKey: "QA-1", status: "PASSED" }], ...none }, { inputs: [], templateVersion: "xray-execution-1" });
+    await new Promise((r) => setTimeout(r, 5));
+    const newer = (await runs.create({ workflow: "run-tests", context: "other", host: "cli", driver: "api" })).id;
+    await runs.writeArtifact(newer, XRAY_EXECUTION_ARTIFACT, { status: "recorded", key: "OTHER-5", project: "OTHER", label, results: [], ...none }, { inputs: [], templateVersion: "xray-execution-1" });
+    const again = await e.start("run-tests", { tag: "@smoke" });
+    const next = (await e.submit(again.runId, "run", { run: true }, { byPerson: true })).next;
+    expect(previouses.at(-1)?.key).toBe("QA-70");
+    expect(next.context).toContain("Since QA-70");
   });
 
   it("never sends twice: an import that fails, or a run stopped while recording, is uncertain and isn't sent again", async () => {

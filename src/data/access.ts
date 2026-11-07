@@ -73,11 +73,12 @@ export interface XrayData {
   pushToXray(runId: string, tokensRun: string, cases: PushCase[], approved: boolean): Promise<{ status: "done"; result: XrayPushResult } | { status: "declined" }>;
   /**
    * What a run's results would record in Xray (S3-9): each case's test by its
-   * `agent-qa:TC-ID` label, and what changed since `previous`, the last
-   * execution recorded for the same selection (the workflow finds it in the
+   * `agent-qa:TC-ID` label, and what changed since the last execution
+   * recorded for the same selection in the configured project. `previous`
+   * holds the newest recorded one per project (the workflow finds them in the
    * run folder; Tarek, 7 Nov 2026).
    */
-  xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, previous: PreviousExecution | undefined): Promise<XrayExecutionPlan>;
+  xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, previous: readonly PreviousExecution[]): Promise<XrayExecutionPlan>;
   /**
    * Records the plan as a new Test Execution, through `Policy.guard` (target
    * xray), labelled with `runLabel` too, so a person can find a run's own
@@ -557,16 +558,17 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return outcome.status === "done" ? { status: "done" as const, result: outcome.value } : { status: "declined" as const };
   }
 
-  async xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, previous: PreviousExecution | undefined): Promise<XrayExecutionPlan> {
+  async xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, previous: readonly PreviousExecution[]): Promise<XrayExecutionPlan> {
     const config = await this.loadConfig();
     const xray = this.xrayConfig(config);
     const ids = [...new Set(rows.flatMap((r) => tcIdOf(r.title, r.tags) ?? []))];
     const found = ids.length ? await (await this.labels(config)).findByLabels(xray.projectKey, ids.map(caseLabel)) : new Map<string, string>();
     const keys = new Map(ids.flatMap((id) => (found.has(caseLabel(id)) ? [[id, found.get(caseLabel(id))!] as const] : [])));
     const { results: now, notInXray, skipped, skippedKeys } = executionResults(rows, keys);
-    // One recorded for another project (the config changed since) compares with nothing.
-    const { results: withBefore, changes } = executionChanges(now, previous?.project === xray.projectKey ? previous : undefined, skippedKeys);
-    return { project: xray.projectKey, label, ...(previous?.project === xray.projectKey ? { previous: { key: previous.key, created: previous.created } } : {}), results: withBefore, notInXray, skipped, changes };
+    // Only one recorded in this project counts (the config may have changed since others).
+    const last = previous.find((p) => p.project === xray.projectKey);
+    const { results: withBefore, changes } = executionChanges(now, last, skippedKeys);
+    return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes };
   }
 
   async recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean) {

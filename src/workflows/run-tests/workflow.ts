@@ -203,18 +203,19 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
   const runLabel = (ctx: Ctx) => `agent-qa:run:${createHash("sha256").update(ctx.runId).digest("hex").slice(0, 16)}`;
   /** Runs read for the last execution: the newest this many. */
   const MAX_PREVIOUS_RUNS = 500;
-  // The last execution recorded for the same selection, from the run folder: newest by when its record was written.
-  const previousOf = async (ctx: Ctx): Promise<PreviousExecution | undefined> => {
-    if (!deps.runs.list) return undefined;
+  // The last execution recorded for the same selection, from the run folder: the newest per Xray project, by when its record was written.
+  const previousOf = async (ctx: Ctx): Promise<PreviousExecution[]> => {
+    if (!deps.runs.list) return [];
     const label = labelOf(ctx.inputs);
-    let best: PreviousExecution | undefined;
+    const best = new Map<string, PreviousExecution>();
     for (const id of (await deps.runs.list()).filter((r) => r !== ctx.runId).slice(-MAX_PREVIOUS_RUNS)) {
       const a = await deps.runs.readArtifact(id, XRAY_EXECUTION_ARTIFACT).catch(() => undefined);
       if (!a || a.data.status !== "recorded" || a.data.label !== label || !a.data.key || !a.data.project) continue;
-      if (best && best.created >= a.createdAt) continue;
-      best = { project: a.data.project, key: a.data.key, created: a.createdAt, statuses: Object.fromEntries(a.data.results.map((r) => [r.xrayKey, r.status])) };
+      const seen = best.get(a.data.project);
+      if (seen && seen.created >= a.createdAt) continue;
+      best.set(a.data.project, { project: a.data.project, key: a.data.key, created: a.createdAt, statuses: Object.fromEntries(a.data.results.map((r) => [r.xrayKey, r.status])) });
     }
-    return best;
+    return [...best.values()];
   };
   // One read of Jira (and the run folder) per run for the question and its context; onAccept reads again. A failed read is an answer, not an error.
   type Planned = { plan: XrayExecutionPlan } | { error: string };
