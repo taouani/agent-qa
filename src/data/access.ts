@@ -502,7 +502,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const out: Record<string, RelatedFeature[]> = {};
     for (const issue of issues) {
       const found = relatedFeatures(issue, files);
-      if (found.length) out[issue.key] = found.map((f) => ({ path: f.path, text: clipFeature(service.maskText(f.text, "repo.feature")) }));
+      if (found.length) out[issue.key] = found.map((f) => ({ path: f.path, text: clipFeature(service.maskText(f.text, "repo.feature")), hash: f.hash }));
     }
     await service.saveVault();
     return out;

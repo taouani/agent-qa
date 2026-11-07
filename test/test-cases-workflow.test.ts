@@ -479,3 +479,48 @@ describe("test-cases workflow", () => {
     });
   });
 });
+
+describe("test-cases workflow: reuse an earlier analysis of the same input (Tarek, 7 Nov 2026)", () => {
+  it("offers the newest earlier analysis only when Jira is unchanged, and reuses it on a yes", async () => {
+    const a = await engine.start("test-cases", { key: "ABC-1" });
+    expect(a.stepId).toBe("analyze");
+    await engine.submit(a.runId, "analyze", good);
+
+    // Same issues, same Jira version: asked first.
+    const b = await engine.start("test-cases", { key: "ABC-1" });
+    expect(b).toMatchObject({ stepId: "reuse", kind: "confirm" });
+    expect(b.context).toContain(`Run ${a.runId} (`);
+    expect(b.context).toContain("analyzed the same 2 issue(s), unchanged in Jira since");
+    expect(b.context).toContain("3 criteria, average quality 59/100");
+    // The run is Agent-QA's to name, whatever the answer says.
+    const next = (await engine.submit(b.runId, "reuse", { reuse: true, run: "2026-01-01-X-1-zzzz" })).next;
+    expect(next).toMatchObject({ stepId: "cases", kind: "generate" });
+    expect(next.context).toContain("AC1: The owner gets an email when a case is escalated");
+    await engine.submit(b.runId, "cases", cases);
+    expect((await runs.readArtifact(b.runId, TEST_CASES_DRAFT_ARTIFACT))!.data.requirements.run).toBe(a.runId);
+
+    // A no analyzes again.
+    const c = await engine.start("test-cases", { key: "ABC-1" });
+    expect(c.stepId).toBe("reuse");
+    expect((await engine.submit(c.runId, "reuse", { reuse: false })).next.stepId).toBe("analyze");
+
+    // A related feature file appeared in the repo: the analysis would see it, so nothing to reuse.
+    const { mkdir, writeFile, rm: remove } = await import("node:fs/promises");
+    await mkdir(join(dir, "tests"), { recursive: true });
+    await writeFile(join(dir, "tests", "escalation-email.feature"), "Feature: Email the owner when a case is escalated\n");
+    const f = await engine.start("test-cases", { key: "ABC-1" });
+    expect(f.context).toContain("can't be reused");
+    await remove(join(dir, "tests"), { recursive: true });
+
+    // The issue changed in Jira: nothing to reuse, even on a yes.
+    issues = ISSUES.map((i) => (i.key === "ABC-2" ? { ...i, updated: "2026-11-07T10:00:00.000+0000" } : i));
+    const d = await engine.start("test-cases", { key: "ABC-1" });
+    expect(d.stepId).toBe("reuse");
+    expect(d.context).toContain("can't be reused. Submit reuse: false without asking.");
+    expect((await engine.submit(d.runId, "reuse", { reuse: true })).next.stepId).toBe("analyze");
+    // Another key: not asked.
+    expect((await engine.start("test-cases", { key: "ABC-2" })).stepId).toBe("analyze");
+    // From an earlier requirements run, nothing is asked.
+    expect((await engine.start("test-cases", { requirementsRun: a.runId })).stepId).toBe("cases");
+  });
+});

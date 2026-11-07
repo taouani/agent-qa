@@ -12,3 +12,12 @@ When an issue has no acceptance criteria, the criteria are inferred. Two sources
 A related feature often describes a neighbouring process (for example "refund above store limit" for a "refund below store limit" story). The model is told to ask in the open questions where they may differ instead of copying limits, approvers or messages. Check criteria inferred from the repo with the story's author before trusting the cases written from them: `test-cases` tells the model they aren't written in the issue.
 
 The context is the same in an IDE and in CI. The host model (Copilot's, for example) is told to use only that context and not to read the repository itself, so two runs on the same story and repo see the same files.
+
+## Reusing an earlier analysis in test-cases
+
+When `test-cases` starts from a `key` that an earlier run already analyzed (a `requirements` run, or a `test-cases` run that analyzed it), its first step is `reuse`. Agent-QA reads Jira again (no model) and compares what the analysis would be given with what the earlier run was given: the same issues at the same Jira version (each issue's `sourceHash`: key, last update, linked page versions) and the same related feature files (path and content hash, kept in `requirements@1` as `related`).
+
+- **Unchanged:** you're asked whether to reuse the newest such run's analysis (its criteria, scores and open questions) or analyze again. A yes skips the analysis: the cases are written from that run's `requirements@1`, with its vault, like `{"requirementsRun": "<run id>"}`. Agent-QA names the run, never the model. With `--yes` in the CLI, the analysis is reused.
+- **Changed:** the step says the earlier analysis can't be reused and the host submits no without asking. A yes changes nothing.
+
+Not offered for a JQL filter (the stored filter is a vault token, different in each run), or when the earlier run's vault has expired (30 days). Runs analyzed before this change have no `related` hashes, so they are only reused when no related feature file is found now.
