@@ -1,5 +1,5 @@
 import type { Config } from "../core/index.js";
-import type { XrayJobResult, XrayTest } from "../connectors/index.js";
+import type { XrayExecutionRead, XrayJobResult, XrayRunStatus, XrayTest } from "../connectors/index.js";
 
 /**
  * Test cases to Xray tests (S1-10). Each case becomes a Manual test:
@@ -90,4 +90,114 @@ export function results(batch: PushCase[], existing: Record<string, string>, job
     if (key) return { tcId: c.id, action: existing[c.id] ? "updated" : "created", xrayKey: key, linkedTo: c.requirement };
     return { tcId: c.id, action: "failed", linkedTo: c.requirement, error: errors.get(i) ?? (job.status === "failed" ? job.errors[0]?.message ?? "the import failed" : "not in the import result") };
   });
+}
+
+/** A test case id in a test's title or tags: TC-ABC-1-001 (S3-9). */
+const TC_ID = /\bTC-[A-Z][A-Z0-9_]*-\d+-\d{3,}\b/;
+export const tcIdOf = (title: string, tags: readonly string[]): string | undefined => TC_ID.exec(title)?.[0] ?? tags.map((t) => TC_ID.exec(t)?.[0]).find((x) => x !== undefined);
+
+/** A test's result as a run recorded it (masked): the rows of test-run@1. */
+export interface ExecutionRow {
+  title: string;
+  tags: string[];
+  file: string;
+  line: number;
+  outcome: "passed" | "failed" | "flaky" | "skipped";
+  runs: number;
+  failedRuns: number;
+  failure?: { message: string } | undefined;
+}
+
+export interface ExecutionResult {
+  tcId: string;
+  xrayKey: string;
+  status: XrayRunStatus;
+  /** Masked. */
+  comment?: string;
+  /** Its status in the last execution with the same label, when it was in it. */
+  before?: string;
+}
+
+/**
+ * What a run records in Xray, and what changed since the last execution
+ * with its label. failing: passed before, fails now; fixed: failed before,
+ * passes now; stillFailing; added: not in the last one; gone: in the last
+ * one, not run this time (Xray keys).
+ */
+export interface XrayExecutionPlan {
+  project: string;
+  label: string;
+  previous?: { key: string; created: string };
+  results: ExecutionResult[];
+  /** Tests that ran but have no TC id, or whose case isn't in Xray: not recorded (masked titles). */
+  notInXray: string[];
+  /** Skipped tests: not run, so not recorded. */
+  skipped: number;
+  /**
+   * failing: PASSED before, FAILED now; other: before neither PASSED nor
+   * FAILED (TODO, ABORTED…), as "TC-ID (was X)"; skippedNow: in the last one,
+   * skipped this time; gone: in the last one, not run at all now (Xray keys).
+   */
+  changes: { failing: string[]; fixed: string[]; stillFailing: string[]; added: string[]; gone: string[]; other: string[]; skippedNow: string[] };
+}
+
+const firstLine = (s: string) => (s.split("\n").find((l) => l.trim()) ?? "").replace(/\s+/g, " ").trim();
+
+/** One result per case: a case whose tests ran more than once (projects, repeats) fails if any failed. */
+export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMap<string, string>): { results: Omit<ExecutionResult, "before">[]; notInXray: string[]; skipped: number; skippedKeys: string[] } {
+  const byCase = new Map<string, Omit<ExecutionResult, "before">>();
+  const notInXray: string[] = [];
+  const skippedKeys = new Set<string>();
+  let skipped = 0;
+  for (const r of rows) {
+    if (r.outcome === "skipped") {
+      skipped++;
+      const id = tcIdOf(r.title, r.tags);
+      const key = id ? keys.get(id) : undefined;
+      if (key) skippedKeys.add(key);
+      continue;
+    }
+    const id = tcIdOf(r.title, r.tags);
+    const key = id ? keys.get(id) : undefined;
+    if (!id || !key) {
+      notInXray.push(r.title);
+      continue;
+    }
+    const failed = r.outcome === "failed";
+    const comment = failed
+      ? `Failed in ${r.file}:${r.line}${r.failure ? `: ${firstLine(r.failure.message)}` : ""}`
+      : r.outcome === "flaky"
+        ? `Flaky: failed ${r.failedRuns} of ${r.runs} run(s), passed on a retry (${r.file}:${r.line})`
+        : undefined;
+    const prev = byCase.get(id);
+    if (prev?.status === "FAILED" && !failed) continue;
+    if (prev && !failed && !comment) continue;
+    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment: comment.slice(0, 1000) } : {}) });
+  }
+  const ran = new Set([...byCase.values()].map((r) => r.xrayKey));
+  return { results: [...byCase.values()], notInXray: [...new Set(notInXray)], skipped, skippedKeys: [...skippedKeys].filter((k) => !ran.has(k)).sort() };
+}
+
+/** What changed since the last execution: by Xray key. */
+export function executionChanges(results: readonly Omit<ExecutionResult, "before">[], previous: XrayExecutionRead | undefined, skippedKeys: readonly string[] = []): { results: ExecutionResult[]; changes: XrayExecutionPlan["changes"] } {
+  const changes: XrayExecutionPlan["changes"] = { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] };
+  const was = previous?.statuses ?? {};
+  const out = results.map((r) => {
+    const before = was[r.xrayKey];
+    if (previous) {
+      if (before === undefined) changes.added.push(r.tcId);
+      else if (before !== "PASSED" && before !== "FAILED") changes.other.push(`${r.tcId} (was ${before})`);
+      else if (r.status === "FAILED") (before === "FAILED" ? changes.stillFailing : changes.failing).push(r.tcId);
+      else if (before === "FAILED") changes.fixed.push(r.tcId);
+    }
+    return { ...r, ...(before !== undefined ? { before } : {}) };
+  });
+  if (previous) {
+    const now = new Set(results.map((r) => r.xrayKey));
+    const skipped = new Set(skippedKeys);
+    const missing = Object.keys(was).filter((k) => !now.has(k)).sort();
+    changes.skippedNow = missing.filter((k) => skipped.has(k));
+    changes.gone = missing.filter((k) => !skipped.has(k));
+  }
+  return { results: out, changes };
 }

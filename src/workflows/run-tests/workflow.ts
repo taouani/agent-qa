@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ArtifactSpec, RunStore, StepContext, WorkflowDefinition } from "../../core/index.js";
-import type { MaskedTestResult, ProfileData, RequirementsData, SuiteData, TestSelection } from "../../data/index.js";
+import type { MaskedTestResult, ProfileData, RequirementsData, SuiteData, TestSelection, XrayData, XrayExecutionPlan } from "../../data/index.js";
 import { testRowSchema } from "../scripts/run.js";
 
 /**
@@ -10,7 +10,9 @@ import { testRowSchema } from "../scripts/run.js";
  * profile's commands, after the person's own yes. The part is spec or
  * feature paths, a title text, a tag, a project, or the failed and flaky
  * tests of an earlier JSON report. The result is test-run@1, masked: the
- * start of `debug` (S3-3), and a record of its own.
+ * start of `debug` (S3-3), and a record of its own. With Xray set up, the
+ * results can then go to Xray as a new Test Execution (S3-9), with what
+ * changed since the last one for the same selection: xray-execution@1.
  */
 
 /** Which tests to run: the selection fields `run-tests` and `debug` share. */
@@ -52,6 +54,8 @@ export const testRunSchema = z
       .strict(),
     /** From `failedIn`: the report's failed and flaky tests, run again. */
     fromReport: z.array(z.object({ title: z.string(), file: z.string(), line: z.number() }).strict()).optional(),
+    /** When the tests started (ISO), for the Test Execution's dates. */
+    startedAt: z.string().optional(),
     exitCode: z.number().nullable(),
     timedOut: z.boolean(),
     durationMs: z.number(),
@@ -75,10 +79,67 @@ function renderTestRun(r: TestRun): string {
 
 export const TEST_RUN_ARTIFACT: ArtifactSpec<TestRun> = { name: "test-run", schema: "test-run@1", data: testRunSchema, render: renderTestRun };
 
+const resultSchema = z.object({ tcId: z.string(), xrayKey: z.string(), status: z.enum(["PASSED", "FAILED", "TODO"]), comment: z.string().optional(), before: z.string().optional() }).strict();
+
+/**
+ * `xray-execution@1` (S3-9): recorded, with the Test Execution's key;
+ * declined: the person (or the policy) said no; nothing: no test of the run
+ * has a case in Xray; unavailable: Jira or Xray couldn't be read, so nothing
+ * was recorded (an optional report never stops the run). changes compares with `previous`, the newest Test
+ * Execution with the same label (the same selection of tests).
+ */
+export const xrayExecutionSchema = z
+  .object({
+    status: z.enum(["recorded", "declined", "nothing", "unavailable"]),
+    /** Why Xray couldn't be read (unavailable). */
+    reason: z.string().optional(),
+    project: z.string().optional(),
+    key: z.string().optional(),
+    label: z.string(),
+    previous: z.object({ key: z.string(), created: z.string() }).strict().optional(),
+    results: z.array(resultSchema),
+    notInXray: z.array(z.string()),
+    skipped: z.number(),
+    changes: z.object({ failing: z.array(z.string()), fixed: z.array(z.string()), stillFailing: z.array(z.string()), added: z.array(z.string()), gone: z.array(z.string()), other: z.array(z.string()), skippedNow: z.array(z.string()) }).strict(),
+  })
+  .strict();
+export type XrayExecution = z.infer<typeof xrayExecutionSchema>;
+
+/** What changed since the last execution, one line per kind of change. */
+export function changeLines(p: { previous?: { key: string; created: string } | undefined; changes: XrayExecutionPlan["changes"]; results: ReadonlyArray<{ status: string }> }): string[] {
+  if (!p.previous) return ["No earlier Agent-QA Test Execution for these tests: nothing to compare with."];
+  const c = p.changes;
+  const list = (ids: string[]) => ids.slice(0, 20).join(", ") + (ids.length > 20 ? ` and ${ids.length - 20} more` : "");
+  const lines = [`Since ${p.previous.key}${p.previous.created ? ` (${p.previous.created.slice(0, 10)})` : ""}:`];
+  if (c.failing.length) lines.push(`- now failing: ${list(c.failing)}`);
+  if (c.fixed.length) lines.push(`- now passing: ${list(c.fixed)}`);
+  if (c.stillFailing.length) lines.push(`- still failing: ${list(c.stillFailing)}`);
+  if (c.other.length) lines.push(`- before neither passed nor failed: ${list(c.other)}`);
+  if (c.skippedNow.length) lines.push(`- in the last one, skipped now: ${list(c.skippedNow)}`);
+  if (c.added.length) lines.push(`- not in the last one: ${list(c.added)}`);
+  if (c.gone.length) lines.push(`- in the last one, not run now: ${list(c.gone)}`);
+  if (lines.length === 1) lines.push(`- nothing changed: ${p.results.filter((r) => r.status === "FAILED").length} failing, as before`);
+  return lines;
+}
+
+function renderXrayExecution(x: XrayExecution): string {
+  const failed = x.results.filter((r) => r.status === "FAILED").length;
+  const head = x.status === "recorded" ? `# Xray: recorded as ${x.key}` : x.status === "declined" ? "# Xray: not recorded" : x.status === "unavailable" ? "# Xray: couldn't be read, nothing recorded" : "# Xray: nothing to record";
+  if (x.status === "unavailable" || x.project === undefined) return `${[head, "", ...(x.reason ? [one(x.reason)] : [])].join("\n")}\n`;
+  const lines = [head, "", `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
+  for (const r of x.results) lines.push(`- ${r.tcId} (${r.xrayKey}): ${r.status}${r.before ? `, was ${r.before}` : ""}${r.comment ? `: ${one(r.comment)}` : ""}`);
+  if (x.notInXray.length) lines.push("", `Not in Xray (no TC id, or its case wasn't pushed): ${x.notInXray.map(one).join("; ")}`);
+  return `${lines.join("\n")}\n`;
+}
+
+export const XRAY_EXECUTION_ARTIFACT: ArtifactSpec<XrayExecution> = { name: "xray-execution", schema: "xray-execution@1", data: xrayExecutionSchema, render: renderXrayExecution };
+
+const recordSchema = z.object({ record: z.boolean().describe("true only if the user said to record these results in Xray") }).strict();
+
 const runSchema = z.object({ run: z.boolean().describe("true only if the user agreed to run these tests with their repo's Playwright") }).strict();
 
 export interface RunTestsDeps {
-  data: Pick<ProfileData, "savedProfile"> & SuiteData & Pick<RequirementsData, "maskTexts">;
+  data: Pick<ProfileData, "savedProfile"> & SuiteData & Pick<RequirementsData, "maskTexts"> & Partial<Pick<XrayData, "xrayEnabled" | "xrayExecutionPlan" | "recordXrayExecution">>;
   runs: Pick<RunStore, "readArtifact" | "writeArtifact">;
 }
 
@@ -127,6 +188,33 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
       inputs: [{ kind: "repo-folder", ref: run.folder, hash: createHash("sha256").update(JSON.stringify(run.selection)).digest("hex") }],
       templateVersion: "test-run-1",
     });
+  // The label that finds the last execution of the same selection: a hash of it, never its text.
+  // failedIn isn't in it: the same report path holds other failures each time, so the tests decide.
+  const labelOf = (i: RunTestsInputs) => {
+    const sel = { files: [...(i.files ?? [])].sort(), grep: i.grep ?? null, tag: i.tag ?? null, project: i.project ?? null, failedIn: i.failedIn !== undefined };
+    return `agent-qa:exec:${createHash("sha256").update(JSON.stringify(sel)).digest("hex").slice(0, 12)}`;
+  };
+  const testRun = async (ctx: Ctx) => (await deps.runs.readArtifact(ctx.runId, TEST_RUN_ARTIFACT))?.data;
+  /** This run's own execution: how a retry after a stop finds it, so it is never recorded twice. */
+  const runLabel = (ctx: Ctx) => `agent-qa:run:${createHash("sha256").update(ctx.runId).digest("hex").slice(0, 16)}`;
+  // One read of Xray per run for the question and its context; onAccept reads again. A failed read is an answer, not an error.
+  type Planned = { plan: XrayExecutionPlan } | { error: string };
+  const plans = new Map<string, Promise<Planned>>();
+  const planOf = (ctx: Ctx, fresh = false): Promise<Planned> => {
+    if (fresh || !plans.has(ctx.runId)) {
+      if (plans.size > 16) plans.delete(plans.keys().next().value!);
+      const p = (async (): Promise<Planned> => {
+        try {
+          return { plan: await deps.data.xrayExecutionPlan!((await testRun(ctx))!.tests, labelOf(ctx.inputs), runLabel(ctx)) };
+        } catch (error) {
+          return { error: one(error instanceof Error ? error.message : String(error)).slice(0, 300) };
+        }
+      })();
+      plans.set(ctx.runId, p);
+      void p.then((r) => "error" in r && plans.delete(ctx.runId));
+    }
+    return plans.get(ctx.runId)!;
+  };
   const empty = { exitCode: null, timedOut: false, durationMs: 0, counts: { passed: 0, failed: 0, flaky: 0, skipped: 0 }, tests: [], errors: [] };
 
   return {
@@ -169,6 +257,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
           const base = { folder: f, command: await shown(ctx, p), selection, ...(p.fromReport ? { fromReport: p.fromReport } : {}) };
           const ready = await deps.data.testRunReadiness(ctx.runId);
           if (!ready.ready) return void (await save(ctx, { ...base, ...empty, status: "unavailable", reason: ready.reason }));
+          const startedAt = new Date().toISOString();
           const r = await deps.data.runTests(ctx.runId, ctx.runId, f, selectionOf(ctx.inputs), true);
           if (r.status === "declined") return void (await save(ctx, { ...base, ...empty, status: "declined", reason: "the policy or the person said no to running the tests" }));
           if (r.status === "unavailable") return void (await save(ctx, { ...base, ...empty, status: "unavailable", reason: r.reason }));
@@ -188,6 +277,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             ...base,
             status,
             ...(status === "no-tests" ? { reason: "the selection matched no test that ran" } : {}),
+            startedAt,
             exitCode: r.exitCode,
             timedOut: r.timedOut,
             durationMs: r.durationMs,
@@ -195,6 +285,69 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             tests,
             errors: r.errors,
           });
+        },
+      },
+      {
+        id: "xray",
+        kind: "confirm",
+        outputSchema: recordSchema,
+        // Writing to Xray takes the person's yes (or --accept xray in CI), as the test-case push does.
+        answers: { yes: { record: true }, no: { record: false }, unattended: { record: false } },
+        when: async (ctx) => {
+          if (!deps.data.xrayEnabled || !deps.data.xrayExecutionPlan || !deps.data.recordXrayExecution) return false;
+          const run = await testRun(ctx);
+          return !!run && run.tests.some((t) => t.outcome !== "skipped") && (await deps.data.xrayEnabled());
+        },
+        approval: {
+          question: async (ctx) => {
+            const planned = await planOf(ctx);
+            if ("error" in planned) return `Xray couldn't be read (${planned.error}), so nothing will be recorded. Go on?`;
+            const p = planned.plan;
+            if (p.results.length === 0) return `None of these tests has a test case in Xray project ${p.project}, so nothing can be recorded. Go on?`;
+            const failed = p.results.filter((r) => r.status === "FAILED").length;
+            return `Record ${p.results.length} result(s) (${failed} failed) in Xray project ${p.project} as a new Test Execution? ${changeLines(p).join(" ")}`;
+          },
+        },
+        instructions: () =>
+          [
+            "Ask the user whether to record these test results in Xray as a new Test Execution. The context lists each result and what changed since the last Agent-QA execution of the same tests. Wait for their answer.",
+            "Submit record: true only if they said yes; record: false records nothing.",
+          ].join("\n"),
+        context: async (ctx) => {
+          const planned = await planOf(ctx);
+          if ("error" in planned) return `Xray couldn't be read: ${planned.error}. Nothing will be recorded, whatever the answer; the test run's record stands.`;
+          const p = planned.plan;
+          return [
+            `Xray project ${p.project}: ${p.results.length} result(s) to record${p.skipped ? `, ${p.skipped} skipped test(s) left out` : ""}.`,
+            ...changeLines(p),
+            ...p.results.map((r) => `${r.tcId} | ${r.xrayKey} | ${r.status}${r.before ? ` (was ${r.before})` : ""}`),
+            ...(p.notInXray.length ? [`Not in Xray, not recorded: ${p.notInXray.join("; ")}`] : []),
+          ].join("\n");
+        },
+        onAccept: async (ctx, out) => {
+          // Run again after a stop halfway: the execution is in Xray already, its record stands.
+          if (await deps.runs.readArtifact(ctx.runId, XRAY_EXECUTION_ARTIFACT)) return;
+          const run = (await testRun(ctx))!;
+          const write = (x: XrayExecution) => deps.runs.writeArtifact(ctx.runId, XRAY_EXECUTION_ARTIFACT, x, { inputs: [{ kind: "artifact", ref: `${ctx.runId}/test-run`, hash: createHash("sha256").update(JSON.stringify(run.tests)).digest("hex") }], templateVersion: "xray-execution-1" });
+          const none = { label: labelOf(ctx.inputs), results: [], notInXray: [], skipped: 0, changes: { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] } };
+          // A no reads nothing: Xray being down never stops it.
+          if (!(out as z.infer<typeof recordSchema>).record) return void (await write({ ...none, status: "declined" }));
+          const planned = await planOf(ctx, true);
+          if ("error" in planned) return void (await write({ ...none, status: "unavailable", reason: planned.error }));
+          const p = planned.plan;
+          const base = { project: p.project, label: p.label, ...(p.previous ? { previous: p.previous } : {}), results: p.results, notInXray: p.notInXray, skipped: p.skipped, changes: p.changes };
+          if (p.results.length === 0) return void (await write({ ...base, status: "nothing" }));
+          const finishedAt = run.startedAt ? new Date(Date.parse(run.startedAt) + run.durationMs) : new Date();
+          const startedAt = run.startedAt ? new Date(run.startedAt) : new Date(finishedAt.getTime() - run.durationMs);
+          const failed = p.results.filter((r) => r.status === "FAILED").length;
+          const r = await deps.data.recordXrayExecution!(
+            ctx.runId,
+            p,
+            runLabel(ctx),
+            { summary: `Agent-QA run ${ctx.runId}: ${p.results.length - failed} passed, ${failed} failed`, description: [`Recorded by Agent-QA from \`${run.command.join(" ")}\` in ${run.folder}.`, "", ...changeLines(p)].join("\n"), startedAt, finishedAt },
+            true,
+          );
+          await write(r.status === "done" ? { ...base, status: "recorded", key: r.key } : { ...base, status: "declined" });
         },
       },
     ],

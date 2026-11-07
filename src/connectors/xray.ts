@@ -10,6 +10,12 @@ import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } fr
  * - POST /api/v2/authenticate {client_id, client_secret} → the token, as a JSON string
  * - POST /api/v2/import/test/bulk [tests] → {jobId}
  * - GET  /api/v2/import/test/bulk/{jobId}/status → {status, result: {errors, issues, warnings}}
+ * - POST /api/v2/import/execution/multipart, parts `results` (Xray JSON:
+ *   {info, tests: [{testKey, status, comment}]}) and `info` (the Test
+ *   Execution's Jira fields) → {id, key} (S3-9)
+ * - POST /api/v2/graphql getTestExecutions(jql, limit) { results { issueId
+ *   jira(fields) testRuns(limit, start) { total results { status { name }
+ *   test { jira(fields) } } } } }: a read, sent only as the fixed query below
  */
 
 export const XRAY_CLOUD_URL = "https://xray.cloud.getxray.app";
@@ -18,6 +24,48 @@ const BULK_PATH = "/api/v2/import/test/bulk";
 /** Xray's documented limit per bulk import. */
 export const XRAY_BULK_LIMIT = 1000;
 const JOB_ID = /^[A-Za-z0-9_-]{1,100}$/;
+const EXECUTION_PATH = "/api/v2/import/execution/multipart";
+const GRAPHQL_PATH = "/api/v2/graphql";
+const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
+/** Xray's page size for test runs in GraphQL. */
+const RUNS_PAGE = 100;
+/** The one GraphQL document the client sends: a read of the newest Test Execution a JQL finds, and a page of its runs. */
+const LAST_EXECUTION_QUERY = `query AgentQaLastExecution($jql: String!, $start: Int!) {
+  getTestExecutions(jql: $jql, limit: 1) {
+    results {
+      issueId
+      jira(fields: ["key", "created"])
+      testRuns(limit: ${RUNS_PAGE}, start: $start) { total results { status { name } test { jira(fields: ["key"]) } } }
+    }
+  }
+}`;
+
+/** The statuses Agent-QA records; Xray's built-in ones. */
+export type XrayRunStatus = "PASSED" | "FAILED" | "TODO";
+
+export interface XrayExecutionResult {
+  testKey: string;
+  status: XrayRunStatus;
+  /** Masked: where it failed, the error's first line. */
+  comment?: string;
+}
+
+export interface XrayExecutionInput {
+  project: string;
+  summary: string;
+  description: string;
+  labels: string[];
+  startedAt: Date;
+  finishedAt: Date;
+  tests: XrayExecutionResult[];
+}
+
+/** A Test Execution read back: its key, when it was created, and each test's status (any status name Xray has). */
+export interface XrayExecutionRead {
+  key: string;
+  created: string;
+  statuses: Record<string, string>;
+}
 
 export interface XrayStep {
   action: string;
@@ -74,6 +122,7 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 export class XrayClient {
   readonly http: HttpClient;
+  private readonly graph: HttpClient;
   private readonly auth: HttpClient;
   private token: Promise<string> | undefined;
   private readonly pollMs: number;
@@ -93,6 +142,14 @@ export class XrayClient {
       service: "Xray",
       baseUrl: base,
       writeTarget: "xray",
+      headers: async () => ({ Authorization: `Bearer ${await this.bearer()}` }),
+    });
+    // GraphQL reads: only the fixed query above, with no mutation in it.
+    this.graph = new HttpClient({
+      ...rest,
+      service: "Xray",
+      baseUrl: base,
+      readOnlyPosts: [(path, body) => path === GRAPHQL_PATH && typeof body === "object" && body !== null && (body as Raw).query === LAST_EXECUTION_QUERY],
       headers: async () => ({ Authorization: `Bearer ${await this.bearer()}` }),
     });
     this.pollMs = pollMs ?? 2000;
@@ -161,6 +218,60 @@ export class XrayClient {
     } catch (error) {
       if (error instanceof ConnectorError) error.jobId = jobId;
       throw error;
+    }
+  }
+
+  /**
+   * Records results as a new Test Execution (S3-9), with its own labels so the
+   * next run finds it. Only keys and statuses, plus a masked comment, go out.
+   */
+  async importExecution(input: XrayExecutionInput, grant: WriteGrant): Promise<{ key: string }> {
+    if (!/^[A-Z][A-Z0-9_]+$/.test(input.project)) throw new Error("Not a Jira project key");
+    if (input.tests.length === 0) throw new Error("A Test Execution needs at least one result");
+    for (const t of input.tests) if (!ISSUE_KEY.test(t.testKey)) throw new Error("Not an Xray test key");
+    const results = {
+      info: { summary: input.summary, description: input.description, startDate: input.startedAt.toISOString(), finishDate: input.finishedAt.toISOString() },
+      tests: input.tests.map((t) => ({ testKey: t.testKey, status: t.status, ...(t.comment ? { comment: t.comment } : {}) })),
+    };
+    const info = { fields: { project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
+    const boundary = `agent-qa-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+    const part = (name: string, value: unknown) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${name}.json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(value)}\r\n`;
+    const body = `${part("results", results)}${part("info", info)}--${boundary}--\r\n`;
+    const answer = obj(await this.http.request(EXECUTION_PATH, { method: "POST", body, headers: { "content-type": `multipart/form-data; boundary=${boundary}` }, grant }));
+    const key = answer.key;
+    if (typeof key !== "string" || !ISSUE_KEY.test(key)) throw new ConnectorError("INVALID_RESPONSE", "Xray", "POST", EXECUTION_PATH, undefined, "Xray execution import returned no issue key");
+    return { key };
+  }
+
+  /**
+   * The newest Test Execution in `project` with `label` (and without
+   * `without`, such as the current run's own), and each test's status in it;
+   * undefined when there is none.
+   */
+  async lastExecution(project: string, label: string, without?: string): Promise<XrayExecutionRead | undefined> {
+    if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error("Not a Jira project key");
+    for (const l of [label, ...(without !== undefined ? [without] : [])]) if (!/^[^\s"'\\]{1,255}$/.test(l)) throw new Error("Not a label Agent-QA writes");
+    const jql = `project = "${project}" AND issuetype = "Test Execution" AND labels = "${label}"${without !== undefined ? ` AND labels != "${without}"` : ""} ORDER BY created DESC`;
+    let read: XrayExecutionRead | undefined;
+    for (let start = 0; ; start += RUNS_PAGE) {
+      const answer = obj(await this.graph.request(GRAPHQL_PATH, { method: "POST", body: { query: LAST_EXECUTION_QUERY, variables: { jql, start } } }));
+      if (arr(answer.errors).length) throw new ConnectorError("INVALID_RESPONSE", "Xray", "POST", GRAPHQL_PATH, undefined, "Xray GraphQL returned errors");
+      const exec = obj(arr(obj(obj(answer.data).getTestExecutions).results)[0]);
+      const jira = obj(exec.jira);
+      if (typeof jira.key !== "string" || !ISSUE_KEY.test(jira.key)) return read;
+      // A newer execution appeared between pages: keep what the first one gave.
+      if (read && read.key !== jira.key) return read;
+      read ??= { key: jira.key, created: typeof jira.created === "string" ? jira.created : "", statuses: {} };
+      const runs = obj(exec.testRuns);
+      const page = arr(runs.results).map(obj);
+      for (const r of page) {
+        const key = obj(obj(r.test).jira).key;
+        const status = obj(r.status).name;
+        if (typeof key === "string" && ISSUE_KEY.test(key) && typeof status === "string") read.statuses[key] = status.toUpperCase().slice(0, 40);
+      }
+      const total = typeof runs.total === "number" ? runs.total : 0;
+      // A page that adds nothing ends the read, whatever total says.
+      if (page.length === 0 || start + RUNS_PAGE >= total || start >= 10_000) return read;
     }
   }
 }
