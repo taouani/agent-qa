@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { runHostCommand } from "../src/connectors/host.js";
 import { assertGrant, configSchema, MemoryAuditSink, RunStore, WorkflowEngine } from "../src/core/index.js";
-import { DataAccess, ProfileError } from "../src/data/index.js";
+import { DataAccess, ProfileError, TEST_RUN_TIMEOUT_MS } from "../src/data/index.js";
 import { fileFilter } from "../src/data/access.js";
 import { pathToFileURL } from "node:url";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
@@ -80,7 +80,7 @@ describe("running a part of the repo's suite (S3-2)", () => {
     expect(picked.fromReport!.map((t) => t.line)).toEqual([6, 10]);
     expect(JSON.stringify(picked.fromReport)).not.toContain("jane.doe@example.com");
     const r = await d.runTests("r", "r", ".", { failedIn: "last-run.json" }, true);
-    expect(ran).toEqual([["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", ...picked.args.slice(3)]]);
+    expect(ran).toEqual([["npx", "playwright", "test", `--global-timeout=${TEST_RUN_TIMEOUT_MS}`, "--reporter=json", "--retries=0", "--workers=1", ...picked.args.slice(3)]]);
     if (r.status !== "done") throw new Error(r.status);
     expect(r.tests.map((t) => t.outcome)).toEqual(["passed", "failed", "failed"]);
     expect(JSON.stringify(r)).not.toContain("jane.doe@example.com");
