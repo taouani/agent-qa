@@ -47,6 +47,7 @@ export interface RunOptions {
   key?: string;
   jql?: string;
   fromRun?: string;
+  pushFrom?: string;
   /** Inputs as JSON, for workflows the flags don't cover. */
   input?: string;
   model?: string;
@@ -88,17 +89,18 @@ async function terminalAsk(question: string): Promise<boolean | undefined> {
 const ciFromEnv = (env: NodeJS.ProcessEnv) => Boolean(env.CI) && !/^(false|0)$/i.test(env.CI!);
 
 function inputsOf(opts: RunOptions): unknown {
-  const given = [opts.key, opts.jql, opts.fromRun, opts.input].filter((v) => v !== undefined).length;
+  const given = [opts.key, opts.jql, opts.fromRun, opts.pushFrom, opts.input].filter((v) => v !== undefined).length;
   if (opts.resume) {
-    if (given) throw new SetupError("--resume continues a run with its own inputs: leave out --key, --jql, --from-run and --input");
+    if (given) throw new SetupError("--resume continues a run with its own inputs: leave out --key, --jql, --from-run, --push-from and --input");
     return undefined;
   }
   // The profile workflow reads the repo, so it needs no input.
   if (given === 0 && opts.workflow === "profile") return {};
-  if (given !== 1) throw new SetupError("give exactly one of --key, --jql, --from-run or --input");
+  if (given !== 1) throw new SetupError("give exactly one of --key, --jql, --from-run, --push-from or --input");
   if (opts.key !== undefined) return { key: opts.key };
   if (opts.jql !== undefined) return { jql: opts.jql };
   if (opts.fromRun !== undefined) return { requirementsRun: opts.fromRun };
+  if (opts.pushFrom !== undefined) return { casesRun: opts.pushFrom };
   try {
     return JSON.parse(opts.input!) as unknown;
   } catch {

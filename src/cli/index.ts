@@ -72,6 +72,7 @@ export function buildProgram(): Command {
     .option("--key <issue>", "one Jira issue key")
     .option("--jql <filter>", "a JQL filter")
     .option("--from-run <runId>", "start test-cases from an earlier requirements run")
+    .option("--push-from <runId>", "test-cases: push the reviewed cases of an earlier test-cases run whose push was declined (a new run, straight to the push)")
     .option("--input <json>", "the workflow's inputs as JSON")
     .option("--resume <runId>", "continue a run that stopped")
     .option("--model <provider:model>", "the model for every step")

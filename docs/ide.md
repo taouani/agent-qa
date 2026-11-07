@@ -32,6 +32,10 @@ If the prompt can't be shown (it fails or is closed with an error), nothing is s
 
 In the CLI, the push takes a terminal answer or `--accept push`. `--yes` never pushes.
 
+### Pushing later, after a no
+
+A run whose push you declined is finished, and stays as it finished. To push its reviewed cases later, start a new `test-cases` run with `{"casesRun": "<run id>"}` (CLI: `agent-qa run test-cases --push-from <run id> --accept push`). It reads no Jira and asks the model for nothing: it goes straight to the push of that run's `test-cases@1`, with that run's vault for the real values, and asks for your yes the same way. The new run's `xray-push@1` names the earlier run as its source. If these cases were pushed already (by that run or a later one), the question says so: a yes updates the same tests. The earlier run's vault must still hold the values (30 days).
+
 ## Behind a corporate proxy
 
 If `agent-qa doctor` shows a certificate error such as `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, your network re-signs HTTPS with a company certificate that Node doesn't trust by default. Start node with `--use-system-ca` (Node 22.15 and later) so it uses the operating system's certificates, in `mcp.json` too: `"command": "node", "args": ["--use-system-ca", "<path>/dist/cli/bin.js", "mcp"]`. For `agent-qa` in a terminal, set `NODE_OPTIONS=--use-system-ca` first (PowerShell: `$env:NODE_OPTIONS = "--use-system-ca"`). Or set `NODE_EXTRA_CA_CERTS` to the company CA file (.pem). If the network only reaches out through a proxy, set `HTTPS_PROXY` (and `NO_PROXY`). Never set `NODE_TLS_REJECT_UNAUTHORIZED=0`: it turns off certificate checks for your Jira and Xray tokens.
