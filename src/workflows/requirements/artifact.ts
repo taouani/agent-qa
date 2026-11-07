@@ -56,6 +56,8 @@ export const analyzedRequirementSchema = z
     linkedPages: z.array(z.object({ id: z.string(), title: z.string(), version: z.number().int() }).strict()),
     quality: z.object({ score: z.number().int().min(0).max(100), missing: z.array(z.enum(QUALITY_GAPS)) }).strict(),
     openQuestions: z.array(z.string()),
+    /** The related feature files the analysis was given (none for an issue with criteria): with sourceHash, what makes a later run's input the same. */
+    related: z.array(z.object({ path: z.string(), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict()).optional(),
     /** The issue's own hash from `sources@1`: same hash, same source. */
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
   })

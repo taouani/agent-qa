@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { listRepoFiles } from "./profile-scan.js";
@@ -16,6 +17,8 @@ export interface RelatedFeature {
   path: string;
   /** The file's text, raw: the caller masks it. */
   text: string;
+  /** sha256 of the raw text: the same file gives the same hash in any run, whatever the masking. */
+  hash: string;
 }
 
 /** Files offered per issue, and how much of each. */
@@ -103,5 +106,5 @@ export function relatedFeatures(issue: { key: string; summary: string }, files: 
     .filter((s) => s.named || s.shared >= 2)
     // Plain code-unit order: the same on every machine, whatever its locale.
     .sort((a, b) => Number(b.named) - Number(a.named) || b.shared - a.shared || (a.f.path < b.f.path ? -1 : a.f.path > b.f.path ? 1 : 0));
-  return scored.slice(0, max).map(({ f }) => ({ path: f.path, text: f.text }));
+  return scored.slice(0, max).map(({ f }) => ({ path: f.path, text: f.text, hash: createHash("sha256").update(f.text).digest("hex") }));
 }

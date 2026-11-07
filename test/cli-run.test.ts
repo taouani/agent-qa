@@ -143,7 +143,7 @@ describe("agent-qa run", () => {
 
   it("rejects --accept or --decline naming no confirm step, and both at once", async () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, decline: ["pushh"] }))).toBe(EXIT.setup);
-    expect(lines.at(-1)).toBe("agent-qa run: test-cases has no confirm step pushh; its confirm steps are review, push");
+    expect(lines.at(-1)).toBe("agent-qa run: test-cases has no confirm step pushh; its confirm steps are reuse, review, push");
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", accept: ["push"], decline: ["push"] }))).toBe(EXIT.setup);
     expect(sent).toHaveLength(0);
   });

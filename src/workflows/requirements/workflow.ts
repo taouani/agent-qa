@@ -168,7 +168,7 @@ function check(requirements: Requirement[], context: string, analysis: Analysis,
   return errors;
 }
 
-function build(loaded: LoadedSources, analysis: Analysis): RequirementsArtifact {
+function build(loaded: LoadedSources, analysis: Analysis, related: Record<string, RelatedFeature[]> = {}): RequirementsArtifact {
   const byKey = new Map(analysis.issues.map((a) => [norm(a.key), a]));
   const requirements = loaded.sources.requirements.map((r): AnalyzedRequirement => {
     const a = byKey.get(r.key)!;
@@ -201,11 +201,33 @@ function build(loaded: LoadedSources, analysis: Analysis): RequirementsArtifact 
       linkedPages: r.linkedPages.map((p) => ({ id: p.id, title: p.title, version: p.version })),
       quality: a.quality,
       openQuestions: a.openQuestions,
+      ...(related[r.key]?.length ? { related: related[r.key]!.map((f) => ({ path: f.path, hash: f.hash })) } : {}),
       sourceHash: r.sourceHash,
     };
   });
   return { input: loaded.sources.input, requirements, truncated: loaded.sources.truncated, unreachable: loaded.sources.unreachable };
 }
+
+/** The related feature files of the issues with no criteria of their own (the others don't infer any). */
+export async function relatedFeaturesOf(deps: RequirementsDeps, runId: string, loaded: LoadedSources): Promise<Record<string, RelatedFeature[]>> {
+  const bare = loaded.sources.requirements.filter((r) => r.acceptanceCriteria.length === 0).map((r) => ({ key: r.key, summary: r.summary }));
+  if (!deps.data.relatedFeatures || bare.length === 0) return {};
+  return deps.data.relatedFeatures(runId, bare);
+}
+
+/**
+ * What the analysis of `loaded` would be given, as one string per issue: its
+ * sourceHash and its related files. Two runs with the same fingerprint gave
+ * the model the same input (Tarek, 7 Nov 2026: reuse only then).
+ */
+export function inputFingerprint(issues: ReadonlyArray<{ key: string; sourceHash: string; related?: ReadonlyArray<{ path: string; hash: string }> | undefined }>): string {
+  return issues
+    .map((r) => `${r.key} ${r.sourceHash} ${[...(r.related ?? [])].map((f) => `${f.path}@${f.hash}`).sort().join(",")}`)
+    .sort()
+    .join("\n");
+}
+
+export { inputOf as jiraInputOf };
 
 /** Inputs of any workflow that starts from Jira: one key or one JQL filter. */
 export type JiraInputs = { key?: string | undefined; jql?: string | undefined };
@@ -213,12 +235,7 @@ export type JiraInputs = { key?: string | undefined; jql?: string | undefined };
 /** The analyze step, shared with the test-cases workflow. It writes requirements@1 when accepted. */
 export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepDefinition<I, Analysis> {
   const load = (runId: string, inputs: I) => deps.data.requirements(runId, inputOf(inputs));
-  // Only issues with no criteria of their own get related features: the others don't infer any.
-  const relatedOf = async (runId: string, loaded: LoadedSources): Promise<Record<string, RelatedFeature[]>> => {
-    const bare = loaded.sources.requirements.filter((r) => r.acceptanceCriteria.length === 0).map((r) => ({ key: r.key, summary: r.summary }));
-    if (!deps.data.relatedFeatures || bare.length === 0) return {};
-    return deps.data.relatedFeatures(runId, bare);
-  };
+  const relatedOf = (runId: string, loaded: LoadedSources) => relatedFeaturesOf(deps, runId, loaded);
   return {
     id: "analyze",
     kind: "generate",
@@ -235,7 +252,7 @@ export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepD
     },
     onAccept: async ({ runId, inputs }, output) => {
       const loaded = await load(runId, inputs);
-      await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output), {
+      await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output, await relatedOf(runId, loaded)), {
         inputs: loaded.inputs,
         templateVersion: REQUIREMENTS_TEMPLATE_VERSION,
       });
