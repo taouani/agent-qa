@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { ArtifactSpec, RunStore, StepContext, WorkflowDefinition } from "../../core/index.js";
-import type { MaskedTestResult, ProfileData, RequirementsData, SuiteData, TestSelection, XrayData, XrayExecutionPlan } from "../../data/index.js";
+import type { MaskedTestResult, PreviousExecution, ProfileData, RequirementsData, SuiteData, TestSelection, XrayData, XrayExecutionPlan } from "../../data/index.js";
 import { testRowSchema } from "../scripts/run.js";
 
 /**
@@ -12,7 +12,8 @@ import { testRowSchema } from "../scripts/run.js";
  * tests of an earlier JSON report. The result is test-run@1, masked: the
  * start of `debug` (S3-3), and a record of its own. With Xray set up, the
  * results can then go to Xray as a new Test Execution (S3-9), with what
- * changed since the last one for the same selection: xray-execution@1.
+ * changed since the last one recorded for the same selection, found in the
+ * run folder (Tarek, 7 Nov 2026): xray-execution@1.
  */
 
 /** Which tests to run: the selection fields `run-tests` and `debug` share. */
@@ -84,14 +85,17 @@ const resultSchema = z.object({ tcId: z.string(), xrayKey: z.string(), status: z
 /**
  * `xray-execution@1` (S3-9): recorded, with the Test Execution's key;
  * declined: the person (or the policy) said no; nothing: no test of the run
- * has a case in Xray; unavailable: Jira or Xray couldn't be read, so nothing
- * was recorded (an optional report never stops the run). changes compares with `previous`, the newest Test
- * Execution with the same label (the same selection of tests).
+ * has a case in Xray; unavailable: Jira couldn't be read, so nothing was
+ * recorded (an optional report never stops the run); recording: saved just
+ * before the import; uncertain: the import failed or was cut off, so it may
+ * or may not be in Xray (never sent again: the person checks the run's
+ * label). changes compares with `previous`, the newest execution this run
+ * folder recorded with the same label (the same selection of tests).
  */
 export const xrayExecutionSchema = z
   .object({
-    status: z.enum(["recorded", "declined", "nothing", "unavailable"]),
-    /** Why Xray couldn't be read (unavailable). */
+    status: z.enum(["recorded", "declined", "nothing", "unavailable", "recording", "uncertain"]),
+    /** Why Jira couldn't be read (unavailable), or why the recording's outcome isn't known (uncertain). */
     reason: z.string().optional(),
     project: z.string().optional(),
     key: z.string().optional(),
@@ -124,9 +128,9 @@ export function changeLines(p: { previous?: { key: string; created: string } | u
 
 function renderXrayExecution(x: XrayExecution): string {
   const failed = x.results.filter((r) => r.status === "FAILED").length;
-  const head = x.status === "recorded" ? `# Xray: recorded as ${x.key}` : x.status === "declined" ? "# Xray: not recorded" : x.status === "unavailable" ? "# Xray: couldn't be read, nothing recorded" : "# Xray: nothing to record";
+  const head = x.status === "recorded" ? `# Xray: recorded as ${x.key}` : x.status === "declined" ? "# Xray: not recorded" : x.status === "unavailable" ? "# Xray: Jira couldn't be read, nothing recorded" : x.status === "recording" ? "# Xray: recording" : x.status === "uncertain" ? "# Xray: may or may not be recorded" : "# Xray: nothing to record";
   if (x.status === "unavailable" || x.project === undefined) return `${[head, "", ...(x.reason ? [one(x.reason)] : [])].join("\n")}\n`;
-  const lines = [head, "", `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
+  const lines = [head, "", ...(x.status === "uncertain" && x.reason ? [one(x.reason), ""] : []), `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
   for (const r of x.results) lines.push(`- ${r.tcId} (${r.xrayKey}): ${r.status}${r.before ? `, was ${r.before}` : ""}${r.comment ? `: ${one(r.comment)}` : ""}`);
   if (x.notInXray.length) lines.push("", `Not in Xray (no TC id, or its case wasn't pushed): ${x.notInXray.map(one).join("; ")}`);
   return `${lines.join("\n")}\n`;
@@ -140,7 +144,7 @@ const runSchema = z.object({ run: z.boolean().describe("true only if the user ag
 
 export interface RunTestsDeps {
   data: Pick<ProfileData, "savedProfile"> & SuiteData & Pick<RequirementsData, "maskTexts"> & Partial<Pick<XrayData, "xrayEnabled" | "xrayExecutionPlan" | "recordXrayExecution">>;
-  runs: Pick<RunStore, "readArtifact" | "writeArtifact">;
+  runs: Pick<RunStore, "readArtifact" | "writeArtifact"> & Partial<Pick<RunStore, "list">>;
 }
 
 type Ctx = StepContext<RunTestsInputs>;
@@ -195,9 +199,24 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
     return `agent-qa:exec:${createHash("sha256").update(JSON.stringify(sel)).digest("hex").slice(0, 12)}`;
   };
   const testRun = async (ctx: Ctx) => (await deps.runs.readArtifact(ctx.runId, TEST_RUN_ARTIFACT))?.data;
-  /** This run's own execution: how a retry after a stop finds it, so it is never recorded twice. */
+  /** This run's own execution, so a person can find it in Xray (after an uncertain recording, say). */
   const runLabel = (ctx: Ctx) => `agent-qa:run:${createHash("sha256").update(ctx.runId).digest("hex").slice(0, 16)}`;
-  // One read of Xray per run for the question and its context; onAccept reads again. A failed read is an answer, not an error.
+  /** Runs read for the last execution: the newest this many. */
+  const MAX_PREVIOUS_RUNS = 500;
+  // The last execution recorded for the same selection, from the run folder: newest by when its record was written.
+  const previousOf = async (ctx: Ctx): Promise<PreviousExecution | undefined> => {
+    if (!deps.runs.list) return undefined;
+    const label = labelOf(ctx.inputs);
+    let best: PreviousExecution | undefined;
+    for (const id of (await deps.runs.list()).filter((r) => r !== ctx.runId).slice(-MAX_PREVIOUS_RUNS)) {
+      const a = await deps.runs.readArtifact(id, XRAY_EXECUTION_ARTIFACT).catch(() => undefined);
+      if (!a || a.data.status !== "recorded" || a.data.label !== label || !a.data.key || !a.data.project) continue;
+      if (best && best.created >= a.createdAt) continue;
+      best = { project: a.data.project, key: a.data.key, created: a.createdAt, statuses: Object.fromEntries(a.data.results.map((r) => [r.xrayKey, r.status])) };
+    }
+    return best;
+  };
+  // One read of Jira (and the run folder) per run for the question and its context; onAccept reads again. A failed read is an answer, not an error.
   type Planned = { plan: XrayExecutionPlan } | { error: string };
   const plans = new Map<string, Promise<Planned>>();
   const planOf = (ctx: Ctx, fresh = false): Promise<Planned> => {
@@ -205,7 +224,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
       if (plans.size > 16) plans.delete(plans.keys().next().value!);
       const p = (async (): Promise<Planned> => {
         try {
-          return { plan: await deps.data.xrayExecutionPlan!((await testRun(ctx))!.tests, labelOf(ctx.inputs), runLabel(ctx)) };
+          return { plan: await deps.data.xrayExecutionPlan!((await testRun(ctx))!.tests, labelOf(ctx.inputs), await previousOf(ctx)) };
         } catch (error) {
           return { error: one(error instanceof Error ? error.message : String(error)).slice(0, 300) };
         }
@@ -301,7 +320,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
         approval: {
           question: async (ctx) => {
             const planned = await planOf(ctx);
-            if ("error" in planned) return `Xray couldn't be read (${planned.error}), so nothing will be recorded. Go on?`;
+            if ("error" in planned) return `Jira couldn't be read to find the tests in Xray (${planned.error}), so nothing will be recorded. Go on?`;
             const p = planned.plan;
             if (p.results.length === 0) return `None of these tests has a test case in Xray project ${p.project}, so nothing can be recorded. Go on?`;
             const failed = p.results.filter((r) => r.status === "FAILED").length;
@@ -315,7 +334,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
           ].join("\n"),
         context: async (ctx) => {
           const planned = await planOf(ctx);
-          if ("error" in planned) return `Xray couldn't be read: ${planned.error}. Nothing will be recorded, whatever the answer; the test run's record stands.`;
+          if ("error" in planned) return `Jira couldn't be read to find the tests in Xray: ${planned.error}. Nothing will be recorded, whatever the answer; the test run's record stands.`;
           const p = planned.plan;
           return [
             `Xray project ${p.project}: ${p.results.length} result(s) to record${p.skipped ? `, ${p.skipped} skipped test(s) left out` : ""}.`,
@@ -325,10 +344,14 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
           ].join("\n");
         },
         onAccept: async (ctx, out) => {
-          // Run again after a stop halfway: the execution is in Xray already, its record stands.
-          if (await deps.runs.readArtifact(ctx.runId, XRAY_EXECUTION_ARTIFACT)) return;
           const run = (await testRun(ctx))!;
           const write = (x: XrayExecution) => deps.runs.writeArtifact(ctx.runId, XRAY_EXECUTION_ARTIFACT, x, { inputs: [{ kind: "artifact", ref: `${ctx.runId}/test-run`, hash: createHash("sha256").update(JSON.stringify(run.tests)).digest("hex") }], templateVersion: "xray-execution-1" });
+          const uncertain = (x: XrayExecution, why: string) =>
+            write({ ...x, status: "uncertain", reason: `${why}: it may or may not be in Xray, so it isn't sent again. Look in Xray project ${x.project} for a Test Execution labelled ${runLabel(ctx)}.` });
+          // Run again after a stop halfway: a record stands; one cut off during the import isn't sent twice.
+          const kept = (await deps.runs.readArtifact(ctx.runId, XRAY_EXECUTION_ARTIFACT))?.data;
+          if (kept?.status === "recording") return void (await uncertain(kept, "the run stopped while recording"));
+          if (kept) return;
           const none = { label: labelOf(ctx.inputs), results: [], notInXray: [], skipped: 0, changes: { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] } };
           // A no reads nothing: Xray being down never stops it.
           if (!(out as z.infer<typeof recordSchema>).record) return void (await write({ ...none, status: "declined" }));
@@ -340,13 +363,20 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
           const finishedAt = run.startedAt ? new Date(Date.parse(run.startedAt) + run.durationMs) : new Date();
           const startedAt = run.startedAt ? new Date(run.startedAt) : new Date(finishedAt.getTime() - run.durationMs);
           const failed = p.results.filter((r) => r.status === "FAILED").length;
-          const r = await deps.data.recordXrayExecution!(
-            ctx.runId,
-            p,
-            runLabel(ctx),
-            { summary: `Agent-QA run ${ctx.runId}: ${p.results.length - failed} passed, ${failed} failed`, description: [`Recorded by Agent-QA from \`${run.command.join(" ")}\` in ${run.folder}.`, "", ...changeLines(p)].join("\n"), startedAt, finishedAt },
-            true,
-          );
+          // Kept before the import: a stop during it is never followed by a second one.
+          await write({ ...base, status: "recording" });
+          let r: Awaited<ReturnType<NonNullable<RunTestsDeps["data"]["recordXrayExecution"]>>>;
+          try {
+            r = await deps.data.recordXrayExecution!(
+              ctx.runId,
+              p,
+              runLabel(ctx),
+              { summary: `Agent-QA run ${ctx.runId}: ${p.results.length - failed} passed, ${failed} failed`, description: [`Recorded by Agent-QA from \`${run.command.join(" ")}\` in ${run.folder}.`, "", ...changeLines(p)].join("\n"), startedAt, finishedAt },
+              true,
+            );
+          } catch (error) {
+            return void (await uncertain({ ...base, status: "recording" }, `the import failed (${one(error instanceof Error ? error.message : String(error)).slice(0, 300)})`));
+          }
           await write(r.status === "done" ? { ...base, status: "recorded", key: r.key } : { ...base, status: "declined" });
         },
       },

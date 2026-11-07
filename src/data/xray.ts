@@ -1,5 +1,5 @@
 import type { Config } from "../core/index.js";
-import type { XrayExecutionRead, XrayJobResult, XrayRunStatus, XrayTest } from "../connectors/index.js";
+import type { XrayJobResult, XrayRunStatus, XrayTest } from "../connectors/index.js";
 
 /**
  * Test cases to Xray tests (S1-10). Each case becomes a Manual test:
@@ -92,6 +92,14 @@ export function results(batch: PushCase[], existing: Record<string, string>, job
   });
 }
 
+/** An earlier recorded execution, as the run folder keeps it: its key, when, and each test's status by Xray key. */
+export interface PreviousExecution {
+  project: string;
+  key: string;
+  created: string;
+  statuses: Record<string, string>;
+}
+
 /** A test case id in a test's title or tags: TC-ABC-1-001 (S3-9). */
 const TC_ID = /\bTC-[A-Z][A-Z0-9_]*-\d+-\d{3,}\b/;
 export const tcIdOf = (title: string, tags: readonly string[]): string | undefined => TC_ID.exec(title)?.[0] ?? tags.map((t) => TC_ID.exec(t)?.[0]).find((x) => x !== undefined);
@@ -120,7 +128,8 @@ export interface ExecutionResult {
 
 /**
  * What a run records in Xray, and what changed since the last execution
- * with its label. failing: passed before, fails now; fixed: failed before,
+ * this project folder recorded for the same selection (from its run folder,
+ * `.agent-qa/runs`). failing: passed before, fails now; fixed: failed before,
  * passes now; stillFailing; added: not in the last one; gone: in the last
  * one, not run this time (Xray keys).
  */
@@ -179,7 +188,7 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
 }
 
 /** What changed since the last execution: by Xray key. */
-export function executionChanges(results: readonly Omit<ExecutionResult, "before">[], previous: XrayExecutionRead | undefined, skippedKeys: readonly string[] = []): { results: ExecutionResult[]; changes: XrayExecutionPlan["changes"] } {
+export function executionChanges(results: readonly Omit<ExecutionResult, "before">[], previous: PreviousExecution | undefined, skippedKeys: readonly string[] = []): { results: ExecutionResult[]; changes: XrayExecutionPlan["changes"] } {
   const changes: XrayExecutionPlan["changes"] = { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] };
   const was = previous?.statuses ?? {};
   const out = results.map((r) => {
