@@ -265,19 +265,22 @@ describe("requirements workflow: related features of the repo (live check, 7 Nov
 });
 
 describe("relatedFeatures", () => {
-  it("puts a file naming the key first, then files sharing at least two title words, at most three", async () => {
-    const { relatedFeatures } = await import("../src/data/index.js");
+  it("puts a file naming the key first, then files sharing at least two title words, at most three; never Agent-QA's own cases of the issue", async () => {
+    const { relatedFeatures, clipFeature } = await import("../src/data/index.js");
     const files = [
       { path: "tests/features/refund-above-store-limit.feature", text: "Feature: Create approval request for Refund above store limit\n  Scenario: listed under Returns\n" },
       { path: "tests/features/SFSC-3168-refund.feature", text: "Feature: something\n" },
-      { path: "tests/features/tagged.feature", text: "@TC-SFSC-3168-002\nFeature: other\n" },
+      { path: "tests/features/tagged.feature", text: "@TC-SFSC-3168-002\nFeature: Refund below store limit\n" },
+      { path: "tests/features/linked.feature", text: "# See SFSC-3168\nFeature: other\n" },
       { path: "tests/features/near.feature", text: "@TC-SFSC-31680-001\nFeature: Refund\n" },
       { path: "tests/features/login.feature", text: "Feature: Login with store user\n" },
     ];
     const found = relatedFeatures({ key: "SFSC-3168", summary: "Refund blow store limit in InStroe app" }, files);
-    expect(found.map((f) => f.path)).toEqual(["tests/features/SFSC-3168-refund.feature", "tests/features/tagged.feature", "tests/features/refund-above-store-limit.feature"]);
+    expect(found.map((f) => f.path)).toEqual(["tests/features/SFSC-3168-refund.feature", "tests/features/linked.feature", "tests/features/refund-above-store-limit.feature"]);
     expect(relatedFeatures({ key: "ABC-9", summary: "<PERSON_1> logs in" }, files)).toEqual([]);
-    const big = relatedFeatures({ key: "X-1", summary: "refund store" }, [{ path: "a.feature", text: `Feature: refund store\n${"x".repeat(7000)}` }]);
-    expect(big[0]!.text).toMatch(/\[cut: \d+ more characters\]$/);
+    // Cut after masking, at a line end.
+    const cut = clipFeature(`Feature: refund store\n${"x".repeat(100)}\n${"y".repeat(7000)}`);
+    expect(cut).toMatch(/x\n\[cut: 7001 more characters\]$/);
+    expect(clipFeature("short")).toBe("short");
   });
 });

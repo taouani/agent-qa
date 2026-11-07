@@ -22,7 +22,7 @@ import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, host
 import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PreviousExecution, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
-import { featureFiles, relatedFeatures, type RelatedFeature } from "./related-features.js";
+import { clipFeature, featureFiles, relatedFeatures, type RelatedFeature } from "./related-features.js";
 import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
 import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
@@ -502,7 +502,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const out: Record<string, RelatedFeature[]> = {};
     for (const issue of issues) {
       const found = relatedFeatures(issue, files);
-      if (found.length) out[issue.key] = found.map((f) => ({ path: f.path, text: service.maskText(f.text, "repo.feature") }));
+      if (found.length) out[issue.key] = found.map((f) => ({ path: f.path, text: clipFeature(service.maskText(f.text, "repo.feature")) }));
     }
     await service.saveVault();
     return out;

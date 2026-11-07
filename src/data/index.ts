@@ -60,5 +60,5 @@ export {
 export type { LoadedSources, LoadOptions, MaskedDataOptions, MaskedSources, MaskingReport, Requirement } from "./requirements.js";
 export type { JiraCollection, JiraInput, JiraIssue } from "../connectors/index.js";
 export { applyRefactor, dependentSpecs, type RefactorOp, type RefactorResult } from "./refactor-ops.js";
-export { relatedFeatures, wordsOf, MAX_RELATED_FEATURES, MAX_RELATED_FEATURE_CHARS } from "./related-features.js";
+export { clipFeature, relatedFeatures, wordsOf, MAX_RELATED_FEATURES, MAX_RELATED_FEATURE_CHARS } from "./related-features.js";
 export type { RelatedFeature } from "./related-features.js";

@@ -51,10 +51,13 @@ export interface FeatureFile {
   text: string;
 }
 
+/** Files listed while looking for features: far more than a profile scan reads, since only .feature files are opened. */
+const MAX_LISTED = 50_000;
+
 /** Every readable .feature file under `folder`, sorted by path. */
 export function featureFiles(folder: string): FeatureFile[] {
   const out: FeatureFile[] = [];
-  for (const path of listRepoFiles(folder)) {
+  for (const path of listRepoFiles(folder, MAX_LISTED)) {
     if (!path.endsWith(".feature")) continue;
     try {
       const full = join(folder, path);
@@ -67,11 +70,29 @@ export function featureFiles(folder: string): FeatureFile[] {
   return out;
 }
 
-/** The files most likely about `issue`, best first: the key named in the file or its path, then shared title words (at least two). */
+/** At most MAX_RELATED_FEATURE_CHARS, cut at a line end. Called on masked text, so a cut never splits a name before it is masked. */
+export function clipFeature(text: string): string {
+  if (text.length <= MAX_RELATED_FEATURE_CHARS) return text;
+  const end = text.lastIndexOf("\n", MAX_RELATED_FEATURE_CHARS);
+  const at = end > 0 ? end : MAX_RELATED_FEATURE_CHARS;
+  return `${text.slice(0, at)}\n[cut: ${text.length - at} more characters]`;
+}
+
+/**
+ * The files most likely about `issue`, best first: the key named in the file
+ * or its path, then shared words of the path and titles (at least two). A file
+ * tagged with one of the issue's own case ids (`@TC-{KEY}-NNN`) is Agent-QA's
+ * output for this issue (the scripts workflow tags every scenario so): it is
+ * left out, or a rerun would offer the earlier guesses back as evidence.
+ * Text comes back whole: the caller masks it, then clips it.
+ */
 export function relatedFeatures(issue: { key: string; summary: string }, files: readonly FeatureFile[], max = MAX_RELATED_FEATURES): RelatedFeature[] {
-  const key = new RegExp(`(^|[^A-Z0-9])${issue.key.replace(/[-]/g, "\\-")}(?![0-9])`, "i");
+  const k = issue.key.replace(/[-]/g, "\\-");
+  const key = new RegExp(`(^|[^A-Z0-9])${k}(?![0-9])`, "i");
+  const own = new RegExp(`@TC-${k}-\\d{3,}(?![0-9])`, "i");
   const wanted = wordsOf(issue.summary);
   const scored = files
+    .filter((f) => !own.test(f.text))
     .map((f) => {
       const named = key.test(f.path) || key.test(f.text);
       const have = wordsOf(`${f.path.replace(/[_/.-]+/g, " ")}\n${titlesOf(f.text)}`);
@@ -80,9 +101,7 @@ export function relatedFeatures(issue: { key: string; summary: string }, files: 
       return { f, named, shared };
     })
     .filter((s) => s.named || s.shared >= 2)
-    .sort((a, b) => Number(b.named) - Number(a.named) || b.shared - a.shared || a.f.path.localeCompare(b.f.path));
-  return scored.slice(0, max).map(({ f }) => ({
-    path: f.path,
-    text: f.text.length > MAX_RELATED_FEATURE_CHARS ? `${f.text.slice(0, MAX_RELATED_FEATURE_CHARS)}\n[cut: ${f.text.length - MAX_RELATED_FEATURE_CHARS} more characters]` : f.text,
-  }));
+    // Plain code-unit order: the same on every machine, whatever its locale.
+    .sort((a, b) => Number(b.named) - Number(a.named) || b.shared - a.shared || (a.f.path < b.f.path ? -1 : a.f.path > b.f.path ? 1 : 0));
+  return scored.slice(0, max).map(({ f }) => ({ path: f.path, text: f.text }));
 }
