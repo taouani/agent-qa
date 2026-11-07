@@ -333,5 +333,36 @@ describe("doctor in a git work tree (clean-up of slice 0 follow-ups)", () => {
     }
     expect(parseGitIndex(Buffer.from("not an index"))).toBeUndefined();
   });
+
+  it("sees a vault under a sparse index's folder entry, and warns on a split index it can't read", async () => {
+    git(dir, "init", "-q");
+    for (const n of ["app/a.txt", ".agent-qa/vault/r.vault", "b.txt"]) {
+      await mkdir(join(dir, n, ".."), { recursive: true });
+      await writeFile(join(dir, n), n);
+    }
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "x");
+    git(dir, "sparse-checkout", "init", "--cone", "--sparse-index");
+    git(dir, "sparse-checkout", "set", "app");
+    expect(await trackedPaths(join(dir, ".git"))).toContain(".agent-qa/");
+    expect(byId(await doctor(ENV)).tracked!.status).toBe("fail");
+    git(dir, "sparse-checkout", "disable");
+    git(dir, "update-index", "--split-index");
+    expect(await trackedPaths(join(dir, ".git"))).toBeUndefined();
+    expect(byId(await doctor(ENV)).tracked!.status).toBe("warn");
+  });
+
+  it("gives an untrack command that works from a project in a subfolder", async () => {
+    git(dir, "init", "-q");
+    const project = join(dir, "packages", "my qa");
+    await mkdir(join(project, ".agent-qa", "vault"), { recursive: true });
+    await writeFile(join(project, ".agent-qa", "vault", "r.vault"), "x");
+    git(dir, "add", "-A");
+    const tracked = byId(await doctor(ENV, { cwd: project })).tracked!;
+    expect(tracked.status).toBe("fail");
+    const command = /`(git rm[^`]+)`/.exec(tracked.fix!)![1]!;
+    execFileSync("sh", ["-c", command], { cwd: project, stdio: "pipe" });
+    expect(byId(await doctor(ENV, { cwd: project })).tracked!.status).toBe("pass");
+  });
 });
 

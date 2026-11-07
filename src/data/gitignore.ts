@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /**
@@ -114,7 +114,9 @@ async function readOptional(file: string): Promise<string> {
  * root itself included) and its git folder; root itself when none is found.
  */
 export async function gitWorkTree(root: string): Promise<{ top: string; gitDir: string | undefined }> {
-  let dir = resolve(root);
+  // Git finds its repository from the physical folder: a symlinked project belongs to the repo it points into.
+  const start = await realpath(resolve(root)).catch(() => resolve(root));
+  let dir = start;
   for (;;) {
     const dotGit = join(dir, ".git");
     const found = await stat(dotGit).catch(() => undefined);
@@ -125,7 +127,7 @@ export async function gitWorkTree(root: string): Promise<{ top: string; gitDir: 
       return { top: dir, gitDir: named ? resolve(dir, named) : undefined };
     }
     const up = dirname(dir);
-    if (up === dir) return { top: resolve(root), gitDir: undefined };
+    if (up === dir) return { top: start, gitDir: undefined };
     dir = up;
   }
 }
@@ -138,7 +140,7 @@ export async function loadIgnoreRules(
   caseInsensitive = process.platform === "win32",
 ): Promise<IgnoreRules> {
   const { top, gitDir } = await gitWorkTree(root);
-  const rel = relative(top, resolve(root));
+  const rel = relative(top, await realpath(resolve(root)).catch(() => resolve(root)));
   const prefix = rel && !isAbsolute(rel) && !rel.split(sep).includes("..") ? rel.split(sep).join("/") : "";
   const rules: IgnoreRules = [];
   if (gitDir) {

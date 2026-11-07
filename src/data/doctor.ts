@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
 import { VERSION, CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { ConnectorError, networkCause, SalesforceAuth, SalesforceAuthError, selectFetch } from "../connectors/index.js";
 import { salesforceKey, salesforceKeyPath } from "./access.js";
@@ -176,12 +177,17 @@ async function trackedCheck(cwd: string): Promise<CheckResult> {
   if (!gitDir) return { id: "tracked", title: "Tracked by git", status: "skip", detail: "not a git work tree" };
   const paths = await trackedPaths(gitDir);
   if (!paths) return { id: "tracked", title: "Tracked by git", status: "warn", detail: "git's index couldn't be read, so tracked files weren't checked", fix: "Run `git ls-files .agent-qa` and untrack anything listed." };
-  const rel = relative(top, resolve(cwd)).split(sep).join("/");
-  const under = (folder: string) => paths.filter((p) => p.startsWith(`${rel ? `${rel}/` : ""}${folder}`));
+  const rel = relative(top, await realpath(resolve(cwd)).catch(() => resolve(cwd))).split(sep).join("/");
+  // A sparse index lists a folder ("dir/") for everything under it.
+  const under = (folder: string) => {
+    const target = `${rel ? `${rel}/` : ""}${folder}`;
+    return paths.filter((p) => p.startsWith(target) || (p.endsWith("/") && target.startsWith(p)));
+  };
   const vault = under(".agent-qa/vault/");
-  const others = [...under(".agent-qa/runs/"), ...under(".agent-qa/audit.jsonl")];
+  const others = [...under(".agent-qa/runs/"), ...paths.filter((p) => p === `${rel ? `${rel}/` : ""}.agent-qa/audit.jsonl`)];
   if (vault.length === 0 && others.length === 0) return { id: "tracked", title: "Tracked by git", status: "pass", detail: "no vault, run or audit file is tracked" };
-  const untrack = `git rm -r --cached ${rel ? `${rel}/` : ""}.agent-qa`;
+  // Run in the project folder: git reads the path from there.
+  const untrack = "git rm -r --cached .agent-qa";
   return {
     id: "tracked",
     title: "Tracked by git",
@@ -190,7 +196,7 @@ async function trackedCheck(cwd: string): Promise<CheckResult> {
       ...(vault.length ? [`${vault.length} vault file(s) are tracked by git, so the token vault goes wherever the repo goes`] : []),
       ...(others.length ? [`${others.length} run or audit file(s) are tracked by git`] : []),
     ].join("\n"),
-    fix: `Untrack them with \`${untrack}\` (the files stay on disk), commit, and keep .agent-qa/ in .gitignore.${vault.length ? " The vault's values are in git history: treat them as exposed." : ""}`,
+    fix: `Untrack them by running \`${untrack}\` in this folder (the files stay on disk), commit, and keep .agent-qa/ in .gitignore.${vault.length ? " The vault's values are in git history: treat them as exposed." : ""}`,
   };
 }
 
