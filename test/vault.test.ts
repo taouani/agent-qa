@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -228,6 +228,54 @@ describe("key providers", () => {
       expect(await withKeyCreationLock(() => "taken", { dir, staleMs: -1 })).toBe("taken");
       await writeFile(join(dir, lockName), "123");
       await expect(withKeyCreationLock(() => "never", { dir, waitMs: 50 })).rejects.toThrow(/Another Agent-QA process is creating the vault key\. If none is running, delete .*\.lock/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets one waiter take a stale lock, keeps a lock that is refreshed, and removes only its own", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-qa-lock-"));
+    const file = join(dir, "vault-key.lock");
+    try {
+      let inside = 0;
+      let most = 0;
+      const guarded = (ms: number) => async () => {
+        most = Math.max(most, ++inside);
+        await new Promise((r) => setTimeout(r, ms));
+        inside--;
+      };
+      // Two waiters find the same crashed lock: only one holds it at a time.
+      await writeFile(file, "crashed");
+      const past = new Date(Date.now() - 60_000);
+      await utimes(file, past, past);
+      await Promise.all([withKeyCreationLock(guarded(80), { dir, staleMs: 1000 }), withKeyCreationLock(guarded(80), { dir, staleMs: 1000 })]);
+      expect(most).toBe(1);
+      // A holder slower than staleMs keeps its lock fresh, so a second process waits.
+      most = 0;
+      const slow = withKeyCreationLock(guarded(500), { dir, staleMs: 150 });
+      await new Promise((r) => setTimeout(r, 30));
+      await withKeyCreationLock(guarded(10), { dir, staleMs: 150, waitMs: 2000 });
+      await slow;
+      expect(most).toBe(1);
+      // A lock dated in the future (a clock ahead of ours) is stale once it stops changing.
+      await writeFile(file, "ahead");
+      const future = new Date(Date.now() + 3_600_000);
+      await utimes(file, future, future);
+      expect(await withKeyCreationLock(() => "taken", { dir, staleMs: 100, waitMs: 2000 })).toBe("taken");
+      // A lock that someone else took over while we held it is theirs: not removed.
+      await withKeyCreationLock(() => writeFile(file, "theirs"), { dir });
+      expect(await readFile(file, "utf8")).toBe("theirs");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates the key without the lock when the lock folder can't be written", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-qa-lock-"));
+    try {
+      const notAFolder = join(dir, "file");
+      await writeFile(notAFolder, "");
+      expect(await withKeyCreationLock(() => "ran", { dir: join(notAFolder, "locks") })).toBe("ran");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
