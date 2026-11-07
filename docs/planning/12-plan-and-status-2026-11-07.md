@@ -73,9 +73,9 @@ Estimate from the final plan: 120–140 h. The BDD (Gherkin) output of `scripts`
 | `document` engine: strategy, plan, charter, risk register, test data, traceability, release notes | Not started | One engine, seven templates (decision F1) |
 | Confluence publish | Not started | Confluence is read-only today; it needs a write through the policy layer (`confluence` target already exists) |
 | `gherkin` workflow (stand-alone) | Partly done | `scripts` writes BDD scenarios and missing steps; a stand-alone "test cases to feature files" workflow is not built |
-| `commits` | Not started | Your answer, 7 Nov: two features from v1. (a) The diffs of PRs linked to a story as optional extra context in the requirements analysis, never a required input. (b) A technical release note for a fix version, built from the code that changed in its scope |
+| `commits` | Not started | Your answer, 7 Nov: two features from v1. (a) A PR's diff as optional extra context in the requirements analysis, never a required input. (b) A technical release note for a fix version, built from the code that changed in its scope |
 | Azure DevOps adapter (pull requests in CI) | Not started | **First** (your choice, 7 Nov). `git.platform` already accepts `azure-devops` and `gitlab` in `src/core/config/schema.ts`; only GitHub has an adapter. Live check on a personal ADO org you will provide |
-| GitLab adapter (merge requests in CI) | Not started | Second. You will provide a test project |
+| GitLab adapter (merge requests in CI) | Not started | Second, by the plan's order. You will provide a test project |
 | Claude Code and Cursor setup in `init` | Not started | `init` writes `agent-qa.yaml`, `.gitignore` and one host config, VS Code's `.vscode/mcp.json` (`src/cli/setup-files.ts`) |
 | Headless CI drivers: Copilot CLI and Claude Code | Not started | The CLI runs with a model API key today |
 
@@ -133,15 +133,15 @@ Moved out of the backlog: healing existing scripts became `debug` (slice 3).
 
 | # | Question | Answer |
 | --- | --- | --- |
-| 1 | Slice 3 live check and alpha.2 | You will finish it soon. It doesn't block slice 4. "Publish" merges the open release PR #67 ("Version Packages (alpha)") |
-| 2 | First git platform in slice 4 | Azure DevOps, then GitLab |
+| 1 | Slice 3 live check and alpha.2 | You will finish it soon. You asked whether it blocks slice 4: it doesn't, because slice 4 builds new workflows and alpha.2 can be published at any time. "Publish" merges the open release PR #67 ("Version Packages (alpha)") |
+| 2 | First git platform in slice 4 | Azure DevOps (GitLab second follows from the plan building both) |
 | 3 | Test access | A personal Azure DevOps org (you will provide it; your company's ADO stays out of testing), a GitLab project and a Confluence space for testing. Claude Code and Cursor are on your laptop |
-| 4 | Document engine | All seven document types stay in 2.0.0, published to Confluence (my reading of your "yes" to both parts) |
+| 4 | Document engine | All seven document types stay in 2.0.0. Whether they publish to Confluence or stay as files plus markdown: my reading of your "yes" is Confluence, to confirm |
 | 5 | `commits` | Two features: linked PR diffs as optional context for requirements, and a technical release note per fix version (see section 3) |
-| 6 | Model IDs | Not available yet. Not a blocker: the catalog stays as it is and doctor warns about models outside it. To confirm before 2.0.0 |
-| 7 | Clean-up pass before slice 4 | Yes: the open follow-ups (the slice 0 items in [10](10-plan-and-status-2026-11-04.md), the `--push-from` limits and similar small items) come first, about 6–10 h |
+| 6 | Model IDs | Not available yet. Proposal: not a blocker, the catalog stays as it is (doctor already warns about models outside it), and the IDs are confirmed before 2.0.0 |
+| 7 | Clean-up pass before slice 4 | Yes: the open follow-ups (the slice 0 items in [10](10-plan-and-status-2026-11-04.md), the `--push-from` limits) come first, about 6–10 h |
 
-Still open: the live check (1), the ADO org and the GitLab and Confluence access (3), the model IDs (6).
+Still open: the live check (1), the ADO org and the GitLab and Confluence access (3), Confluence publishing for documents (4), the model IDs (6).
 
 ## Next steps
 
