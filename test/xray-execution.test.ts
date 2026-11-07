@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FetchLike } from "../src/connectors/http.js";
 import { XrayClient, type XrayExecutionInput } from "../src/connectors/xray.js";
 import { configSchema, MemoryAuditSink, Policy, RunStore, WorkflowEngine, type WriteGrant } from "../src/core/index.js";
+import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 import { DataAccess, executionChanges, executionResults, tcIdOf, type ExecutionRow, type PreviousExecution, type XrayExecutionPlan } from "../src/data/index.js";
 import { runTestsWorkflow, TEST_RUN_ARTIFACT, XRAY_EXECUTION_ARTIFACT, type RunTestsDeps } from "../src/workflows/index.js";
 
@@ -19,7 +20,7 @@ async function withGrant<T>(fn: (g: WriteGrant) => Promise<T>): Promise<T> {
 
 const row = (title: string, outcome: ExecutionRow["outcome"], over: Partial<ExecutionRow> = {}): ExecutionRow => ({ title, tags: [], file: "tests/a.spec.ts", line: 3, outcome, runs: 1, failedRuns: outcome === "failed" ? 1 : 0, ...over });
 
-const INPUT: XrayExecutionInput = { project: "QA", summary: "Agent-QA run r1", description: "d", labels: ["agent-qa", "agent-qa:exec:abc"], startedAt: new Date("2026-11-07T10:00:00Z"), finishedAt: new Date("2026-11-07T10:01:00Z"), tests: [{ testKey: "QA-1", status: "FAILED", comment: "Failed in a.spec.ts:3", start: new Date("2026-11-07T10:00:05.250Z"), finish: new Date("2026-11-07T10:00:40Z") }] };
+const INPUT: XrayExecutionInput = { project: "QA", summary: "Agent-QA run r1", description: "d", labels: ["agent-qa", "agent-qa:exec:abc"], startedAt: new Date("2026-11-07T10:00:00Z"), finishedAt: new Date("2026-11-07T10:01:00Z"), tests: [{ testKey: "QA-1", status: "FAILED", comment: "Failed in a.spec.ts:3", start: new Date("2026-11-07T10:00:05.250Z"), finish: new Date("2026-11-07T10:00:40Z"), evidence: [{ data: "iVBO", filename: "TC-ABC-1-001.png", contentType: "image/png" }] }] };
 
 describe("Xray Test Executions (S3-9): the client", () => {
   it("records results as a multipart import with the execution's labels, only with a grant", async () => {
@@ -42,7 +43,7 @@ describe("Xray Test Executions (S3-9): the client", () => {
     // Dates as Xray's examples write them: seconds and an offset, no milliseconds; each test with its own.
     expect(json("results")).toEqual({
       info: { summary: "Agent-QA run r1", description: "d", startDate: "2026-11-07T10:00:00+00:00", finishDate: "2026-11-07T10:01:00+00:00" },
-      tests: [{ testKey: "QA-1", start: "2026-11-07T10:00:05+00:00", finish: "2026-11-07T10:00:40+00:00", status: "FAILED", comment: "Failed in a.spec.ts:3" }],
+      tests: [{ testKey: "QA-1", start: "2026-11-07T10:00:05+00:00", finish: "2026-11-07T10:00:40+00:00", status: "FAILED", comment: "Failed in a.spec.ts:3", evidence: [{ data: "iVBO", filename: "TC-ABC-1-001.png", contentType: "image/png" }] }],
     });
     expect(json("info")).toEqual({ fields: { project: { key: "QA" }, summary: "Agent-QA run r1", description: "d", issuetype: { name: "Test Execution" }, labels: ["agent-qa", "agent-qa:exec:abc"] } });
     await expect(withGrant((g) => client.importExecution({ ...INPUT, tests: [{ testKey: "not a key", status: "PASSED" }] }, g))).rejects.toThrow(/Not an Xray test key/);
@@ -113,8 +114,8 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
-  const config = (writes: Record<string, string> = {}) =>
-    configSchema.parse({ version: 1, atlassian: { site: "https://acme.atlassian.net", email: "${env:E}", token: "${env:T}" }, xray: { clientId: "i", clientSecret: "${env:S}", projectKey: "QA" }, policy: { writes: { xray: "allow", confluence: "ask", testCode: "ask", jira: "deny", commands: "ask", ...writes } } });
+  const config = (writes: Record<string, string> = {}, xray: Record<string, unknown> = {}) =>
+    configSchema.parse({ version: 1, atlassian: { site: "https://acme.atlassian.net", email: "${env:E}", token: "${env:T}" }, xray: { clientId: "i", clientSecret: "${env:S}", projectKey: "QA", ...xray }, policy: { writes: { xray: "allow", confluence: "ask", testCode: "ask", jira: "deny", commands: "ask", ...writes } } });
 
   it("plans from the labels and the last execution passed in, and records through the policy", async () => {
     const recorded: XrayExecutionInput[] = [];
@@ -150,6 +151,50 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91" });
     expect(recorded[0]).toMatchObject({ project: "QA", labels: ["agent-qa", "agent-qa:exec:abc", "agent-qa:run:r1"], tests: [{ testKey: "QA-1", status: "FAILED" }, { testKey: "QA-2", status: "PASSED" }] });
     expect([...new Set(audit.entries.map((e) => e.summary))]).toEqual(["Record 2 test result(s) (1 failed) as a Test Execution in Xray project QA"]);
+  });
+
+  it("attaches failure screenshots only with xray.attachScreenshots, from the profile's folder (Tarek, 7 Nov 2026)", async () => {
+    await writeFile(join(dir, "agent-qa.profile.json"), JSON.stringify({ version: 1, folder: ".", kind: "playwright", commands: { test: ["npx", "playwright", "test"] }, reviewedAt: "2026-11-05T00:00:00.000Z" }));
+    await mkdir(join(dir, "test-results", "a-chromium"), { recursive: true });
+    await writeFile(join(dir, "test-results", "a-chromium", "test-failed-1.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await writeFile(join(dir, "secret.png"), Buffer.from([1]));
+    const recorded: XrayExecutionInput[] = [];
+    const audit = new MemoryAuditSink();
+    const key = Buffer.alloc(32, 3);
+    const make = (attach: boolean) =>
+      new DataAccess({
+        root: dir,
+        store: runs,
+        config: config({}, attach ? { attachScreenshots: true } : {}),
+        audit,
+        vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }),
+        labels: { findByLabels: async (_p, labels) => new Map(labels.map((l, i) => [l, `QA-${i + 1}`])) },
+        xray: {
+          importAndWait: async () => {
+            throw new Error("not used");
+          },
+          importExecution: async (input) => {
+            recorded.push(input);
+            return { key: "QA-91" };
+          },
+        },
+      });
+    const rows = [
+      row("TC-ABC-1-001 a", "failed", { failure: { message: "boom", screenshot: "test-results/a-chromium/test-failed-1.png" } }),
+      row("TC-ABC-1-002 b", "failed", { failure: { message: "boom", screenshot: "../outside.png" } }),
+      row("TC-ABC-1-003 c", "passed"),
+    ];
+    const info = { summary: "s", description: "d", startedAt: new Date(0), finishedAt: new Date(1000) };
+    const off = make(false);
+    await off.recordXrayExecution("r1", await off.xrayExecutionPlan(rows, "agent-qa:exec:abc", []), "agent-qa:run:r1", info, true);
+    expect(recorded[0]!.tests.every((t) => t.evidence === undefined)).toBe(true);
+    const on = make(true);
+    const plan = await on.xrayExecutionPlan(rows, "agent-qa:exec:abc", []);
+    expect(plan.results.map((x) => x.screenshot)).toEqual(["test-results/a-chromium/test-failed-1.png", "../outside.png", undefined]);
+    await on.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true);
+    // Only the file inside the folder: a path that leaves it is never read.
+    expect(recorded[1]!.tests.map((t) => t.evidence)).toEqual([[{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"), filename: "TC-ABC-1-001.png", contentType: "image/png" }], undefined, undefined]);
+    expect(audit.entries.at(-1)!.summary).toBe("Record 3 test result(s) (2 failed, 1 unmasked screenshot(s)) as a Test Execution in Xray project QA");
   });
 
   /** run-tests with fake data: the run step records a run, then the xray step. */

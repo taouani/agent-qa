@@ -1,6 +1,6 @@
-import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath, sep } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -373,7 +373,7 @@ export interface MaskedTestResult {
   failedRuns: number;
   startedAt?: string | undefined;
   durationMs?: number | undefined;
-  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined } | undefined;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined; screenshot?: string | undefined } | undefined;
 }
 
 export type TestRunOutcome =
@@ -614,14 +614,58 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const client = await this.xrayClient(config);
     if (!client.importExecution) throw new Error("this Xray client can't record Test Executions");
     const failed = plan.results.filter((r) => r.status === "FAILED").length;
-    const summary = `Record ${plan.results.length} test result(s) (${failed} failed) as a Test Execution in Xray project ${plan.project}`;
+    // Screenshots only when agent-qa.yaml asks for them: they can't be masked.
+    const shots = config.xray?.attachScreenshots ? await this.failureScreenshots(runId, plan) : new Map<string, XrayEvidence>();
+    const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
       client.importExecution!(
-        { project: plan.project, summary: info.summary.slice(0, 255), description: info.description, labels: ["agent-qa", plan.label, runLabel], startedAt: info.startedAt, finishedAt: info.finishedAt, tests: plan.results.map((r) => ({ testKey: r.xrayKey, status: r.status, ...(r.comment ? { comment: r.comment } : {}), ...(r.start ? { start: new Date(r.start) } : {}), ...(r.finish ? { finish: new Date(r.finish) } : {}) })) },
+        {
+          project: plan.project,
+          summary: info.summary.slice(0, 255),
+          description: info.description,
+          labels: ["agent-qa", plan.label, runLabel],
+          startedAt: info.startedAt,
+          finishedAt: info.finishedAt,
+          tests: plan.results.map((r) => ({
+            testKey: r.xrayKey,
+            status: r.status,
+            ...(r.comment ? { comment: r.comment } : {}),
+            ...(r.start ? { start: new Date(r.start) } : {}),
+            ...(r.finish ? { finish: new Date(r.finish) } : {}),
+            ...(shots.has(r.tcId) ? { evidence: [shots.get(r.tcId)!] } : {}),
+          })),
+        },
         grant,
       ),
     );
     return outcome.status === "done" ? { status: "done" as const, key: outcome.value.key } : { status: "declined" as const };
+  }
+
+  /**
+   * The failed cases' screenshots, as Xray evidence by TC id: each path's
+   * tokens restored with the run's vault, read only from the reviewed
+   * profile's folder, PNG or JPEG, at most 5 MB each and 20 MB in all. One
+   * that is gone or too big is left out.
+   */
+  private async failureScreenshots(runId: string, plan: XrayExecutionPlan): Promise<Map<string, XrayEvidence>> {
+    const out = new Map<string, XrayEvidence>();
+    const saved = await this.savedProfile();
+    if (!saved) return out;
+    const dir = hostCwd(this.options.root, saved.folder);
+    const { vault } = await this.run(runId);
+    const restore = restorer((t) => vault.valueOf(t));
+    let total = 0;
+    for (const r of plan.results) {
+      if (r.status !== "FAILED" || !r.screenshot) continue;
+      const rel = restore(r.screenshot);
+      const type = /\.png$/i.test(rel) ? "image/png" : /\.jpe?g$/i.test(rel) ? "image/jpeg" : undefined;
+      if (!type || !isPlainRelativePath(rel)) continue;
+      const data = await readBytesInside(dir, resolvePath(dir, rel), MAX_SCREENSHOT_BYTES);
+      if (!data || total + data.length > MAX_SCREENSHOTS_BYTES) continue;
+      total += data.length;
+      out.set(r.tcId, { data: data.toString("base64"), filename: `${r.tcId}${type === "image/png" ? ".png" : ".jpg"}`, contentType: type });
+    }
+    return out;
   }
 
   async runCommand(runId: string, request: HostCommandRequest, approved: boolean) {
@@ -844,6 +888,12 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       const why = t.result.timedOut ? ` (the run was stopped after ${Math.round(t.result.durationMs / 60_000)} minutes)` : "";
       return { ...base, tests: [], errors: [`no test report came back${why}: ${tail(t.result) || "no output"}`] };
     }
+    // A screenshot's path, from the folder (forward slashes): only a plain path inside it.
+    const screenshotOf = (path: string | undefined) => {
+      if (!path) return undefined;
+      const rel = relativePath(dir, path).split(sep).join("/");
+      return isPlainRelativePath(rel) ? rel : undefined;
+    };
     const tests: MaskedTestResult[] = [];
     for (const x of parsed.tests) {
       const raw = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
@@ -867,6 +917,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
                 snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
                 at: x.failure.at,
                 snapshot,
+                // Its path can hold the test's title (test-results/<title>/): kept masked, restored with this vault when sent.
+                ...(screenshotOf(x.failure.screenshotPath) ? { screenshot: echo.detect(screenshotOf(x.failure.screenshotPath)!, "test.screenshot") } : {}),
               },
             }
           : {}),
@@ -1760,6 +1812,23 @@ async function gitRoot(dir: string): Promise<string | undefined> {
 }
 
 /** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
+const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
+const MAX_SCREENSHOTS_BYTES = 20 * 1024 * 1024;
+
+/** A file's bytes, only when it is inside `folder` (links followed) and at most `max` bytes. */
+async function readBytesInside(folder: string, path: string, max: number): Promise<Buffer | undefined> {
+  try {
+    const real = await realpathAsync(path);
+    const rel = relativePath(await realpathAsync(folder), real);
+    if (rel === "" || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) return undefined;
+    const info = await stat(real);
+    if (!info.isFile() || info.size > max) return undefined;
+    return await readFile(real);
+  } catch {
+    return undefined;
+  }
+}
+
 async function readInside(folder: string, path: string): Promise<string | undefined> {
   try {
     const real = await realpathAsync(path);

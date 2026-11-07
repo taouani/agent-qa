@@ -81,7 +81,7 @@ function renderTestRun(r: TestRun): string {
 export const TEST_RUN_ARTIFACT: ArtifactSpec<TestRun> = { name: "test-run", schema: "test-run@1", data: testRunSchema, render: renderTestRun };
 
 const resultSchema = z
-  .object({ tcId: z.string(), xrayKey: z.string(), status: z.enum(["PASSED", "FAILED", "TODO"]), comment: z.string().optional(), start: z.string().optional(), finish: z.string().optional(), before: z.string().optional() })
+  .object({ tcId: z.string(), xrayKey: z.string(), status: z.enum(["PASSED", "FAILED", "TODO"]), comment: z.string().optional(), start: z.string().optional(), finish: z.string().optional(), screenshot: z.string().optional(), before: z.string().optional() })
   .strict();
 
 /**
@@ -293,7 +293,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             runs: t.runs,
             failedRuns: t.failedRuns,
             ...(t.startedAt !== undefined ? { startedAt: t.startedAt, durationMs: t.durationMs ?? 0 } : {}),
-            ...(t.failure ? { failure: { message: t.failure.message, ...(t.failure.snippet !== undefined ? { snippet: t.failure.snippet } : {}), ...(t.failure.at ? { at: t.failure.at } : {}), ...(t.failure.snapshot !== undefined ? { snapshot: t.failure.snapshot } : {}) } } : {}),
+            ...(t.failure ? { failure: { message: t.failure.message, ...(t.failure.snippet !== undefined ? { snippet: t.failure.snippet } : {}), ...(t.failure.at ? { at: t.failure.at } : {}), ...(t.failure.snapshot !== undefined ? { snapshot: t.failure.snapshot } : {}), ...(t.failure.screenshot !== undefined ? { screenshot: t.failure.screenshot } : {}) } } : {}),
           }));
           const status = statusOf(r.tests, r.errors);
           await save(ctx, {

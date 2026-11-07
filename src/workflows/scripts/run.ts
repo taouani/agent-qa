@@ -50,7 +50,14 @@ export const testRowSchema = z
     startedAt: z.string().optional(),
     durationMs: z.number().optional(),
     failure: z
-      .object({ message: z.string(), snippet: z.string().optional(), at: z.object({ file: z.string(), line: z.number() }).strict().optional(), snapshot: z.string().optional() })
+      .object({
+        message: z.string(),
+        snippet: z.string().optional(),
+        at: z.object({ file: z.string(), line: z.number() }).strict().optional(),
+        snapshot: z.string().optional(),
+        /** Playwright's failure screenshot, from the framework folder: sent to Xray only with xray.attachScreenshots. */
+        screenshot: z.string().optional(),
+      })
       .strict()
       .optional(),
   })

@@ -38,6 +38,17 @@ describe("Playwright's JSON report", () => {
     ]);
   });
 
+  it("keeps Playwright's failure screenshot only from a project's output folder", () => {
+    const shot = (path: string) => ({ name: "screenshot", contentType: "image/png", path });
+    const t = (title: string, path: string) => ({ title, file: "a.spec.ts", line: 1, tests: [{ status: "unexpected", results: [{ status: "failed", error: { message: "boom" }, attachments: [shot(path)] }] }] });
+    const json = {
+      config: { rootDir: "/repo", projects: [{ outputDir: "/repo/test-results" }] },
+      suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [t("in", "/repo/test-results/a-in/test-failed-1.png"), t("out", "/home/me/.ssh/key.png"), t("not an image", "/repo/test-results/a/trace.zip")] }],
+      stats: { expected: 0, unexpected: 3, flaky: 0, skipped: 0 },
+    };
+    expect(parsePlaywrightReport(json, "/repo").tests.map((x) => x.failure?.screenshotPath)).toEqual(["/repo/test-results/a-in/test-failed-1.png", undefined, undefined]);
+  });
+
   it("spans repeated runs from the first start to the last end", () => {
     const run = (startTime: string, duration: number) => ({ status: "expected", results: [{ status: "passed", startTime, duration }] });
     const json = { suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [{ title: "t", file: "a.spec.ts", line: 1, tests: [run("2026-11-05T10:00:05.000Z", 1000), run("2026-11-05T10:00:00.000Z", 2000)] }] }], stats: { expected: 2, unexpected: 0, flaky: 0, skipped: 0 } };
