@@ -5,15 +5,25 @@
     "sf-agent-qa": "1.0.0"
   },
   "changesets": [
+    "api-tests",
+    "audit-workflow",
+    "debug-ci-pull-request",
+    "debug-workflow",
     "docs-slice2",
+    "docs-slice3",
+    "edit-existing-files",
     "explore-workflow",
     "explorer-browser",
     "framework-profile",
+    "harness-debug-case",
     "harness-runnable-rate",
     "harness-seeded-defect",
     "harness-stand-in-app",
     "live-check-hints",
     "npm-provenance",
+    "refactor-workflow",
+    "review-workflow",
+    "run-tests-workflow",
     "salesforce-jwt",
     "salesforce-pack",
     "scaffold-new-repo",
@@ -24,6 +34,7 @@
     "scripts-typecheck",
     "scripts-workflow",
     "scripts-write",
-    "v2-alpha"
+    "v2-alpha",
+    "xray-executions"
   ]
 }

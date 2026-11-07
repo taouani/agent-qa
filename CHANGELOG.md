@@ -1,5 +1,67 @@
 # sf-agent-qa
 
+## 2.0.0-alpha.2
+
+### Minor Changes
+
+- 3167252: `scripts` writes API tests with `api: true`: Playwright request tests for cases that describe API behaviour. They send to paths under the config's baseURL and check status and body. They drive no browser, take no exploration and use no Salesforce UI helpers. The server refuses a draft that uses `page`, a locator, a full URL, or sends no request (S3-8).
+- 23a52a8: The `audit` workflow (slice 3, S3-5): a read-only architecture audit of the repo's own Playwright suite, ported from v1's audit-framework.
+
+  Agent-QA does the inventory itself. It counts the files by role (specs, steps, page objects, fixtures, other code, features, data, configs) with their lines, and lists the largest files and the entry points. Configs are never read. It also runs its code scan over every code file it can read, up to 400. The scan counts fixed waits, focus or skip, XPath, generated ids, record ids and org URLs.
+
+  The model reads a sample in full:
+
+  - every fixture;
+  - the ten largest files;
+  - a fixed draw of specs, page objects, step files and data.
+
+  It reports findings by area: layering, patterns, reuse, locators, waits, data, naming and scalability. Each finding cites evidence in the sample and has a severity, impact, risk of change and effort, and can name what it depends on.
+
+  Agent-QA then ranks the findings: high impact and low risk first, each one after the findings it depends on. It numbers them AF-001 onward, scores each area out of 10, and records the result as `audit@1`, which `refactor` will read. The harness gets an `audit` case.
+
+- dfee604: In CI, `debug` opens its changes as a pull request (step `pr`). Each changed file goes in once and is checked against its blob on the base from before the first change. The pull request is a draft unless every test passed and stayed stable. It is recorded under `pr` in `debug-report@1`.
+- 737e1f0: `debug` workflow (slice 3, S3-3), which closes the backlog item "healing existing scripts". It runs a chosen part of the repo's own suite and classifies each failure as selector, timing, data, flake, environment or defect. A defect, an environment failure or a test-data failure is reported and nothing is changed for it. For the others it proposes only the fixes each kind allows, in the test files it showed the model, as one diff that waits for the person's own yes. Each file is written only if it is unchanged since it was read, then the tests run again and, once green, run again to show they are stable. A declined change is kept as a diff in `debug-report@1`. A fix may no longer change the locator of an element that a check like `toBeVisible()`, `toHaveCount()` or `expect.soft` checks, whether the locator is inline, held in a variable, or a page-object field. A wait for an element that the next statements act on can still change with them. This applies to `scripts` fixes too.
+- 6f8872f: Changing existing test files (slice 3, S3-1): the data layer reads test files masked, with the sha256 and git blob id of their real bytes, and writes a reviewed edit back with its real values, all or none, only while each file still holds what was read. An edit keeps only the masking tokens of that file. Configs (at any depth), `package.json`, `.env`, the profile, auth and session files, git-ignored files and JSON outside a test data folder are never read or changed. A unified diff (`unifiedDiff`) shows the person the whole change first. In CI, pull requests can now carry changed files: the base must still hold each one as it was read.
+- e848838: The `refactor` workflow (slice 3, task S3-6), ported from v1's refactor-framework. It works from an audit run's findings (`audit@1`), by default all of them, and the folder's code, masked. The model plans phases. Each task serves audit findings and is made of operations that Agent-QA applies in memory with ts-morph (new dependency):
+
+  - a rename, where every reference follows across files, path aliases included;
+  - an exact edit;
+  - a new file.
+
+  Before the person sees the plan, Agent-QA checks it:
+
+  - every task applies;
+  - the tasks of a phase touch different files;
+  - nothing is planned before what it depends on;
+  - no task changes what the tests check. Across the folder, checks, test titles and literal values stay as they were. No fixed wait, skip or soft check is added. Masked values stay in their files.
+
+  A run carries out the first phase. The person sees its whole diff and says yes to all of its tasks or to some. Each task is type-checked with the repo's TypeScript over the whole folder and is written only if it adds no type error. The phase stops at the first task that does add one.
+
+  The specs the changes reach, through imports, are listed. They run on a second yes, and if one fails, the phase is put back: edited files get their earlier text and new files are removed (new data method `removeTestFiles`). In CI the changes go out as a pull request, a draft unless the tests passed. The result is recorded as `refactor-report@1`. Linting isn't run yet, because the profile records no lint command.
+
+- 893b0f1: `review` workflow (slice 3, S3-4). It does a file-scoped review of the repo's own test code: files, or globs with `*` and `**`, in the profile's folder. Each finding has a file and line, a severity (critical, high, medium or low) and a kind. Findings come from the code scan (fixed waits, focus or skip, XPath, generated ids, record ids, org URLs) and from the model, which reviews against v1's checklist.
+
+  A finding may carry a small fix: an exact piece of the file and its replacement. A fix is refused if:
+
+  - it doesn't apply cleanly;
+  - it adds a fixed wait or a skip;
+  - it removes or changes a check (what it checks, what it expects, `.not`), or makes one soft;
+  - it adds a branch (`if`, `try`, `return`, `?:`, a loop) or a longer timeout;
+  - it changes a test's title;
+  - it brings in a masked value the file doesn't hold.
+
+  The fixes are shown as one diff and type-checked with the repo's TypeScript across the whole folder, so a fix that breaks a file importing it is caught; any fix that adds a type error stops them all. If the type check can't run, nothing is written (`unchecked`). They are written only on the person's own yes. In CI they open as a draft pull request.
+
+  The result is recorded as `findings@1`. The harness gets a `review` case: a hand-written test with two known flaws, both of which must be reported.
+
+- 7d02f8d: `run-tests` workflow (slice 3, S3-2): runs a chosen part of the repo's own Playwright suite, not only generated tests: spec or feature paths (a spec may name a line), a title text, a tag, a project, or the failed and flaky tests of an earlier JSON report (from CI too). It asks the person before anything runs and records the result as `test-run@1`, masked.
+- 5fb54c6: `run-tests` can record its results in Xray as a new Test Execution (S3-9). If Jira can't be read, nothing is recorded and the run still finishes. A run is never sent twice: if the import fails or is cut off, the step ends as `uncertain` and says which label to look for in Xray. Each test is matched to its case's Xray test through the `agent-qa:TC-ID` label. A skipped test, or one with no case in Xray, isn't recorded. Before asking, it compares with the last recorded run of the same selection in the local run folder (`.agent-qa/runs`; keep it between CI jobs) and says what changed: now failing, now passing, still failing, new, and not run this time. The result is `xray-execution@1`. Recording takes the person's yes (`--accept xray` in CI) and goes through the `xray` write policy.
+
+### Patch Changes
+
+- b6ccf53: Docs for maintaining an existing suite: `docs/run-tests.md` (including the Xray Test Execution), `docs/debug.md`, `docs/review.md`, `docs/audit.md` and `docs/refactor.md`, plus API tests in `docs/scripts.md` and the README.
+- cbeea4d: The harness's browser run now includes a `debug` case (S3-10). A hand-written test and page object, not generated ones, open a seeded person's request on the stand-in app and fail on its seeded bug. The run must report a defect, refuse the fix that expects what the app shows, leave both files unchanged, and keep the person's names, the error and the page snapshot masked. The harness never approves a change, so this case also runs with a real model.
+
 ## 2.0.0-alpha.1
 
 ### Minor Changes
