@@ -371,6 +371,8 @@ export interface MaskedTestResult {
   outcome: TestOutcome;
   runs: number;
   failedRuns: number;
+  startedAt?: string | undefined;
+  durationMs?: number | undefined;
   failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined } | undefined;
 }
 
@@ -615,7 +617,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const summary = `Record ${plan.results.length} test result(s) (${failed} failed) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
       client.importExecution!(
-        { project: plan.project, summary: info.summary.slice(0, 255), description: info.description, labels: ["agent-qa", plan.label, runLabel], startedAt: info.startedAt, finishedAt: info.finishedAt, tests: plan.results.map((r) => ({ testKey: r.xrayKey, status: r.status, ...(r.comment ? { comment: r.comment } : {}) })) },
+        { project: plan.project, summary: info.summary.slice(0, 255), description: info.description, labels: ["agent-qa", plan.label, runLabel], startedAt: info.startedAt, finishedAt: info.finishedAt, tests: plan.results.map((r) => ({ testKey: r.xrayKey, status: r.status, ...(r.comment ? { comment: r.comment } : {}), ...(r.start ? { start: new Date(r.start) } : {}), ...(r.finish ? { finish: new Date(r.finish) } : {}) })) },
         grant,
       ),
     );
@@ -857,6 +859,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         outcome: x.outcome,
         runs: x.runs,
         failedRuns: x.failedRuns,
+        ...(x.startedAt !== undefined ? { startedAt: x.startedAt, durationMs: x.durationMs ?? 0 } : {}),
         ...(x.failure
           ? {
               failure: {

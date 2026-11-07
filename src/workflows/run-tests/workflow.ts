@@ -80,7 +80,9 @@ function renderTestRun(r: TestRun): string {
 
 export const TEST_RUN_ARTIFACT: ArtifactSpec<TestRun> = { name: "test-run", schema: "test-run@1", data: testRunSchema, render: renderTestRun };
 
-const resultSchema = z.object({ tcId: z.string(), xrayKey: z.string(), status: z.enum(["PASSED", "FAILED", "TODO"]), comment: z.string().optional(), before: z.string().optional() }).strict();
+const resultSchema = z
+  .object({ tcId: z.string(), xrayKey: z.string(), status: z.enum(["PASSED", "FAILED", "TODO"]), comment: z.string().optional(), start: z.string().optional(), finish: z.string().optional(), before: z.string().optional() })
+  .strict();
 
 /**
  * `xray-execution@1` (S3-9): recorded, with the Test Execution's key;
@@ -131,7 +133,7 @@ function renderXrayExecution(x: XrayExecution): string {
   const head = x.status === "recorded" ? `# Xray: recorded as ${x.key}` : x.status === "declined" ? "# Xray: not recorded" : x.status === "unavailable" ? "# Xray: Jira couldn't be read, nothing recorded" : x.status === "recording" ? "# Xray: recording" : x.status === "uncertain" ? "# Xray: may or may not be recorded" : "# Xray: nothing to record";
   if (x.status === "unavailable" || x.project === undefined) return `${[head, "", ...(x.reason ? [one(x.reason)] : [])].join("\n")}\n`;
   const lines = [head, "", ...(x.status === "uncertain" && x.reason ? [one(x.reason), ""] : []), `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
-  for (const r of x.results) lines.push(`- ${r.tcId} (${r.xrayKey}): ${r.status}${r.before ? `, was ${r.before}` : ""}${r.comment ? `: ${one(r.comment)}` : ""}`);
+  for (const r of x.results) lines.push(`- ${r.tcId} (${r.xrayKey}): ${r.status}${r.before ? `, was ${r.before}` : ""}${r.comment ? `: ${one(r.comment).slice(0, 300)}` : ""}`);
   if (x.notInXray.length) lines.push("", `Not in Xray, not recorded: ${x.notInXray.map(one).join("; ")}`);
   return `${lines.join("\n")}\n`;
 }
@@ -290,6 +292,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             outcome: t.outcome,
             runs: t.runs,
             failedRuns: t.failedRuns,
+            ...(t.startedAt !== undefined ? { startedAt: t.startedAt, durationMs: t.durationMs ?? 0 } : {}),
             ...(t.failure ? { failure: { message: t.failure.message, ...(t.failure.snippet !== undefined ? { snippet: t.failure.snippet } : {}), ...(t.failure.at ? { at: t.failure.at } : {}), ...(t.failure.snapshot !== undefined ? { snapshot: t.failure.snapshot } : {}) } } : {}),
           }));
           const status = statusOf(r.tests, r.errors);

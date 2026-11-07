@@ -30,6 +30,18 @@ describe("Playwright's JSON report", () => {
     expect(click.at).toEqual({ file: "tests/a.spec.ts", line: 8 });
     expect(click.snippet).toContain(">  8 |");
     expect(r.tests[2]!.failure!.message).toContain('Received string: "Hello"');
+    // Each test's start and duration, for the Xray test run's dates.
+    expect(r.tests.map((t) => [t.startedAt, t.durationMs])).toEqual([
+      ["2026-11-05T05:43:43.097Z", 654],
+      ["2026-11-05T05:43:44.669Z", 650],
+      ["2026-11-05T05:43:45.958Z", 1183],
+    ]);
+  });
+
+  it("spans repeated runs from the first start to the last end", () => {
+    const run = (startTime: string, duration: number) => ({ status: "expected", results: [{ status: "passed", startTime, duration }] });
+    const json = { suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [{ title: "t", file: "a.spec.ts", line: 1, tests: [run("2026-11-05T10:00:05.000Z", 1000), run("2026-11-05T10:00:00.000Z", 2000)] }] }], stats: { expected: 2, unexpected: 0, flaky: 0, skipped: 0 } };
+    expect(parsePlaywrightReport(json, "/repo").tests[0]).toMatchObject({ startedAt: "2026-11-05T10:00:00.000Z", durationMs: 6000 });
   });
 
   it("counts repeated runs of a test once, flaky when only some failed", () => {

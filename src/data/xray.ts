@@ -113,15 +113,20 @@ export interface ExecutionRow {
   outcome: "passed" | "failed" | "flaky" | "skipped";
   runs: number;
   failedRuns: number;
-  failure?: { message: string } | undefined;
+  startedAt?: string | undefined;
+  durationMs?: number | undefined;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined } | undefined;
 }
 
 export interface ExecutionResult {
   tcId: string;
   xrayKey: string;
   status: XrayRunStatus;
-  /** Masked. */
+  /** Masked: why it failed (the error, where, the code), or that it was flaky. */
   comment?: string;
+  /** When the case's tests started and ended (ISO), from the report. */
+  start?: string;
+  finish?: string;
   /** Its status in the last execution with the same label, when it was in it. */
   before?: string;
 }
@@ -150,13 +155,25 @@ export interface XrayExecutionPlan {
   changes: { failing: string[]; fixed: string[]; stillFailing: string[]; added: string[]; gone: string[]; other: string[]; skippedNow: string[] };
 }
 
-const firstLine = (s: string) => (s.split("\n").find((l) => l.trim()) ?? "").replace(/\s+/g, " ").trim();
+/** The longest failure comment Xray gets: the error with its call log, where, and the code around it. */
+export const MAX_COMMENT = 4000;
+
+/** A failure as a person reads it in Xray: where it failed, the error (with Playwright's call log), the code. */
+export function failureComment(r: Pick<ExecutionRow, "file" | "line" | "failure">): string {
+  const f = r.failure;
+  const where = f?.at && (f.at.file !== r.file || f.at.line !== r.line) ? `${f.at.file}:${f.at.line} (test ${r.file}:${r.line})` : `${r.file}:${r.line}`;
+  const parts = [`Failed at ${where}.`];
+  if (f) parts.push(f.message.trim().slice(0, 2500));
+  if (f?.snippet?.trim()) parts.push(f.snippet.trimEnd().slice(0, 1000));
+  return parts.join("\n\n").slice(0, MAX_COMMENT);
+}
 
 /** One result per case: a case whose tests ran more than once (projects, repeats) fails if any failed. */
 export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMap<string, string>): { results: Omit<ExecutionResult, "before">[]; notInXray: string[]; skipped: number; skippedKeys: string[] } {
   const byCase = new Map<string, Omit<ExecutionResult, "before">>();
   const notInXray: string[] = [];
   const skippedKeys = new Set<string>();
+  const spans = new Map<string, { start: number; end: number }>();
   let skipped = 0;
   for (const r of rows) {
     if (r.outcome === "skipped") {
@@ -179,14 +196,25 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     }
     const failed = r.outcome === "failed";
     const comment = failed
-      ? `Failed in ${r.file}:${r.line}${r.failure ? `: ${firstLine(r.failure.message)}` : ""}`
+      ? failureComment(r)
       : r.outcome === "flaky"
-        ? `Flaky: failed ${r.failedRuns} of ${r.runs} run(s), passed on a retry (${r.file}:${r.line})`
+        ? `Flaky: failed ${r.failedRuns} of ${r.runs} run(s), passed on a retry (${r.file}:${r.line}).${r.failure ? `\n\n${failureComment(r)}` : ""}`.slice(0, MAX_COMMENT)
         : undefined;
+    // A case's dates span all its tests (projects, repeats).
+    const at = r.startedAt !== undefined ? Date.parse(r.startedAt) : NaN;
+    const span = spans.get(id);
+    if (Number.isFinite(at)) {
+      const end = at + Math.max(0, r.durationMs ?? 0);
+      spans.set(id, span ? { start: Math.min(span.start, at), end: Math.max(span.end, end) } : { start: at, end });
+    }
     const prev = byCase.get(id);
     if (prev?.status === "FAILED" && !failed) continue;
     if (prev && !failed && !comment) continue;
-    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment: comment.slice(0, 1000) } : {}) });
+    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment } : {}) });
+  }
+  for (const [id, r] of byCase) {
+    const span = spans.get(id);
+    if (span) byCase.set(id, { ...r, start: new Date(span.start).toISOString(), finish: new Date(span.end).toISOString() });
   }
   const ran = new Set([...byCase.values()].map((r) => r.xrayKey));
   return { results: [...byCase.values()], notInXray: [...new Set(notInXray)], skipped, skippedKeys: [...skippedKeys].filter((k) => !ran.has(k)).sort() };

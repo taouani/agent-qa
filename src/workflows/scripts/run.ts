@@ -46,6 +46,9 @@ export const testRowSchema = z
     outcome: z.enum(["passed", "failed", "flaky", "skipped"]),
     runs: z.number(),
     failedRuns: z.number(),
+    /** When it started (ISO) and how long it ran: the Xray test run's dates. */
+    startedAt: z.string().optional(),
+    durationMs: z.number().optional(),
     failure: z
       .object({ message: z.string(), snippet: z.string().optional(), at: z.object({ file: z.string(), line: z.number() }).strict().optional(), snapshot: z.string().optional() })
       .strict()
