@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { OutputError, RunStore, StepDefinition, WorkflowDefinition } from "../../core/index.js";
-import type { JiraInput, LoadedSources, Requirement, RequirementsData } from "../../data/index.js";
+import type { JiraInput, LoadedSources, RelatedFeature, Requirement, RequirementsData } from "../../data/index.js";
 import {
   QUALITY_GAPS,
   REQUIREMENTS_ARTIFACT,
@@ -66,9 +66,19 @@ const analysisSchema = z
               .strict(),
             openQuestions: z.array(z.string().min(1).max(500)).max(15).describe("Questions a tester would ask the author; empty if none"),
             inferredCriteria: z
-              .array(z.string().min(1).max(1000))
+              .array(
+                z.union([
+                  z.string().min(1).max(1000),
+                  z
+                    .object({
+                      text: z.string().min(1).max(1000),
+                      from: z.string().min(1).max(500).describe('"issue" when the issue implies it, or the path of the related feature it comes from'),
+                    })
+                    .strict(),
+                ]),
+              )
               .max(20)
-              .describe("Only for issues with no acceptance criteria: testable criteria the issue implies. Empty otherwise"),
+              .describe("Only for issues with no acceptance criteria: testable criteria, each with where it comes from. Empty otherwise"),
           })
           .strict(),
       )
@@ -84,7 +94,7 @@ function inputOf(inputs: JiraInputs): JiraInput {
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n[cut: ${text.length - max} more characters]` : text);
 
 /** What the model sees of each issue: masked, and without hashes or ids it doesn't need. */
-function contextOf(loaded: LoadedSources): string {
+function contextOf(loaded: LoadedSources, related: Record<string, RelatedFeature[]> = {}): string {
   const issues = loaded.sources.requirements.map((r) => ({
     key: r.key,
     type: r.type,
@@ -101,6 +111,7 @@ function contextOf(loaded: LoadedSources): string {
     ...(r.labels.length ? { labels: r.labels } : {}),
     ...(r.components.length ? { components: r.components } : {}),
     ...(r.linkedPages.length ? { linkedPages: r.linkedPages.map((p) => ({ title: p.title, text: clip(p.text, MAX_PAGE) })) } : {}),
+    ...(related[r.key]?.length ? { relatedFeatures: related[r.key]!.map((f) => ({ path: f.path, text: f.text })) } : {}),
   }));
   const notes = [
     loaded.sources.truncated ? "The Jira read hit a limit, so some related issues are missing." : "",
@@ -114,12 +125,14 @@ const INSTRUCTIONS = [
   "quality.score: 90-100 testable as written; 70-89 small gaps; 40-69 a tester must ask before writing cases; below 40 not testable.",
   `quality.missing: the gaps, from: ${QUALITY_GAPS.join(", ")}.`,
   "openQuestions: what a tester would ask the author: undefined behaviour, error cases, limits, roles, data rules. Be specific; no generic questions.",
-  "inferredCriteria: only for an issue whose acceptanceCriteria is empty, the testable criteria its summary and description imply, one per item. Leave it empty for every issue that has criteria, and for epics that only group other issues.",
+  'inferredCriteria: only for an issue whose acceptanceCriteria is empty, the testable criteria it implies, one per item, each as {"text", "from"}. from is "issue" for a criterion its summary, description or pages imply. Leave it empty for every issue that has criteria, and for epics that only group other issues.',
+  'relatedFeatures: feature files of the repo that may describe similar behaviour, found by the issue key or by words of its summary. For an issue with no criteria, you may propose criteria from them, with from set to the file\'s path, but only for behaviour the issue makes likely to apply. A related feature can describe another process: where it may differ (limits, approvers, roles, messages), ask in openQuestions instead of copying it.',
+  "Use only this context: don't read the repository or other files yourself. What the analysis may use from the repo is already in relatedFeatures.",
   "Values like <PERSON_1> are masked personal data: keep them exactly as they are, never guess what they stand for, and don't make up new ones.",
 ].join("\n");
 
 /** Errors the schema can't catch: each issue answered once, criteria only where none exist, no made-up tokens. */
-function check(requirements: Requirement[], context: string, analysis: Analysis): OutputError[] {
+function check(requirements: Requirement[], context: string, analysis: Analysis, related: Record<string, RelatedFeature[]> = {}): OutputError[] {
   const errors: OutputError[] = [];
   const byKey = new Map(requirements.map((r) => [r.key, r]));
   const seen = new Set<string>();
@@ -134,9 +147,16 @@ function check(requirements: Requirement[], context: string, analysis: Analysis)
     if (requirement && requirement.acceptanceCriteria.length > 0 && issue.inferredCriteria.length > 0) {
       errors.push({ path: `${at}.inferredCriteria`, message: `${issue.key} already has acceptance criteria: leave inferredCriteria empty` });
     }
+    const paths = new Set((related[key] ?? []).map((f) => f.path));
+    issue.inferredCriteria.forEach((c, j) => {
+      const from = typeof c === "string" ? "issue" : c.from;
+      if (from !== "issue" && !paths.has(from)) {
+        errors.push({ path: `${at}.inferredCriteria.${j}.from`, message: `${from} isn't one of ${key}'s relatedFeatures; use "issue" or one of: ${[...paths].join(", ") || "(none)"}` });
+      }
+    });
     const texts: Array<[string, string]> = [
       ...issue.openQuestions.map((q, j): [string, string] => [`${at}.openQuestions.${j}`, q]),
-      ...issue.inferredCriteria.map((c, j): [string, string] => [`${at}.inferredCriteria.${j}`, c]),
+      ...issue.inferredCriteria.map((c, j): [string, string] => [`${at}.inferredCriteria.${j}`, typeof c === "string" ? c : c.text]),
     ];
     for (const [path, text] of texts) {
       const unknown = (text.match(TOKEN) ?? []).filter((t) => !known.has(t));
@@ -153,7 +173,13 @@ function build(loaded: LoadedSources, analysis: Analysis): RequirementsArtifact 
   const requirements = loaded.sources.requirements.map((r): AnalyzedRequirement => {
     const a = byKey.get(r.key)!;
     const own = r.acceptanceCriteria.map((ac) => ({ ...ac, origin: "jira" as const }));
-    const inferred = own.length === 0 ? a.inferredCriteria.map((text, i) => ({ id: `AC${i + 1}`, text, origin: "inferred" as const })) : [];
+    const inferred =
+      own.length === 0
+        ? a.inferredCriteria.map((c, i) => {
+            const from = typeof c === "string" ? "issue" : c.from;
+            return { id: `AC${i + 1}`, text: typeof c === "string" ? c : c.text, origin: "inferred" as const, ...(from !== "issue" ? { from } : {}) };
+          })
+        : [];
     return {
       key: r.key,
       type: r.type,
@@ -187,15 +213,25 @@ export type JiraInputs = { key?: string | undefined; jql?: string | undefined };
 /** The analyze step, shared with the test-cases workflow. It writes requirements@1 when accepted. */
 export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepDefinition<I, Analysis> {
   const load = (runId: string, inputs: I) => deps.data.requirements(runId, inputOf(inputs));
+  // Only issues with no criteria of their own get related features: the others don't infer any.
+  const relatedOf = async (runId: string, loaded: LoadedSources): Promise<Record<string, RelatedFeature[]>> => {
+    const bare = loaded.sources.requirements.filter((r) => r.acceptanceCriteria.length === 0).map((r) => ({ key: r.key, summary: r.summary }));
+    if (!deps.data.relatedFeatures || bare.length === 0) return {};
+    return deps.data.relatedFeatures(runId, bare);
+  };
   return {
     id: "analyze",
     kind: "generate",
     outputSchema: analysisSchema,
     instructions: () => INSTRUCTIONS,
-    context: async ({ runId, inputs }) => contextOf(await load(runId, inputs)),
+    context: async ({ runId, inputs }) => {
+      const loaded = await load(runId, inputs);
+      return contextOf(loaded, await relatedOf(runId, loaded));
+    },
     check: async ({ runId, inputs }, output) => {
       const loaded = await load(runId, inputs);
-      return check(loaded.sources.requirements, contextOf(loaded), output);
+      const related = await relatedOf(runId, loaded);
+      return check(loaded.sources.requirements, contextOf(loaded, related), output, related);
     },
     onAccept: async ({ runId, inputs }, output) => {
       const loaded = await load(runId, inputs);

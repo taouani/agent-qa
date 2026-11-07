@@ -28,6 +28,8 @@ const criterion = z
     text: z.string(),
     /** `jira`: written in the issue. `inferred`: proposed by the analysis because the issue had none. */
     origin: z.enum(["jira", "inferred"]),
+    /** An inferred criterion taken from a feature file of the repo, not from the issue: its path. Check it with the author. */
+    from: z.string().optional(),
   })
   .strict();
 
@@ -105,7 +107,7 @@ export function renderRequirements(data: RequirementsArtifact): string {
     lines.push(`${facts.join(" · ")}`, "", `**Quality:** ${r.quality.score}/100${r.quality.missing.length ? `, missing ${r.quality.missing.join(", ")}` : ""}`);
     lines.push("", "### Acceptance criteria", "");
     if (r.acceptanceCriteria.length === 0) lines.push("None.");
-    for (const ac of r.acceptanceCriteria) lines.push(`- **${ac.id}**${ac.origin === "inferred" ? " (inferred)" : ""}: ${one(ac.text)}`);
+    for (const ac of r.acceptanceCriteria) lines.push(`- **${ac.id}**${ac.from ? ` (inferred from repo: ${one(ac.from)})` : ac.origin === "inferred" ? " (inferred)" : ""}: ${one(ac.text)}`);
     if (r.openQuestions.length) {
       lines.push("", "### Open questions", "");
       for (const q of r.openQuestions) lines.push(`- ${one(q)}`);
