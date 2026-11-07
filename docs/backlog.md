@@ -45,11 +45,7 @@ From the PR #76 review (7 Nov 2026):
 
 ## Pushing reviewed cases later (`--push-from`)
 
-From the PR #82 review (7 Nov 2026):
-- Two runs pushing the same cases from two terminals at the same moment aren't stopped: the check and the push aren't atomic across processes.
-- The "already pushed" check looks at the newest 200 runs only.
-- A push that partly failed can't be retried with `--push-from`, because the cases count as pushed.
-- The vault check refuses an expired vault even when `restoreOnWrite` is off and the vault isn't needed.
+The four limits from the PR #82 review were closed in the clean-up pass (7 Nov 2026): a push takes a claim on the cases' run across processes, every run is searched, a push with failed cases can be pushed again (all cases are sent; those already in Xray are updated), and the vault is needed only with `restoreOnWrite`. Left: a claim left by a crash is never taken over; the message names the file to delete.
 
 ## Test run limits
 

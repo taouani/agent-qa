@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { EngineError } from "../engine/engine.js";
@@ -451,6 +451,38 @@ export class RunStore {
   async log(runId: string, event: Record<string, unknown>): Promise<void> {
     if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`, [], "NOT_FOUND");
     await appendFile(join(this.dir(runId), "log.jsonl"), JSON.stringify({ ...event, at: this.now().toISOString() }) + "\n", "utf8");
+  }
+
+  /**
+   * Takes the claim `name` on a run for `holder` (another run's id), across
+   * processes: `steps/claim-{name}` is created exclusively. Returns undefined when
+   * the claim is now `holder`'s (or already was), else the run that holds it.
+   */
+  async claim(runId: string, name: string, holder: string): Promise<string | undefined> {
+    if (!SAFE_ID.test(name)) throw new RunStoreError(`Unsafe claim name: ${name}`, [], "UNSAFE_ID");
+    if (!(await this.manifest(runId))) throw new RunStoreError(`Run not found: ${runId}`, [], "NOT_FOUND");
+    await mkdir(join(this.dir(runId), "steps"), { recursive: true });
+    const file = this.claimFile(runId, name);
+    try {
+      await writeFile(file, holder, { flag: "wx" });
+      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const current = (await readFile(file, "utf8").catch(() => "")).trim();
+    return current === holder ? undefined : current || "(unknown)";
+  }
+
+  /** Gives up `holder`'s claim `name` on a run; a claim held by another run is left. */
+  async release(runId: string, name: string, holder: string): Promise<void> {
+    if (!SAFE_ID.test(name)) throw new RunStoreError(`Unsafe claim name: ${name}`, [], "UNSAFE_ID");
+    const file = this.claimFile(runId, name);
+    if ((await readFile(file, "utf8").catch(() => undefined))?.trim() === holder) await rm(file, { force: true });
+  }
+
+  /** Path of a claim's file, for messages telling the person what to delete. */
+  claimFile(runId: string, name: string): string {
+    return join(this.dir(runId), "steps", `claim-${name}`);
   }
 
   /** Run ids, oldest first (the date prefix sorts them). */

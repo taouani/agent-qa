@@ -309,9 +309,15 @@ describe("test-cases workflow", () => {
     let agentTests: Record<string, AgentTest[]>;
     /** Tests found by label only (their link to the issue was removed). */
     let labelOnly: Record<string, string>;
+    /** Imports left that reject the first test. */
+    let rejectFirst: number;
+    let xrayConfig: ReturnType<typeof configSchema.parse>;
+    let xrayLabels: NonNullable<ConstructorParameters<typeof DataAccess>[0]["labels"]>;
+    let xrayClient: NonNullable<ConstructorParameters<typeof DataAccess>[0]["xray"]>;
 
     beforeEach(() => {
       sent = [];
+      rejectFirst = 0;
       agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"] }] };
       labelOnly = {};
       audit = new MemoryAuditSink();
@@ -342,11 +348,19 @@ describe("test-cases workflow", () => {
         xray: {
           importAndWait: async (tests) => {
             sent.push(tests);
-            return { jobId: "job1", status: "successful", issues: tests.map((_, i) => ({ elementNumber: i, key: `QA-${10 + i}` })), errors: [] };
+            const issues = tests.map((_, i) => ({ elementNumber: i, key: `QA-${10 + i}` }));
+            if (rejectFirst > 0) {
+              rejectFirst--;
+              return { jobId: "job1", status: "successful", issues: issues.slice(1), errors: [{ elementNumber: 0, message: "rejected" }] };
+            }
+            return { jobId: "job1", status: "successful", issues, errors: [] };
           },
         },
         audit,
       });
+      xrayConfig = config;
+      xrayLabels = data["options"].labels!;
+      xrayClient = data["options"].xray!;
       xrayEngine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(testCasesWorkflow({ data, runs }));
     });
 
@@ -525,6 +539,65 @@ describe("test-cases workflow", () => {
       await expect(xrayEngine.submit(b.runId, "push", { approve: true })).rejects.toThrow(`already pushed to Xray, by run ${a.runId}`);
       expect(sent).toHaveLength(2);
       expect((await xrayEngine.submit(b.runId, "push", { approve: false })).next.kind).toBe("done");
+    });
+
+    it("pushes again from a run whose push had failed cases (clean-up, 7 Nov 2026)", async () => {
+      const { runId: earlier } = await reviewed();
+      rejectFirst = 1;
+      await xrayEngine.submit(earlier, "push", { approve: true });
+      expect((await runs.readArtifact(earlier, XRAY_PUSH_ARTIFACT))!.data.counts.failed).toBe(1);
+      const retry = await xrayEngine.start("test-cases", { casesRun: earlier });
+      expect(retry.context).toContain(`run ${earlier} pushed them, but 1 case(s) failed: this push sends them all again (cases already in Xray are updated)`);
+      await xrayEngine.submit(retry.runId, "push", { approve: true });
+      expect(sent).toHaveLength(2);
+      expect((await runs.readArtifact(retry.runId, XRAY_PUSH_ARTIFACT))!.data.counts.failed).toBe(0);
+      // A push with no failures ends it.
+      await expect(xrayEngine.start("test-cases", { casesRun: earlier })).rejects.toThrow(`already pushed to Xray, by run ${retry.runId}`);
+    });
+
+    it("doesn't push while another process holds the push claim, and frees it after", async () => {
+      const { runId: declined } = await reviewed();
+      await xrayEngine.submit(declined, "push", { approve: false });
+      const later = await xrayEngine.start("test-cases", { casesRun: declined });
+      expect(await runs.claim(declined, "xray-push", "other-run")).toBeUndefined();
+      await expect(xrayEngine.submit(later.runId, "push", { approve: true })).rejects.toThrow(
+        `Run other-run is pushing these reviewed cases to Xray now, so they aren't pushed twice: wait for it, then submit again. If it isn't running, delete ${runs.claimFile(declined, "xray-push")} and submit again.`,
+      );
+      expect(sent).toHaveLength(0);
+      await runs.release(declined, "xray-push", "other-run");
+      await xrayEngine.submit(later.runId, "push", { approve: true });
+      expect(sent).toHaveLength(1);
+      // Released after the push, so a run that had failures could be pushed again.
+      expect(await runs.claim(declined, "xray-push", "next")).toBeUndefined();
+    });
+
+    it("pushes tokens as they are from a run whose vault expired when restoreOnWrite is off", async () => {
+      const { runId: declined } = await reviewed();
+      await xrayEngine.submit(declined, "push", { approve: false });
+      const key = randomBytes(32);
+      const make = (restoreOnWrite: boolean) =>
+        new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(
+          testCasesWorkflow({
+            runs,
+            data: new DataAccess({
+              root: dir,
+              store: runs,
+              config: { ...xrayConfig, masking: { ...xrayConfig.masking, restoreOnWrite } },
+              // Empty vault storage, as after the 30-day expiry.
+              vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }),
+              jira,
+              confluence: { pages: async () => ({ pages: [], skipped: [] }) },
+              labels: xrayLabels,
+              xray: xrayClient,
+              audit,
+            }),
+          }),
+        );
+      await expect(make(true).start("test-cases", { casesRun: declined })).rejects.toThrow("has expired or was deleted");
+      const off = make(false);
+      const later = await off.start("test-cases", { casesRun: declined });
+      await off.submit(later.runId, "push", { approve: true });
+      expect(sent[0]!.map((t) => t.fields.summary)[0]).toMatch(/^\[TC-ABC-1-001\] Old case escalated for <PERSON_\d+>$/);
     });
 
     it("refuses casesRun without reviewed cases", async () => {
