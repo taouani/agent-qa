@@ -208,6 +208,7 @@ describe("agent-qa run", () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "not a key" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ workflow: "test-cases", input: "{" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ resume: "2026-11-03-x-abcd" }))).toBe(EXIT.setup);
+    expect(lines.at(-1)).toMatch(/no run 2026-11-03-x-abcd in this project's run folder/);
     expect(await runCommand(options({ resume: "../../etc" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ workflow: "test-cases", fromRun: "2026-11-03-none-abcd" }))).toBe(EXIT.setup);
     const noDriver = options({ workflow: "test-cases", key: "ABC-1", model: "nope" });

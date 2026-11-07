@@ -139,6 +139,9 @@ describe("seed scanner", () => {
       "pat.vexwillow\\u0040example.com",
       "user patvexwillow",
       Buffer.from("mail pat.vexwillow@example.com now").toString("base64"),
+      // Base64 glued to a prefix, so the run starts off its 4-character alignment.
+      `key${Buffer.from("mail pat.vexwillow@example.com now").toString("base64")}`,
+      `ab${Buffer.from("mail pat.vexwillow@example.com now").toString("base64url")}`,
     ]) expect(email.scan(text), text).toHaveLength(1);
   });
 
