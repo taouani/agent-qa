@@ -36,10 +36,24 @@ Found in the PR #75 review (7 Nov 2026). In API tests, a request context may onl
 
 ## Xray Test Execution limits
 
-From the PR #76 review (7 Nov 2026), not yet checked against a live Xray:
-- The start and finish dates go in the Xray JSON `info` part. In a multipart import the issue fields come from the `info` part, and some instances keep the dates in custom fields.
+From the PR #76 review (7 Nov 2026):
+- Checked live on 7 Nov 2026: Xray ignores the dates in the results' `info` in a multipart import. The Test Execution's own dates are set through `xray.executionDates` (PR #86).
 - The rerun comparison comes from the local run folder (Tarek's choice, 7 Nov 2026). In CI it needs the folder kept between jobs; a shared Xray read-back could be added later if teams ask for it.
 - An `uncertain` recording (import failed or cut off) is never sent again and never used as a comparison; the person checks Xray by the `agent-qa:run:` label. No automatic check yet.
+- The screenshot handle is an unsalted hash of the file's path in the output folder.
+
+## Pushing reviewed cases later (`--push-from`)
+
+From the PR #82 review (7 Nov 2026):
+- Two runs pushing the same cases from two terminals at the same moment aren't stopped; the check runs inside one process.
+- A push that partly failed can't be retried with `--push-from`, because the cases count as pushed.
+- The vault check refuses an expired vault even when `restoreOnWrite` is off and the vault isn't needed.
+
+## Test run limits
+
+From the PR #83 review (7 Nov 2026):
+- A test that hangs until the 15-minute `--global-timeout` shows as skipped, not failed.
+- A smaller `globalTimeout` in the repo's Playwright config is replaced by Agent-QA's.
 
 ## Done or moved into a slice
 
