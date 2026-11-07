@@ -18,7 +18,7 @@ import {
   type FrameworkProfile,
   type SavedProfile,
 } from "./profile.js";
-import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
+import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, TEST_RUN_KILL_MS, TEST_RUN_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PreviousExecution, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
@@ -830,7 +830,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         return { status: "done", exitCode: g.result.exitCode, timedOut: g.result.timedOut, durationMs, tests: [], errors: [`${saved.commands.generate.join(" ")} failed: ${tail(g.result)}`] };
       }
     }
-    const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands!.test!, args, purpose }, true, true);
+    const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands!.test!, args: [...args.filter((a) => !a.startsWith("--global-timeout=")), `--global-timeout=${TEST_RUN_TIMEOUT_MS}`], purpose, timeoutMs: TEST_RUN_KILL_MS }, true, true);
     if (t.status !== "done") return { status: "declined" };
     durationMs += t.result.durationMs;
     const base = { status: "done" as const, exitCode: t.result.exitCode, timedOut: t.result.timedOut, durationMs };
@@ -839,7 +839,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       parsed = parsePlaywrightReport(JSON.parse(t.report ?? "null"), dir);
     } catch {
       await service.saveVault();
-      return { ...base, tests: [], errors: [`no test report came back${t.result.timedOut ? " (the run timed out)" : ""}: ${tail(t.result) || "no output"}`] };
+      const why = t.result.timedOut ? ` (the run was stopped after ${Math.round(t.result.durationMs / 60_000)} minutes)` : "";
+      return { ...base, tests: [], errors: [`no test report came back${why}: ${tail(t.result) || "no output"}`] };
     }
     const tests: MaskedTestResult[] = [];
     for (const x of parsed.tests) {

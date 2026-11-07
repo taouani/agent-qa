@@ -34,9 +34,19 @@ export interface HostCommandOutcome {
 export const DEFAULT_TIMEOUT_MS = 15 * 60_000;
 export const MAX_TIMEOUT_MS = 60 * 60_000;
 export const MAX_OUTPUT_BYTES = 256 * 1024;
+/**
+ * Playwright's own limit for a test run, under the kill timeout: when it is
+ * reached, Playwright stops the tests itself and still writes its report, so
+ * the failures so far come back. A killed run leaves no report at all
+ * (Tarek's debug run, 7 Nov 2026: five tests each hung until their 3-minute
+ * timeout, and the run was killed at 15 minutes with nothing to read).
+ */
+export const TEST_RUN_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+/** The kill limit of such a run: room after Playwright's limit for teardown (fixtures, globalTeardown, a logout) and the report. */
+export const TEST_RUN_KILL_MS = TEST_RUN_TIMEOUT_MS + 5 * 60_000;
 
 /** Flags a workflow may add, by prefix: the ones the run-and-fix loop needs. Values are checked like paths, and reporters by name. */
-export const ALLOWED_FLAGS = ["--reporter=", "--retries=", "--workers=", "--grep=", "--grep-invert=", "--project=", "--repeat-each=", "--max-failures=", "--timeout=", "--tags="];
+export const ALLOWED_FLAGS = ["--reporter=", "--retries=", "--workers=", "--grep=", "--grep-invert=", "--project=", "--repeat-each=", "--max-failures=", "--timeout=", "--global-timeout=", "--tags="];
 /** Characters an argument may hold. No quotes, %, ^, !, &, |, <, > or spaces: nothing a shell or cmd.exe could read as syntax. */
 const SAFE_ARG = /^[\p{L}\p{N}_@+=:,./\\-]{1,300}$/u;
 const SAFE_FLAG_VALUE = /^[\p{L}\p{N}_@+=:,./\\ -]{0,300}$/u;
