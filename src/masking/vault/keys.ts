@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { withKeyCreationLock } from "./vault.js";
 
 /** Supplies the 32-byte AES key that encrypts the token vault. */
 export interface KeyProvider {
@@ -64,7 +65,11 @@ export class KeychainKeyProvider implements KeyProvider {
   readonly description = `OS keychain (${KEYCHAIN_SERVICE}/${KEYCHAIN_ACCOUNT})`;
   private cached: Buffer | undefined;
 
-  constructor(private readonly factory: KeyringFactory = defaultKeyringFactory) {}
+  constructor(
+    private readonly factory: KeyringFactory = defaultKeyringFactory,
+    /** Held while a missing key is created; shared by this user's Agent-QA processes. */
+    private readonly lock: <T>(fn: () => Promise<T> | T) => Promise<T> = withKeyCreationLock,
+  ) {}
 
   async getKey(): Promise<Buffer> {
     if (this.cached) return this.cached;
@@ -76,10 +81,14 @@ export class KeychainKeyProvider implements KeyProvider {
     }
     let stored = this.keychain(() => entry.getPassword());
     if (!stored) {
-      this.keychain(() => entry.setPassword(randomBytes(32).toString("base64")));
-      // Read back what was stored: if two processes create a key at once, the last write
-      // wins, and both must use that one or one process writes vaults nobody can decrypt.
-      stored = this.keychain(() => entry.getPassword());
+      // Created under a lock, checking again inside it: another process may have just made one.
+      stored = await this.lock(() => {
+        const now = this.keychain(() => entry.getPassword());
+        if (now) return now;
+        this.keychain(() => entry.setPassword(randomBytes(32).toString("base64")));
+        // Read back what was stored, in case a process that took over a stale lock wrote too.
+        return this.keychain(() => entry.getPassword());
+      });
       if (!stored) throw unavailable("the key was stored but can't be read back");
     }
     this.cached = decodeKey(stored, this.description);

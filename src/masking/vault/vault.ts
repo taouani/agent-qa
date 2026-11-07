@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, utimes } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { KeyProvider } from "./keys.js";
 
@@ -15,6 +16,114 @@ export interface VaultStorage {
   write(runId: string, blob: string): Promise<void>;
   delete(runId: string): Promise<void>;
   list(): Promise<string[]>;
+}
+
+export interface KeyLockOptions {
+  /** Folder of the lock file; default `~/.agent-qa` (created 0700), which only this user can write. */
+  dir?: string;
+  /** How long to wait for another process; default 4 min, longer than `staleMs` so a crashed process's lock is taken over first. */
+  waitMs?: number;
+  /**
+   * A lock that hasn't changed for this long while we watched was left by a crash and is taken over; default 3 min.
+   * Long, because the keychain calls are synchronous: while one waits on a prompt, the holder can't refresh its lock.
+   */
+  staleMs?: number;
+}
+
+/**
+ * Runs `fn` while holding a lock file shared by every Agent-QA process of
+ * this OS user, so two processes that find no vault key in the keychain
+ * don't each create one (the loser's vaults could never be read again).
+ *
+ * The lock holds a random token: it is refreshed while `fn` runs (a keychain
+ * prompt can wait on the person), removed only by its owner, and a stale one
+ * is taken over by renaming it away first, so two waiters can't both take it.
+ * It is stale when it hasn't changed for `staleMs` while we watched (its own
+ * time isn't trusted: a network home folder's clock can differ from ours).
+ * Left: three processes at a stale lock can still briefly both hold it; the
+ * key is read back after it is stored, so they still end up with one key.
+ * If the lock folder can't be written, `fn` runs without the lock, as before
+ * locking existed; the key is read back after it is stored either way.
+ */
+export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: KeyLockOptions = {}): Promise<T> {
+  const dir = options.dir ?? join(homedir(), ".agent-qa");
+  const file = join(dir, "vault-key.lock");
+  const waitMs = options.waitMs ?? 240_000;
+  const staleMs = options.staleMs ?? 180_000;
+  const token = randomBytes(16).toString("hex");
+  const started = Date.now();
+  let seen: { stamp: string; since: number } | undefined;
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    // mkdir's mode doesn't apply to a folder that already exists.
+    if (process.platform !== "win32") await chmod(dir, 0o700);
+  } catch {
+    return await fn();
+  }
+  for (;;) {
+    let handle;
+    try {
+      handle = await open(file, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return await fn();
+    }
+    if (handle) {
+      try {
+        await handle.writeFile(token);
+      } catch {
+        await handle.close().catch(() => undefined);
+        await rm(file, { force: true }).catch(() => undefined);
+        return await fn();
+      }
+      await handle.close();
+      break;
+    }
+    const held = await lockState(file);
+    if (held) {
+      const stamp = `${held.mtimeMs}:${held.content}`;
+      if (seen?.stamp !== stamp) seen = { stamp, since: Date.now() };
+      if (Date.now() - seen.since > staleMs) {
+        await takeOver(file, held.content);
+        seen = undefined;
+        continue;
+      }
+    }
+    if (Date.now() - started > waitMs) throw new Error(`Another Agent-QA process is creating the vault key. If none is running, delete ${file} and try again.`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const refresh = setInterval(() => {
+    const now = new Date();
+    void readFile(file, "utf8").then((c) => (c === token ? utimes(file, now, now) : undefined)).catch(() => undefined);
+  }, Math.max(50, Math.floor(staleMs / 4)));
+  refresh.unref();
+  try {
+    return await fn();
+  } finally {
+    clearInterval(refresh);
+    if ((await readFile(file, "utf8").catch(() => undefined)) === token) await rm(file, { force: true }).catch(() => undefined);
+  }
+}
+
+async function lockState(file: string): Promise<{ mtimeMs: number; content: string } | undefined> {
+  try {
+    const [s, content] = await Promise.all([stat(file), readFile(file, "utf8")]);
+    return { mtimeMs: s.mtimeMs, content };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Moves a stale lock away; if what moved is not the lock we judged stale (someone just took it), puts it back. */
+async function takeOver(file: string, staleContent: string): Promise<void> {
+  const aside = `${file}.${randomBytes(6).toString("hex")}.stale`;
+  try {
+    await rename(file, aside);
+  } catch {
+    return; // Another waiter moved it first.
+  }
+  const moved = await readFile(aside, "utf8").catch(() => staleContent);
+  if (moved !== staleContent) await link(aside, file).catch(() => undefined);
+  await rm(aside, { force: true }).catch(() => undefined);
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
