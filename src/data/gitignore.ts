@@ -1,14 +1,16 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /**
  * A read-only .gitignore evaluator for `agent-qa doctor`. It follows git's
  * rules closely enough for the paths doctor asks about: anchored and
  * unanchored patterns, `*`, `?`, `**`, directory-only patterns, negation, the
  * last matching rule winning, and a file staying ignored once a parent folder
- * is ignored. It reads `.git/info/exclude`, the root `.gitignore`, and the
- * `.gitignore` files in each folder on the way to the path. It does not read
- * `core.excludesFile` or ask git, so it can be stricter than git, never looser.
+ * is ignored. It finds the git work tree the project sits in (a project can
+ * be a subfolder of a bigger repo) and reads its `info/exclude`, its root
+ * `.gitignore`, and the `.gitignore` files in each folder on the way down to
+ * the path. It does not read `core.excludesFile` or ask git, so it can be
+ * stricter than git, never looser.
  */
 
 interface Rule {
@@ -79,10 +81,13 @@ function matches(rule: Rule, path: string, isDir: boolean): boolean {
   return rule.anchored ? rule.regex.test(rel) : rule.regex.test(rel.slice(rel.lastIndexOf("/") + 1));
 }
 
-/** True when git would ignore `target` (relative, `/`-separated; a trailing `/` means a folder). */
-export function isIgnored(rules: Rule[], target: string): boolean {
+/** Rules for one project; `prefix` is the project folder inside its git work tree ("" at the top). */
+export type IgnoreRules = Rule[] & { prefix?: string };
+
+/** True when git would ignore `target` (relative to the project, `/`-separated; a trailing `/` means a folder). */
+export function isIgnored(rules: IgnoreRules, target: string): boolean {
   const isDirTarget = target.endsWith("/");
-  const parts = target.replace(/\/$/, "").split("/");
+  const parts = (rules.prefix ? `${rules.prefix}/${target}` : target).replace(/\/$/, "").split("/");
   for (let i = 0; i < parts.length; i++) {
     const path = parts.slice(0, i + 1).join("/");
     const isDir = i < parts.length - 1 || isDirTarget;
@@ -104,22 +109,52 @@ async function readOptional(file: string): Promise<string> {
   }
 }
 
+/**
+ * The git work tree holding `root` (the nearest folder with a `.git` entry,
+ * root itself included) and its git folder; root itself when none is found.
+ */
+export async function gitWorkTree(root: string): Promise<{ top: string; gitDir: string | undefined }> {
+  let dir = resolve(root);
+  for (;;) {
+    const dotGit = join(dir, ".git");
+    const found = await stat(dotGit).catch(() => undefined);
+    if (found?.isDirectory()) return { top: dir, gitDir: dotGit };
+    if (found?.isFile()) {
+      // A worktree or submodule: ".git" is a file naming the git folder.
+      const named = /^gitdir:\s*(.+?)\s*$/m.exec(await readOptional(dotGit))?.[1];
+      return { top: dir, gitDir: named ? resolve(dir, named) : undefined };
+    }
+    const up = dirname(dir);
+    if (up === dir) return { top: resolve(root), gitDir: undefined };
+    dir = up;
+  }
+}
+
 /** Rules that apply to `targets` in the project at `root`, in git's precedence order. */
 export async function loadIgnoreRules(
   root: string,
   targets: string[],
   // Only Windows: macOS repos can set core.ignorecase=false, and guessing wrong there would be looser than git.
   caseInsensitive = process.platform === "win32",
-): Promise<Rule[]> {
-  const rules = parseGitignore(await readOptional(join(root, ".git", "info", "exclude")), "", caseInsensitive);
-  rules.push(...parseGitignore(await readOptional(join(root, ".gitignore")), "", caseInsensitive));
+): Promise<IgnoreRules> {
+  const { top, gitDir } = await gitWorkTree(root);
+  const rel = relative(top, resolve(root));
+  const prefix = rel && !isAbsolute(rel) && !rel.split(sep).includes("..") ? rel.split(sep).join("/") : "";
+  const rules: IgnoreRules = [];
+  if (gitDir) {
+    // A linked worktree keeps info/exclude in the main git folder, named by its commondir file.
+    const common = (await readOptional(join(gitDir, "commondir"))).trim();
+    rules.push(...parseGitignore(await readOptional(join(common ? resolve(gitDir, common) : gitDir, "info", "exclude")), "", caseInsensitive));
+  }
+  rules.push(...parseGitignore(await readOptional(join(top, ".gitignore")), "", caseInsensitive));
   const folders = new Set<string>();
   for (const target of targets) {
-    const parts = target.replace(/\/$/, "").split("/").slice(0, -1);
+    const parts = (prefix ? `${prefix}/${target}` : target).replace(/\/$/, "").split("/").slice(0, -1);
     for (let i = 1; i <= parts.length; i++) folders.add(parts.slice(0, i).join("/"));
   }
   for (const folder of [...folders].sort((a, b) => a.length - b.length)) {
-    rules.push(...parseGitignore(await readOptional(join(root, ...folder.split("/"), ".gitignore")), folder, caseInsensitive));
+    rules.push(...parseGitignore(await readOptional(join(top, ...folder.split("/"), ".gitignore")), folder, caseInsensitive));
   }
+  if (prefix) rules.prefix = prefix;
   return rules;
 }

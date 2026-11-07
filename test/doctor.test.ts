@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { formatDoctor, runDoctor, type CheckResult } from "../src/data/index.js";
-import { isIgnored, parseGitignore } from "../src/data/gitignore.js";
+import { isIgnored, loadIgnoreRules, parseGitignore } from "../src/data/gitignore.js";
+import { parseGitIndex, trackedPaths } from "../src/data/git-index.js";
 import { keychainLookup, type KeyringEntry } from "../src/masking/index.js";
 import { VERSION } from "../src/core/index.js";
 
@@ -60,6 +62,7 @@ describe("agent-qa doctor", () => {
       ["secrets", "pass"],
       ["vault-key", "pass"],
       ["gitignore", "pass"],
+      ["tracked", "skip"],
       ["models", "pass"],
       ["salesforce", "skip"],
       ["network", "pass"],
@@ -277,3 +280,58 @@ describe("doctor with a relative cwd", () => {
     }
   });
 });
+
+describe("doctor in a git work tree (clean-up of slice 0 follow-ups)", () => {
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd, stdio: "pipe" });
+
+  it("reads the .gitignore files above a project in a subfolder of the repo", async () => {
+    git(dir, "init", "-q");
+    await writeFile(join(dir, ".gitignore"), "**/.agent-qa/vault/\n");
+    await mkdir(join(dir, "packages", "qa"), { recursive: true });
+    await writeFile(join(dir, "packages", ".gitignore"), "qa/.agent-qa/runs/\n");
+    await writeFile(join(dir, ".git", "info", "exclude"), "audit.jsonl\n");
+    const project = join(dir, "packages", "qa");
+    const rules = await loadIgnoreRules(project, [".agent-qa/vault/x.vault", ".agent-qa/runs/x/run.json", ".agent-qa/audit.jsonl"], false);
+    expect(rules.prefix).toBe("packages/qa");
+    expect(isIgnored(rules, ".agent-qa/vault/x.vault")).toBe(true);
+    expect(isIgnored(rules, ".agent-qa/runs/x/run.json")).toBe(true);
+    expect(isIgnored(rules, ".agent-qa/audit.jsonl")).toBe(true);
+    expect(isIgnored(rules, "tests/a.spec.ts")).toBe(false);
+    expect(byId(await doctor(ENV, { cwd: project })).gitignore!.status).toBe("pass");
+  });
+
+  it("fails when a vault file is tracked by git, even once it is ignored", async () => {
+    git(dir, "init", "-q");
+    await mkdir(join(dir, ".agent-qa", "vault"), { recursive: true });
+    await writeFile(join(dir, ".agent-qa", "vault", "r1.vault"), "x");
+    await writeFile(join(dir, "README.md"), "x");
+    expect(byId(await doctor(ENV)).tracked!.status).toBe("pass");
+    git(dir, "add", "README.md", ".agent-qa/vault/r1.vault");
+    await writeFile(join(dir, ".gitignore"), ".agent-qa/\n");
+    const tracked = byId(await doctor(ENV)).tracked!;
+    expect(tracked.status).toBe("fail");
+    expect(tracked.fix).toContain("git rm -r --cached .agent-qa");
+    git(dir, "rm", "-q", "-r", "--cached", ".agent-qa");
+    expect(byId(await doctor(ENV)).tracked!.status).toBe("pass");
+  });
+
+  it("reads index versions 2, 3 and 4 the way git ls-files does", async () => {
+    git(dir, "init", "-q");
+    const names = ["a.txt", "dir/b.txt", "dir/sub/c with space.txt", "dir/sub/ü.txt", ".agent-qa/vault/r.vault"];
+    for (const n of names) {
+      await mkdir(join(dir, n, ".."), { recursive: true });
+      await writeFile(join(dir, n), n);
+    }
+    git(dir, "add", "-A");
+    // An intent-to-add entry uses the extended flags (version 3).
+    await writeFile(join(dir, "later.txt"), "x");
+    git(dir, "add", "-N", "later.txt");
+    for (const version of ["2", "3", "4"]) {
+      if (version !== "3") git(dir, "update-index", "--index-version", version);
+      const expected = execFileSync("git", ["ls-files", "-z"], { cwd: dir }).toString("utf8").split("\0").filter(Boolean);
+      expect(await trackedPaths(join(dir, ".git")), `version ${version}`).toEqual(expected);
+    }
+    expect(parseGitIndex(Buffer.from("not an index"))).toBeUndefined();
+  });
+});
+
