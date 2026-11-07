@@ -199,6 +199,10 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     expect(plan.results.map((x) => x.screenshot !== undefined)).toEqual([true, true, false, true]);
     expect(plan.screenshots).toBe(3);
     expect((await off.xrayExecutionPlan(rows, "agent-qa:exec:abc", [])).screenshots).toBeUndefined();
+    // A plan made with the setting off (the question named no screenshots) sends none, even once it is on.
+    await on.recordXrayExecution("r1", await off.xrayExecutionPlan(rows, "agent-qa:exec:abc", []), "agent-qa:run:r1", info, true);
+    expect(recorded.at(-1)!.tests.every((t) => t.evidence === undefined)).toBe(true);
+    recorded.splice(1);
     await on.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true);
     // Only the file in the output folder: a folder outside it, or a link out, is never read.
     expect(recorded[1]!.tests.map((t) => t.evidence)).toEqual([[{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"), filename: "TC-ABC-1-001.png", contentType: "image/png" }], undefined, undefined, undefined]);

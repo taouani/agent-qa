@@ -617,7 +617,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (!client.importExecution) throw new Error("this Xray client can't record Test Executions");
     const failed = plan.results.filter((r) => r.status === "FAILED").length;
     // Screenshots only when agent-qa.yaml asks for them: they can't be masked.
-    const shots = config.xray?.attachScreenshots ? await this.failureScreenshots(runId, plan) : new Map<string, XrayEvidence>();
+    // Only what the person was told about: the plan they saw counted them, and the setting is still on.
+    const shots = config.xray?.attachScreenshots && plan.screenshots ? await this.failureScreenshots(runId, plan) : new Map<string, XrayEvidence>();
     const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
       client.importExecution!(
