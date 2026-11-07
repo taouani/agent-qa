@@ -667,7 +667,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const restore = restorer((t) => vault.valueOf(t));
     let total = 0;
     const found = new Map<string, Map<string, string>>();
-    for (const r of plan.results) {
+    // Failed cases first: under the 10 MB cap, a passed page's screenshot never crowds out a failure's.
+    const ordered = [...plan.results.filter((r) => r.status === "FAILED"), ...plan.results.filter((r) => r.status !== "FAILED")];
+    for (const r of ordered) {
       if (!r.screenshot) continue;
       const cut = r.screenshot.lastIndexOf("#");
       const outDir = restore(r.screenshot.slice(0, cut));

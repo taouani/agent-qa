@@ -216,8 +216,8 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     const prev = byCase.get(id);
     if (prev?.status === "FAILED" && !failed) continue;
     if (prev && !failed && !comment) continue;
-    // The kept row's screenshot, else one an earlier row of the case had.
-    const shot = r.screenshot ?? r.failure?.screenshot ?? prev?.screenshot;
+    // The kept row's screenshot, else one an earlier row with the same status had: a failed result never shows a passing page.
+    const shot = r.screenshot ?? r.failure?.screenshot ?? (prev && (prev.status === "FAILED") === failed ? prev.screenshot : undefined);
     byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment } : {}), ...(shot ? { screenshot: shot } : {}) });
   }
   for (const [id, r] of byCase) {

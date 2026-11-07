@@ -63,6 +63,28 @@ describe("Xray Test Executions (S3-9): the client", () => {
 });
 
 describe("Xray Test Executions (S3-9): results and changes", () => {
+  it("gives a case the screenshot of a row with its own status, a failure's ahead of a pass's", () => {
+    const keys = new Map([["TC-ABC-1-001", "QA-1"], ["TC-ABC-1-002", "QA-2"], ["TC-ABC-1-003", "QA-3"]]);
+    const { results } = executionResults(
+      [
+        // A pass then a failure with none: the failed result gets no passing page.
+        row("TC-ABC-1-001 a [chromium]", "passed", { screenshot: "test-results#pass" }),
+        row("TC-ABC-1-001 a [firefox]", "failed", { failure: { message: "boom" } }),
+        // Two passes: the second has none, the first's is kept.
+        row("TC-ABC-1-002 b [chromium]", "passed", { screenshot: "test-results#p1" }),
+        row("TC-ABC-1-002 b [firefox]", "passed"),
+        // A run from before alpha.2: the failure's.
+        row("TC-ABC-1-003 c", "failed", { failure: { message: "boom", screenshot: "test-results#old" } }),
+      ],
+      keys,
+    );
+    expect(results.map((r) => [r.tcId, r.status, r.screenshot])).toEqual([
+      ["TC-ABC-1-001", "FAILED", undefined],
+      ["TC-ABC-1-002", "PASSED", "test-results#p1"],
+      ["TC-ABC-1-003", "FAILED", "test-results#old"],
+    ]);
+  });
+
   it("finds each case by its TC id, one result per case, and leaves out skipped tests and tests with no case", () => {
     expect(tcIdOf("TC-ABC-1-001 Create a request", [])).toBe("TC-ABC-1-001");
     expect(tcIdOf("Approval › Create", ["@TC-ABC-12-010", "@positive"])).toBe("TC-ABC-12-010");
@@ -188,6 +210,7 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", { summary: "s", description: "d", startedAt: new Date("2026-11-07T21:50:00Z"), finishedAt: new Date("2026-11-07T21:51:30Z") }, true);
     expect(recorded[0]!.fields).toEqual({ customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T21:51:30.000+0000" });
     expect(() => config({}, { executionDates: { start: { field: "Start date" } } })).toThrow(/custom field id/);
+    expect(() => config({}, { executionDates: { start: { field: "customfield_1" }, end: { field: "customfield_1" } } })).toThrow(/different fields/);
   });
 
   it("attaches screenshots, passed or failed, only with xray.attachScreenshots, from the profile's folder (Tarek, 7 Nov 2026)", async () => {

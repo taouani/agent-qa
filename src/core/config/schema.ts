@@ -115,6 +115,7 @@ export const configSchema = z
         executionDates: z
           .object({ start: executionDateField.optional(), end: executionDateField.optional() })
           .strict()
+          .refine((d) => !d.start || !d.end || d.start.field !== d.end.field, "start and end must be different fields")
           .optional(),
       })
       .strict()
