@@ -14,6 +14,7 @@ const attachment = z.object({ name: z.string(), contentType: z.string().optional
 const result = z
   .object({
     status: z.string(),
+    startTime: z.string().optional(),
     duration: z.number().optional(),
     error: error.optional(),
     errors: z.array(error).optional(),
@@ -51,6 +52,9 @@ export interface ReportedTest {
   /** How many times it ran (--repeat-each), and how many of those failed. */
   runs: number;
   failedRuns: number;
+  /** When its first run started (ISO) and how long its runs took, start to end: for the Test Execution's per-test dates. */
+  startedAt?: string | undefined;
+  durationMs?: number | undefined;
   /** The first failure: its message (with the call log), the code around it, and where. */
   failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined } | undefined;
 }
@@ -100,6 +104,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
         const first = failed[0];
         const err = first?.error ?? first?.errors?.[0];
         const context = first?.attachments?.find((a) => a.name === "error-context");
+        const span = timeSpan(t.results);
         tests.push({
           title: [...here, sp.title].filter(Boolean).join(" › ") + (t.projectName ? ` [${t.projectName}]` : ""),
           tags: sp.tags ?? [],
@@ -108,6 +113,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
           outcome,
           runs: t.results.length,
           failedRuns: failed.length,
+          ...span,
           ...(first
             ? {
                 failure: {
@@ -129,6 +135,17 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
   return { tests: merged(tests), errors: (r.errors ?? []).map((e) => plain(e.message ?? e.stack ?? "an error outside the tests")) };
 }
 
+/** From the first run's start to the last run's end; nothing when the report has no start times. */
+function timeSpan(results: ReadonlyArray<{ startTime?: string | undefined; duration?: number | undefined }>): { startedAt?: string; durationMs?: number } {
+  const runs = results.flatMap((x) => {
+    const at = x.startTime ? Date.parse(x.startTime) : NaN;
+    return Number.isFinite(at) ? [{ start: at, end: at + Math.max(0, x.duration ?? 0) }] : [];
+  });
+  if (runs.length === 0) return {};
+  const start = Math.min(...runs.map((x) => x.start));
+  return { startedAt: new Date(start).toISOString(), durationMs: Math.max(...runs.map((x) => x.end)) - start };
+}
+
 /** --repeat-each runs a test as several: one row each, its runs counted. Passing some and failing others is flaky. */
 function merged(tests: ReportedTest[]): ReportedTest[] {
   const byKey = new Map<string, ReportedTest>();
@@ -142,6 +159,13 @@ function merged(tests: ReportedTest[]): ReportedTest[] {
     seen.runs += t.runs;
     seen.failedRuns += t.failedRuns;
     seen.failure ??= t.failure;
+    if (t.startedAt !== undefined) {
+      const end = (x: ReportedTest) => Date.parse(x.startedAt!) + (x.durationMs ?? 0);
+      const start = seen.startedAt === undefined ? Date.parse(t.startedAt) : Math.min(Date.parse(seen.startedAt), Date.parse(t.startedAt));
+      const last = seen.startedAt === undefined ? end(t) : Math.max(end(seen), end(t));
+      seen.startedAt = new Date(start).toISOString();
+      seen.durationMs = last - start;
+    }
     if (seen.outcome !== t.outcome) seen.outcome = seen.outcome === "skipped" ? t.outcome : t.outcome === "skipped" ? seen.outcome : "flaky";
   }
   return [...byKey.values()];

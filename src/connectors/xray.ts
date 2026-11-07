@@ -15,6 +15,9 @@ import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } fr
  *   Execution's Jira fields) → {id, key} (S3-9)
  */
 
+/** A date as Xray JSON's examples write it: seconds and an offset, no milliseconds (2026-11-07T20:00:13+00:00). */
+export const xrayDate = (d: Date): string => `${d.toISOString().slice(0, 19)}+00:00`;
+
 export const XRAY_CLOUD_URL = "https://xray.cloud.getxray.app";
 const AUTH_PATH = "/api/v2/authenticate";
 const BULK_PATH = "/api/v2/import/test/bulk";
@@ -30,8 +33,10 @@ export type XrayRunStatus = "PASSED" | "FAILED" | "TODO";
 export interface XrayExecutionResult {
   testKey: string;
   status: XrayRunStatus;
-  /** Masked: where it failed, the error's first line. */
+  /** Masked: where it failed, the error and the code. */
   comment?: string;
+  start?: Date;
+  finish?: Date;
 }
 
 export interface XrayExecutionInput {
@@ -199,8 +204,14 @@ export class XrayClient {
     if (input.tests.length === 0) throw new Error("A Test Execution needs at least one result");
     for (const t of input.tests) if (!ISSUE_KEY.test(t.testKey)) throw new Error("Not an Xray test key");
     const results = {
-      info: { summary: input.summary, description: input.description, startDate: input.startedAt.toISOString(), finishDate: input.finishedAt.toISOString() },
-      tests: input.tests.map((t) => ({ testKey: t.testKey, status: t.status, ...(t.comment ? { comment: t.comment } : {}) })),
+      info: { summary: input.summary, description: input.description, startDate: xrayDate(input.startedAt), finishDate: xrayDate(input.finishedAt) },
+      tests: input.tests.map((t) => ({
+        testKey: t.testKey,
+        ...(t.start ? { start: xrayDate(t.start) } : {}),
+        ...(t.finish ? { finish: xrayDate(t.finish) } : {}),
+        status: t.status,
+        ...(t.comment ? { comment: t.comment } : {}),
+      })),
     };
     const info = { fields: { project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
     const boundary = `agent-qa-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;

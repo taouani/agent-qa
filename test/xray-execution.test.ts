@@ -19,7 +19,7 @@ async function withGrant<T>(fn: (g: WriteGrant) => Promise<T>): Promise<T> {
 
 const row = (title: string, outcome: ExecutionRow["outcome"], over: Partial<ExecutionRow> = {}): ExecutionRow => ({ title, tags: [], file: "tests/a.spec.ts", line: 3, outcome, runs: 1, failedRuns: outcome === "failed" ? 1 : 0, ...over });
 
-const INPUT: XrayExecutionInput = { project: "QA", summary: "Agent-QA run r1", description: "d", labels: ["agent-qa", "agent-qa:exec:abc"], startedAt: new Date("2026-11-07T10:00:00Z"), finishedAt: new Date("2026-11-07T10:01:00Z"), tests: [{ testKey: "QA-1", status: "FAILED", comment: "Failed in a.spec.ts:3" }] };
+const INPUT: XrayExecutionInput = { project: "QA", summary: "Agent-QA run r1", description: "d", labels: ["agent-qa", "agent-qa:exec:abc"], startedAt: new Date("2026-11-07T10:00:00Z"), finishedAt: new Date("2026-11-07T10:01:00Z"), tests: [{ testKey: "QA-1", status: "FAILED", comment: "Failed in a.spec.ts:3", start: new Date("2026-11-07T10:00:05.250Z"), finish: new Date("2026-11-07T10:00:40Z") }] };
 
 describe("Xray Test Executions (S3-9): the client", () => {
   it("records results as a multipart import with the execution's labels, only with a grant", async () => {
@@ -39,7 +39,11 @@ describe("Xray Test Executions (S3-9): the client", () => {
     expect(sent.type).toMatch(/^multipart\/form-data; boundary=/);
     const parts = sent.body.split(`--${boundary}`).filter((p) => p.includes("Content-Disposition"));
     const json = (name: string) => JSON.parse(parts.find((p) => p.includes(`name="${name}"`))!.split("\r\n\r\n")[1]!.trim());
-    expect(json("results")).toEqual({ info: { summary: "Agent-QA run r1", description: "d", startDate: "2026-11-07T10:00:00.000Z", finishDate: "2026-11-07T10:01:00.000Z" }, tests: [{ testKey: "QA-1", status: "FAILED", comment: "Failed in a.spec.ts:3" }] });
+    // Dates as Xray's examples write them: seconds and an offset, no milliseconds; each test with its own.
+    expect(json("results")).toEqual({
+      info: { summary: "Agent-QA run r1", description: "d", startDate: "2026-11-07T10:00:00+00:00", finishDate: "2026-11-07T10:01:00+00:00" },
+      tests: [{ testKey: "QA-1", start: "2026-11-07T10:00:05+00:00", finish: "2026-11-07T10:00:40+00:00", status: "FAILED", comment: "Failed in a.spec.ts:3" }],
+    });
     expect(json("info")).toEqual({ fields: { project: { key: "QA" }, summary: "Agent-QA run r1", description: "d", issuetype: { name: "Test Execution" }, labels: ["agent-qa", "agent-qa:exec:abc"] } });
     await expect(withGrant((g) => client.importExecution({ ...INPUT, tests: [{ testKey: "not a key", status: "PASSED" }] }, g))).rejects.toThrow(/Not an Xray test key/);
   });
@@ -53,8 +57,12 @@ describe("Xray Test Executions (S3-9): results and changes", () => {
     const keys = new Map([["TC-ABC-1-001", "QA-1"], ["TC-ABC-1-002", "QA-2"], ["TC-ABC-1-003", "QA-3"]]);
     const r = executionResults(
       [
-        row("TC-ABC-1-001 a [chromium]", "passed"),
-        row("TC-ABC-1-001 a [firefox]", "failed", { failure: { message: "\n  Error: expect(locator).toHaveText(expected)\n  Expected: x" } }),
+        row("TC-ABC-1-001 a [chromium]", "passed", { startedAt: "2026-11-07T10:00:00.000Z", durationMs: 4000 }),
+        row("TC-ABC-1-001 a [firefox]", "failed", {
+          startedAt: "2026-11-07T10:00:02.000Z",
+          durationMs: 9000,
+          failure: { message: "\n  Error: expect(locator).toHaveText(expected)\n  Expected: x", at: { file: "tests/pages/case.ts", line: 40 }, snippet: "> 40 |   await expect(this.status).toHaveText(v);" },
+        }),
         row("TC-ABC-1-002 b", "flaky", { runs: 2, failedRuns: 1 }),
         row("TC-ABC-1-003 c", "skipped"),
         row("TC-ABC-1-009 not pushed", "passed"),
@@ -63,8 +71,16 @@ describe("Xray Test Executions (S3-9): results and changes", () => {
       keys,
     );
     expect(r.results).toEqual([
-      { tcId: "TC-ABC-1-001", xrayKey: "QA-1", status: "FAILED", comment: "Failed in tests/a.spec.ts:3: Error: expect(locator).toHaveText(expected)" },
-      { tcId: "TC-ABC-1-002", xrayKey: "QA-2", status: "PASSED", comment: "Flaky: failed 1 of 2 run(s), passed on a retry (tests/a.spec.ts:3)" },
+      {
+        tcId: "TC-ABC-1-001",
+        xrayKey: "QA-1",
+        status: "FAILED",
+        comment: "Failed at tests/pages/case.ts:40 (test tests/a.spec.ts:3).\n\nError: expect(locator).toHaveText(expected)\n  Expected: x\n\n> 40 |   await expect(this.status).toHaveText(v);",
+        // Both projects' runs: from the first start to the last end.
+        start: "2026-11-07T10:00:00.000Z",
+        finish: "2026-11-07T10:00:11.000Z",
+      },
+      { tcId: "TC-ABC-1-002", xrayKey: "QA-2", status: "PASSED", comment: "Flaky: failed 1 of 2 run(s), passed on a retry (tests/a.spec.ts:3)." },
     ]);
     expect(r.notInXray).toEqual(["TC-ABC-1-009 not pushed (TC-ABC-1-009: no Xray test labelled agent-qa:TC-ABC-1-009; push its case with test-cases first)", "no case at all (no TC id in its title or tags)"]);
     expect(r.skipped).toBe(1);
