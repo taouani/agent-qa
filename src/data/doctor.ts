@@ -1,8 +1,10 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
 import { VERSION, CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { ConnectorError, networkCause, SalesforceAuth, SalesforceAuthError, selectFetch } from "../connectors/index.js";
 import { salesforceKey, salesforceKeyPath } from "./access.js";
-import { loadIgnoreRules, isIgnored } from "./gitignore.js";
+import { gitWorkTree, loadIgnoreRules, isIgnored } from "./gitignore.js";
+import { trackedPaths } from "./git-index.js";
 import { defaultKeyringFactory, keychainLookup, vaultKeyStatus, type KeyringFactory } from "../masking/index.js";
 
 /**
@@ -166,6 +168,38 @@ async function gitignoreCheck(cwd: string, caseInsensitive?: boolean): Promise<C
   };
 }
 
+/**
+ * Files git already tracks stay in git whatever .gitignore says: a vault
+ * committed before it was ignored is still pushed. Read from git's index.
+ */
+async function trackedCheck(cwd: string): Promise<CheckResult> {
+  const { top, gitDir } = await gitWorkTree(cwd);
+  if (!gitDir) return { id: "tracked", title: "Tracked by git", status: "skip", detail: "not a git work tree" };
+  const paths = await trackedPaths(gitDir);
+  if (!paths) return { id: "tracked", title: "Tracked by git", status: "warn", detail: "git's index couldn't be read, so tracked files weren't checked", fix: "Run `git ls-files .agent-qa` and untrack anything listed." };
+  const rel = relative(top, await realpath(resolve(cwd)).catch(() => resolve(cwd))).split(sep).join("/");
+  // A sparse index lists a folder ("dir/") for everything under it.
+  const under = (folder: string) => {
+    const target = `${rel ? `${rel}/` : ""}${folder}`;
+    return paths.filter((p) => p.startsWith(target) || (p.endsWith("/") && target.startsWith(p)));
+  };
+  const vault = under(".agent-qa/vault/");
+  const others = [...under(".agent-qa/runs/"), ...paths.filter((p) => p === `${rel ? `${rel}/` : ""}.agent-qa/audit.jsonl`)];
+  if (vault.length === 0 && others.length === 0) return { id: "tracked", title: "Tracked by git", status: "pass", detail: "no vault, run or audit file is tracked" };
+  // Run in the project folder: git reads the path from there.
+  const untrack = "git rm -r --cached .agent-qa";
+  return {
+    id: "tracked",
+    title: "Tracked by git",
+    status: vault.length ? "fail" : "warn",
+    detail: [
+      ...(vault.length ? [`${vault.length} vault file(s) are tracked by git, so the token vault goes wherever the repo goes`] : []),
+      ...(others.length ? [`${others.length} run or audit file(s) are tracked by git`] : []),
+    ].join("\n"),
+    fix: `Untrack them by running \`${untrack}\` in this folder (the files stay on disk), commit, and keep .agent-qa/ in .gitignore.${vault.length ? " The vault's values are in git history: treat them as exposed." : ""}`,
+  };
+}
+
 function modelsCheck(config: Config, env: NodeJS.ProcessEnv): CheckResult {
   const models = config.models;
   if (!models) {
@@ -302,6 +336,7 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
   } catch (error) {
     results.push({ id: "gitignore", title: ".gitignore", status: "fail", detail: `can't be read: ${shown((error as Error).message)}` });
   }
+  results.push(await trackedCheck(root));
   results.push(config ? modelsCheck(config, env) : { id: "models", title: "Models", status: "skip", detail: "needs a valid config" });
   if (config) results.push(await salesforceCheck(config, root, env, keyring, options.online !== false, options.fetch ?? proxyAwareFetch(env), options.timeoutMs ?? 5000));
   if (!config) results.push({ id: "network", title: "Services", status: "skip", detail: "needs a valid config" });
