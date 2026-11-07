@@ -868,7 +868,8 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
         } else visit(c, env, false);
         // The arguments as written too, so a value passed but never read is still reached; a function passed runs only if the call is one known to run it.
         const describe = /^test\.describe(?:\.|$)/.test(pathOfExpr(c) ?? "");
-        const declared = c.type !== "Identifier" && !!name && decls.has(name);
+        // test.step is Playwright's; another x.then or x.step is the files' own only if they declare such a method or function.
+        const declared = c.type !== "Identifier" && !!name && !/^test\./.test(pathOfExpr(c) ?? "") && (decls.get(name) ?? []).some((d) => d.fn !== undefined);
         const runner = describe || (RUNNERS.has(name ?? "") && !declared) || matched.has(n);
         const later = runner && LATER.has(name ?? "") && !awaited.has(n);
         if (later) floating++;

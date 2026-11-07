@@ -569,6 +569,14 @@ test('T1', async ({ page }) => {
     expect(check(spec.replace("  await page.goto('/requests');\n", "  await request.open();\n"))).toBe("");
   });
 
+  it("runs test.step's callback whatever the files declare as step", () => {
+    const spec = "import { test } from '@playwright/test';\ntest('t', async ({ page }) => {\n  await test.step('send', async () => {\n    await page.getByRole('button', { name: 'A' }).click();\n    await page.getByRole('button', { name: 'B' }).click();\n  });\n});\n";
+    const data = ["data.ts", "export const wizard = { step: 2 };\n"] as [string, string];
+    const before = new Map([data, ["t.spec.ts", spec]]);
+    const after = new Map([data, ["t.spec.ts", spec.replace("    await page.getByRole('button', { name: 'B' }).click();\n", "")]]);
+    expect(checkRefactored(before, after, []).join()).toMatch(/no longer reaches/);
+  });
+
   it("counts a single return as no branch only when it hands back no function", () => {
     const scan = (body: string) => scanGeneratedCode(`class P {\n  ${body}\n}\n`, "p.ts").branches;
     expect(scan("get go() { return this.page.getByRole('button'); }")).toBe(0);
