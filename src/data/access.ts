@@ -76,9 +76,14 @@ export interface XrayData {
    * `agent-qa:TC-ID` label, and what changed since the newest Test Execution
    * with `label` (read back from Xray, so it works in CI too).
    */
-  xrayExecutionPlan(rows: readonly ExecutionRow[], label: string): Promise<XrayExecutionPlan>;
-  /** Records the plan as a new Test Execution, through `Policy.guard` (target xray). Masked text only. */
-  recordXrayExecution(runId: string, plan: XrayExecutionPlan, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean): Promise<{ status: "done"; key: string } | { status: "declined" }>;
+  xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, runLabel: string): Promise<XrayExecutionPlan>;
+  /**
+   * Records the plan as a new Test Execution, through `Policy.guard` (target
+   * xray), labelled with `runLabel` too. An execution with `runLabel` already
+   * in Xray (a retry after a stop) is returned, never recorded twice.
+   * Masked text only: tokens go as they are, even with restoreOnWrite.
+   */
+  recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean): Promise<{ status: "done"; key: string; again?: true } | { status: "declined" }>;
 }
 
 /** Running the host repo's own commands (S2-1): the test run in run-and-fix. */
@@ -551,31 +556,35 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return outcome.status === "done" ? { status: "done" as const, result: outcome.value } : { status: "declined" as const };
   }
 
-  async xrayExecutionPlan(rows: readonly ExecutionRow[], label: string): Promise<XrayExecutionPlan> {
+  async xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, runLabel: string): Promise<XrayExecutionPlan> {
     const config = await this.loadConfig();
     const xray = this.xrayConfig(config);
     const ids = [...new Set(rows.flatMap((r) => tcIdOf(r.title, r.tags) ?? []))];
     const found = ids.length ? await (await this.labels(config)).findByLabels(xray.projectKey, ids.map(caseLabel)) : new Map<string, string>();
     const keys = new Map(ids.flatMap((id) => (found.has(caseLabel(id)) ? [[id, found.get(caseLabel(id))!] as const] : [])));
-    const { results: now, notInXray, skipped } = executionResults(rows, keys);
+    const { results: now, notInXray, skipped, skippedKeys } = executionResults(rows, keys);
     const client = await this.xrayClient(config);
     if (!client.lastExecution) throw new Error("this Xray client can't read Test Executions");
-    const previous = now.length ? await client.lastExecution(xray.projectKey, label) : undefined;
-    const { results: withBefore, changes } = executionChanges(now, previous);
+    // Never this run's own execution (a retry after it was recorded): the one before it.
+    const previous = now.length ? await client.lastExecution(xray.projectKey, label, runLabel) : undefined;
+    const { results: withBefore, changes } = executionChanges(now, previous, skippedKeys);
     return { project: xray.projectKey, label, ...(previous ? { previous: { key: previous.key, created: previous.created } } : {}), results: withBefore, notInXray, skipped, changes };
   }
 
-  async recordXrayExecution(runId: string, plan: XrayExecutionPlan, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean) {
+  async recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean) {
     // "No" never reaches the policy: under an `allow` rule it would not ask again.
     if (!approved || plan.results.length === 0) return { status: "declined" as const };
     const config = await this.loadConfig();
     const client = await this.xrayClient(config);
-    if (!client.importExecution) throw new Error("this Xray client can't record Test Executions");
+    if (!client.importExecution || !client.lastExecution) throw new Error("this Xray client can't record Test Executions");
+    // Recorded already, and stopped before the record was kept: that execution stands.
+    const done = await client.lastExecution(plan.project, runLabel);
+    if (done) return { status: "done" as const, key: done.key, again: true as const };
     const failed = plan.results.filter((r) => r.status === "FAILED").length;
     const summary = `Record ${plan.results.length} test result(s) (${failed} failed) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
       client.importExecution!(
-        { project: plan.project, summary: info.summary.slice(0, 255), description: info.description, labels: ["agent-qa", plan.label], startedAt: info.startedAt, finishedAt: info.finishedAt, tests: plan.results.map((r) => ({ testKey: r.xrayKey, status: r.status, ...(r.comment ? { comment: r.comment } : {}) })) },
+        { project: plan.project, summary: info.summary.slice(0, 255), description: info.description, labels: ["agent-qa", plan.label, runLabel], startedAt: info.startedAt, finishedAt: info.finishedAt, tests: plan.results.map((r) => ({ testKey: r.xrayKey, status: r.status, ...(r.comment ? { comment: r.comment } : {}) })) },
         grant,
       ),
     );

@@ -76,6 +76,8 @@ describe("Xray Test Executions (S3-9): the client", () => {
     expect(bodies.map((b) => b.variables.start)).toEqual([0, 100]);
     expect(bodies[0]!.variables.jql).toBe('project = "QA" AND issuetype = "Test Execution" AND labels = "agent-qa:exec:abc" ORDER BY created DESC');
     expect(bodies[0]!.query).not.toMatch(/mutation/);
+    await client.lastExecution("QA", "agent-qa:exec:abc", "agent-qa:run:r1");
+    expect(bodies.at(-1)!.variables.jql).toBe('project = "QA" AND issuetype = "Test Execution" AND labels = "agent-qa:exec:abc" AND labels != "agent-qa:run:r1" ORDER BY created DESC');
     // A newer execution between pages: the first one's statuses stand.
     second = "QA-81";
     expect(Object.keys((await client.lastExecution("QA", "agent-qa:exec:abc"))!.statuses)).toHaveLength(100);
@@ -109,6 +111,7 @@ describe("Xray Test Executions (S3-9): results and changes", () => {
     ]);
     expect(r.notInXray).toEqual(["TC-ABC-1-009 not pushed", "no case at all"]);
     expect(r.skipped).toBe(1);
+    expect(r.skippedKeys).toEqual(["QA-3"]);
   });
 
   it("says what changed since the last execution", () => {
@@ -119,9 +122,12 @@ describe("Xray Test Executions (S3-9): results and changes", () => {
       { tcId: "D", xrayKey: "QA-4", status: "PASSED" as const },
     ];
     const { results, changes } = executionChanges(now, { key: "QA-80", created: "", statuses: { "QA-1": "PASSED", "QA-2": "FAILED", "QA-3": "FAILED", "QA-9": "PASSED" } });
-    expect(changes).toEqual({ failing: ["A"], fixed: ["B"], stillFailing: ["C"], added: ["D"], gone: ["QA-9"] });
+    expect(changes).toEqual({ failing: ["A"], fixed: ["B"], stillFailing: ["C"], added: ["D"], gone: ["QA-9"], other: [], skippedNow: [] });
     expect(results.map((r) => r.before)).toEqual(["PASSED", "FAILED", "FAILED", undefined]);
-    expect(executionChanges(now, undefined).changes).toEqual({ failing: [], fixed: [], stillFailing: [], added: [], gone: [] });
+    expect(executionChanges(now, undefined).changes).toEqual({ failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] });
+    // Before neither passed nor failed: said as it was; a case skipped now isn't "not run".
+    const odd = executionChanges(now.slice(0, 1), { key: "QA-80", created: "", statuses: { "QA-1": "TODO", "QA-7": "PASSED", "QA-8": "PASSED" } }, ["QA-7"]).changes;
+    expect(odd).toMatchObject({ failing: [], other: ["A (was TODO)"], skippedNow: ["QA-7"], gone: ["QA-8"] });
   });
 });
 
@@ -139,6 +145,8 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
 
   it("plans from the labels and the last execution, and records through the policy", async () => {
     const recorded: XrayExecutionInput[] = [];
+    const lastCalls: Array<[string, string, string | undefined]> = [];
+    const own: { mine?: { key: string; created: string; statuses: Record<string, string> } } = {};
     const audit = new MemoryAuditSink();
     const data = new DataAccess({
       root: dir,
@@ -150,20 +158,29 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
         importAndWait: async () => {
           throw new Error("not used");
         },
-        lastExecution: async () => ({ key: "QA-80", created: "2026-11-06T09:00:00.000+0000", statuses: { "QA-1": "PASSED" } }),
+        lastExecution: async (project, label, without) => {
+          lastCalls.push([project, label, without]);
+          if (label.startsWith("agent-qa:run:")) return own.mine;
+          return { key: "QA-80", created: "2026-11-06T09:00:00.000+0000", statuses: { "QA-1": "PASSED" } };
+        },
         importExecution: async (input) => {
           recorded.push(input);
           return { key: "QA-91" };
         },
       },
     });
-    const plan = await data.xrayExecutionPlan([row("TC-ABC-1-001 a", "failed"), row("TC-ABC-1-002 b", "passed"), row("TC-ABC-1-009 c", "passed")], "agent-qa:exec:abc");
+    const plan = await data.xrayExecutionPlan([row("TC-ABC-1-001 a", "failed"), row("TC-ABC-1-002 b", "passed"), row("TC-ABC-1-009 c", "passed")], "agent-qa:exec:abc", "agent-qa:run:r1");
+    expect(lastCalls[0]).toEqual(["QA", "agent-qa:exec:abc", "agent-qa:run:r1"]);
     expect(plan).toMatchObject({ project: "QA", label: "agent-qa:exec:abc", previous: { key: "QA-80" }, notInXray: ["TC-ABC-1-009 c"], changes: { failing: ["TC-ABC-1-001"], added: ["TC-ABC-1-002"] } });
     const info = { summary: "s", description: "d", startedAt: new Date(0), finishedAt: new Date(1000) };
-    expect(await data.recordXrayExecution("r1", plan, info, false)).toEqual({ status: "declined" });
+    expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, false)).toEqual({ status: "declined" });
     expect(recorded).toEqual([]);
-    expect(await data.recordXrayExecution("r1", plan, info, true)).toEqual({ status: "done", key: "QA-91" });
-    expect(recorded[0]).toMatchObject({ project: "QA", labels: ["agent-qa", "agent-qa:exec:abc"], tests: [{ testKey: "QA-1", status: "FAILED" }, { testKey: "QA-2", status: "PASSED" }] });
+    expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91" });
+    expect(recorded[0]).toMatchObject({ project: "QA", labels: ["agent-qa", "agent-qa:exec:abc", "agent-qa:run:r1"], tests: [{ testKey: "QA-1", status: "FAILED" }, { testKey: "QA-2", status: "PASSED" }] });
+    // A retry after a stop finds the run's own execution and records nothing again.
+    own.mine = { key: "QA-91", created: "", statuses: {} };
+    expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91", again: true });
+    expect(recorded).toHaveLength(1);
     expect([...new Set(audit.entries.map((e) => e.summary))]).toEqual(["Record 2 test result(s) (1 failed) as a Test Execution in Xray project QA"]);
   });
 
@@ -180,8 +197,8 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
       xrayEnabled: async () => true,
       xrayExecutionPlan: async (rows: readonly ExecutionRow[], label: string): Promise<XrayExecutionPlan> => {
         plans.push(label);
-        const { results, notInXray, skipped } = executionResults(rows, new Map([["TC-ABC-1-001", "QA-1"], ["TC-ABC-1-002", "QA-2"]]));
-        const c = executionChanges(results, { key: "QA-80", created: "2026-11-06T09:00:00.000+0000", statuses: { "QA-1": "PASSED", "QA-2": "PASSED" } });
+        const { results, notInXray, skipped, skippedKeys } = executionResults(rows, new Map([["TC-ABC-1-001", "QA-1"], ["TC-ABC-1-002", "QA-2"]]));
+        const c = executionChanges(results, { key: "QA-80", created: "2026-11-06T09:00:00.000+0000", statuses: { "QA-1": "PASSED", "QA-2": "PASSED" } }, skippedKeys);
         return { project: "QA", label, previous: { key: "QA-80", created: "2026-11-06T09:00:00.000+0000" }, results: c.results, notInXray, skipped, changes: c.changes };
       },
       recordXrayExecution: async (_r: string, p: XrayExecutionPlan) => {
@@ -223,7 +240,7 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     const a = await off.e.start("run-tests", { tag: "@smoke" });
     expect((await off.e.submit(a.runId, "run", { run: true }, { byPerson: true })).next.kind).toBe("done");
     const none = engineWith({
-      xrayExecutionPlan: async (rows: readonly ExecutionRow[], label: string) => ({ project: "QA", label, results: [], notInXray: rows.map((r) => r.title), skipped: 0, changes: { failing: [], fixed: [], stillFailing: [], added: [], gone: [] } }),
+      xrayExecutionPlan: async (rows: readonly ExecutionRow[], label: string) => ({ project: "QA", label, results: [], notInXray: rows.map((r) => r.title), skipped: 0, changes: { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] } }),
     });
     const b = await none.e.start("run-tests", { tag: "@smoke" });
     await none.e.submit(b.runId, "run", { run: true }, { byPerson: true });
@@ -231,5 +248,25 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     await none.e.submit(b.runId, "xray", { record: true });
     expect((await runs.readArtifact(b.runId, XRAY_EXECUTION_ARTIFACT))!.data.status).toBe("nothing");
     expect(none.records).toEqual([]);
+  });
+
+  it("never stops on Xray being down: a no reads nothing, a yes records nothing and says why (review B1)", async () => {
+    const down = engineWith({
+      xrayExecutionPlan: async () => {
+        throw new Error("Xray 503");
+      },
+    });
+    const a = await down.e.start("run-tests", { tag: "@smoke" });
+    const next = (await down.e.submit(a.runId, "run", { run: true }, { byPerson: true })).next;
+    expect(next.stepId).toBe("xray");
+    expect(next.context).toContain("Xray couldn't be read: Xray 503.");
+    expect((await down.e.approval(a.runId, "xray"))!.question).toMatch(/^Xray couldn't be read \(Xray 503\), so nothing will be recorded/);
+    expect((await down.e.submit(a.runId, "xray", { record: true })).next.kind).toBe("done");
+    expect((await runs.readArtifact(a.runId, XRAY_EXECUTION_ARTIFACT))!.data).toMatchObject({ status: "unavailable", reason: "Xray 503" });
+    const b = await down.e.start("run-tests", { tag: "@smoke" });
+    await down.e.submit(b.runId, "run", { run: true }, { byPerson: true });
+    expect((await down.e.submit(b.runId, "xray", { record: false })).next.kind).toBe("done");
+    expect((await runs.readArtifact(b.runId, XRAY_EXECUTION_ARTIFACT))!.data.status).toBe("declined");
+    expect(down.records).toEqual([]);
   });
 });

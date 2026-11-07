@@ -133,19 +133,28 @@ export interface XrayExecutionPlan {
   notInXray: string[];
   /** Skipped tests: not run, so not recorded. */
   skipped: number;
-  changes: { failing: string[]; fixed: string[]; stillFailing: string[]; added: string[]; gone: string[] };
+  /**
+   * failing: PASSED before, FAILED now; other: before neither PASSED nor
+   * FAILED (TODO, ABORTED…), as "TC-ID (was X)"; skippedNow: in the last one,
+   * skipped this time; gone: in the last one, not run at all now (Xray keys).
+   */
+  changes: { failing: string[]; fixed: string[]; stillFailing: string[]; added: string[]; gone: string[]; other: string[]; skippedNow: string[] };
 }
 
 const firstLine = (s: string) => (s.split("\n").find((l) => l.trim()) ?? "").replace(/\s+/g, " ").trim();
 
 /** One result per case: a case whose tests ran more than once (projects, repeats) fails if any failed. */
-export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMap<string, string>): { results: Omit<ExecutionResult, "before">[]; notInXray: string[]; skipped: number } {
+export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMap<string, string>): { results: Omit<ExecutionResult, "before">[]; notInXray: string[]; skipped: number; skippedKeys: string[] } {
   const byCase = new Map<string, Omit<ExecutionResult, "before">>();
   const notInXray: string[] = [];
+  const skippedKeys = new Set<string>();
   let skipped = 0;
   for (const r of rows) {
     if (r.outcome === "skipped") {
       skipped++;
+      const id = tcIdOf(r.title, r.tags);
+      const key = id ? keys.get(id) : undefined;
+      if (key) skippedKeys.add(key);
       continue;
     }
     const id = tcIdOf(r.title, r.tags);
@@ -165,17 +174,19 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     if (prev && !failed && !comment) continue;
     byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment: comment.slice(0, 1000) } : {}) });
   }
-  return { results: [...byCase.values()], notInXray: [...new Set(notInXray)], skipped };
+  const ran = new Set([...byCase.values()].map((r) => r.xrayKey));
+  return { results: [...byCase.values()], notInXray: [...new Set(notInXray)], skipped, skippedKeys: [...skippedKeys].filter((k) => !ran.has(k)).sort() };
 }
 
 /** What changed since the last execution: by Xray key. */
-export function executionChanges(results: readonly Omit<ExecutionResult, "before">[], previous: XrayExecutionRead | undefined): { results: ExecutionResult[]; changes: XrayExecutionPlan["changes"] } {
-  const changes: XrayExecutionPlan["changes"] = { failing: [], fixed: [], stillFailing: [], added: [], gone: [] };
+export function executionChanges(results: readonly Omit<ExecutionResult, "before">[], previous: XrayExecutionRead | undefined, skippedKeys: readonly string[] = []): { results: ExecutionResult[]; changes: XrayExecutionPlan["changes"] } {
+  const changes: XrayExecutionPlan["changes"] = { failing: [], fixed: [], stillFailing: [], added: [], gone: [], other: [], skippedNow: [] };
   const was = previous?.statuses ?? {};
   const out = results.map((r) => {
     const before = was[r.xrayKey];
     if (previous) {
       if (before === undefined) changes.added.push(r.tcId);
+      else if (before !== "PASSED" && before !== "FAILED") changes.other.push(`${r.tcId} (was ${before})`);
       else if (r.status === "FAILED") (before === "FAILED" ? changes.stillFailing : changes.failing).push(r.tcId);
       else if (before === "FAILED") changes.fixed.push(r.tcId);
     }
@@ -183,7 +194,10 @@ export function executionChanges(results: readonly Omit<ExecutionResult, "before
   });
   if (previous) {
     const now = new Set(results.map((r) => r.xrayKey));
-    changes.gone = Object.keys(was).filter((k) => !now.has(k)).sort();
+    const skipped = new Set(skippedKeys);
+    const missing = Object.keys(was).filter((k) => !now.has(k)).sort();
+    changes.skippedNow = missing.filter((k) => skipped.has(k));
+    changes.gone = missing.filter((k) => !skipped.has(k));
   }
   return { results: out, changes };
 }

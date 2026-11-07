@@ -243,11 +243,15 @@ export class XrayClient {
     return { key };
   }
 
-  /** The newest Test Execution in `project` with `label`, and each test's status in it; undefined when there is none. */
-  async lastExecution(project: string, label: string): Promise<XrayExecutionRead | undefined> {
+  /**
+   * The newest Test Execution in `project` with `label` (and without
+   * `without`, such as the current run's own), and each test's status in it;
+   * undefined when there is none.
+   */
+  async lastExecution(project: string, label: string, without?: string): Promise<XrayExecutionRead | undefined> {
     if (!/^[A-Z][A-Z0-9_]+$/.test(project)) throw new Error("Not a Jira project key");
-    if (!/^[^\s"'\\]{1,255}$/.test(label)) throw new Error("Not a label Agent-QA writes");
-    const jql = `project = "${project}" AND issuetype = "Test Execution" AND labels = "${label}" ORDER BY created DESC`;
+    for (const l of [label, ...(without !== undefined ? [without] : [])]) if (!/^[^\s"'\\]{1,255}$/.test(l)) throw new Error("Not a label Agent-QA writes");
+    const jql = `project = "${project}" AND issuetype = "Test Execution" AND labels = "${label}"${without !== undefined ? ` AND labels != "${without}"` : ""} ORDER BY created DESC`;
     let read: XrayExecutionRead | undefined;
     for (let start = 0; ; start += RUNS_PAGE) {
       const answer = obj(await this.graph.request(GRAPHQL_PATH, { method: "POST", body: { query: LAST_EXECUTION_QUERY, variables: { jql, start } } }));
