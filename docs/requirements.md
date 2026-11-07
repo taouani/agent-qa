@@ -17,7 +17,9 @@ The context is the same in an IDE and in CI. The host model (Copilot's, for exam
 
 When `test-cases` starts from a `key` that an earlier run already analyzed (a `requirements` run, or a `test-cases` run that analyzed it), its first step is `reuse`. Agent-QA reads Jira again (no model) and compares what the analysis would be given with what the earlier run was given: the same issues at the same Jira version (each issue's `sourceHash`: key, last update, linked page versions) and the same related feature files (path and content hash, kept in `requirements@1` as `related`).
 
-- **Unchanged:** you're asked whether to reuse the newest such run's analysis (its criteria, scores and open questions) or analyze again. A yes skips the analysis: the cases are written from that run's `requirements@1`, with its vault, like `{"requirementsRun": "<run id>"}`. Agent-QA names the run, never the model. With `--yes` in the CLI, the analysis is reused.
-- **Changed:** the step says the earlier analysis can't be reused and the host submits no without asking. A yes changes nothing.
+- **Unchanged:** you're asked whether to reuse the newest such run's analysis (its criteria, scores and open questions) or analyze again. A yes skips the analysis: the cases are written from that run's `requirements@1`, with its vault, like `{"requirementsRun": "<run id>"}`. Agent-QA names the run, never the model. In the CLI, `--yes` or `--accept reuse` reuses it and `--decline reuse` analyzes again. In CI, a run without one of these stops at this step (exit 3, waiting) when the runs folder holds an earlier analysis of the key, for example a cached `.agent-qa/runs`.
+- **Changed:** the step says no earlier analysis can be reused and the host submits no without asking. A yes changes nothing: the match is checked again when the answer arrives.
+
+The match covers the input only: an analysis made by an older Agent-QA version (another prompt) with the same input is offered too.
 
 Not offered for a JQL filter (the stored filter is a vault token, different in each run), or when the earlier run's vault has expired (30 days). Runs analyzed before this change have no `related` hashes, so they are only reused when no related feature file is found now.

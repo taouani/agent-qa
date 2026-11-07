@@ -509,14 +509,14 @@ describe("test-cases workflow: reuse an earlier analysis of the same input (Tare
     await mkdir(join(dir, "tests"), { recursive: true });
     await writeFile(join(dir, "tests", "escalation-email.feature"), "Feature: Email the owner when a case is escalated\n");
     const f = await engine.start("test-cases", { key: "ABC-1" });
-    expect(f.context).toContain("can't be reused");
+    expect(f.context).toContain("can be reused");
     await remove(join(dir, "tests"), { recursive: true });
 
     // The issue changed in Jira: nothing to reuse, even on a yes.
     issues = ISSUES.map((i) => (i.key === "ABC-2" ? { ...i, updated: "2026-11-07T10:00:00.000+0000" } : i));
     const d = await engine.start("test-cases", { key: "ABC-1" });
     expect(d.stepId).toBe("reuse");
-    expect(d.context).toContain("can't be reused. Submit reuse: false without asking.");
+    expect(d.context).toContain("it will be analyzed again. Submit reuse: false without asking.");
     expect((await engine.submit(d.runId, "reuse", { reuse: true })).next.stepId).toBe("analyze");
     // Another key: not asked.
     expect((await engine.start("test-cases", { key: "ABC-2" })).stepId).toBe("analyze");

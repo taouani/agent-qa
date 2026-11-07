@@ -217,12 +217,6 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
   };
   const requirementsRunOf = (ctx: Ctx) => ctx.inputs.requirementsRun ?? reused(ctx) ?? ctx.runId;
 
-  /**
-   * The newest earlier run whose analysis was given the same input as this one
-   * would be: the same issues at the same Jira version (sourceHash), and the
-   * same related feature files (Tarek, 7 Nov 2026). Its vault must still hold
-   * the tokens. Jira is read for this, with no model.
-   */
   /** Whether an earlier run of this key left an analysis whose tokens are still in its vault: no Jira read (the run may not exist yet). */
   const analyzedBefore = async (ctx: Ctx): Promise<boolean> => {
     const key = ctx.inputs.key;
@@ -234,8 +228,14 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     return false;
   };
   const earlierMemo = new Map<string, Promise<Earlier | undefined>>();
-  const earlierOf = (ctx: Ctx): Promise<Earlier | undefined> => {
-    let found = earlierMemo.get(ctx.runId);
+  /**
+   * The newest earlier run whose analysis was given the same input as this one
+   * would be: the same issues at the same Jira version (sourceHash), and the
+   * same related feature files (Tarek, 7 Nov 2026). Its vault must still hold
+   * the tokens. Jira is read for this, with no model.
+   */
+  const earlierOf = (ctx: Ctx, fresh = false): Promise<Earlier | undefined> => {
+    let found = fresh ? undefined : earlierMemo.get(ctx.runId);
     if (!found) {
       found = (async () => {
         if (!deps.runs.list || ctx.inputs.requirementsRun !== undefined) return undefined;
@@ -357,12 +357,13 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           ].join("\n"),
         context: async (ctx) => {
           const e = await earlierOf(ctx);
-          if (!e) return "The issues changed in Jira, or the related feature files of the repo changed, since the earlier analysis: it can't be reused. Submit reuse: false without asking.";
-          return `Run ${e.run} (${e.created}) analyzed the same ${e.issues} issue(s), unchanged in Jira since, with the same related feature files: ${e.criteria} criteria, average quality ${e.quality}/100. Its requirements.md is in .agent-qa/runs/${e.run}/.`;
+          if (!e) return "No earlier analysis with the same input can be reused (the issues or the related feature files changed since, or its run is gone): it will be analyzed again. Submit reuse: false without asking.";
+          return `Run ${e.run} (${e.created}) analyzed the same ${e.issues} issue(s), unchanged in Jira since, with the same related feature files: ${e.criteria} criteria, average quality ${e.quality}/100. Its requirements.md is in that run's folder.`;
         },
         // The run is Agent-QA's to name: the one found, whatever the answer says; with none, nothing is reused.
         sanitize: async (ctx, out: Reuse) => {
-          const e = out.reuse ? await earlierOf(ctx) : undefined;
+          // Checked again at the answer: Jira or the repo may have changed while the question waited.
+          const e = out.reuse ? await earlierOf(ctx, true) : undefined;
           return e ? { reuse: true, run: e.run } : { reuse: false };
         },
       },
