@@ -58,6 +58,24 @@ The `run` step is skipped when no files were written, when the profile has no te
 
 What a run shows the model (an error, the code around it, a page snapshot) is masked first, like everything else.
 
+## API tests
+
+With `api: true`, `scripts` writes Playwright `request` tests for the cases that describe API behaviour. These tests send requests and check what comes back, and drive no browser. They take no exploration (`explorationRun` is refused) and no Salesforce UI helpers.
+
+```bash
+agent-qa run scripts --input '{"testCasesRun":"<run id>","api":true,"cases":["TC-ABC-1-004"]}' --accept typecheck,review,run
+```
+
+Each test sends to a path under the config's `baseURL` (Salesforce: `/services/data/vNN.0/…`). It checks the status, then the body field by field. The model is told to delete the records a test creates, but nothing checks that it does. The repo's own API fixture or request context authenticates it. If your repo has none, the draft's notes say that the request fixture needs its auth, for example `extraHTTPHeaders` in the config. On top of the checks above, the server refuses a draft that:
+
+- uses `page`, `context` or `browser`, a locator, `goto`, `newPage`, a browser type, or a launch;
+- sends to anything but a path written where it's sent (a string or template starting with `/` and its first segment). This also refuses a full or protocol-relative URL anywhere, a backslash, a `baseURL` of its own, and the global `fetch`;
+- hands the request context on in a way the check can't follow: into an object or array, `bind` or `call`, a method, a class, a callback or `arguments`. Passing it to your own helpers (relative imports and tsconfig path aliases) or to a function in the same file is fine;
+- handles credentials: an OAuth path, or an `Authorization`, cookie, secret or password key;
+- sends no request at all.
+
+When an API test fails, the run and fix loop works as above, with one more kind. `request` means the test sent the wrong path, method, payload or field, for example a 404 for a path the app doesn't have. That is the test's mistake, not a defect in your app: nothing is changed, and the run stops as `gave-up` for you to fix. `selector` isn't a kind for API tests, since they pick no element. Every case in the run gets a test. Leave out the cases with no API behaviour using `cases`. Known limits are in [backlog.md](backlog.md#api-test-guard-limits).
+
 ## In CI
 
 With `--ci`, the generated files are written into the job's checkout and run there, and leave it only as a pull request: one commit of new files on a branch `agent-qa/<run id>`, with the run's report as the description. It is a draft unless every test passed and stayed stable. The result is `scripts-pr@1`. Nobody is asked in CI, so accept every step, including `pr`:
