@@ -168,8 +168,13 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     }
     const id = tcIdOf(r.title, r.tags);
     const key = id ? keys.get(id) : undefined;
-    if (!id || !key) {
-      notInXray.push(r.title);
+    // Each says why, so the person knows what to fix: a TC id in the test, or a push of its case.
+    if (!id) {
+      notInXray.push(`${r.title} (no TC id in its title or tags)`);
+      continue;
+    }
+    if (!key) {
+      notInXray.push(`${r.title} (${id}: no Xray test labelled ${caseLabel(id)}; push its case with test-cases first)`);
       continue;
     }
     const failed = r.outcome === "failed";
