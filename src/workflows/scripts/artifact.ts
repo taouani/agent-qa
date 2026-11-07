@@ -58,13 +58,15 @@ export const scriptsDraftArtifactSchema = scriptsDraftSchema.extend({
   exploration: z.object({ run: z.string(), sourceHash: z.string() }).strict().optional(),
   folder: z.string(),
   kind: z.enum(["playwright", "playwright-bdd"]),
+  /** API tests (S3-8): request tests with no browser. */
+  api: z.literal(true).optional(),
   /** passed: no errors with the repo's own TypeScript; skipped: the person said no; unavailable: no typescript or tsconfig in the repo. */
   typeCheck: z.object({ status: z.enum(["passed", "skipped", "unavailable"]), reason: z.string().optional() }).strict(),
 });
 export type ScriptsDraftArtifact = z.infer<typeof scriptsDraftArtifactSchema>;
 
 function renderDraft(d: ScriptsDraftArtifact): string {
-  const lines = [`# Generated scripts (draft)`, "", `Framework: ${d.kind} in ${d.folder || "."}. Test cases: run ${d.testCases.run}${d.exploration ? `; exploration: run ${d.exploration.run}` : ""}.`, `Type check: ${d.typeCheck.status}${d.typeCheck.reason ? ` (${d.typeCheck.reason})` : ""}.`, "", "| File | Role | Lines |", "|---|---|---|"];
+  const lines = [`# Generated scripts (draft)`, "", `Framework: ${d.kind} in ${d.folder || "."}${d.api ? ", API tests" : ""}. Test cases: run ${d.testCases.run}${d.exploration ? `; exploration: run ${d.exploration.run}` : ""}.`, `Type check: ${d.typeCheck.status}${d.typeCheck.reason ? ` (${d.typeCheck.reason})` : ""}.`, "", "| File | Role | Lines |", "|---|---|---|"];
   for (const f of d.files) lines.push(`| ${f.path} | ${f.role} | ${f.content.split("\n").length} |`);
   lines.push("", "| Case | Steps covered |", "|---|---|");
   for (const c of d.cases) lines.push(`| ${c.id} | ${c.steps.map((s) => `${s.step} → ${s.file}:${s.line}`).join(", ")} |`);

@@ -2,7 +2,7 @@ import { CucumberExpression, ParameterType, ParameterTypeRegistry } from "@cucum
 import { AstBuilder, GherkinClassicTokenMatcher, Parser } from "@cucumber/gherkin";
 import { IdGenerator, type GherkinDocument, type Scenario, type Step, type Tag } from "@cucumber/messages";
 import type { OutputError } from "../../core/index.js";
-import { isPlainRelativePath, isProtectedPath, scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
+import { apiTestProblems, isPlainRelativePath, isProtectedPath, scanGeneratedCode, scanSource, type FrameworkProfile } from "../../data/index.js";
 import { lightningHelpersSource } from "../packs/salesforce.js";
 import type { TestCases } from "../test-cases/artifact.js";
 import type { ScriptsDraft } from "./artifact.js";
@@ -44,6 +44,8 @@ export interface CheckContext {
   existingFiles: readonly string[];
   /** Symbolic links in the folder: a path under one would write somewhere else. */
   links?: readonly string[];
+  /** API tests (S3-8): Playwright request tests that drive no browser. */
+  api?: boolean;
 }
 
 type Definition = { pattern: string; kind: "expression" | "regex"; flags?: string | undefined; file: string };
@@ -123,6 +125,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
   const byPath = new Map<string, ScriptsDraft["files"][number]>();
   const keys = new Set<string>();
   const specs = new Map<string, ReturnType<typeof scanGeneratedCode>>();
+  let sends = 0;
 
   draft.files.forEach((f, i) => {
     const at = `$.files[${i}]`;
@@ -156,9 +159,16 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
     if (f.role === "feature") return;
     const scan = scanGeneratedCode(f.content, f.path);
     if (f.role === "spec") specs.set(f.path, scan);
+    if (ctx.api && (f.role === "spec" || f.role === "steps")) {
+      const a = apiTestProblems(f.content, f.path);
+      for (const m of a.problems) err(`${at}.content`, m);
+      sends += a.sends;
+    }
     if (!scan.parsed || scan.syntaxErrors > 0) err(`${at}.content`, "doesn't parse as TypeScript");
     for (const finding of scan.findings) err(`${at}.content`, `line ${finding.line} ${finding.message}`);
   });
+
+  if (ctx.api && sends === 0) err("$.files", "an API test sends requests: no generated spec or step calls request.get, post, put, patch, delete or fetch with a path");
 
   // Features: parsed, no focus tags.
   const features = new Map<string, ScenarioInfo[]>();

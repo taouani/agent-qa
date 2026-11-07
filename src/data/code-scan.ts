@@ -909,3 +909,39 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
   }
   return out;
 }
+
+const API_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "fetch"]);
+const BROWSER = new Set(["page", "context", "browser", "browserName"]);
+
+/**
+ * What keeps generated code from being an API test (S3-8): one that drives a
+ * browser (the `page`, `context` or `browser` fixture, or a locator) or never
+ * sends a request (`request.get(...)` and the like on an APIRequestContext,
+ * the repo's own fixture of another name included: `sends` counts them), or
+ * one that sends to a full URL instead of a path under the config's
+ * baseURL. One message each, with its line.
+ */
+export function apiTestProblems(text: string, file: string): { problems: string[]; sends: number } {
+  const ast = parseCode(text, file);
+  if (!ast) return { problems: [], sends: 0 };
+  const out: string[] = [];
+  const at = (n: Node) => `line ${n.loc?.start.line ?? 0}`;
+  let sends = 0;
+  walkAst(ast, (n) => {
+    if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") && n.params[0]?.type === "ObjectPattern")
+      for (const p of n.params[0].properties) {
+        const key = p.type === "ObjectProperty" && !p.computed && p.key.type === "Identifier" ? p.key.name : undefined;
+        if (key && BROWSER.has(key)) out.push(`${at(p as Node)}: an API test takes the request fixture, not ${key}: it drives no browser`);
+      }
+    if ((n.type === "CallExpression" || n.type === "OptionalCallExpression") && (n.callee.type === "MemberExpression" || n.callee.type === "OptionalMemberExpression")) {
+      const m = memberName(n.callee as Node);
+      if (m && LOCATOR_METHODS.has(m) && m !== "filter" && m !== "first" && m !== "last" && m !== "and" && m !== "or" && m !== "nth") out.push(`${at(n)}: ${m}() picks an element: an API test checks responses, not pages`);
+      if (m && API_METHODS.has(m) && n.arguments.length > 0) {
+        sends++;
+        const url = literalString(n.arguments[0] as Node) ?? (n.arguments[0]?.type === "TemplateLiteral" ? n.arguments[0].quasis[0]?.value.cooked : undefined);
+        if (url && /^\s*https?:\/\//i.test(url)) out.push(`${at(n)}: a full URL: send to a path (/services/data/…), the config's baseURL gives the host`);
+      }
+    }
+  });
+  return { problems: [...new Set(out)], sends };
+}

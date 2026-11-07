@@ -389,6 +389,37 @@ test('TC-ABC-1-001 Create an approval request', async ({ page }) => {
     expect((await runs.readArtifact(first.runId, SCRIPTS_DRAFT_ARTIFACT))!.data.files.map((f) => f.path)).toEqual(["tests/abc-1.spec.ts"]);
   });
 
+  it("writes API tests that send requests and drive no browser (S3-8)", async () => {
+    const plain: FrameworkProfile = { ...PROFILE, kind: "playwright", steps: [], features: [], config: { ...PROFILE.config, bdd: undefined } as FrameworkProfile["config"] };
+    delete (plain.config as { bdd?: unknown }).bdd;
+    const e = engine(fakeData({ savedProfile: async () => ({ ...SAVED, kind: "playwright" }) }, plain));
+    await expect(e.start("scripts", { testCasesRun: "tc-run", explorationRun: "ex-run", api: true })).rejects.toMatchObject({ code: "INVALID_INPUTS", message: expect.stringContaining("leave explorationRun out") });
+    const first = await begin(e, { testCasesRun: "tc-run", api: true });
+    expect(first.context).toContain("## Rules (API tests)");
+    expect(first.context).not.toContain("Salesforce Lightning rules");
+    expect(first.context).not.toContain("helper file goes at");
+    const spec = `import { test, expect } from '@playwright/test';
+
+test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
+  await test.step('1. Sign in', async () => {});
+  await test.step('2. Create a request', async () => {
+    const res = await request.post('/services/data/v62.0/sobjects/Approval__c', { data: { Reason__c: 'Restock' } });
+    expect(res.status()).toBe(201);
+  });
+});
+`;
+    const draft = (content: string) => ({ files: [{ path: "tests/api/abc-1.spec.ts", role: "spec", content }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/api/abc-1.spec.ts", line: 4 }, { step: 2, file: "tests/api/abc-1.spec.ts", line: 5 }] }], notes: [] });
+    const browser = await e.submit(first.runId, "draft", draft(spec.replace("async ({ request })", "async ({ request, page })").replace("expect(res.status()).toBe(201);", "expect(res.status()).toBe(201);\n    await page.getByRole('status').click();")));
+    expect(browser.status === "rejected" && browser.errors.map((x) => x.message)).toEqual([
+      "line 3: an API test takes the request fixture, not page: it drives no browser",
+      "line 8: getByRole() picks an element: an API test checks responses, not pages",
+    ]);
+    const full = await e.submit(first.runId, "draft", draft(spec.replace("'/services/data", "'https://example.com/services/data")));
+    expect(full.status === "rejected" && full.errors.map((x) => x.message).join()).toMatch(/a full URL: send to a path/);
+    const none = await e.submit(first.runId, "draft", draft(spec.replace(/const res = [^\n]+\n\s+expect\(res.status\(\)\).toBe\(201\);/, "expect(1).toBe(1);")));
+    expect(none.status === "rejected" && none.errors.map((x) => x.message).join()).toMatch(/an API test sends requests/);
+  });
+
   it("refuses a repo that changed kind since the profile was reviewed", async () => {
     const e = engine(fakeData({ savedProfile: async () => ({ ...SAVED, kind: "playwright" }) }));
     await expect(begin(e, { testCasesRun: "tc-run" })).rejects.toThrow(/the repo is now playwright-bdd, but the reviewed profile says playwright/);

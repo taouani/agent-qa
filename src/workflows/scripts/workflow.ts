@@ -39,6 +39,7 @@ export const scriptsInputSchema = z
       .optional()
       .describe("Only these case ids. Default: every reviewed case, up to 20"),
     explorationRun: z.string().regex(RUN_ID, "must be a run id").optional().describe("Id of an explore run of the same test cases: its exploration@1 gives the elements and waits found"),
+    api: z.boolean().optional().describe("API tests: Playwright request tests for cases that describe API behaviour, with no browser (no exploration)"),
     fixRounds: z.number().int().min(0).max(MAX_FIX_ROUNDS).default(DEFAULT_FIX_ROUNDS).describe("How many times failing tests may be fixed and run again"),
     stabilityRuns: z.number().int().min(1).max(10).default(DEFAULT_STABILITY_RUNS).describe("How many times passing tests run again to show they are stable"),
   })
@@ -238,6 +239,8 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
     return art;
   };
   const isSalesforce = async (ctx: Ctx) => (await exploration(ctx))?.data.target.kind !== "web";
+  /** The pack's UI helpers: for browser tests on Salesforce only. */
+  const usesHelpers = async (ctx: Ctx) => !ctx.inputs.api && (await isSalesforce(ctx));
 
   /** The type check's errors, on the model's own files where they are. */
   const typeErrors = async (ctx: Ctx, draft: ScriptsDraft, own: ReadonlyArray<{ path: string }>): Promise<OutputError[]> => {
@@ -257,12 +260,23 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
     const cases = await casesOf(ctx);
     const explored = await exploration(ctx);
     const salesforce = await isSalesforce(ctx);
+    const api = ctx.inputs.api === true;
     return [
-      ...describeRepo(p, kind, salesforce ? helpersPath(p) : undefined),
+      ...describeRepo(p, kind, salesforce && !api ? helpersPath(p) : undefined),
       "",
-      ...(salesforce
-        ? [renderPack(p), ""]
-        : ["## Rules (a web app, not Salesforce)", "- Locators: getByRole, getByLabel, getByText, getByTestId, getByPlaceholder; CSS last, XPath never.", "- Wait for elements and states with expect(...) assertions, never fixed waits.", ""]),
+      ...(api
+        ? [
+            "## Rules (API tests)",
+            "- Playwright request tests: the request fixture (or the repo's own API fixture), never page, context or browser, never a locator.",
+            "- Send to paths (Salesforce: /services/data/vNN.0/…); the config's baseURL gives the host. Never a full URL, an org URL or a record id.",
+            "- Check what the case expects: the status (expect(response.status()).toBe(201), or toBeOK()), then the body (await response.json()) field by field.",
+            "- Authenticate with the repo's own API fixture or request context. Never write a token, a client id or secret, or sign-in code; if the repo has none, say in notes that the person must give the request fixture its auth (extraHTTPHeaders in the config).",
+            "- A record a test creates, it deletes at the end (test.afterEach or the last step), so a rerun starts clean.",
+            "",
+          ]
+        : salesforce
+          ? [renderPack(p), ""]
+          : ["## Rules (a web app, not Salesforce)", "- Locators: getByRole, getByLabel, getByText, getByTestId, getByPlaceholder; CSS last, XPath never.", "- Wait for elements and states with expect(...) assertions, never fixed waits.", ""]),
       `## Test cases (${cases.length})`,
       ...cases.flatMap((c) => {
         const e = explored?.data.cases.find((x) => x.id === c.id);
@@ -271,8 +285,9 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
     ].join("\n");
   };
 
-  const instructions = (): string =>
+  const instructions = (ctx?: Ctx): string =>
     [
+      ...(ctx?.inputs.api ? ["These are API tests: Playwright request tests that send requests and check responses, with no browser. Follow the API rules in the context; the page-object and sign-in lines below don't apply."] : []),
       "Write the code for the test cases in the context, in the repo's style: Gherkin scenarios and step definitions for a playwright-bdd repo, Playwright specs otherwise (the context says which). Submit every file whole.",
       "- Only new files. Call the repo's page objects, fixtures and steps; never change or replace an existing file. Add a page object only for a page the repo has none for.",
       "- playwright-bdd: one scenario per case, tagged with its id (@TC-ABC-1-001) and its type (@positive, @negative…). Reuse an existing step whenever its pattern fits, word for word; write a step definition only for a step no existing one matches, with createBdd(test) and the repo's fixtures. Each Gherkin step matches exactly one definition.",
@@ -289,13 +304,13 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
   const prepared = async (ctx: Ctx, out: ScriptsDraft) => {
     const { profile: p } = await profile(ctx);
     const { files, links } = await existing(ctx);
-    const draft = (await isSalesforce(ctx)) ? withHelper(out, helpersPath(p), files) : out;
+    const draft = (await usesHelpers(ctx)) ? withHelper(out, helpersPath(p), files) : out;
     return { draft, profile: p, files, links };
   };
 
   return {
     id: "scripts",
-    description: "Write Playwright code (specs, or Gherkin scenarios and steps for playwright-bdd) for reviewed test cases (test-cases@1), from the reviewed framework profile, the Salesforce pack and an optional exploration; the server checks it, the person reviews it before it is written, then the tests run and failures are fixed within strict rules (scripts-run@1).",
+    description: "Write Playwright code (specs, or Gherkin scenarios and steps for playwright-bdd; with api, request tests that drive no browser) for reviewed test cases (test-cases@1), from the reviewed framework profile, the Salesforce pack and an optional exploration; the server checks it, the person reviews it before it is written, then the tests run and failures are fixed within strict rules (scripts-run@1).",
     inputSchema: scriptsInputSchema,
     // Checked before the run is saved, so a typo leaves no run behind.
     prepareInputs: async (_runId, inputs) => {
@@ -308,6 +323,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
       } catch (e) {
         fail("$.cases", e);
       }
+      if (inputs.api && inputs.explorationRun) fail("$.explorationRun", new Error("API tests drive no browser: leave explorationRun out"));
       await loadExploration(inputs).catch((e) => fail("$.explorationRun", e));
       await saved().catch((e) => fail("$", e));
       return inputs;
@@ -357,10 +373,10 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
             }
           });
           if (errors.length) return errors;
-          if (!(await isSalesforce(ctx)) && importsHelpers(out, helpersPath(p))) return [{ path: "$.files", message: "this is a web app, not Salesforce: there is no helper file to import" }];
+          if (!(await usesHelpers(ctx)) && importsHelpers(out, helpersPath(p))) return [{ path: "$.files", message: ctx.inputs.api ? "API tests drive no browser: the pack's UI helpers don't apply" : "this is a web app, not Salesforce: there is no helper file to import" }];
           const { draft, files, links } = await prepared(ctx, out);
           if (draft.files.length > SCRIPTS_MAX_FILES) return [{ path: "$.files", message: `at most ${SCRIPTS_MAX_FILES - 1} files when the code imports the helper file, which the server adds` }];
-          const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files], links });
+          const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files], links, api: ctx.inputs.api === true });
           // The type check is the slow part: only for code that passed everything else.
           if (found.length) return found;
           return typeErrors(ctx, draft, out.files);
@@ -383,6 +399,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
             ...(ex && ctx.inputs.explorationRun ? { exploration: { run: ctx.inputs.explorationRun, sourceHash: ex.sourceHash } } : {}),
             folder,
             kind,
+            ...(ctx.inputs.api ? { api: true as const } : {}),
             typeCheck:
               typed.status === "done"
                 ? typed.diagnostics.length === 0
@@ -480,7 +497,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
           const { files, links } = await existing(ctx);
           // The generated files are in the repo now: they don't count as someone else's.
           const mine = new Set(draft.files.map((f) => pathKey(f.path)));
-          const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files].filter((f) => !mine.has(f)), links });
+          const found = checkDraft(draft, { profile: p, cases: await casesOf(ctx), existingFiles: [...files].filter((f) => !mine.has(f)), links, api: ctx.inputs.api === true });
           return found.length ? found : typeErrors(ctx, draft, draft.files);
         },
       }),

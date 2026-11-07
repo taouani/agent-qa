@@ -238,3 +238,25 @@ test.describe('TC-ABC-1-001 Create an approval request', () => {
     });
   });
 });
+
+describe("API test checks (S3-8)", () => {
+  const spec = `import { test, expect } from '@playwright/test';
+
+test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
+  await test.step('1. Sign in', async () => {});
+  await test.step('2. Create a request', async () => {
+    const res = await request.post('/services/data/v62.0/sobjects/Approval__c', { data: { Reason__c: 'Restock' } });
+    expect(res.status()).toBe(201);
+  });
+});
+`;
+  const plain = { ...profile, kind: "playwright" as const, steps: [], features: [] };
+  const d = (content: string) => scriptsDraftSchema.parse({ files: [{ path: "tests/api/abc-1.spec.ts", role: "spec", content }], cases: [{ id: "TC-ABC-1-001", steps: [{ step: 1, file: "tests/api/abc-1.spec.ts", line: 4 }, { step: 2, file: "tests/api/abc-1.spec.ts", line: 5 }] }] });
+  it("accepts a request test, and refuses one that drives a browser or sends nothing", () => {
+    expect(check(d(spec), { profile: plain, api: true })).toEqual([]);
+    // The same code is a fine UI-less spec when api isn't asked for.
+    expect(check(d(spec), { profile: plain })).toEqual([]);
+    expect(check(d(spec.replace("async ({ request })", "async ({ page })")), { profile: plain, api: true }).map((e) => e.message).join()).toMatch(/not page/);
+    expect(check(d(spec.replace("request.post(", "request.post(`https://x.my.salesforce.com${''}` + ")), { profile: plain, api: true }).map((e) => e.message).join()).toMatch(/full URL|org URL/);
+  });
+});
