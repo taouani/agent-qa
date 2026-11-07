@@ -115,6 +115,8 @@ export interface ExecutionRow {
   failedRuns: number;
   startedAt?: string | undefined;
   durationMs?: number | undefined;
+  screenshot?: string | undefined;
+  /** `screenshot` here: runs recorded before 2.0.0-alpha.2 kept only a failure's. */
   failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; screenshot?: string | undefined } | undefined;
 }
 
@@ -127,7 +129,7 @@ export interface ExecutionResult {
   /** When the case's tests started and ended (ISO), from the report. */
   start?: string;
   finish?: string;
-  /** A failed case's failure screenshot, from the framework folder (masked path): sent only with xray.attachScreenshots. */
+  /** The case's screenshot, passed or failed, as a handle (masked output folder # hash): sent only with xray.attachScreenshots. */
   screenshot?: string;
   /** Its status in the last execution with the same label, when it was in it. */
   before?: string;
@@ -149,7 +151,7 @@ export interface XrayExecutionPlan {
   notInXray: string[];
   /** Skipped tests: not run, so not recorded. */
   skipped: number;
-  /** Failed results whose screenshot goes too (xray.attachScreenshots); 0 when it is off. Each must still be there when recorded. */
+  /** Results whose screenshot goes too (xray.attachScreenshots); 0 when it is off. Each must still be there when recorded. */
   screenshots?: number;
   /**
    * failing: PASSED before, FAILED now; other: before neither PASSED nor
@@ -214,7 +216,9 @@ export function executionResults(rows: readonly ExecutionRow[], keys: ReadonlyMa
     const prev = byCase.get(id);
     if (prev?.status === "FAILED" && !failed) continue;
     if (prev && !failed && !comment) continue;
-    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment } : {}), ...(failed && r.failure?.screenshot ? { screenshot: r.failure.screenshot } : {}) });
+    // The kept row's screenshot, else one an earlier row with the same status had: a failed result never shows a passing page.
+    const shot = r.screenshot ?? r.failure?.screenshot ?? (prev && (prev.status === "FAILED") === failed ? prev.screenshot : undefined);
+    byCase.set(id, { tcId: id, xrayKey: key, status: failed ? "FAILED" : "PASSED", ...(comment ? { comment } : {}), ...(shot ? { screenshot: shot } : {}) });
   }
   for (const [id, r] of byCase) {
     const span = spans.get(id);

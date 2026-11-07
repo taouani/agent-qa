@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FetchLike } from "../src/connectors/http.js";
-import { XrayClient, type XrayExecutionInput } from "../src/connectors/xray.js";
+import { jiraDate, XrayClient, type XrayExecutionInput } from "../src/connectors/xray.js";
 import { configSchema, MemoryAuditSink, Policy, RunStore, WorkflowEngine, type WriteGrant } from "../src/core/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 import { DataAccess, executionChanges, executionResults, tcIdOf, type ExecutionRow, type PreviousExecution, type XrayExecutionPlan } from "../src/data/index.js";
@@ -48,10 +48,43 @@ describe("Xray Test Executions (S3-9): the client", () => {
     });
     expect(json("info")).toEqual({ fields: { project: { key: "QA" }, summary: "Agent-QA run r1", description: "d", issuetype: { name: "Test Execution" }, labels: ["agent-qa", "agent-qa:exec:abc"] } });
     await expect(withGrant((g) => client.importExecution({ ...INPUT, tests: [{ testKey: "not a key", status: "PASSED" }] }, g))).rejects.toThrow(/Not an Xray test key/);
+    // The execution's own dates go as Jira fields in the info part; only custom field ids.
+    await withGrant((g) => client.importExecution({ ...INPUT, fields: { customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T10:01:00.000+0000" } }, g));
+    const last = calls.filter((c) => c.path === "/api/v2/import/execution/multipart").at(-1)!;
+    expect(last.body).toContain('"customfield_10014":"2026-11-07","customfield_10505":"2026-11-07T10:01:00.000+0000","project":{"key":"QA"}');
+    await expect(withGrant((g) => client.importExecution({ ...INPUT, fields: { project: "X" } }, g))).rejects.toThrow(/custom field id/);
+  });
+
+  it("writes Jira dates as a UTC day or Jira's date-time form", () => {
+    const d = new Date("2026-11-07T23:30:05.123Z");
+    expect(jiraDate(d, "date")).toBe("2026-11-07");
+    expect(jiraDate(d, "datetime")).toBe("2026-11-07T23:30:05.123+0000");
   });
 });
 
 describe("Xray Test Executions (S3-9): results and changes", () => {
+  it("gives a case the screenshot of a row with its own status, a failure's ahead of a pass's", () => {
+    const keys = new Map([["TC-ABC-1-001", "QA-1"], ["TC-ABC-1-002", "QA-2"], ["TC-ABC-1-003", "QA-3"]]);
+    const { results } = executionResults(
+      [
+        // A pass then a failure with none: the failed result gets no passing page.
+        row("TC-ABC-1-001 a [chromium]", "passed", { screenshot: "test-results#pass" }),
+        row("TC-ABC-1-001 a [firefox]", "failed", { failure: { message: "boom" } }),
+        // Two passes: the second has none, the first's is kept.
+        row("TC-ABC-1-002 b [chromium]", "passed", { screenshot: "test-results#p1" }),
+        row("TC-ABC-1-002 b [firefox]", "passed"),
+        // A run from before alpha.2: the failure's.
+        row("TC-ABC-1-003 c", "failed", { failure: { message: "boom", screenshot: "test-results#old" } }),
+      ],
+      keys,
+    );
+    expect(results.map((r) => [r.tcId, r.status, r.screenshot])).toEqual([
+      ["TC-ABC-1-001", "FAILED", undefined],
+      ["TC-ABC-1-002", "PASSED", "test-results#p1"],
+      ["TC-ABC-1-003", "FAILED", "test-results#old"],
+    ]);
+  });
+
   it("finds each case by its TC id, one result per case, and leaves out skipped tests and tests with no case", () => {
     expect(tcIdOf("TC-ABC-1-001 Create a request", [])).toBe("TC-ABC-1-001");
     expect(tcIdOf("Approval › Create", ["@TC-ABC-12-010", "@positive"])).toBe("TC-ABC-12-010");
@@ -152,9 +185,35 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91" });
     expect(recorded[0]).toMatchObject({ project: "QA", labels: ["agent-qa", "agent-qa:exec:abc", "agent-qa:run:r1"], tests: [{ testKey: "QA-1", status: "FAILED" }, { testKey: "QA-2", status: "PASSED" }] });
     expect([...new Set(audit.entries.map((e) => e.summary))]).toEqual(["Record 2 test result(s) (1 failed) as a Test Execution in Xray project QA"]);
+    expect(recorded[0]!.fields).toBeUndefined();
   });
 
-  it("attaches failure screenshots only with xray.attachScreenshots, from the profile's folder (Tarek, 7 Nov 2026)", async () => {
+  it("sets the execution's start and end date fields from xray.executionDates (Tarek, 7 Nov 2026)", async () => {
+    const recorded: XrayExecutionInput[] = [];
+    const data = new DataAccess({
+      root: dir,
+      store: runs,
+      config: config({}, { executionDates: { start: { field: "customfield_10014", type: "date" }, end: { field: "customfield_10505" } } }),
+      audit: new MemoryAuditSink(),
+      labels: { findByLabels: async (_p, labels) => new Map(labels.map((l, i) => [l, `QA-${i + 1}`])) },
+      xray: {
+        importAndWait: async () => {
+          throw new Error("not used");
+        },
+        importExecution: async (input) => {
+          recorded.push(input);
+          return { key: "QA-91" };
+        },
+      },
+    });
+    const plan = await data.xrayExecutionPlan([row("TC-ABC-1-001 a", "passed")], "agent-qa:exec:abc", []);
+    await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", { summary: "s", description: "d", startedAt: new Date("2026-11-07T21:50:00Z"), finishedAt: new Date("2026-11-07T21:51:30Z") }, true);
+    expect(recorded[0]!.fields).toEqual({ customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T21:51:30.000+0000" });
+    expect(() => config({}, { executionDates: { start: { field: "Start date" } } })).toThrow(/custom field id/);
+    expect(() => config({}, { executionDates: { start: { field: "customfield_1" }, end: { field: "customfield_1" } } })).toThrow(/different fields/);
+  });
+
+  it("attaches screenshots, passed or failed, only with xray.attachScreenshots, from the profile's folder (Tarek, 7 Nov 2026)", async () => {
     await writeFile(join(dir, "agent-qa.profile.json"), JSON.stringify({ version: 1, folder: ".", kind: "playwright", commands: { test: ["npx", "playwright", "test"] }, reviewedAt: "2026-11-05T00:00:00.000Z" }));
     await mkdir(join(dir, "test-results", "a-chromium"), { recursive: true });
     await writeFile(join(dir, "test-results", "a-chromium", "test-failed-1.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -184,9 +243,10 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
         },
       });
     const rows = [
-      row("TC-ABC-1-001 a", "failed", { failure: { message: "boom", screenshot: handle("a-chromium/test-failed-1.png") } }),
-      row("TC-ABC-1-002 b", "failed", { failure: { message: "boom", screenshot: handle("x.png", "..") } }),
-      row("TC-ABC-1-003 c", "flaky", { runs: 2, failedRuns: 1, failure: { message: "boom", screenshot: handle("a-chromium/test-failed-1.png") } }),
+      row("TC-ABC-1-001 a", "failed", { screenshot: handle("a-chromium/test-failed-1.png"), failure: { message: "boom" } }),
+      row("TC-ABC-1-002 b", "failed", { screenshot: handle("x.png", ".."), failure: { message: "boom" } }),
+      row("TC-ABC-1-003 c", "passed", { screenshot: handle("a-chromium/test-failed-1.png") }),
+      // A run recorded before alpha.2 kept it in the failure.
       row("TC-ABC-1-004 d", "failed", { failure: { message: "boom", screenshot: handle("link.png") } }),
     ];
     const info = { summary: "s", description: "d", startedAt: new Date(0), finishedAt: new Date(1000) };
@@ -195,9 +255,9 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     expect(recorded[0]!.tests.every((t) => t.evidence === undefined)).toBe(true);
     const on = make(true);
     const plan = await on.xrayExecutionPlan(rows, "agent-qa:exec:abc", []);
-    // A flaky (passed) case sends none; the count is what the question names.
-    expect(plan.results.map((x) => x.screenshot !== undefined)).toEqual([true, true, false, true]);
-    expect(plan.screenshots).toBe(3);
+    // A passed case's goes too; the count is what the question names.
+    expect(plan.results.map((x) => x.screenshot !== undefined)).toEqual([true, true, true, true]);
+    expect(plan.screenshots).toBe(4);
     expect((await off.xrayExecutionPlan(rows, "agent-qa:exec:abc", [])).screenshots).toBeUndefined();
     // A plan made with the setting off (the question named no screenshots) sends none, even once it is on.
     await on.recordXrayExecution("r1", await off.xrayExecutionPlan(rows, "agent-qa:exec:abc", []), "agent-qa:run:r1", info, true);
@@ -205,8 +265,9 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     recorded.splice(1);
     await on.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true);
     // Only the file in the output folder: a folder outside it, or a link out, is never read.
-    expect(recorded[1]!.tests.map((t) => t.evidence)).toEqual([[{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"), filename: "TC-ABC-1-001.png", contentType: "image/png" }], undefined, undefined, undefined]);
-    expect(audit.entries.at(-1)!.summary).toBe("Record 4 test result(s) (3 failed, 1 unmasked screenshot(s)) as a Test Execution in Xray project QA");
+    const png = (id: string) => [{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"), filename: `${id}.png`, contentType: "image/png" }];
+    expect(recorded[1]!.tests.map((t) => t.evidence)).toEqual([png("TC-ABC-1-001"), undefined, png("TC-ABC-1-003"), undefined]);
+    expect(audit.entries.at(-1)!.summary).toBe("Record 4 test result(s) (3 failed, 2 unmasked screenshot(s)) as a Test Execution in Xray project QA");
   });
 
   /** run-tests with fake data: the run step records a run, then the xray step. */

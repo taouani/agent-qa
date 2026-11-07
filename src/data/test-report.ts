@@ -57,8 +57,13 @@ export interface ReportedTest {
   durationMs?: number | undefined;
   /** The first failure: its message (with the call log), the code around it, and where. */
   failure?:
-    | { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined; screenshot?: { outputDir: string; path: string } | undefined }
+    | { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined }
     | undefined;
+  /**
+   * Playwright's screenshot of the test (`screenshot: 'on'` or
+   * 'only-on-failure'): a failed run's when one failed, else the last run's.
+   */
+  screenshot?: { outputDir: string; path: string } | undefined;
 }
 
 export interface ParsedReport {
@@ -95,7 +100,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
       ? path
       : undefined;
   };
-  /** Playwright's own failure screenshot: an image attachment named "screenshot", in a project's output folder. */
+  /** Playwright's own screenshot: an image attachment named "screenshot", in a project's output folder. */
   const screenshotFile = (attachments: ReadonlyArray<z.infer<typeof attachment>> | undefined) => {
     const a = attachments?.find((x) => x.name === "screenshot" && /^image\/(png|jpeg)$/.test(x.contentType ?? "") && typeof x.path === "string" && /\.(png|jpe?g)$/i.test(x.path));
     if (!a?.path) return undefined;
@@ -117,6 +122,8 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
         const err = first?.error ?? first?.errors?.[0];
         const context = first?.attachments?.find((a) => a.name === "error-context");
         const span = timeSpan(t.results);
+        // A failed run's screenshot shows the failure; otherwise the last one taken.
+        const shot = screenshotFile(first?.attachments) ?? [...t.results].reverse().map((x) => screenshotFile(x.attachments)).find((x) => x !== undefined);
         tests.push({
           title: [...here, sp.title].filter(Boolean).join(" › ") + (t.projectName ? ` [${t.projectName}]` : ""),
           tags: sp.tags ?? [],
@@ -126,6 +133,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
           runs: t.results.length,
           failedRuns: failed.length,
           ...span,
+          ...(shot ? { screenshot: shot } : {}),
           ...(first
             ? {
                 failure: {
@@ -134,7 +142,6 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
                   snippet: err?.snippet ? plain(err.snippet) : undefined,
                   at: err?.location ? { file: fromFolder(err.location.file, folder, base), line: err.location.line } : undefined,
                   snapshotPath: snapshotFile(context?.path),
-                  screenshot: screenshotFile(first.attachments),
                   snapshot: context?.body !== undefined && context.contentType?.startsWith("text/") ? Buffer.from(context.body, "base64").toString("utf8") : undefined,
                 },
               }
@@ -171,6 +178,8 @@ function merged(tests: ReportedTest[]): ReportedTest[] {
     }
     seen.runs += t.runs;
     seen.failedRuns += t.failedRuns;
+    // A failure's screenshot comes before a pass's.
+    if (t.screenshot && (!seen.screenshot || (t.failure && !seen.failure))) seen.screenshot = t.screenshot;
     seen.failure ??= t.failure;
     if (t.startedAt !== undefined) {
       const end = (x: ReportedTest) => Date.parse(x.startedAt!) + (x.durationMs ?? 0);

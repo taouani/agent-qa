@@ -21,7 +21,7 @@ export { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "./c
 export type { ConfluenceClientOptions, ConfluencePage, SkippedPage } from "./confluence.js";
 export { decodeEntities, parseStorage, storageToText } from "./storage.js";
 export type { StorageText } from "./storage.js";
-export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient } from "./xray.js";
+export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient, jiraDate } from "./xray.js";
 export type { XrayClientOptions, XrayEvidence, XrayExecutionInput, XrayExecutionResult, XrayJobIssue, XrayJobResult, XrayRunStatus, XrayStep, XrayTest } from "./xray.js";
 export { BRANCH, GITHUB_API, GitHubClient } from "./github.js";
 export type { GitHubClientOptions, OpenedPullRequest, PullRequestFiles } from "./github.js";

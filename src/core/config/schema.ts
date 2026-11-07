@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+/** A Jira date field set when a Test Execution is created: its id and whether it holds a day or a time. */
+const executionDateField = z
+  .object({ field: z.string().regex(/^customfield_\d+$/, "a Jira custom field id, such as customfield_10505"), type: z.enum(["date", "datetime"]).default("datetime") })
+  .strict();
+
 /**
  * Contract 1: `agent-qa.yaml`. Every section is optional except `version`;
  * each workflow checks only the sections it needs.
@@ -95,12 +100,23 @@ export const configSchema = z
         /** Jira link type from each test to its requirement. Default "Test" (tests / is tested by). */
         linkType: z.string().min(1).max(100).default("Test"),
         /**
-         * Attach Playwright's failure screenshots to the failed tests of a
-         * Test Execution (Tarek, 7 Nov 2026). Off by default: a screenshot
+         * Attach Playwright's screenshots (`screenshot: 'on'` or
+         * 'only-on-failure' in its config) to the tests of a Test Execution,
+         * passed or failed (Tarek, 7 Nov 2026). Off by default: a screenshot
          * can't be masked, so what the page showed (names, record data) goes
          * to Xray as it is.
          */
         attachScreenshots: z.boolean().default(false),
+        /**
+         * The Test Execution's own start and end date fields, which Xray
+         * doesn't set from the results in this import: Jira custom field ids,
+         * with each field's type (a date field takes the UTC day only).
+         */
+        executionDates: z
+          .object({ start: executionDateField.optional(), end: executionDateField.optional() })
+          .strict()
+          .refine((d) => !d.start || !d.end || d.start.field !== d.end.field, "start and end must be different fields")
+          .optional(),
       })
       .strict()
       .optional(),

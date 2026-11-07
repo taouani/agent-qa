@@ -38,15 +38,30 @@ describe("Playwright's JSON report", () => {
     ]);
   });
 
-  it("keeps Playwright's failure screenshot only from a project's output folder", () => {
+  it("keeps Playwright's screenshot only from a project's output folder, a passed test's too", () => {
     const shot = (path: string) => ({ name: "screenshot", contentType: "image/png", path });
     const t = (title: string, path: string) => ({ title, file: "a.spec.ts", line: 1, tests: [{ status: "unexpected", results: [{ status: "failed", error: { message: "boom" }, attachments: [shot(path)] }] }] });
     const json = {
       config: { rootDir: "/repo", projects: [{ outputDir: "/repo/test-results" }] },
-      suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [t("in", "/repo/test-results/a-in/test-failed-1.png"), t("out", "/home/me/.ssh/key.png"), t("not an image", "/repo/test-results/a/trace.zip")] }],
-      stats: { expected: 0, unexpected: 3, flaky: 0, skipped: 0 },
+      suites: [
+        {
+          title: "a.spec.ts",
+          file: "a.spec.ts",
+          specs: [
+            t("in", "/repo/test-results/a-in/test-failed-1.png"),
+            t("out", "/home/me/.ssh/key.png"),
+            t("not an image", "/repo/test-results/a/trace.zip"),
+            // screenshot: 'on': a passed test has one too.
+            { title: "passed", file: "a.spec.ts", line: 2, tests: [{ status: "expected", results: [{ status: "passed", attachments: [shot("/repo/test-results/a-passed/test-finished-1.png")] }] }] },
+            // Failed, then passed on a retry: the failure's.
+            { title: "flaky", file: "a.spec.ts", line: 3, tests: [{ status: "flaky", results: [{ status: "failed", error: { message: "boom" }, attachments: [shot("/repo/test-results/a-flaky/test-failed-1.png")] }, { status: "passed", attachments: [shot("/repo/test-results/a-flaky-retry1/test-finished-1.png")] }] }] },
+          ],
+        },
+      ],
+      stats: { expected: 1, unexpected: 3, flaky: 1, skipped: 0 },
     };
-    expect(parsePlaywrightReport(json, "/repo").tests.map((x) => x.failure?.screenshot)).toEqual([{ outputDir: "/repo/test-results", path: "/repo/test-results/a-in/test-failed-1.png" }, undefined, undefined]);
+    const at = (p: string) => ({ outputDir: "/repo/test-results", path: `/repo/test-results/${p}` });
+    expect(parsePlaywrightReport(json, "/repo").tests.map((x) => x.screenshot)).toEqual([at("a-in/test-failed-1.png"), undefined, undefined, at("a-passed/test-finished-1.png"), at("a-flaky/test-failed-1.png")]);
   });
 
   it("spans repeated runs from the first start to the last end", () => {
