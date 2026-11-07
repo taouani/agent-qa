@@ -116,9 +116,24 @@ export function scanGeneratedCode(text: string, file: string): CodeScan {
     }
     return undefined;
   };
+  const soleReturns = new Set<Node>();
+  walkAst(ast, (n) => {
+    if ((n.type === "FunctionDeclaration" || n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") && n.body.type === "BlockStatement" && n.body.body.length === 1 && n.body.body[0]!.type === "ReturnStatement") {
+      // Not when it hands back a function: a check inside one never runs.
+      let fn = false;
+      const passed = new Set<Node>();
+      walkAst(n.body.body[0] as Node, (x) => {
+        // expect.poll(() => …), test.step('…', async () => …): run by the call they are passed to.
+        if ((x.type === "CallExpression" || x.type === "OptionalCallExpression") && ["step", "poll"].includes((x.callee.type === "Identifier" ? x.callee.name : memberName(x.callee as Node)) ?? "")) for (const a of x.arguments) passed.add(a as Node);
+        if ((x.type === "ArrowFunctionExpression" || x.type === "FunctionExpression") && !passed.has(x)) fn = true;
+      });
+      if (!fn) soleReturns.add(n.body.body[0] as Node);
+    }
+  });
   const nameOf = (n: Node): string | undefined => (n.type === "Identifier" ? n.name : memberName(n));
   walkAst(ast, (n) => {
-    if (BRANCHES.has(n.type)) branches++;
+    // A function whose body is one return (a getter, `submit() { return …click(); }`) skips nothing.
+    if (BRANCHES.has(n.type) && !(n.type === "ReturnStatement" && soleReturns.has(n))) branches++;
     // Reading files, the environment or other programs.
     if (n.type === "ImportDeclaration" && SYSTEM_MODULES.test(n.source.value)) add(n, "system-access");
     if (n.type === "Identifier" && ["process", "require", "eval", "Function"].includes(n.name)) {
@@ -557,7 +572,8 @@ export function checkDependencies(text: string, file: string, seed: Iterable<str
     } else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n, n.value as Node | null);
     else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n, n.body);
     else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n, n.body);
-    else if (n.type === "ObjectProperty") declare(keyName(n.key as Node), n, n.value as Node);
+    // { page } (a fixture parameter, a shorthand) only passes a name on: no declaration of it.
+    else if (n.type === "ObjectProperty" && !n.shorthand) declare(keyName(n.key as Node), n, n.value as Node);
     else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n, n.right);
     else if (expand && n.type === "CallExpression" && (n.callee.type === "MemberExpression" || n.callee.type === "OptionalMemberExpression")) {
       // A matcher hanging off expect(...): what the check reads.
@@ -583,4 +599,313 @@ export function checkDependencies(text: string, file: string, seed: Iterable<str
   }
   const declarations = [...names].flatMap((name) => (decls.get(name) ?? []).map((d) => `${name}\u0000${d.source}`)).sort();
   return { names: [...names].sort(), declarations };
+}
+
+/**
+ * The string and number values a file's code holds (S3-6), template text
+ * included, module paths left out: a refactor moves code and renames it, but
+ * adds no value the folder didn't hold (an expected text, a selector, a
+ * timeout).
+ */
+export function codeLiterals(text: string, file: string): string[] | undefined {
+  const ast = parseCode(text, file);
+  if (!ast) return undefined;
+  const modulePaths = new Set<Node>();
+  const out: string[] = [];
+  walkAst(ast, (n) => {
+    if ((n.type === "ImportDeclaration" || n.type === "ExportAllDeclaration" || n.type === "ExportNamedDeclaration") && n.source) modulePaths.add(n.source as Node);
+    if (n.type === "CallExpression" && ((n.callee.type === "Identifier" && n.callee.name === "require") || n.callee.type === "Import") && n.arguments[0]) modulePaths.add(n.arguments[0] as Node);
+    if (n.type === "TSImportType" || n.type === "TSExternalModuleReference") walkAst(n as Node, (x) => x.type === "StringLiteral" && modulePaths.add(x));
+    if (modulePaths.has(n)) return;
+    if (n.type === "StringLiteral") out.push(`s:${n.value}`);
+    else if (n.type === "NumericLiteral") out.push(`n:${n.value}`);
+    else if (n.type === "TemplateElement") out.push(`s:${n.value.cooked ?? n.value.raw}`);
+  });
+  return out.sort();
+}
+
+/** The most calls and values a test's reach lists in order, and the most nodes it visits: past either, the test is too large to check. */
+export const MAX_REACH = 20_000;
+const MAX_REACH_VISITS = 300_000;
+const TYPE_KEYS = new Set(["typeAnnotation", "returnType", "typeParameters", "typeArguments", "superTypeParameters", "implements", "decorators"]);
+/**
+ * Calls known to run the function passed to them (Playwright's, and a
+ * promise's then and finally), unless the files declare a method of that
+ * name; any other call may never run it. expect(fn) and expect.poll(fn) run
+ * it only under a matcher (toPass, toBe…).
+ */
+const RUNNERS = new Set(["test", "describe", "serial", "parallel", "step", "beforeEach", "afterEach", "beforeAll", "afterAll", "then", "finally"]);
+/** Of those, the ones whose callbacks run later: an action inside counts as awaited only if the call is. */
+const LATER = new Set(["then", "finally", "step"]);
+const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration", "ClassMethod", "ClassPrivateMethod", "ObjectMethod"]);
+
+interface Binding {
+  node: Node;
+  env: Env;
+  /** Destructured: the property (or index) of node the name stands for. */
+  prop?: string;
+}
+interface Env {
+  vars: Map<string, Binding>;
+  parent?: Env;
+}
+
+/** The names a destructuring pattern binds, each to its value's property: `{ user, city: town }` binds user to .user and town to .city. */
+function bindPattern(p: Node, value: Node, env: Env, into: Env): void {
+  if (p.type === "Identifier") return void into.vars.set(p.name, { node: value, env });
+  if (p.type === "AssignmentPattern") return bindPattern(p.left as Node, value, env, into);
+  if (p.type === "ObjectPattern")
+    for (const q of p.properties) {
+      if (q.type !== "ObjectProperty" || q.computed) continue;
+      const key = q.key.type === "Identifier" ? q.key.name : literalString(q.key as Node);
+      const target = (q.value.type === "AssignmentPattern" ? q.value.left : q.value) as Node;
+      if (key && target.type === "Identifier") into.vars.set(target.name, { node: value, env, prop: key });
+      else walkAst(target, (x) => x.type === "Identifier" && into.vars.set(x.name, { node: value, env }));
+    }
+  else if (p.type === "ArrayPattern")
+    p.elements.forEach((e, i) => {
+      const target = (e?.type === "AssignmentPattern" ? e.left : e) as Node | null;
+      if (target?.type === "Identifier") into.vars.set(target.name, { node: value, env, prop: String(i) });
+      else if (target) walkAst(target, (x) => x.type === "Identifier" && into.vars.set(x.name, { node: value, env }));
+    });
+  else walkAst(p, (x) => x.type === "Identifier" && into.vars.set(x.name, { node: value, env }));
+}
+
+/**
+ * What each test reaches (S3-6), by its title: the names of the calls its
+ * body makes (`a:` for each call awaited) and the values it holds, in the
+ * order they run. A name declared in the test (or a function it is in)
+ * stands for its own value; a called function's or method's parameters
+ * stand for the call's arguments, read where the parameter is read; any
+ * other name (a page object's method, a helper, a constant in another file)
+ * expands every declaration of it across the files, each text once, in the
+ * order of their text. A beforeEach of the test's describe block, or of its
+ * file, comes first. A function written in the test but not called reaches
+ * nothing; a locator declared reaches nothing until it is read.
+ *
+ * A refactor may move what a test does into a page object, a helper, a
+ * fixture or a beforeEach, never leave out an action, an await or a value,
+ * nor change their order: the test's list before is a subsequence of its
+ * list after. `complete` is false when the test was too large to follow.
+ */
+export function testReach(files: ReadonlyArray<{ path: string; content: string }>): Map<string, { reach: Set<string>; order: string[]; complete: boolean }> {
+  /** By name: the node a read reaches, and the function (params and body) a call runs. */
+  const decls = new Map<string, Array<{ text: string; node: Node; fn?: Node; getter?: boolean }>>();
+  const tests: Array<{ title: string; at: number; file: string; body: Node[] }> = [];
+  const hooks: Array<{ file: string; from: number; to: number; fn: Node }> = [];
+  for (const f of files) {
+    const ast = parseCode(f.content, f.path);
+    if (!ast) continue;
+    const textOf = (n: Node) => f.content.slice(n.start ?? 0, n.end ?? 0);
+    const declare = (name: string | undefined, node: Node | null | undefined, whole?: Node) => {
+      if (!name || !node) return;
+      const fn = FUNCTIONS.has(node.type) ? node : undefined;
+      decls.set(name, [...(decls.get(name) ?? []), { text: textOf(whole ?? node), node, ...(fn ? { fn } : {}), ...(whole?.type === "ClassMethod" && whole.kind === "get" ? { getter: true } : {}) }]);
+    };
+    const keyName = (k: Node) => (k.type === "Identifier" ? k.name : k.type === "PrivateName" ? k.id.name : literalString(k));
+    const describes: Array<[number, number]> = [];
+    const found: Array<{ at: number; fn: Node }> = [];
+    walkAst(ast, (n) => {
+      if (n.type === "VariableDeclarator" && n.id.type === "Identifier") declare(n.id.name, n.init);
+      else if (n.type === "ClassProperty" || n.type === "ClassPrivateProperty" || n.type === "ClassAccessorProperty") declare(keyName(n.key as Node), n.value as Node | null);
+      else if (n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "ObjectMethod") declare(keyName(n.key as Node), n, n);
+      else if (n.type === "FunctionDeclaration" && n.id) declare(n.id.name, n);
+      else if (n.type === "ObjectProperty" && !n.shorthand) declare(keyName(n.key as Node), n.value as Node);
+      else if (n.type === "AssignmentExpression") declare(n.left.type === "Identifier" ? n.left.name : memberName(n.left as Node), n.right);
+      else if (n.type === "CallExpression") {
+        const callee = n.callee as Node;
+        const isMember = callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression";
+        const name = callee.type === "Identifier" ? callee.name : memberName(callee);
+        const objName = isMember ? (callee.object.type === "Identifier" ? callee.object.name : memberName(callee.object as Node)) : undefined;
+        const title = n.arguments[0] ? literalString(n.arguments[0] as Node) : undefined;
+        // test.describe, test.describe.serial, .parallel, .only…: a block of its own.
+        const isDescribe = /^test\.describe(?:\.|$)/.test(pathOfExpr(callee) ?? "");
+        if (title !== undefined && ((callee.type === "Identifier" && callee.name === "test") || isDescribe)) {
+          tests.push({ title, at: n.start ?? 0, file: f.path, body: n.arguments.slice(1) as Node[] });
+          if (isDescribe) describes.push([n.start ?? 0, n.end ?? 0]);
+        }
+        // beforeEach runs before each test of its describe block (of the file, at the top). beforeAll runs once: nothing moves into it.
+        if (objName === "test" && name === "beforeEach") for (const a of n.arguments) if (a.type === "ArrowFunctionExpression" || a.type === "FunctionExpression") found.push({ at: n.start ?? 0, fn: a as Node });
+      }
+    });
+    for (const h of found) {
+      const inside = describes.filter(([a, b]) => a < h.at && h.at < b).sort((x, y) => x[1] - x[0] - (y[1] - y[0]))[0];
+      hooks.push({ file: f.path, from: inside?.[0] ?? 0, to: inside?.[1] ?? Infinity, fn: h.fn });
+    }
+  }
+  for (const [name, d] of decls) {
+    const seen = new Set<string>();
+    decls.set(name, d.filter((x) => !seen.has(x.text) && seen.add(x.text)).sort((x, y) => (x.text < y.text ? -1 : x.text > y.text ? 1 : 0)));
+  }
+  const callName = (n: Node): string | undefined => {
+    if (n.type !== "CallExpression" && n.type !== "OptionalCallExpression" && n.type !== "NewExpression") return undefined;
+    const c = n.callee as Node;
+    return c.type === "Identifier" ? c.name : memberName(c);
+  };
+  const out = new Map<string, { reach: Set<string>; order: string[]; complete: boolean }>();
+  for (const t of tests) {
+    const order: string[] = [];
+    let visits = 0;
+    const running = new Set<Node>();
+    /** Calls awaited or returned; expect calls under a matcher; how deep in a callback no one awaits. */
+    const awaited = new Set<Node>();
+    const matched = new Set<Node>();
+    let floating = 0;
+    const full = () => order.length >= MAX_REACH || visits >= MAX_REACH_VISITS;
+    const root: Env = { vars: new Map() };
+    const lookup = (env: Env | undefined, name: string): Binding | undefined => {
+      for (let e = env; e; e = e.parent) if (e.vars.has(name)) return e.vars.get(name);
+      return undefined;
+    };
+    /** Runs a function: its parameters stand for the arguments, read in the caller's scope. */
+    const call = (fn: Node, args: readonly Node[], caller: Env, outer: Env) => {
+      if (running.has(fn) || full()) return;
+      running.add(fn);
+      const env: Env = { vars: new Map(), parent: outer };
+      const params = (fn as unknown as { params?: Node[] }).params ?? [];
+      params.forEach((p, i) => {
+        const id = p.type === "TSParameterProperty" ? (p.parameter as Node) : p;
+        const arg = args[i] as Node | undefined;
+        // An argument given stands for the parameter, read in the caller's scope; else its default, in the function's.
+        if (arg) bindPattern(id.type === "AssignmentPattern" ? (id.left as Node) : id, arg, caller, env);
+        else if (id.type === "AssignmentPattern") bindPattern(id.left as Node, id.right as Node, env, env);
+      });
+      const body = (fn as unknown as { body: Node }).body;
+      visit(body, env, false);
+      running.delete(fn);
+    };
+    /** A name read by a call (with its arguments) or not (args undefined). */
+    const reach = (name: string, env: Env, args: readonly Node[] | undefined, runs: boolean, local: boolean) => {
+      if (full()) return;
+      const b = local ? lookup(env, name) : undefined;
+      if (b?.prop !== undefined) {
+        // A destructured name: the matching property or element of its value, or a read of that property.
+        const v = b.node;
+        const hit = v.type === "ObjectExpression" ? v.properties.find((q) => q.type === "ObjectProperty" && !q.computed && (q.key.type === "Identifier" ? q.key.name : literalString(q.key as Node)) === b.prop) : v.type === "ArrayExpression" ? v.elements[Number(b.prop)] : undefined;
+        const node = (hit && hit.type === "ObjectProperty" ? hit.value : hit) as Node | undefined | null;
+        if (node && !running.has(node)) {
+          running.add(node);
+          visit(node, b.env, runs);
+          running.delete(node);
+        } else if (!hit && !running.has(v)) {
+          running.add(v);
+          visit(v, b.env, false);
+          running.delete(v);
+          reach(b.prop, env, args, runs, false);
+        }
+        return;
+      }
+      if (b) {
+        if (running.has(b.node)) return;
+        if (FUNCTIONS.has(b.node.type)) {
+          if (args) call(b.node, args, env, b.env);
+          else if (runs) visit(b.node, b.env, true);
+          return;
+        }
+        running.add(b.node);
+        visit(b.node, b.env, runs);
+        running.delete(b.node);
+        return;
+      }
+      for (const d of decls.get(name) ?? []) {
+        if (d.fn) {
+          if (args) call(d.fn, args, env, root);
+          else if (d.getter || runs) call(d.fn, [], env, root);
+        } else if (!running.has(d.node)) {
+          running.add(d.node);
+          visit(d.node, root, runs);
+          running.delete(d.node);
+        }
+      }
+    };
+    const visit = (n: Node, env: Env, runs: boolean): void => {
+      if (full()) return;
+      visits++;
+      if (n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") {
+        // A function that is neither passed to a call nor called by name never runs here; one that does sees the scope it was written in.
+        if (!runs) return;
+        const inner: Env = { vars: new Map(), parent: env };
+        return visit(n.body as Node, inner, false);
+      }
+      if (n.type === "ClassBody" || n.type === "ClassMethod" || n.type === "ClassPrivateMethod" || n.type === "FunctionDeclaration") return;
+      if (n.type === "VariableDeclarator") {
+        if (n.init) bindPattern(n.id as Node, n.init as Node, env, env);
+        // A value declared is reached where it is read (a locator built does nothing); one awaited, or a wait started early, runs here too.
+        if (n.init && (n.init.type === "AwaitExpression" || /^waitFor/.test(callName(n.init as Node) ?? ""))) visit(n.init as Node, env, false);
+        return;
+      }
+      if (n.type === "AwaitExpression" || (n.type === "ReturnStatement" && n.argument)) {
+        const arg = n.argument as Node;
+        // The awaited (or returned) call and the calls it chains on: x.then(a).finally(b).
+        for (let c: Node | undefined = arg; c && (c.type === "CallExpression" || c.type === "OptionalCallExpression"); ) {
+          awaited.add(c);
+          const callee = c.callee as Node;
+          c = callee.type === "MemberExpression" || callee.type === "OptionalMemberExpression" ? (callee.object as Node) : undefined;
+        }
+        if (n.type === "AwaitExpression") {
+          const name = callName(arg);
+          if (name && floating === 0) order.push(`a:${name}`);
+        }
+        return visit(arg, env, false);
+      }
+      if (n.type === "CallExpression" || n.type === "OptionalCallExpression" || n.type === "NewExpression") {
+        const name = callName(n);
+        if (name) order.push(`c:${name}`);
+        const c = n.callee as Node;
+        const args = n.arguments as Node[];
+        // A matcher runs what expect(fn) or expect.poll(fn) was given.
+        if (c.type === "MemberExpression" || c.type === "OptionalMemberExpression") {
+          let o = c.object as Node;
+          if ((o.type === "MemberExpression" || o.type === "OptionalMemberExpression") && ["not", "resolves", "rejects"].includes(memberName(o) ?? "")) o = o.object as Node;
+          if ((o.type === "CallExpression" || o.type === "OptionalCallExpression") && ["expect", "poll"].includes(callName(o) ?? "")) matched.add(o);
+        }
+        if (c.type === "Identifier") reach(c.name, env, args, true, true);
+        else if (c.type === "MemberExpression" || c.type === "OptionalMemberExpression") {
+          visit(c.object as Node, env, false);
+          if (c.computed) visit(c.property as Node, env, false);
+          const m = memberName(c);
+          if (m) reach(m, env, args, true, false);
+        } else visit(c, env, false);
+        // The arguments as written too, so a value passed but never read is still reached; a function passed runs only if the call is one known to run it.
+        const describe = /^test\.describe(?:\.|$)/.test(pathOfExpr(c) ?? "");
+        // test.step is Playwright's; another x.then or x.step is the files' own only if they declare such a method or function.
+        const declared = c.type !== "Identifier" && !!name && !/^test\./.test(pathOfExpr(c) ?? "") && (decls.get(name) ?? []).some((d) => d.fn !== undefined);
+        const runner = describe || (RUNNERS.has(name ?? "") && !declared) || matched.has(n);
+        const later = runner && LATER.has(name ?? "") && !awaited.has(n);
+        if (later) floating++;
+        for (const a of args) visit(a, env, runner);
+        if (later) floating--;
+        return;
+      }
+      if (n.type === "Identifier") return reach(n.name, env, undefined, runs, true);
+      if (n.type === "MemberExpression" || n.type === "OptionalMemberExpression") {
+        visit(n.object as Node, env, false);
+        if (n.computed) visit(n.property as Node, env, false);
+        const m = memberName(n);
+        if (m) reach(m, env, undefined, runs, false);
+        return;
+      }
+      if ((n.type === "ObjectProperty" || n.type === "ObjectMethod") && !n.computed) {
+        if (n.type === "ObjectProperty") visit(n.value as Node, env, false);
+        return;
+      }
+      if (n.type === "StringLiteral") return void order.push(`s:${n.value}`);
+      if (n.type === "NumericLiteral") return void order.push(`n:${n.value}`);
+      if (n.type === "TemplateElement") return void order.push(`s:${n.value.cooked ?? n.value.raw}`);
+      const rec = n as unknown as Record<string, unknown>;
+      for (const k of Object.keys(rec)) {
+        if (SKIP_KEYS.has(k) || TYPE_KEYS.has(k)) continue;
+        const v = rec[k];
+        if (Array.isArray(v)) {
+          for (const c of v) if (c && typeof c === "object" && typeof (c as Node).type === "string") visit(c as Node, env, false);
+        } else if (v && typeof v === "object" && typeof (v as Node).type === "string") visit(v as Node, env, false);
+      }
+    };
+    for (const h of hooks) if (h.file === t.file && h.from < t.at && t.at < h.to) visit(h.fn, root, true);
+    for (const b of t.body) visit(b, root, true);
+    const prev = out.get(t.title);
+    const all = [...(prev?.order ?? []), ...order];
+    out.set(t.title, { reach: new Set(all), order: all, complete: (prev?.complete ?? true) && !full() });
+  }
+  return out;
 }

@@ -299,7 +299,7 @@ export function checkReview(out: ReviewOutput, files: ReadonlyArray<{ path: stri
 const applySchema = z.object({ apply: z.boolean().describe("true only if the user saw the diff and agreed to write it to their repo") }).strict();
 
 export interface ReviewDeps {
-  data: Pick<ProfileData, "savedProfile" | "frameworkProfile"> & TestFilesData & Pick<ScriptsData, "frameworkFiles" | "typeCheckReadiness" | "typeCheck" | "pullRequestReadiness" | "openPullRequest">;
+  data: Pick<ProfileData, "savedProfile" | "frameworkProfile"> & Pick<TestFilesData, "readTestFiles" | "editTestFiles"> & Pick<ScriptsData, "frameworkFiles" | "typeCheckReadiness" | "typeCheck" | "pullRequestReadiness" | "openPullRequest">;
   runs: Pick<RunStore, "readArtifact" | "writeArtifact">;
 }
 

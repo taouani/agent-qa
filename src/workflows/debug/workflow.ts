@@ -161,7 +161,7 @@ const runSchema = z.object({ run: z.boolean().describe("true only if the user ag
 const applySchema = z.object({ apply: z.boolean().describe("true only if the user saw the diff and agreed to write it to their repo") }).strict();
 
 export interface DebugDeps {
-  data: Pick<ProfileData, "savedProfile"> & SuiteData & TestFilesData & Pick<RequirementsData, "maskTexts"> & Pick<ScriptsData, "pullRequestReadiness" | "openPullRequest">;
+  data: Pick<ProfileData, "savedProfile"> & SuiteData & Pick<TestFilesData, "readTestFiles" | "editTestFiles"> & Pick<RequirementsData, "maskTexts"> & Pick<ScriptsData, "pullRequestReadiness" | "openPullRequest">;
   runs: Pick<RunStore, "readArtifact" | "writeArtifact">;
 }
 

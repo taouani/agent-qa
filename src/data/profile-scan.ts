@@ -156,8 +156,31 @@ function read(root: string, file: string, budget: { left: number }): string | un
   }
 }
 
+const PARSED = new Map<string, Node | undefined>();
+const MAX_PARSED = 800;
+const MAX_PARSED_CHARS = 4_000_000;
+let parsedChars = 0;
+
+/** The syntax tree of `text`, read only: the same text parses once (a refactor's checks read each file many times). */
 export function parseCode(text: string, file: string): Node | undefined {
   const ts = /\.[mc]?tsx?$/.test(file);
+  const key = `${ts ? "t" : "j"}${file.endsWith("x") ? "x" : "-"}${text}`;
+  if (PARSED.has(key)) return PARSED.get(key);
+  const ast = parseFresh(text, file, ts);
+  // Bounded by count and by size: a long-lived server keeps at most a few MB of text and its trees.
+  while (PARSED.size && (PARSED.size >= MAX_PARSED || parsedChars + key.length > MAX_PARSED_CHARS)) {
+    const old = PARSED.keys().next().value!;
+    parsedChars -= old.length;
+    PARSED.delete(old);
+  }
+  if (key.length <= MAX_PARSED_CHARS) {
+    PARSED.set(key, ast);
+    parsedChars += key.length;
+  }
+  return ast;
+}
+
+function parseFresh(text: string, file: string, ts: boolean): Node | undefined {
   try {
     return parse(text, {
       sourceType: "unambiguous",

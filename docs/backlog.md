@@ -18,6 +18,16 @@ Found in the PR #72 review (6 Nov 2026). `review` and `debug` send test-file pat
 
 Found in the PR #72 review (6 Nov 2026). A review fix may not add a branch, but branches are counted for the whole file. A fix that removes one `if` and puts a check behind a new one keeps the total and passes. Counting branches per test would close this.
 
+## Refactor guard limits
+
+Found in the PR #74 review (6 Nov 2026). `refactor` checks each task against the code with only its renames applied. Three limits remain:
+- Outside a test's own scope, what it reaches is matched by name, not by symbol. A check moved into a page-object method can be passed another existing value of the same name and still pass. The type check and the test run remain, but a test run rarely catches this for a negative check (`toBeHidden`, `.not`).
+- Checks must stay word for word, apart from `this.page` in a page object standing for a spec's `page`. A check whose element moves into a page-object getter (`expect(requestPage.status)`) is refused, even when it reads the same element.
+- Branches are counted, not placed: a function body that is a single return doesn't count, but any other new return does, even one that skips nothing.
+- Names declared in a test, and a called function's parameters, resolve to their own values. Any other name, such as a method or a constant in another file, still expands every declaration of it. A beforeEach counts only for the tests of its own describe block, and beforeAll not at all.
+- A callback passed to a promise that never resolves (`new Promise(() => {}).then(…)`) counts as run. The test hangs until its timeout, so the test run fails it and the phase is put back.
+- The lint step isn't run: the report says so, and the type check stands in. Path aliases are read from the folder, not from tsconfig's `baseUrl`, and renames don't reach files that weren't read.
+
 ## Done or moved into a slice
 
 ### Healing existing scripts
