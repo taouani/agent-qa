@@ -4,7 +4,8 @@ import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreat
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
-import { lstat, open, readdir, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import {
   commandList,
   findProjectFolder,
@@ -1846,22 +1847,21 @@ async function imagesIn(folder: string): Promise<Map<string, string>> {
   return out;
 }
 
-/** A file's bytes, only when it is inside `folder` (links followed) and at most `max` bytes, read from one handle. */
+/** A file's bytes, only when it is inside `folder` (links followed) and at most `max` bytes. */
 async function readBytesInside(folder: string, path: string, max: number): Promise<Buffer | undefined> {
   try {
     const real = await realpathAsync(path);
     const rel = relativePath(await realpathAsync(folder), real);
     if (rel === "" || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) return undefined;
-    const handle = await open(real, "r");
-    try {
-      const info = await handle.stat();
-      if (!info.isFile() || info.size > max) return undefined;
-      const buffer = Buffer.alloc(max + 1);
-      const { bytesRead } = await handle.read(buffer, 0, max + 1, 0);
-      return bytesRead > max ? undefined : buffer.subarray(0, bytesRead);
-    } finally {
-      await handle.close();
+    if (!(await stat(real)).isFile()) return undefined;
+    // At most max + 1 bytes are read, whatever the file grew to since: more than max is too big.
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of createReadStream(real, { start: 0, end: max })) {
+      chunks.push(chunk as Buffer);
+      size += (chunk as Buffer).length;
     }
+    return size > max ? undefined : Buffer.concat(chunks);
   } catch {
     return undefined;
   }
