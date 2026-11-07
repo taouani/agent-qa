@@ -361,7 +361,8 @@ describe("doctor in a git work tree (clean-up of slice 0 follow-ups)", () => {
     const tracked = byId(await doctor(ENV, { cwd: project })).tracked!;
     expect(tracked.status).toBe("fail");
     const command = /`(git rm[^`]+)`/.exec(tracked.fix!)![1]!;
-    execFileSync("sh", ["-c", command], { cwd: project, stdio: "pipe" });
+    const [bin, ...args] = command.split(" ");
+    execFileSync(bin!, args, { cwd: project, stdio: "pipe" });
     expect(byId(await doctor(ENV, { cwd: project })).tracked!.status).toBe("pass");
   });
 });
