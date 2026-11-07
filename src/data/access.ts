@@ -20,7 +20,7 @@ import {
 } from "./profile.js";
 import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
-import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
+import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PreviousExecution, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
 import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
 import { maskAriaSnapshot } from "./snapshot.js";
@@ -73,17 +73,19 @@ export interface XrayData {
   pushToXray(runId: string, tokensRun: string, cases: PushCase[], approved: boolean): Promise<{ status: "done"; result: XrayPushResult } | { status: "declined" }>;
   /**
    * What a run's results would record in Xray (S3-9): each case's test by its
-   * `agent-qa:TC-ID` label, and what changed since the newest Test Execution
-   * with `label` (read back from Xray, so it works in CI too).
+   * `agent-qa:TC-ID` label, and what changed since the last execution
+   * recorded for the same selection in the configured project. `previous`
+   * holds the newest recorded one per project (the workflow finds them in the
+   * run folder; Tarek, 7 Nov 2026).
    */
-  xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, runLabel: string): Promise<XrayExecutionPlan>;
+  xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, previous: readonly PreviousExecution[]): Promise<XrayExecutionPlan>;
   /**
    * Records the plan as a new Test Execution, through `Policy.guard` (target
-   * xray), labelled with `runLabel` too. An execution with `runLabel` already
-   * in Xray (a retry after a stop) is returned, never recorded twice.
-   * Masked text only: tokens go as they are, even with restoreOnWrite.
+   * xray), labelled with `runLabel` too, so a person can find a run's own
+   * execution in Xray. Masked text only: tokens go as they are, even with
+   * restoreOnWrite.
    */
-  recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean): Promise<{ status: "done"; key: string; again?: true } | { status: "declined" }>;
+  recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean): Promise<{ status: "done"; key: string } | { status: "declined" }>;
 }
 
 /** Running the host repo's own commands (S2-1): the test run in run-and-fix. */
@@ -407,7 +409,7 @@ export interface DataAccessOptions {
   /** Replace the clients, for tests. */
   jira?: Pick<JiraClient, "collect">;
   confluence?: Pick<ConfluenceClient, "pages">;
-  xray?: Pick<XrayClient, "importAndWait"> & Partial<Pick<XrayClient, "importExecution" | "lastExecution">>;
+  xray?: Pick<XrayClient, "importAndWait"> & Partial<Pick<XrayClient, "importExecution">>;
   labels?: Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests">>;
   /** `ide` (default) or `ci`: decides what an `ask` write rule does. */
   mode?: Mode;
@@ -556,19 +558,17 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return outcome.status === "done" ? { status: "done" as const, result: outcome.value } : { status: "declined" as const };
   }
 
-  async xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, runLabel: string): Promise<XrayExecutionPlan> {
+  async xrayExecutionPlan(rows: readonly ExecutionRow[], label: string, previous: readonly PreviousExecution[]): Promise<XrayExecutionPlan> {
     const config = await this.loadConfig();
     const xray = this.xrayConfig(config);
     const ids = [...new Set(rows.flatMap((r) => tcIdOf(r.title, r.tags) ?? []))];
     const found = ids.length ? await (await this.labels(config)).findByLabels(xray.projectKey, ids.map(caseLabel)) : new Map<string, string>();
     const keys = new Map(ids.flatMap((id) => (found.has(caseLabel(id)) ? [[id, found.get(caseLabel(id))!] as const] : [])));
     const { results: now, notInXray, skipped, skippedKeys } = executionResults(rows, keys);
-    const client = await this.xrayClient(config);
-    if (!client.lastExecution) throw new Error("this Xray client can't read Test Executions");
-    // Never this run's own execution (a retry after it was recorded): the one before it.
-    const previous = now.length ? await client.lastExecution(xray.projectKey, label, runLabel) : undefined;
-    const { results: withBefore, changes } = executionChanges(now, previous, skippedKeys);
-    return { project: xray.projectKey, label, ...(previous ? { previous: { key: previous.key, created: previous.created } } : {}), results: withBefore, notInXray, skipped, changes };
+    // Only one recorded in this project counts (the config may have changed since others).
+    const last = previous.find((p) => p.project === xray.projectKey);
+    const { results: withBefore, changes } = executionChanges(now, last, skippedKeys);
+    return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes };
   }
 
   async recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean) {
@@ -576,10 +576,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (!approved || plan.results.length === 0) return { status: "declined" as const };
     const config = await this.loadConfig();
     const client = await this.xrayClient(config);
-    if (!client.importExecution || !client.lastExecution) throw new Error("this Xray client can't record Test Executions");
-    // Recorded already, and stopped before the record was kept: that execution stands.
-    const done = await client.lastExecution(plan.project, runLabel);
-    if (done) return { status: "done" as const, key: done.key, again: true as const };
+    if (!client.importExecution) throw new Error("this Xray client can't record Test Executions");
     const failed = plan.results.filter((r) => r.status === "FAILED").length;
     const summary = `Record ${plan.results.length} test result(s) (${failed} failed) as a Test Execution in Xray project ${plan.project}`;
     const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
@@ -1596,7 +1593,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     });
   }
 
-  private async xrayClient(config: Config): Promise<Pick<XrayClient, "importAndWait"> & Partial<Pick<XrayClient, "importExecution" | "lastExecution">>> {
+  private async xrayClient(config: Config): Promise<Pick<XrayClient, "importAndWait"> & Partial<Pick<XrayClient, "importExecution">>> {
     if (this.options.xray) return this.options.xray;
     const xray = this.xrayConfig(config);
     return new XrayClient({

@@ -37,9 +37,9 @@ Found in the PR #75 review (7 Nov 2026). In API tests, a request context may onl
 ## Xray Test Execution limits
 
 From the PR #76 review (7 Nov 2026), not yet checked against a live Xray:
-- The newest Test Execution is taken to be the first that `getTestExecutions` returns for a JQL ending `ORDER BY created DESC`. If Xray doesn't keep that order, the comparison may be with an older execution.
 - The start and finish dates go in the Xray JSON `info` part. In a multipart import the issue fields come from the `info` part, and some instances keep the dates in custom fields.
-- A retry within seconds of a stop may not find the run's own label yet, because Jira's search index lags, and could record the run twice.
+- The rerun comparison comes from the local run folder (Tarek's choice, 7 Nov 2026). In CI it needs the folder kept between jobs; a shared Xray read-back could be added later if teams ask for it.
+- An `uncertain` recording (import failed or cut off) is never sent again and never used as a comparison; the person checks Xray by the `agent-qa:run:` label. No automatic check yet.
 
 ## Done or moved into a slice
 

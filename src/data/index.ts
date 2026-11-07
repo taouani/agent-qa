@@ -39,7 +39,7 @@ export type { FolderListing, LocatorForm, RepoScan, ScannedFeature, ScannedPage,
 export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv } from "./host.js";
 export type { HostCommandOutcome, HostCommandRequest } from "./host.js";
 export { caseLabel, executionChanges, executionResults, tcIdOf, toXrayTest } from "./xray.js";
-export type { ExecutionResult, ExecutionRow, ExistingTest, PushCase, XrayExecutionPlan, XrayPlan, XrayPushResult } from "./xray.js";
+export type { ExecutionResult, ExecutionRow, ExistingTest, PreviousExecution, PushCase, XrayExecutionPlan, XrayPlan, XrayPushResult } from "./xray.js";
 export { formatDoctor, runDoctor } from "./doctor.js";
 export { isIgnored, loadIgnoreRules } from "./gitignore.js";
 export type { CheckResult, CheckStatus, DoctorOptions } from "./doctor.js";
