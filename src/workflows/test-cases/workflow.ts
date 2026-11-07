@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Artifact, InputRef, OutputError, RunStore, StepContext, WorkflowDefinition } from "../../core/index.js";
+import { EngineError, type Artifact, type InputRef, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
 import type { ExistingTest, RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
 import { analyzeStep, inputFingerprint, jiraInputOf, relatedFeaturesOf, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
@@ -29,12 +29,19 @@ import {
  * 4. Push (confirm, S1-10; only with an `xray` section the policy doesn't
  *    deny): the user says whether to push the reviewed cases to Xray. The
  *    data layer writes through `Policy.guard`; the core writes `xray-push@1`.
+ *
+ * With `casesRun` (Tarek, 7 Nov 2026), a new run goes straight to the push of
+ * an earlier, finished run's reviewed test-cases@1 that no run pushed, with
+ * the vault of that run's requirements run: the way to push cases whose push
+ * was declined. The earlier run stays as it finished. Every push first checks
+ * that no other run pushed the same reviewed cases, so they go out once.
  */
 
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const TOKEN = /<[A-Z][A-Z0-9_]*_\d+>/g;
 const SEALED = /^<INPUT_\d+>$/;
+const TOKEN_TEST = /<[A-Z][A-Z0-9_]*_\d+>/;
 /** Issues per cases batch: enough context per answer, small enough for one model answer. */
 export const ISSUES_PER_BATCH = 4;
 const MAX_CASES_PER_ISSUE = 30;
@@ -52,9 +59,14 @@ export const testCasesInputSchema = z
       .optional()
       .describe("A JQL filter"),
     requirementsRun: z.string().regex(RUN_ID, "must be a run id").optional().describe("Id of a finished requirements run to start from, instead of reading Jira again"),
+    casesRun: z
+      .string()
+      .regex(RUN_ID, "must be a run id")
+      .optional()
+      .describe("Id of an earlier test-cases run whose reviewed cases weren't pushed (the push was declined): goes straight to the push, with no analysis, cases or review"),
   })
   .strict()
-  .refine((i) => [i.key, i.jql, i.requirementsRun].filter((v) => v !== undefined).length === 1, { message: "give exactly one of key, jql or requirementsRun" });
+  .refine((i) => [i.key, i.jql, i.requirementsRun, i.casesRun].filter((v) => v !== undefined).length === 1, { message: "give exactly one of key, jql, requirementsRun or casesRun" });
 export type TestCasesInputs = z.infer<typeof testCasesInputSchema>;
 
 const casesOutputSchema = z.object({ cases: z.array(testCaseSchema).min(1) }).strict();
@@ -188,7 +200,7 @@ function checkReuse(at: string, c: TestCase, existing: ExistingTest[], unseen: M
   return numberOf(c.id) <= highest ? [{ path: `${at}.id`, message: `numbers up to ${highest} belong to earlier tests (see existingTests): number new cases from ${next}` }] : [];
 }
 
-export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData; runs: RequirementsDeps["runs"] & Partial<Pick<RunStore, "list">> };
+export type TestCasesDeps = RequirementsDeps & { data: RequirementsData & XrayData; runs: RequirementsDeps["runs"] & Partial<Pick<RunStore, "list" | "manifest">> };
 
 /** Runs searched for an earlier analysis of the same input: the newest this many. */
 const MAX_REUSE_RUNS = 200;
@@ -215,7 +227,11 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     const r = ctx.outputs.reuse as Reuse | undefined;
     return r?.reuse && r.run ? r.run : undefined;
   };
-  const requirementsRunOf = (ctx: Ctx) => ctx.inputs.requirementsRun ?? reused(ctx) ?? ctx.runId;
+  /** The run whose reviewed cases this run pushes: its own, or the earlier one `casesRun` names. */
+  const casesRunOf = (ctx: Ctx) => ctx.inputs.casesRun ?? ctx.runId;
+  const fresh = (ctx: Ctx) => ctx.inputs.casesRun === undefined;
+  const requirementsRunOf = async (ctx: Ctx): Promise<string> =>
+    ctx.inputs.casesRun !== undefined ? (await reviewedOf(ctx)).data.requirements.run : (ctx.inputs.requirementsRun ?? reused(ctx) ?? ctx.runId);
 
   /** Whether an earlier run of this key left an analysis whose tokens are still in its vault: no Jira read (the run may not exist yet). */
   const analyzedBefore = async (ctx: Ctx): Promise<boolean> => {
@@ -260,7 +276,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     return found;
   };
   const requirements = async (ctx: Ctx): Promise<Artifact<RequirementsArtifact>> => {
-    const run = requirementsRunOf(ctx);
+    const run = await requirementsRunOf(ctx);
     const art = await deps.runs.readArtifact(run, REQUIREMENTS_ARTIFACT);
     if (!art) throw new Error(`Run ${run} has no requirements@1: run the requirements workflow first, or start from a key or JQL`);
     return art;
@@ -278,7 +294,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     let found = existingMemo.get(memoKey);
     if (!found) {
       // The requirements run's vault: its tokens are the ones the cases and the push use.
-      found = deps.data.existingTests(requirementsRunOf(ctx), keys);
+      found = requirementsRunOf(ctx).then((run) => deps.data.existingTests(run, keys));
       found.catch(() => existingMemo.delete(memoKey));
       existingMemo.set(memoKey, found);
     }
@@ -325,20 +341,54 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     return draft;
   };
 
-  const reviewed = (ctx: Ctx) => deps.runs.readArtifact(ctx.runId, TEST_CASES_ARTIFACT);
-  const reviewedOf = async (ctx: Ctx): Promise<Artifact<TestCases>> => {
+  const reviewed = (ctx: Ctx) => deps.runs.readArtifact(casesRunOf(ctx), TEST_CASES_ARTIFACT);
+  async function reviewedOf(ctx: Ctx): Promise<Artifact<TestCases>> {
     const art = await reviewed(ctx);
-    if (!art) throw new Error(`Run ${ctx.runId} has no test-cases@1`);
+    if (!art) throw new Error(`Run ${casesRunOf(ctx)} has no test-cases@1`);
     return art;
+  }
+  /** The run, other than `self`, that already pushed these reviewed cases (that run itself, or a casesRun run), among the newest runs. */
+  const pushedBy = async (casesRun: string, self?: string): Promise<string | undefined> => {
+    const ids = deps.runs.list ? (await deps.runs.list()).slice(-MAX_REUSE_RUNS) : [];
+    for (const id of new Set([casesRun, ...ids])) {
+      if (id === self) continue;
+      const push = await deps.runs.readArtifact(id, XRAY_PUSH_ARTIFACT).catch(() => undefined);
+      if (push?.data.testCases.run === casesRun) return id;
+    }
+    return undefined;
   };
+  const fromLine = async (ctx: Ctx) =>
+    ctx.inputs.casesRun === undefined ? "" : `These are the cases reviewed in run ${ctx.inputs.casesRun} (${(await reviewedOf(ctx)).createdAt.slice(0, 10)}), not pushed then. `;
   const planOf = async (ctx: Ctx) => deps.data.xrayPlan((await reviewedOf(ctx)).data.cases);
 
   return {
     id: "test-cases",
     description:
-      "Write test cases (TC-{KEY}-{NNN}, P1-P4, steps, criteria covered) for a Jira issue, a JQL filter or an earlier requirements run, then let the user review them into test-cases@1.",
+      "Write test cases (TC-{KEY}-{NNN}, P1-P4, steps, criteria covered) for a Jira issue, a JQL filter or an earlier requirements run, then let the user review them into test-cases@1 and push them to Xray. With casesRun, push the reviewed cases of an earlier run whose push was declined.",
     inputSchema: testCasesInputSchema,
-    prepareInputs: (runId, inputs) => sealJiraInputs(deps, runId, inputs),
+    prepareInputs: async (runId, inputs) => {
+      if (inputs.casesRun === undefined) return sealJiraInputs(deps, runId, inputs);
+      // Checked before the run exists, so a wrong id leaves no run behind; a wrong id is bad input (CLI exit 2).
+      const refuse = (message: string): never => {
+        throw new EngineError("INVALID_INPUTS", message);
+      };
+      const art = await deps.runs.readArtifact(inputs.casesRun, TEST_CASES_ARTIFACT).catch(() => undefined);
+      if (!art) return refuse(`Run ${inputs.casesRun} has no reviewed test cases (test-cases@1): give the id of a test-cases run whose review was approved`);
+      if (art.data.cases.length === 0) return refuse(`Run ${inputs.casesRun} kept no test cases in its review: there is nothing to push`);
+      if (!(await deps.data.xrayEnabled())) return refuse("casesRun pushes reviewed cases to Xray, but agent-qa.yaml has no xray section (or the policy denies Xray)");
+      // Only a finished run: one still open at its push would push the same cases itself.
+      const manifest = deps.runs.manifest ? await deps.runs.manifest(inputs.casesRun) : undefined;
+      if (manifest?.status !== "done") {
+        return refuse(`Run ${inputs.casesRun} isn't finished${manifest ? ` (${manifest.status})` : ""}: if it waits at its push, resume it instead (--resume ${inputs.casesRun})`);
+      }
+      const by = await pushedBy(inputs.casesRun);
+      if (by) return refuse(`The reviewed cases of run ${inputs.casesRun} were already pushed to Xray, by run ${by}: see its xray-push.md`);
+      const tokensRun = art.data.requirements.run;
+      if (TOKEN_TEST.test(JSON.stringify(art.data.cases)) && !(await deps.data.hasVault(tokensRun))) {
+        return refuse(`The token vault of run ${tokensRun} has expired or was deleted, so the real values of these cases can't be restored: write the cases again from the key`);
+      }
+      return inputs;
+    },
     steps: [
       {
         id: "reuse",
@@ -367,11 +417,12 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           return e ? { reuse: true, run: e.run } : { reuse: false };
         },
       },
-      { ...analyzeStep<TestCasesInputs>(deps), when: (ctx) => ctx.inputs.requirementsRun === undefined && reused(ctx) === undefined },
+      { ...analyzeStep<TestCasesInputs>(deps), when: (ctx) => fresh(ctx) && ctx.inputs.requirementsRun === undefined && reused(ctx) === undefined },
       {
         id: "cases",
         kind: "generate",
         outputSchema: casesOutputSchema,
+        when: fresh,
         batches: async (ctx) => Math.ceil(testable((await requirements(ctx)).data).length / ISSUES_PER_BATCH),
         instructions: (ctx) =>
           [
@@ -417,11 +468,11 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           const earlier = ((ctx.outputs.cases as CasesOutput[] | undefined) ?? []).slice(0, ctx.batch ?? 0);
           const cases = [...earlier.flatMap((o) => o.cases), ...output.cases].map((c) => ({ ...c, requirement: c.requirement.trim().toUpperCase() }));
           const draft: TestCasesDraft = {
-            requirements: { run: requirementsRunOf(ctx), sourceHash: art.sourceHash },
+            requirements: { run: await requirementsRunOf(ctx), sourceHash: art.sourceHash },
             cases,
             skipped: art.data.requirements.filter((r) => r.acceptanceCriteria.length === 0).map((r) => r.key),
           };
-          await deps.runs.writeArtifact(ctx.runId, TEST_CASES_DRAFT_ARTIFACT, draft, { inputs: inputsOf(ctx, art), templateVersion: TEST_CASES_TEMPLATE_VERSION });
+          await deps.runs.writeArtifact(ctx.runId, TEST_CASES_DRAFT_ARTIFACT, draft, { inputs: await inputsOf(ctx, art), templateVersion: TEST_CASES_TEMPLATE_VERSION });
         },
       },
       {
@@ -430,7 +481,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         outputSchema: reviewSchema,
         personalAnswer: true,
         answers: { yes: { approved: true, changes: [] }, no: { approved: false, changes: [] }, unattended: { approved: true, changes: [], unattended: true } },
-        when: async (ctx) => testable((await requirements(ctx)).data).length > 0,
+        when: async (ctx) => fresh(ctx) && testable((await requirements(ctx)).data).length > 0,
         instructions: ({ runId }) =>
           [
             `Ask the user to review the draft test cases: they are listed in the context, and in full in test-cases-draft.md in this run's folder (.agent-qa/runs/${runId}/).`,
@@ -482,7 +533,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         sanitize: async (ctx, review: Review): Promise<Review> => {
           if (!review.approved) return { approved: false, changes: [] };
           const unattended = review.unattended ? { unattended: true as const } : {};
-          const run = requirementsRunOf(ctx);
+          const run = await requirementsRunOf(ctx);
           // An expired vault starts again from <PERSON_1>, which would give a new value an old token.
           const art = await requirements(ctx);
           const edits = review.changes.some((c) => c.case);
@@ -542,7 +593,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
               ...(review.unattended ? { unattended: true as const } : {}),
             },
           };
-          await deps.runs.writeArtifact(ctx.runId, TEST_CASES_ARTIFACT, data, { inputs: inputsOf(ctx, art), templateVersion: TEST_CASES_TEMPLATE_VERSION });
+          await deps.runs.writeArtifact(ctx.runId, TEST_CASES_ARTIFACT, data, { inputs: await inputsOf(ctx, art), templateVersion: TEST_CASES_TEMPLATE_VERSION });
         },
       },
       {
@@ -555,7 +606,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         approval: {
           question: async (ctx) => {
             const plan = await planOf(ctx);
-            return `Push ${plan.create + plan.update} reviewed test case(s) to Xray project ${plan.project}? ${plan.create} new, ${plan.update} updated.`;
+            return `${await fromLine(ctx)}Push ${plan.create + plan.update} reviewed test case(s) to Xray project ${plan.project}? ${plan.create} new, ${plan.update} updated.`;
           },
         },
         // No test-cases@1 when the user stopped the review; nothing to push when they dropped every case.
@@ -574,24 +625,28 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             const before = update && was.has(c.id) ? ` (was: ${was.get(c.id)})` : "";
             return `${c.id} | ${c.priority} | ${update ? `updates ${update}${before}` : "new"} | ${c.title}`;
           });
-          return [`Push to Xray project ${plan.project}: ${plan.create} new, ${plan.update} updated.`, ...lines].join("\n");
+          const from = await fromLine(ctx);
+          return [...(from ? [from.trim()] : []), `Push to Xray project ${plan.project}: ${plan.create} new, ${plan.update} updated.`, ...lines].join("\n");
         },
         onAccept: async (ctx, push: Push) => {
           if (!push.approve) return;
+          // Another run may have pushed the same reviewed cases while this question waited.
+          const by = await pushedBy(casesRunOf(ctx), ctx.runId);
+          if (by) throw new Error(`These reviewed cases were already pushed to Xray, by run ${by}, so they aren't pushed again: submit approve: false to end this run`);
           const art = await reviewedOf(ctx);
-          const outcome = await deps.data.pushToXray(ctx.runId, requirementsRunOf(ctx), art.data.cases, true);
+          const outcome = await deps.data.pushToXray(ctx.runId, await requirementsRunOf(ctx), art.data.cases, true);
           if (outcome.status !== "done") return;
           const { project, jobs, results } = outcome.result;
           const count = (action: string) => results.filter((r) => r.action === action).length;
           const data: XrayPush = {
-            testCases: { run: ctx.runId, sourceHash: art.sourceHash },
+            testCases: { run: casesRunOf(ctx), sourceHash: art.sourceHash },
             project,
             jobs,
             results,
             counts: { created: count("created"), updated: count("updated"), failed: count("failed") },
           };
           await deps.runs.writeArtifact(ctx.runId, XRAY_PUSH_ARTIFACT, data, {
-            inputs: [{ kind: "artifact", ref: `${ctx.runId}/test-cases`, hash: art.sourceHash }],
+            inputs: [{ kind: "artifact", ref: `${casesRunOf(ctx)}/test-cases`, hash: art.sourceHash }],
             templateVersion: TEST_CASES_TEMPLATE_VERSION,
           });
         },
@@ -599,7 +654,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     ],
   };
 
-  function inputsOf(ctx: Ctx, art: Artifact<RequirementsArtifact>): InputRef[] {
-    return [{ kind: "artifact", ref: `${requirementsRunOf(ctx)}/requirements`, hash: art.sourceHash }];
+  async function inputsOf(ctx: Ctx, art: Artifact<RequirementsArtifact>): Promise<InputRef[]> {
+    return [{ kind: "artifact", ref: `${await requirementsRunOf(ctx)}/requirements`, hash: art.sourceHash }];
   }
 }

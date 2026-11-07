@@ -141,6 +141,28 @@ describe("agent-qa run", () => {
     expect(audit.entries).toHaveLength(0);
   });
 
+  it("pushes a declined run's reviewed cases later with --push-from, still never on --yes alone", async () => {
+    expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true }))).toBe(EXIT.done);
+    const earlier = runIdIn();
+    lines = [];
+    prompts.length = 0;
+    expect(await runCommand(options({ workflow: "test-cases", pushFrom: earlier, yes: true }))).toBe(EXIT.done);
+    expect(lines).toContain("- push: declined (--yes never accepts this step; use --accept push)");
+    expect(sent).toHaveLength(0);
+    lines = [];
+    expect(await runCommand(options({ workflow: "test-cases", pushFrom: earlier, accept: ["push"] }))).toBe(EXIT.done);
+    const later = runIdIn();
+    expect(later).not.toBe(earlier);
+    expect(sent).toHaveLength(1);
+    expect(prompts).toHaveLength(0);
+    const push = (await new RunStore(join(dir, ".agent-qa", "runs")).readArtifact(later, XRAY_PUSH_ARTIFACT))!;
+    expect(push.data.testCases.run).toBe(earlier);
+    lines = [];
+    expect(await runCommand(options({ workflow: "test-cases", pushFrom: earlier, accept: ["push"] }))).toBe(EXIT.setup);
+    expect(lines.join("\n")).toContain("already pushed to Xray");
+    expect(await runCommand(options({ workflow: "test-cases", pushFrom: earlier, key: "ABC-1" }))).toBe(EXIT.setup);
+  });
+
   it("rejects --accept or --decline naming no confirm step, and both at once", async () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, decline: ["pushh"] }))).toBe(EXIT.setup);
     expect(lines.at(-1)).toBe("agent-qa run: test-cases has no confirm step pushh; its confirm steps are reuse, review, push");

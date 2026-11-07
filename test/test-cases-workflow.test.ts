@@ -216,6 +216,14 @@ describe("test-cases workflow", () => {
     await expect(engine.start("test-cases", { requirementsRun: req.runId, key: "ABC-1" })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
   });
 
+  it("refuses casesRun when Xray isn't configured", async () => {
+    const first = await engine.start("test-cases", { key: "ABC-1" });
+    await engine.submit(first.runId, "analyze", good);
+    await engine.submit(first.runId, "cases", cases);
+    await engine.submit(first.runId, "review", { approved: true, changes: [] });
+    await expect(engine.start("test-cases", { casesRun: first.runId })).rejects.toThrow("no xray section");
+  });
+
   it("masks what the user dictates in an edit before the run keeps it", async () => {
     const first = await engine.start("test-cases", { key: "ABC-1" });
     await engine.submit(first.runId, "analyze", good);
@@ -344,6 +352,7 @@ describe("test-cases workflow", () => {
 
     async function reviewed() {
       const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
+      if (first.stepId === "reuse") await xrayEngine.submit(first.runId, "reuse", { reuse: false });
       await xrayEngine.submit(first.runId, "analyze", good);
       await xrayEngine.submit(first.runId, "cases", cases);
       const after = await xrayEngine.submit(first.runId, "review", { approved: true, changes: [{ id: "TC-ABC-1-003", decision: "dropped" }] });
@@ -468,6 +477,65 @@ describe("test-cases workflow", () => {
       expect(sent).toHaveLength(0);
       expect(audit.entries).toHaveLength(0);
       expect(await runs.readArtifact(runId, XRAY_PUSH_ARTIFACT)).toBeUndefined();
+    });
+
+    it("pushes the reviewed cases of a run whose push was declined, from a new run (Tarek, 7 Nov 2026)", async () => {
+      const { runId: earlier } = await reviewed();
+      await xrayEngine.submit(earlier, "push", { approve: false });
+      const before = await readFile(join(dir, "runs", earlier, "run.json"), "utf8");
+      const reads = jira.inputs.length;
+      const later = await xrayEngine.start("test-cases", { casesRun: earlier });
+      expect(later.runId).not.toBe(earlier);
+      expect(later.stepId).toBe("push");
+      expect(later.context).toContain(`These are the cases reviewed in run ${earlier}`);
+      expect(later.context).toContain("not pushed then");
+      expect(later.context).toContain("Push to Xray project QA: 2 new, 1 updated.");
+      expect((await xrayEngine.approval(later.runId, "push"))!.question).toMatch(new RegExp(`^These are the cases reviewed in run ${earlier} \\(\\d{4}-\\d\\d-\\d\\d\\), not pushed then\\. Push 3 reviewed test case\\(s\\) to Xray project QA\\? 2 new, 1 updated\\.$`));
+      const done = await xrayEngine.submit(later.runId, "push", { approve: true });
+      expect(done.next.kind).toBe("done");
+      // Real values come back from the earlier run's vault; Jira isn't read and no case is written again.
+      expect(sent[0]!.map((t) => t.fields.summary)).toEqual(["[TC-ABC-1-001] Old case escalated for Marguerite Quillfeather", "[TC-ABC-1-002] Case 2 for ABC-1", "[TC-ABC-2-001] Case 1 for ABC-2"]);
+      expect(jira.inputs.length).toBe(reads);
+      expect(await runs.readArtifact(later.runId, TEST_CASES_ARTIFACT)).toBeUndefined();
+      const push = (await runs.readArtifact(later.runId, XRAY_PUSH_ARTIFACT))!;
+      expect(push.data.testCases.run).toBe(earlier);
+      expect(push.data.counts).toEqual({ created: 2, updated: 1, failed: 0 });
+      // The earlier run stays as it finished.
+      expect(await readFile(join(dir, "runs", earlier, "run.json"), "utf8")).toBe(before);
+      expect(await runs.readArtifact(earlier, XRAY_PUSH_ARTIFACT)).toBeUndefined();
+      // Once pushed, the same reviewed cases are never pushed again.
+      await expect(xrayEngine.start("test-cases", { casesRun: earlier })).rejects.toThrow(`already pushed to Xray, by run ${later.runId}`);
+      const third = await xrayEngine.start("test-cases", { casesRun: later.runId }).catch((e: Error) => e);
+      expect(String(third)).toContain("has no reviewed test cases");
+    });
+
+    it("pushes the same reviewed cases once: not from a run still open at its push, not twice", async () => {
+      const { runId: open } = await reviewed();
+      await expect(xrayEngine.start("test-cases", { casesRun: open })).rejects.toThrow(`isn't finished (running): if it waits at its push, resume it instead (--resume ${open})`);
+      await xrayEngine.submit(open, "push", { approve: true });
+      await expect(xrayEngine.start("test-cases", { casesRun: open })).rejects.toThrow(`already pushed to Xray, by run ${open}`);
+
+      const { runId: declined } = await reviewed();
+      await xrayEngine.submit(declined, "push", { approve: false });
+      const a = await xrayEngine.start("test-cases", { casesRun: declined });
+      const b = await xrayEngine.start("test-cases", { casesRun: declined });
+      expect(sent).toHaveLength(1);
+      await xrayEngine.submit(a.runId, "push", { approve: true });
+      expect(sent).toHaveLength(2);
+      await expect(xrayEngine.submit(b.runId, "push", { approve: true })).rejects.toThrow(`already pushed to Xray, by run ${a.runId}`);
+      expect(sent).toHaveLength(2);
+      expect((await xrayEngine.submit(b.runId, "push", { approve: false })).next.kind).toBe("done");
+    });
+
+    it("refuses casesRun without reviewed cases", async () => {
+      const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
+      await expect(xrayEngine.start("test-cases", { casesRun: first.runId })).rejects.toThrow("has no reviewed test cases");
+      await xrayEngine.submit(first.runId, "analyze", good);
+      await xrayEngine.submit(first.runId, "cases", cases);
+      await xrayEngine.submit(first.runId, "review", { approved: true, changes: cases.cases.map((c) => ({ id: c.id, decision: "dropped" as const })) });
+      await expect(xrayEngine.start("test-cases", { casesRun: first.runId })).rejects.toThrow("kept no test cases");
+      await expect(xrayEngine.start("test-cases", { casesRun: "../x" })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
+      await expect(xrayEngine.start("test-cases", { casesRun: first.runId, key: "ABC-1" })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
     });
 
     it("skips the push when the review stopped the run", async () => {
