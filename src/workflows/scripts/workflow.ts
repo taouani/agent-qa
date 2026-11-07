@@ -272,6 +272,8 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
             "- Check what the case expects: the status (expect(response.status()).toBe(201), or toBeOK()), then the body (await response.json()) field by field.",
             "- Authenticate with the repo's own API fixture or request context. Never write a token, a client id or secret, or sign-in code; if the repo has none, say in notes that the person must give the request fixture its auth (extraHTTPHeaders in the config).",
             "- A record a test creates, it deletes at the end (test.afterEach or the last step), so a rerun starts clean.",
+            "- Never a full URL, a baseURL of your own, the global fetch, an OAuth path, or an Authorization, cookie, secret or password key: the config and the repo's fixtures carry the host and the auth.",
+            "- Every case below gets a test. A case that describes no API behaviour (only what a page shows): write the request test closest to what it checks and say in notes that it belongs in a UI test; the person can run again with cases naming the API ones only.",
             "",
           ]
         : salesforce

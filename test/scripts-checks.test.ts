@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scanSource } from "../src/data/index.js";
+import { apiTestProblems, scanSource } from "../src/data/index.js";
 import { checkDraft, lightningHelpersSource, scriptsDraftSchema, type CheckContext, type ScriptsDraft } from "../src/workflows/index.js";
 
 const step = (action: string, expected: string) => ({ action, data: "", expected });
@@ -258,5 +258,45 @@ test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
     expect(check(d(spec), { profile: plain })).toEqual([]);
     expect(check(d(spec.replace("async ({ request })", "async ({ page })")), { profile: plain, api: true }).map((e) => e.message).join()).toMatch(/not page/);
     expect(check(d(spec.replace("request.post(", "request.post(`https://x.my.salesforce.com${''}` + ")), { profile: plain, api: true }).map((e) => e.message).join()).toMatch(/full URL|org URL/);
+  });
+  const problems = (code: string) => apiTestProblems(code, "tests/api/x.spec.ts");
+  const msgs = (code: string) => problems(code).problems.join("\n");
+  const wrap = (body: string, params = "{ request }") => `import { test, expect } from '@playwright/test';\ntest('t', async (${params}) => {\n${body}\n});\n`;
+  it("refuses every way to another host: full URLs in any string, a variable URL, a baseURL of its own, the global fetch (B1)", () => {
+    expect(problems(wrap("await request.get('/services/data/v62.0/limits');"))).toEqual({ problems: [], sends: 1 });
+    for (const body of [
+      "const host = 'https://evil.example';\nawait request.get(`${host}/x`);",
+      "await request.get(`${'h'}/x`);",
+      "const url = '/x';\nawait request.get(url);",
+      "await request.get('//evil.example/x');",
+      "await request.get(`https://evil.example/${1}`);",
+      "test.use({ baseURL: '/x' });",
+      "const api = await request.newContext({ baseURL: process.env.X });",
+      "await fetch('/x');",
+      "await globalThis.fetch('/x');",
+    ]) expect(msgs(wrap(body)), body).toMatch(/full URL|isn't a path|built elsewhere|baseURL of its own|global fetch/);
+  });
+  it("refuses a browser however it's reached, and doesn't refuse a helper's own page parameter (M1, M2)", () => {
+    for (const [code, re] of [
+      ["import { chromium } from 'playwright';\n", /chromium is a browser/],
+      [wrap("const b = await playwright.webkit.launch();"), /webkit is a browser|launch\(\) drives/],
+      [wrap("await f.page.goto('/');", "f"), /not page/],
+      [wrap("const p = await x.newPage();"), /newPage\(\) drives/],
+      ["import { test as base } from '@playwright/test';\nexport const test = base.extend({ thing: async ({ page }, use) => use(page) });\n", /not page/],
+      ["import { createBdd } from 'playwright-bdd';\nconst { Given } = createBdd();\nGiven('x', async ({ context }) => {});\n", /not context/],
+    ] as const) expect(msgs(code), code).toMatch(re);
+    expect(msgs("export function helper({ page }: { page: unknown }) { return page; }\n")).toBe("");
+  });
+  it("refuses credentials in test code (M3), and counts only sends on a request context (low)", () => {
+    for (const body of [
+      "await request.post('/services/oauth2/token');",
+      "await request.get('/x', { headers: { Authorization: 'Bearer x' } });",
+      "await request.get('/x', { headers: { 'authorization': 'x' } });",
+      "await request.post('/x', { form: { client_secret: 'x', grant_type: 'password' } });",
+    ]) expect(msgs(wrap(body)), body).toMatch(/OAuth path|handles credentials/);
+    expect(problems(wrap("const m = new Map();\nm.get('k');\nresponse.headers().get;")).sends).toBe(0);
+    expect(problems(wrap("await api.get('/x');", "{ api }")).sends).toBe(1);
+    expect(problems(wrap("const ctx = await request.newContext();\nawait ctx.post('/x');")).sends).toBe(1);
+    expect(problems("import type { APIRequestContext } from '@playwright/test';\nexport async function make(c: APIRequestContext) { return c.post('/x'); }\n").sends).toBe(1);
   });
 });

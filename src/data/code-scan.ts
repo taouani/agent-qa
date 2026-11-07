@@ -912,35 +912,107 @@ export function testReach(files: ReadonlyArray<{ path: string; content: string }
 
 const API_METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "fetch"]);
 const BROWSER = new Set(["page", "context", "browser", "browserName"]);
+const BROWSER_TYPES = new Set(["chromium", "firefox", "webkit"]);
+const BROWSER_CALLS = new Set(["launch", "launchPersistentContext", "launchServer", "connect", "connectOverCDP", "newPage", "goto"]);
+/** Calls whose function arguments get the test's fixtures: tests, steps, hooks and playwright-bdd steps. */
+const FIXTURE_CALLS = new Set(["test", "it", "Given", "When", "Then", "And", "But", "Before", "After", "BeforeAll", "AfterAll", "BeforeStep", "AfterStep"]);
+/** Keys and paths that carry or ask for credentials: the repo's auth fixture does that, never test code. */
+const AUTH_KEYS = new Set(["authorization", "cookie", "client_secret", "client_id", "password", "grant_type", "access_token", "refresh_token", "sessionid"]);
+const FULL_URL = /^\s*(?:[a-z][a-z0-9+.-]*:)?\/\//i;
 
 /**
  * What keeps generated code from being an API test (S3-8): one that drives a
- * browser (the `page`, `context` or `browser` fixture, or a locator) or never
- * sends a request (`request.get(...)` and the like on an APIRequestContext,
- * the repo's own fixture of another name included: `sends` counts them), or
- * one that sends to a full URL instead of a path under the config's
- * baseURL. One message each, with its line.
+ * browser (the `page`, `context` or `browser` fixture, a browser type, a
+ * locator, launch, newPage or goto), one that could send the config's auth to
+ * another host (a full URL anywhere, a baseURL of its own, a global fetch, a
+ * send whose URL isn't a path), or one that handles credentials itself (an
+ * OAuth path, an Authorization header, a secret or password key). `sends`
+ * counts the requests sent on a request context: the request fixture, a
+ * fixture the test destructures, a context from newContext, or a parameter
+ * typed APIRequestContext. One message each, with its line.
  */
 export function apiTestProblems(text: string, file: string): { problems: string[]; sends: number } {
   const ast = parseCode(text, file);
   if (!ast) return { problems: [], sends: 0 };
   const out: string[] = [];
   const at = (n: Node) => `line ${n.loc?.start.line ?? 0}`;
+  const keyName = (p: Node): string | undefined =>
+    (p.type === "ObjectProperty" || p.type === "ObjectMethod" || p.type === "ClassProperty") && !p.computed ? (p.key.type === "Identifier" ? p.key.name : literalString(p.key as Node)) : undefined;
+  const isFn = (n: Node | undefined): n is Node => !!n && (n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression");
+  // The callbacks that get fixtures, and the request contexts sends go through.
+  const callbacks = new Set<Node>();
+  const contexts = new Set(["request"]);
+  walkAst(ast, (n) => {
+    if (n.type !== "CallExpression" && n.type !== "OptionalCallExpression") return;
+    const root = chainRoot(n.callee as Node);
+    const name = n.callee.type === "Identifier" ? n.callee.name : memberName(n.callee as Node);
+    if (name === "extend") {
+      for (const a of n.arguments) if (a.type === "ObjectExpression") for (const p of a.properties) if (p.type === "ObjectProperty" && isFn(p.value as Node)) callbacks.add(p.value as Node);
+    } else if (root.type === "Identifier" && FIXTURE_CALLS.has(root.name)) for (const a of n.arguments) if (isFn(a as Node)) callbacks.add(a as Node);
+  });
+  for (const fn of callbacks) {
+    if (fn.type !== "ArrowFunctionExpression" && fn.type !== "FunctionExpression") continue;
+    const first = fn.params[0];
+    if (first?.type === "ObjectPattern")
+      for (const p of first.properties) {
+        const key = keyName(p as Node);
+        if (key && BROWSER.has(key)) out.push(`${at(p as Node)}: an API test takes the request fixture, not ${key}: it drives no browser`);
+        else if (p.type === "ObjectProperty" && p.value.type === "Identifier") contexts.add(p.value.name);
+      }
+    if (first?.type === "Identifier") {
+      const param = first.name;
+      walkAst(fn.body as Node, (m) => {
+        if ((m.type === "MemberExpression" || m.type === "OptionalMemberExpression") && m.object.type === "Identifier" && m.object.name === param) {
+          const key = memberName(m);
+          if (key && BROWSER.has(key)) out.push(`${at(m)}: an API test takes the request fixture, not ${key}: it drives no browser`);
+          else if (key) contexts.add(key);
+        }
+      });
+    }
+  }
+  walkAst(ast, (n) => {
+    if (n.type === "VariableDeclarator" && n.id.type === "Identifier" && n.init) {
+      let init = n.init as Node;
+      if (init.type === "AwaitExpression") init = init.argument as Node;
+      if ((init.type === "CallExpression" || init.type === "OptionalCallExpression") && memberName(init.callee as Node) === "newContext") contexts.add(n.id.name);
+    }
+    if (n.type === "Identifier" && n.typeAnnotation?.type === "TSTypeAnnotation") {
+      const t = n.typeAnnotation.typeAnnotation;
+      if (t.type === "TSTypeReference" && t.typeName.type === "Identifier" && t.typeName.name === "APIRequestContext") contexts.add(n.name);
+    }
+  });
   let sends = 0;
   walkAst(ast, (n) => {
-    if ((n.type === "ArrowFunctionExpression" || n.type === "FunctionExpression") && n.params[0]?.type === "ObjectPattern")
-      for (const p of n.params[0].properties) {
-        const key = p.type === "ObjectProperty" && !p.computed && p.key.type === "Identifier" ? p.key.name : undefined;
-        if (key && BROWSER.has(key)) out.push(`${at(p as Node)}: an API test takes the request fixture, not ${key}: it drives no browser`);
-      }
-    if ((n.type === "CallExpression" || n.type === "OptionalCallExpression") && (n.callee.type === "MemberExpression" || n.callee.type === "OptionalMemberExpression")) {
-      const m = memberName(n.callee as Node);
-      if (m && LOCATOR_METHODS.has(m) && m !== "filter" && m !== "first" && m !== "last" && m !== "and" && m !== "or" && m !== "nth") out.push(`${at(n)}: ${m}() picks an element: an API test checks responses, not pages`);
-      if (m && API_METHODS.has(m) && n.arguments.length > 0) {
-        sends++;
-        const url = literalString(n.arguments[0] as Node) ?? (n.arguments[0]?.type === "TemplateLiteral" ? n.arguments[0].quasis[0]?.value.cooked : undefined);
-        if (url && /^\s*https?:\/\//i.test(url)) out.push(`${at(n)}: a full URL: send to a path (/services/data/…), the config's baseURL gives the host`);
-      }
+    // Strings: no host, no OAuth.
+    const pieces = n.type === "StringLiteral" ? [n.value] : n.type === "TemplateLiteral" ? n.quasis.map((q) => q.value.cooked ?? q.value.raw) : [];
+    for (const s of pieces) {
+      if (FULL_URL.test(s) || /:\/\//.test(s)) out.push(`${at(n)}: a full URL: send to a path (/services/data/…), the config's baseURL gives the host`);
+      if (/\/services\/oauth2\//i.test(s)) out.push(`${at(n)}: an OAuth path: the repo's auth fixture signs in, never test code`);
+    }
+    const key = keyName(n);
+    if (key === "baseURL") out.push(`${at(n)}: a baseURL of its own: the config's baseURL gives the host, and its auth goes nowhere else`);
+    if (key && AUTH_KEYS.has(key.toLowerCase())) out.push(`${at(n)}: ${key} handles credentials: the repo's auth fixture authenticates, never test code`);
+    if (n.type === "ImportSpecifier") {
+      const name = n.imported.type === "Identifier" ? n.imported.name : n.imported.value;
+      if (BROWSER_TYPES.has(name)) out.push(`${at(n)}: ${name} is a browser: an API test drives none`);
+    }
+    if ((n.type === "MemberExpression" || n.type === "OptionalMemberExpression") && BROWSER_TYPES.has(memberName(n) ?? "")) out.push(`${at(n)}: ${memberName(n)} is a browser: an API test drives none`);
+    if (n.type !== "CallExpression" && n.type !== "OptionalCallExpression") return;
+    const callee = n.callee as Node;
+    if (callee.type === "Identifier" && callee.name === "fetch") return void out.push(`${at(n)}: the global fetch skips the config: send with the request fixture`);
+    if (callee.type !== "MemberExpression" && callee.type !== "OptionalMemberExpression") return;
+    const m = memberName(callee);
+    if (!m) return;
+    if (callee.object.type === "Identifier" && GLOBALS.has(callee.object.name) && m === "fetch") return void out.push(`${at(n)}: the global fetch skips the config: send with the request fixture`);
+    if (LOCATOR_METHODS.has(m) && m !== "filter" && m !== "first" && m !== "last" && m !== "and" && m !== "or" && m !== "nth") out.push(`${at(n)}: ${m}() picks an element: an API test checks responses, not pages`);
+    if (BROWSER_CALLS.has(m)) out.push(`${at(n)}: ${m}() drives a browser: an API test sends requests only`);
+    const target = callee.object as Node;
+    const onContext = (target.type === "Identifier" && contexts.has(target.name)) || (target.type === "MemberExpression" && target.object.type === "ThisExpression" && contexts.has(memberName(target) ?? ""));
+    if (API_METHODS.has(m) && onContext && n.arguments.length > 0) {
+      sends++;
+      const url = n.arguments[0] as Node;
+      const path = url.type === "StringLiteral" ? url.value : url.type === "TemplateLiteral" ? (url.quasis[0]?.value.cooked ?? "") : undefined;
+      if (path === undefined || !path.startsWith("/")) out.push(`${at(n)}: ${m}() sends to ${path === undefined ? "a URL built elsewhere" : "a URL that isn't a path"}: write the path where it's sent, as a string or template starting with /, so the config's baseURL gives the host`);
     }
   });
   return { problems: [...new Set(out)], sends };
