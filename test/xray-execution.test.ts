@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -158,6 +159,9 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     await mkdir(join(dir, "test-results", "a-chromium"), { recursive: true });
     await writeFile(join(dir, "test-results", "a-chromium", "test-failed-1.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     await writeFile(join(dir, "secret.png"), Buffer.from([1]));
+    // A link out of the folder is never followed.
+    await symlink(join(dir, "secret.png"), join(dir, "test-results", "link.png")).catch(() => undefined);
+    const handle = (path: string, folder = "test-results") => `${folder}#${createHash("sha256").update(path).digest("hex").slice(0, 32)}`;
     const recorded: XrayExecutionInput[] = [];
     const audit = new MemoryAuditSink();
     const key = Buffer.alloc(32, 3);
@@ -180,9 +184,10 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
         },
       });
     const rows = [
-      row("TC-ABC-1-001 a", "failed", { failure: { message: "boom", screenshot: "test-results/a-chromium/test-failed-1.png" } }),
-      row("TC-ABC-1-002 b", "failed", { failure: { message: "boom", screenshot: "../outside.png" } }),
-      row("TC-ABC-1-003 c", "passed"),
+      row("TC-ABC-1-001 a", "failed", { failure: { message: "boom", screenshot: handle("a-chromium/test-failed-1.png") } }),
+      row("TC-ABC-1-002 b", "failed", { failure: { message: "boom", screenshot: handle("x.png", "..") } }),
+      row("TC-ABC-1-003 c", "flaky", { runs: 2, failedRuns: 1, failure: { message: "boom", screenshot: handle("a-chromium/test-failed-1.png") } }),
+      row("TC-ABC-1-004 d", "failed", { failure: { message: "boom", screenshot: handle("link.png") } }),
     ];
     const info = { summary: "s", description: "d", startedAt: new Date(0), finishedAt: new Date(1000) };
     const off = make(false);
@@ -190,11 +195,14 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     expect(recorded[0]!.tests.every((t) => t.evidence === undefined)).toBe(true);
     const on = make(true);
     const plan = await on.xrayExecutionPlan(rows, "agent-qa:exec:abc", []);
-    expect(plan.results.map((x) => x.screenshot)).toEqual(["test-results/a-chromium/test-failed-1.png", "../outside.png", undefined]);
+    // A flaky (passed) case sends none; the count is what the question names.
+    expect(plan.results.map((x) => x.screenshot !== undefined)).toEqual([true, true, false, true]);
+    expect(plan.screenshots).toBe(3);
+    expect((await off.xrayExecutionPlan(rows, "agent-qa:exec:abc", [])).screenshots).toBeUndefined();
     await on.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true);
-    // Only the file inside the folder: a path that leaves it is never read.
-    expect(recorded[1]!.tests.map((t) => t.evidence)).toEqual([[{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"), filename: "TC-ABC-1-001.png", contentType: "image/png" }], undefined, undefined]);
-    expect(audit.entries.at(-1)!.summary).toBe("Record 3 test result(s) (2 failed, 1 unmasked screenshot(s)) as a Test Execution in Xray project QA");
+    // Only the file in the output folder: a folder outside it, or a link out, is never read.
+    expect(recorded[1]!.tests.map((t) => t.evidence)).toEqual([[{ data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"), filename: "TC-ABC-1-001.png", contentType: "image/png" }], undefined, undefined, undefined]);
+    expect(audit.entries.at(-1)!.summary).toBe("Record 4 test result(s) (3 failed, 1 unmasked screenshot(s)) as a Test Execution in Xray project QA");
   });
 
   /** run-tests with fake data: the run step records a run, then the xray step. */

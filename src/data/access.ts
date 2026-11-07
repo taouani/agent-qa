@@ -4,7 +4,7 @@ import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreat
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
+import { lstat, open, readdir, readFile, realpath as realpathAsync, stat } from "node:fs/promises";
 import {
   commandList,
   findProjectFolder,
@@ -604,7 +604,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     // Only one recorded in this project counts (the config may have changed since others).
     const last = previous.find((p) => p.project === xray.projectKey);
     const { results: withBefore, changes } = executionChanges(now, last, skippedKeys);
-    return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes };
+    const screenshots = xray.attachScreenshots ? withBefore.filter((r) => r.status === "FAILED" && r.screenshot).length : 0;
+    return { project: xray.projectKey, label, ...(last ? { previous: { key: last.key, created: last.created } } : {}), results: withBefore, notInXray, skipped, changes, ...(screenshots ? { screenshots } : {}) };
   }
 
   async recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean) {
@@ -642,10 +643,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   /**
-   * The failed cases' screenshots, as Xray evidence by TC id: each path's
-   * tokens restored with the run's vault, read only from the reviewed
-   * profile's folder, PNG or JPEG, at most 5 MB each and 20 MB in all. One
-   * that is gone or too big is left out.
+   * The failed cases' screenshots, as Xray evidence by TC id. Each handle
+   * names an output folder inside the reviewed profile's folder (its tokens
+   * restored with the run's vault) and the hash of the image's path in it:
+   * the folder is searched for that PNG or JPEG, at most 5 MB each and 10 MB
+   * in all. One that is gone or too big is left out.
    */
   private async failureScreenshots(runId: string, plan: XrayExecutionPlan): Promise<Map<string, XrayEvidence>> {
     const out = new Map<string, XrayEvidence>();
@@ -655,12 +657,17 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const { vault } = await this.run(runId);
     const restore = restorer((t) => vault.valueOf(t));
     let total = 0;
+    const found = new Map<string, Map<string, string>>();
     for (const r of plan.results) {
       if (r.status !== "FAILED" || !r.screenshot) continue;
-      const rel = restore(r.screenshot);
-      const type = /\.png$/i.test(rel) ? "image/png" : /\.jpe?g$/i.test(rel) ? "image/jpeg" : undefined;
-      if (!type || !isPlainRelativePath(rel)) continue;
-      const data = await readBytesInside(dir, resolvePath(dir, rel), MAX_SCREENSHOT_BYTES);
+      const cut = r.screenshot.lastIndexOf("#");
+      const outDir = restore(r.screenshot.slice(0, cut));
+      if (cut < 0 || !isPlainRelativePath(outDir)) continue;
+      if (!found.has(outDir)) found.set(outDir, await imagesIn(resolvePath(dir, outDir)));
+      const rel = found.get(outDir)!.get(r.screenshot.slice(cut + 1));
+      if (!rel) continue;
+      const type = /\.png$/i.test(rel) ? "image/png" : "image/jpeg";
+      const data = await readBytesInside(dir, resolvePath(dir, outDir, rel), MAX_SCREENSHOT_BYTES);
       if (!data || total + data.length > MAX_SCREENSHOTS_BYTES) continue;
       total += data.length;
       out.set(r.tcId, { data: data.toString("base64"), filename: `${r.tcId}${type === "image/png" ? ".png" : ".jpg"}`, contentType: type });
@@ -888,11 +895,13 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       const why = t.result.timedOut ? ` (the run was stopped after ${Math.round(t.result.durationMs / 60_000)} minutes)` : "";
       return { ...base, tests: [], errors: [`no test report came back${why}: ${tail(t.result) || "no output"}`] };
     }
-    // A screenshot's path, from the folder (forward slashes): only a plain path inside it.
-    const screenshotOf = (path: string | undefined) => {
-      if (!path) return undefined;
-      const rel = relativePath(dir, path).split(sep).join("/");
-      return isPlainRelativePath(rel) ? rel : undefined;
+    // A screenshot as a handle, never its path: Playwright names the folder after the test's title
+    // (jane-doe-example-com), which the detectors don't recognise. "<output folder>#<hash of the path in it>".
+    const screenshotOf = (shot: { outputDir: string; path: string } | undefined) => {
+      if (!shot) return undefined;
+      const out = relativePath(dir, shot.outputDir).split(sep).join("/");
+      if (!isPlainRelativePath(out)) return undefined;
+      return `${echo.detect(out, "test.screenshot")}#${screenshotHash(relativePath(shot.outputDir, shot.path))}`;
     };
     const tests: MaskedTestResult[] = [];
     for (const x of parsed.tests) {
@@ -917,8 +926,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
                 snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
                 at: x.failure.at,
                 snapshot,
-                // Its path can hold the test's title (test-results/<title>/): kept masked, restored with this vault when sent.
-                ...(screenshotOf(x.failure.screenshotPath) ? { screenshot: echo.detect(screenshotOf(x.failure.screenshotPath)!, "test.screenshot") } : {}),
+                ...(screenshotOf(x.failure.screenshot) ? { screenshot: screenshotOf(x.failure.screenshot)! } : {}),
               },
             }
           : {}),
@@ -1811,24 +1819,55 @@ async function gitRoot(dir: string): Promise<string | undefined> {
   return undefined;
 }
 
-/** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
 const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
-const MAX_SCREENSHOTS_BYTES = 20 * 1024 * 1024;
+/** In all, per execution: as base64 in one JSON body, about 13.5 MB. */
+const MAX_SCREENSHOTS_BYTES = 10 * 1024 * 1024;
+/** Files looked at in an output folder, to find screenshots by their hash. */
+const MAX_OUTPUT_FILES = 20_000;
 
-/** A file's bytes, only when it is inside `folder` (links followed) and at most `max` bytes. */
+/** A screenshot's handle: the hash of its path in the output folder, forward slashes. */
+const screenshotHash = (rel: string) => sha256(rel.split(sep).join("/")).slice(0, 32);
+
+/** The PNG and JPEG files in an output folder, by the hash of their path in it (links not followed). */
+async function imagesIn(folder: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  let seen = 0;
+  const walk = async (rel: string, depth: number): Promise<void> => {
+    if (depth > 8 || seen > MAX_OUTPUT_FILES) return;
+    const entries = await readdir(join(folder, rel), { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (++seen > MAX_OUTPUT_FILES) return;
+      const path = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) await walk(path, depth + 1);
+      else if (e.isFile() && /\.(png|jpe?g)$/i.test(e.name)) out.set(screenshotHash(path), path);
+    }
+  };
+  await walk("", 0);
+  return out;
+}
+
+/** A file's bytes, only when it is inside `folder` (links followed) and at most `max` bytes, read from one handle. */
 async function readBytesInside(folder: string, path: string, max: number): Promise<Buffer | undefined> {
   try {
     const real = await realpathAsync(path);
     const rel = relativePath(await realpathAsync(folder), real);
     if (rel === "" || isAbsolute(rel) || rel.split(/[\\/]/).includes("..")) return undefined;
-    const info = await stat(real);
-    if (!info.isFile() || info.size > max) return undefined;
-    return await readFile(real);
+    const handle = await open(real, "r");
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > max) return undefined;
+      const buffer = Buffer.alloc(max + 1);
+      const { bytesRead } = await handle.read(buffer, 0, max + 1, 0);
+      return bytesRead > max ? undefined : buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
   } catch {
     return undefined;
   }
 }
 
+/** A file the test run left inside the folder (a page snapshot), at most 200 KB; nothing outside it. */
 async function readInside(folder: string, path: string): Promise<string | undefined> {
   try {
     const real = await realpathAsync(path);

@@ -57,7 +57,7 @@ export interface ReportedTest {
   durationMs?: number | undefined;
   /** The first failure: its message (with the call log), the code around it, and where. */
   failure?:
-    | { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined; screenshotPath?: string | undefined }
+    | { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined; screenshot?: { outputDir: string; path: string } | undefined }
     | undefined;
 }
 
@@ -99,12 +99,11 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
   const screenshotFile = (attachments: ReadonlyArray<z.infer<typeof attachment>> | undefined) => {
     const a = attachments?.find((x) => x.name === "screenshot" && /^image\/(png|jpeg)$/.test(x.contentType ?? "") && typeof x.path === "string" && /\.(png|jpe?g)$/i.test(x.path));
     if (!a?.path) return undefined;
-    return outputs.some((d) => {
+    const outputDir = outputs.find((d) => {
       const rel = relative(d, a.path!);
       return rel !== "" && !isAbsolute(rel) && !rel.split(sep).includes("..");
-    })
-      ? a.path
-      : undefined;
+    });
+    return outputDir ? { outputDir, path: a.path } : undefined;
   };
   const tests: ReportedTest[] = [];
   const walk = (s: Suite, titles: string[]) => {
@@ -135,7 +134,7 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
                   snippet: err?.snippet ? plain(err.snippet) : undefined,
                   at: err?.location ? { file: fromFolder(err.location.file, folder, base), line: err.location.line } : undefined,
                   snapshotPath: snapshotFile(context?.path),
-                  screenshotPath: screenshotFile(first.attachments),
+                  screenshot: screenshotFile(first.attachments),
                   snapshot: context?.body !== undefined && context.contentType?.startsWith("text/") ? Buffer.from(context.body, "base64").toString("utf8") : undefined,
                 },
               }

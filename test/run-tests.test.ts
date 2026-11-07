@@ -46,7 +46,7 @@ describe("Playwright's JSON report", () => {
       suites: [{ title: "a.spec.ts", file: "a.spec.ts", specs: [t("in", "/repo/test-results/a-in/test-failed-1.png"), t("out", "/home/me/.ssh/key.png"), t("not an image", "/repo/test-results/a/trace.zip")] }],
       stats: { expected: 0, unexpected: 3, flaky: 0, skipped: 0 },
     };
-    expect(parsePlaywrightReport(json, "/repo").tests.map((x) => x.failure?.screenshotPath)).toEqual(["/repo/test-results/a-in/test-failed-1.png", undefined, undefined]);
+    expect(parsePlaywrightReport(json, "/repo").tests.map((x) => x.failure?.screenshot)).toEqual([{ outputDir: "/repo/test-results", path: "/repo/test-results/a-in/test-failed-1.png" }, undefined, undefined]);
   });
 
   it("spans repeated runs from the first start to the last end", () => {

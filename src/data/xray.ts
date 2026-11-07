@@ -149,6 +149,8 @@ export interface XrayExecutionPlan {
   notInXray: string[];
   /** Skipped tests: not run, so not recorded. */
   skipped: number;
+  /** Failed results whose screenshot goes too (xray.attachScreenshots); 0 when it is off. Each must still be there when recorded. */
+  screenshots?: number;
   /**
    * failing: PASSED before, FAILED now; other: before neither PASSED nor
    * FAILED (TODO, ABORTED…), as "TC-ID (was X)"; skippedNow: in the last one,

@@ -328,7 +328,8 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             const p = planned.plan;
             if (p.results.length === 0) return `None of these tests has a test case in Xray project ${p.project}, so nothing can be recorded (the context says why for each). Go on?`;
             const failed = p.results.filter((r) => r.status === "FAILED").length;
-            return `Record ${p.results.length} result(s) (${failed} failed) in Xray project ${p.project} as a new Test Execution? ${changeLines(p).join(" ")}`;
+            const shots = p.screenshots ? `, with ${p.screenshots} unmasked failure screenshot(s)` : "";
+            return `Record ${p.results.length} result(s) (${failed} failed) in Xray project ${p.project} as a new Test Execution${shots}? ${changeLines(p).join(" ")}`;
           },
         },
         instructions: () =>
@@ -342,6 +343,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
           const p = planned.plan;
           return [
             `Xray project ${p.project}: ${p.results.length} result(s) to record${p.skipped ? `, ${p.skipped} skipped test(s) left out` : ""}.`,
+            ...(p.screenshots ? [`With ${p.screenshots} failure screenshot(s) as evidence (xray.attachScreenshots): screenshots aren't masked, so what the page showed goes to Xray as it is. Say so when you ask.`] : []),
             ...changeLines(p),
             ...p.results.map((r) => `${r.tcId} | ${r.xrayKey} | ${r.status}${r.before ? ` (was ${r.before})` : ""}`),
             ...(p.notInXray.length ? [`Not in Xray, not recorded: ${p.notInXray.join("; ")}`] : []),
