@@ -38,7 +38,7 @@ const EXTENSIONS: Record<ScriptsDraft["files"][number]["role"], RegExp> = {
 export const pathKey = (path: string) => path.normalize("NFC").replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
 
 export interface CheckContext {
-  profile: Pick<FrameworkProfile, "kind" | "pages" | "steps" | "features" | "authFiles" | "config">;
+  profile: Pick<FrameworkProfile, "kind" | "pages" | "steps" | "features" | "authFiles" | "config"> & Partial<Pick<FrameworkProfile, "aliases">>;
   cases: TestCases["cases"];
   /** Every file in the framework folder, from the folder itself (not just the ones the profile names). */
   existingFiles: readonly string[];
@@ -160,7 +160,7 @@ export function checkDraft(draft: ScriptsDraft, ctx: CheckContext): OutputError[
     const scan = scanGeneratedCode(f.content, f.path);
     if (f.role === "spec") specs.set(f.path, scan);
     if (ctx.api && (f.role === "spec" || f.role === "steps")) {
-      const a = apiTestProblems(f.content, f.path, new Set(draft.files.map((x) => x.path)));
+      const a = apiTestProblems(f.content, f.path, new Set(draft.files.map((x) => x.path)), Object.keys(ctx.profile.aliases ?? {}));
       for (const m of a.problems) err(`${at}.content`, m);
       sends += a.sends;
     }

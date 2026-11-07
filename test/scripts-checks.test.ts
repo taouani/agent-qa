@@ -334,6 +334,11 @@ test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
     // What tests do with it stays fine: send, dispose, the repo's helpers, a fixture's use, this file's functions, this.<ctx>.
     expect(problems(`import { test as base } from '@playwright/test';\nimport { createRecord } from '../../src/api/records';\nimport type { APIRequestContext } from '@playwright/test';\nexport const test = base.extend({ api: async ({ request }, use) => { await use(request); } });\ntest('t', async ({ request, playwright }) => {\n  await createRecord(request, 'Account');\n  const ctx = await playwright.request.newContext();\n  await ctx.get('/x');\n  await ctx.dispose();\n  const send = (c: typeof request) => c.post('/y');\n  await send(request);\n});\nclass Client { constructor(private api: APIRequestContext) {} list() { return this.api.get('/z'); } }\n`).problems).toEqual([]);
     expect(problems(wrap("await fx.request.get('/x');", "fx"))).toEqual({ problems: [], sends: 1 });
+    // Fourth review: arguments, a this alias, a package that calls a method by name.
+    expect(msgs(wrap("function f(c: any) { return arguments[0].get(atob('x')); }\nawait f(request);"))).toMatch(/arguments hides/);
+    expect(msgs(wrap("const o: any = { init() { this.r = request; } };\no.init();\nawait o.r.get(atob('x'));"))).toMatch(/hands on the request context \(assignment\)/);
+    expect(msgs(`import _ from 'lodash';\n${wrap("await _.invoke(request, 'get', atob('x'));")}`)).toMatch(/hands on the request context \(an argument to invoke\)/);
+    expect(apiTestProblems(`import { createRecord } from '@api/records';\n${wrap("await createRecord(request, 'Account');")}`, "tests/api/x.spec.ts", new Set(), ["@api/*"]).problems).toEqual([]);
     expect(problems(wrap("const res = await request.post('/x', { data: { Name: testData.name } });\nexpect((await res.json()).Name).toBe(testData.name);", "{ request, testData }"))).toEqual({ problems: [], sends: 1 });
     expect(msgs(wrap("const g = sfApi.get;\nawait g(atob('x'));", "{ sfApi }"))).toMatch(/hands on the request context \(\.get\)/);
   });

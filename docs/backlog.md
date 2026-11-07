@@ -28,6 +28,12 @@ Found in the PR #74 review (6 Nov 2026). `refactor` checks each task against the
 - A callback passed to a promise that never resolves (`new Promise(() => {}).then(…)`) counts as run. The test hangs until its timeout, so the test run fails it and the phase is put back.
 - The lint step isn't run: the report says so, and the type check stands in. Path aliases are read from the folder, not from tsconfig's `baseUrl`, and renames don't reach files that weren't read.
 
+## API test guard limits
+
+Found in the PR #75 review (7 Nov 2026). In API tests, a request context may only be sent on, disposed of, or passed to the person's own helpers (relative imports and tsconfig path aliases) or to a function in the same file. Two limits remain:
+- A context reached inside the repo's own fixture or helper (`sfApi.raw.get(url)`) is the person's code and isn't followed.
+- Fixtures other than `request` may be the repo's API fixture or plain test data, so their non-send members are read as usual (`testData.name`). Only a send on them is path-checked.
+
 ## Done or moved into a slice
 
 ### Healing existing scripts

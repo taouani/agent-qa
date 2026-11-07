@@ -931,11 +931,13 @@ const FULL_URL = /^\s*(?:[a-z][a-z0-9+.-]*:)?\/\//i;
  * fixture the test destructures, a context from newContext, or a parameter
  * typed APIRequestContext, an alias or cast of one, or a parameter of a
  * function in this file that is given one. A context may go to the repo's
- * own helpers (the person's files), but not to a function another generated
+ * own helpers (the person's files: relative imports and tsconfig path
+ * aliases, never a package, whose functions can call a method by name), but
+ * not to a function another generated
  * file declares, whose sends this check can't follow. One message each,
  * with its line.
  */
-export function apiTestProblems(text: string, file: string, draftPaths: ReadonlySet<string> = new Set()): { problems: string[]; sends: number } {
+export function apiTestProblems(text: string, file: string, draftPaths: ReadonlySet<string> = new Set(), aliases: readonly string[] = []): { problems: string[]; sends: number } {
   const ast = parseCode(text, file);
   if (!ast) return { problems: [], sends: 0 };
   const out: string[] = [];
@@ -1039,7 +1041,6 @@ export function apiTestProblems(text: string, file: string, draftPaths: Readonly
         if (isContext(init)) contexts.add(n.id.name);
       }
       if (n.type === "AssignmentExpression" && n.left.type === "Identifier" && isContext(n.right as Node)) contexts.add(n.left.name);
-      if (n.type === "AssignmentExpression" && n.left.type === "MemberExpression" && n.left.object.type === "ThisExpression" && isContext(n.right as Node)) contexts.add(memberName(n.left as Node) ?? "");
       if (n.type === "Identifier" && n.typeAnnotation?.type === "TSTypeAnnotation") {
         const t = n.typeAnnotation.typeAnnotation;
         if (t.type === "TSTypeReference" && t.typeName.type === "Identifier" && t.typeName.name === "APIRequestContext") contexts.add(n.name);
@@ -1069,7 +1070,10 @@ export function apiTestProblems(text: string, file: string, draftPaths: Readonly
   });
   const imported = new Set<string>();
   walkAst(ast, (n) => {
-    if (n.type === "ImportDeclaration") for (const sp of n.specifiers) if (!fromDraft.has(sp.local.name)) imported.add(sp.local.name);
+    if (n.type !== "ImportDeclaration") return;
+    const from = n.source.value;
+    const mine = from.startsWith(".") || aliases.some((a) => (a.endsWith("/*") ? from.startsWith(a.slice(0, -1)) : from === a));
+    if (mine) for (const sp of n.specifiers) if (!fromDraft.has(sp.local.name)) imported.add(sp.local.name);
   });
   const WRAPS = new Set(["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion", "ParenthesizedExpression", "AwaitExpression"]);
   const handedOn = (ref: Node): string | undefined => {
@@ -1091,7 +1095,7 @@ export function apiTestProblems(text: string, file: string, draftPaths: Readonly
       return `.${m ?? "[…]"}`;
     }
     if (p.type === "VariableDeclarator" && p.init === top && p.id.type === "Identifier") return undefined;
-    if (p.type === "AssignmentExpression" && p.right === top && (p.left.type === "Identifier" || (p.left.type === "MemberExpression" && p.left.object.type === "ThisExpression"))) return undefined;
+    if (p.type === "AssignmentExpression" && p.right === top && p.left.type === "Identifier") return undefined;
     if ((p.type === "CallExpression" || p.type === "OptionalCallExpression" || p.type === "NewExpression") && p.arguments.includes(top as never)) {
       const callee = bare(p.callee as Node);
       const root = chainRoot(callee);
@@ -1109,6 +1113,8 @@ export function apiTestProblems(text: string, file: string, draftPaths: Readonly
   };
   walkAst(ast, (n) => {
     const p = parents.get(n);
+    if (n.type === "Identifier" && n.name === "arguments" && !(p && (p.type === "MemberExpression" || p.type === "OptionalMemberExpression") && p.property === n && !p.computed) && !(p && (p.type === "ObjectProperty" || p.type === "ClassProperty") && p.key === n && !p.computed))
+      out.push(`${at(n)}: arguments hides which parameter is the request context: name the parameters`);
     let ref = false;
     if (n.type === "Identifier" && contexts.has(n.name) && p) {
       const declaration =
