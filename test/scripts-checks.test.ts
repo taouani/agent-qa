@@ -317,5 +317,25 @@ test('TC-ABC-1-001 Create an approval request', async ({ request }) => {
     // A browser fixture taken apart inside the body.
     expect(msgs(wrap("const { page: p } = fx;\nawait p.evaluate(() => 1);", "fx"))).toMatch(/not page/);
   });
+  it("refuses a request context handed on in any way it can't follow (B1, third review)", () => {
+    const u = "const u = ['https:', '', 'api.example.com', 'v1'].join('/');\n";
+    for (const body of [
+      "const api = { r: request };\nawait api.r.get(u);",
+      "const [r] = [request];\nawait r.get(u);",
+      "const g = request.get.bind(request);\nawait g(u);",
+      "await request.get.call(request, u);",
+      "await Reflect.apply(request.get, request, [u]);",
+      "class W { constructor(private r: any) {} go(x: string) { return this.r.get(x); } }\nawait new W(request).go(u);",
+      "const h = { send: (c: any, x: string) => c.get(x) };\nawait h.send(request, u);",
+      "await Promise.all([request].map((c) => c.get(u)));",
+      "const s = (...a: any[]) => a[0].get(a[1]);\nawait s(request, u);",
+      "const o = { request };\nawait o.request.get(u);",
+    ]) expect(msgs(wrap(u + body)), body).toMatch(/hands on the request context|built elsewhere/);
+    // What tests do with it stays fine: send, dispose, the repo's helpers, a fixture's use, this file's functions, this.<ctx>.
+    expect(problems(`import { test as base } from '@playwright/test';\nimport { createRecord } from '../../src/api/records';\nimport type { APIRequestContext } from '@playwright/test';\nexport const test = base.extend({ api: async ({ request }, use) => { await use(request); } });\ntest('t', async ({ request, playwright }) => {\n  await createRecord(request, 'Account');\n  const ctx = await playwright.request.newContext();\n  await ctx.get('/x');\n  await ctx.dispose();\n  const send = (c: typeof request) => c.post('/y');\n  await send(request);\n});\nclass Client { constructor(private api: APIRequestContext) {} list() { return this.api.get('/z'); } }\n`).problems).toEqual([]);
+    expect(problems(wrap("await fx.request.get('/x');", "fx"))).toEqual({ problems: [], sends: 1 });
+    expect(problems(wrap("const res = await request.post('/x', { data: { Name: testData.name } });\nexpect((await res.json()).Name).toBe(testData.name);", "{ request, testData }"))).toEqual({ problems: [], sends: 1 });
+    expect(msgs(wrap("const g = sfApi.get;\nawait g(atob('x'));", "{ sfApi }"))).toMatch(/hands on the request context \(\.get\)/);
+  });
 });
 
