@@ -66,7 +66,7 @@ describe("Xray Test Executions (S3-9): results and changes", () => {
       { tcId: "TC-ABC-1-001", xrayKey: "QA-1", status: "FAILED", comment: "Failed in tests/a.spec.ts:3: Error: expect(locator).toHaveText(expected)" },
       { tcId: "TC-ABC-1-002", xrayKey: "QA-2", status: "PASSED", comment: "Flaky: failed 1 of 2 run(s), passed on a retry (tests/a.spec.ts:3)" },
     ]);
-    expect(r.notInXray).toEqual(["TC-ABC-1-009 not pushed", "no case at all"]);
+    expect(r.notInXray).toEqual(["TC-ABC-1-009 not pushed (TC-ABC-1-009: no Xray test labelled agent-qa:TC-ABC-1-009; push its case with test-cases first)", "no case at all (no TC id in its title or tags)"]);
     expect(r.skipped).toBe(1);
     expect(r.skippedKeys).toEqual(["QA-3"]);
   });
@@ -122,7 +122,7 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     const rows = [row("TC-ABC-1-001 a", "failed"), row("TC-ABC-1-002 b", "passed"), row("TC-ABC-1-009 c", "passed")];
     const previous = { project: "QA", key: "QA-80", created: "2026-11-06T09:00:00.000Z", statuses: { "QA-1": "PASSED" } };
     const plan = await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", [{ ...previous, project: "OLD", key: "OLD-5" }, previous]);
-    expect(plan).toMatchObject({ project: "QA", label: "agent-qa:exec:abc", previous: { key: "QA-80", created: "2026-11-06T09:00:00.000Z" }, notInXray: ["TC-ABC-1-009 c"], changes: { failing: ["TC-ABC-1-001"], added: ["TC-ABC-1-002"] } });
+    expect(plan).toMatchObject({ project: "QA", label: "agent-qa:exec:abc", previous: { key: "QA-80", created: "2026-11-06T09:00:00.000Z" }, notInXray: ["TC-ABC-1-009 c (TC-ABC-1-009: no Xray test labelled agent-qa:TC-ABC-1-009; push its case with test-cases first)"], changes: { failing: ["TC-ABC-1-001"], added: ["TC-ABC-1-002"] } });
     // Only another project's execution (the config changed since) is no comparison.
     const other = await data.xrayExecutionPlan(rows, "agent-qa:exec:abc", [{ ...previous, project: "OLD" }]);
     expect(other.previous).toBeUndefined();

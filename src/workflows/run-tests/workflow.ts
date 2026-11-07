@@ -132,7 +132,7 @@ function renderXrayExecution(x: XrayExecution): string {
   if (x.status === "unavailable" || x.project === undefined) return `${[head, "", ...(x.reason ? [one(x.reason)] : [])].join("\n")}\n`;
   const lines = [head, "", ...(x.status === "uncertain" && x.reason ? [one(x.reason), ""] : []), `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
   for (const r of x.results) lines.push(`- ${r.tcId} (${r.xrayKey}): ${r.status}${r.before ? `, was ${r.before}` : ""}${r.comment ? `: ${one(r.comment)}` : ""}`);
-  if (x.notInXray.length) lines.push("", `Not in Xray (no TC id, or its case wasn't pushed): ${x.notInXray.map(one).join("; ")}`);
+  if (x.notInXray.length) lines.push("", `Not in Xray, not recorded: ${x.notInXray.map(one).join("; ")}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -323,7 +323,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             const planned = await planOf(ctx);
             if ("error" in planned) return `Jira couldn't be read to find the tests in Xray (${planned.error}), so nothing will be recorded. Go on?`;
             const p = planned.plan;
-            if (p.results.length === 0) return `None of these tests has a test case in Xray project ${p.project}, so nothing can be recorded. Go on?`;
+            if (p.results.length === 0) return `None of these tests has a test case in Xray project ${p.project}, so nothing can be recorded (the context says why for each). Go on?`;
             const failed = p.results.filter((r) => r.status === "FAILED").length;
             return `Record ${p.results.length} result(s) (${failed} failed) in Xray project ${p.project} as a new Test Execution? ${changeLines(p).join(" ")}`;
           },
