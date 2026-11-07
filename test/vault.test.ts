@@ -10,6 +10,7 @@ import {
   keychainLookup,
   MemoryVaultStorage,
   Vault,
+  withKeyCreationLock,
   type KeyProvider,
   type KeyringEntry,
 } from "../src/masking/index.js";
@@ -182,6 +183,54 @@ describe("key providers", () => {
     };
     const ours = await new KeychainKeyProvider(racing).getKey();
     expect(ours.toString("base64")).toBe(store.get("sf-agent-qa/vault-key"));
+  });
+
+  it("creates one key when two processes find none at once (clean-up of a slice 0 follow-up)", async () => {
+    const { store, factory } = fakeKeyring();
+    const dir = await mkdtemp(join(tmpdir(), "agent-qa-lock-"));
+    try {
+      const lock = <T>(fn: () => Promise<T> | T) => withKeyCreationLock(fn, { dir });
+      // The first two reads say "no key": both processes looked before either wrote one.
+      let early = 2;
+      const both = (service: string, account: string): KeyringEntry => {
+        const inner = factory(service, account);
+        return { getPassword: () => (early-- > 0 ? null : inner.getPassword()), setPassword: inner.setPassword };
+      };
+      const [a, b] = await Promise.all([new KeychainKeyProvider(both, lock).getKey(), new KeychainKeyProvider(both, lock).getKey()]);
+      expect(a.equals(b)).toBe(true);
+      expect(a.toString("base64")).toBe(store.get("sf-agent-qa/vault-key"));
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for the key lock, takes over a stale one, and says what to delete when it can't", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-qa-lock-"));
+    try {
+      const order: string[] = [];
+      const slow = withKeyCreationLock(async () => {
+        await new Promise((r) => setTimeout(r, 150));
+        order.push("first");
+      }, { dir });
+      await new Promise((r) => setTimeout(r, 20));
+      await withKeyCreationLock(() => void order.push("second"), { dir });
+      await slow;
+      expect(order).toEqual(["first", "second"]);
+      // A lock left by a crash (older than staleMs) is taken over.
+      const file = join(dir, "x");
+      await withKeyCreationLock(async () => {
+        const [held] = await readdir(dir);
+        await writeFile(file, held!);
+      }, { dir });
+      const lockName = await readFile(file, "utf8");
+      await writeFile(join(dir, lockName), "123");
+      expect(await withKeyCreationLock(() => "taken", { dir, staleMs: -1 })).toBe("taken");
+      await writeFile(join(dir, lockName), "123");
+      await expect(withKeyCreationLock(() => "never", { dir, waitMs: 50 })).rejects.toThrow(/Another Agent-QA process is creating the vault key\. If none is running, delete .*\.lock/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("explains how to fall back to AGENT_QA_VAULT_KEY when the keychain fails", async () => {

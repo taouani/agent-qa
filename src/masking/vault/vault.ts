@@ -1,5 +1,6 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { chmod, mkdir, open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { KeyProvider } from "./keys.js";
 
@@ -15,6 +16,58 @@ export interface VaultStorage {
   write(runId: string, blob: string): Promise<void>;
   delete(runId: string): Promise<void>;
   list(): Promise<string[]>;
+}
+
+export interface KeyLockOptions {
+  /** Folder of the lock file; default the OS temp folder. */
+  dir?: string;
+  /** How long to wait for another process; default 10 s. */
+  waitMs?: number;
+  /** A lock older than this was left by a crash and is taken over; default 30 s. */
+  staleMs?: number;
+}
+
+/**
+ * Runs `fn` while holding a lock file shared by every Agent-QA process of
+ * this OS user, so two processes that find no vault key in the keychain
+ * don't each create one (the loser's vaults could never be read again).
+ */
+export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: KeyLockOptions = {}): Promise<T> {
+  let user = "user";
+  try {
+    user = userInfo().username;
+  } catch {
+    // No user entry (some containers): one lock for everyone on the machine.
+  }
+  const file = join(options.dir ?? tmpdir(), `sf-agent-qa-key-${createHash("sha256").update(user).digest("hex").slice(0, 16)}.lock`);
+  const waitMs = options.waitMs ?? 10_000;
+  const staleMs = options.staleMs ?? 30_000;
+  const started = Date.now();
+  for (;;) {
+    try {
+      const handle = await open(file, "wx", 0o600);
+      await handle.writeFile(String(process.pid));
+      await handle.close();
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const age = await stat(file).then(
+        (s) => Date.now() - s.mtimeMs,
+        () => 0,
+      );
+      if (age > staleMs) {
+        await rm(file, { force: true });
+        continue;
+      }
+      if (Date.now() - started > waitMs) throw new Error(`Another Agent-QA process is creating the vault key. If none is running, delete ${file} and try again.`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(file, { force: true });
+  }
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
