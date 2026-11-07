@@ -659,6 +659,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
             throw new Error(`Run ${holder} is pushing these reviewed cases to Xray now, so they aren't pushed twice: wait for it, then submit again.${file}`);
           }
           try {
+            // Resumed after a crash between the push and the saved answer: this run already pushed them.
+            if ((await deps.runs.readArtifact(ctx.runId, XRAY_PUSH_ARTIFACT).catch(() => undefined))?.data.counts.failed === 0) return;
             const { done } = await pushesOf(casesRun, ctx.runId);
             if (done) throw new Error(`These reviewed cases were already pushed to Xray, by run ${done}, so they aren't pushed again: submit approve: false to end this run`);
             await pushCases(ctx, casesRun);

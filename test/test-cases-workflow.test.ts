@@ -311,6 +311,7 @@ describe("test-cases workflow", () => {
     let labelOnly: Record<string, string>;
     /** Imports left that reject the first test. */
     let rejectFirst: number;
+    let importThrows: boolean;
     let xrayConfig: ReturnType<typeof configSchema.parse>;
     let xrayLabels: NonNullable<ConstructorParameters<typeof DataAccess>[0]["labels"]>;
     let xrayClient: NonNullable<ConstructorParameters<typeof DataAccess>[0]["xray"]>;
@@ -318,6 +319,7 @@ describe("test-cases workflow", () => {
     beforeEach(() => {
       sent = [];
       rejectFirst = 0;
+      importThrows = false;
       agentTests = { "ABC-2": [{ key: "QA-9", tcId: "TC-ABC-2-001", title: "Case 1 for ABC-2", covers: ["AC1"] }] };
       labelOnly = {};
       audit = new MemoryAuditSink();
@@ -347,6 +349,7 @@ describe("test-cases workflow", () => {
         },
         xray: {
           importAndWait: async (tests) => {
+            if (importThrows) throw new Error("Xray is down");
             sent.push(tests);
             const issues = tests.map((_, i) => ({ elementNumber: i, key: `QA-${10 + i}` }));
             if (rejectFirst > 0) {
@@ -567,6 +570,16 @@ describe("test-cases workflow", () => {
       await runs.release(declined, "xray-push", "other-run");
       await xrayEngine.submit(later.runId, "push", { approve: true });
       expect(sent).toHaveLength(1);
+      // Released when the push throws too, and the same answer can be sent again.
+      const source = await reviewedAndDeclined();
+      const third = await xrayEngine.start("test-cases", { casesRun: source });
+      importThrows = true;
+      await expect(xrayEngine.submit(third.runId, "push", { approve: true })).rejects.toThrow("Xray is down");
+      importThrows = false;
+      expect(await runs.claim(source, "xray-push", "probe")).toBeUndefined();
+      await runs.release(source, "xray-push", "probe");
+      await xrayEngine.submit(third.runId, "push", { approve: true });
+      expect(sent).toHaveLength(2);
       // Released after the push, so a run that had failures could be pushed again.
       expect(await runs.claim(declined, "xray-push", "next")).toBeUndefined();
     });
@@ -599,6 +612,12 @@ describe("test-cases workflow", () => {
       await off.submit(later.runId, "push", { approve: true });
       expect(sent[0]!.map((t) => t.fields.summary)[0]).toMatch(/^\[TC-ABC-1-001\] Old case escalated for <PERSON_\d+>$/);
     });
+
+    async function reviewedAndDeclined() {
+      const { runId } = await reviewed();
+      await xrayEngine.submit(runId, "push", { approve: false });
+      return runId;
+    }
 
     it("refuses casesRun without reviewed cases", async () => {
       const first = await xrayEngine.start("test-cases", { key: "ABC-1" });
