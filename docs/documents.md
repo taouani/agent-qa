@@ -10,7 +10,7 @@ The `document` workflow writes a QA document from what earlier runs know. A docu
 | `risk-register` | requirements; reviewed cases optional | every issue with a quality score below 60 is in a risk; numbers R-001 in the order written; score (probability × impact) and level; risks ranked |
 | `test-data` | requirements; reviewed cases optional | a valid and an invalid, boundary or empty set per issue with criteria; a set's cases are of its issue; numbers TD-001 in the order written; values shown exactly |
 | `traceability` | reviewed cases (required); a test run optional | the matrix of issue, criterion, cases and result (passed only when every case passed); the model must name every gap: no case, or a case failed, flaky, skipped or not run |
-| `release-notes` | requirements; reviewed cases and a test run optional | every issue once; the fix version; the testing figures |
+| `release-notes` | requirements; reviewed cases and a test run optional; pull requests when the analysis had them | every issue once; the fix version; the testing figures; with pull requests, a technical entry for every issue that has some, naming only its own changed files, and the list of pull requests |
 
 A test in a test run belongs to a case when its title or one of its tags names the case's whole id (`TC-ABC-1-001`). A traceability report made with a test run of other tests shows every case as not run.
 
@@ -46,7 +46,17 @@ The result is `document@1`, with `document.md` beside it. Its texts hold masked 
 
 With `--yes`, nobody reviews the document; `document.md` then says it wasn't reviewed.
 
-Test results (`testRunRun`, for traceability and release notes) are masked with their own run's vault. Their masked values are shown to the model as `[masked]`, so they never reach the document. The technical section of release notes, from pull requests, comes in a later alpha.
+Test results (`testRunRun`, for traceability and release notes) are masked with their own run's vault. Their masked values are shown to the model as `[masked]`, so they never reach the document.
+
+## Technical release notes
+
+Release notes get a technical section when the requirements analysis was given pull requests (`withPullRequests`, see [requirements.md](requirements.md#pull-requests-as-context)):
+
+```bash
+agent-qa run document --type release-notes --jql "project = ABC AND fixVersion = 2026.11" --with-pull-requests
+```
+
+The model sees each issue's pull requests, masked and capped as for the analysis, and writes, for every issue that has some, what the code changed and the files that matter (checked: only that issue's own changed files). Agent-QA adds the list of pull requests with their state and link under "Technical changes". A document from an earlier run (`requirementsRun`, `testCasesRun`) gets the section too when that run's analysis had pull requests.
 
 ## Publish to Confluence
 

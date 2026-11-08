@@ -4,7 +4,7 @@ import { REQUIREMENTS_ARTIFACT } from "../requirements/artifact.js";
 import { analyzeStep, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
 import { TEST_CASES_ARTIFACT } from "../test-cases/artifact.js";
 import { TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
-import type { DocumentData, RequirementsData } from "../../data/index.js";
+import { PULL_REQUESTS_ARTIFACT, type DocumentData, type RequirementsData } from "../../data/index.js";
 import { CONFLUENCE_PAGE_ARTIFACT, DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, type DocumentArtifact, type DocumentDraft } from "./artifact.js";
 import { code, one } from "./markdown.js";
 import { RELEASE_NOTES } from "./release-notes.js";
@@ -193,7 +193,11 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
     };
     const testCases = await read(ctx.inputs.testCasesRun, TEST_CASES_ARTIFACT);
     const testRun = await read(ctx.inputs.testRunRun, TEST_RUN_ARTIFACT);
-    return { run, requirements, testCases, testRun };
+    // The pull requests the analysis was given, as it saw them: only those its requirements@1 names.
+    const named = new Map(requirements.data.requirements.filter((r) => r.pullRequests?.length).map((r) => [r.key, new Set(r.pullRequests!.map((p) => p.id))]));
+    const prs = named.size ? await read(run, PULL_REQUESTS_ARTIFACT) : undefined;
+    const pullRequests = prs && { art: prs, byIssue: Object.fromEntries([...named].map(([key, ids]) => [key, (prs.data.byIssue[key] ?? []).filter((p) => ids.has(p.id))])) };
+    return { run, requirements, testCases, testRun, pullRequests };
   }
 
   async function sourcesOf(ctx: Ctx): Promise<DocumentSources> {
@@ -203,6 +207,7 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       ...(a.testCases ? { testCases: { run: ctx.inputs.testCasesRun!, data: a.testCases.data } } : {}),
       // Its tokens belong to another vault: hidden, so the document can't hold one meaning someone else.
       ...(a.testRun ? { testRun: { run: ctx.inputs.testRunRun!, data: JSON.parse(JSON.stringify(a.testRun.data).replace(TOKEN, "[masked]")) as typeof a.testRun.data } } : {}),
+      ...(a.pullRequests ? { pullRequests: { run: a.run, byIssue: a.pullRequests.byIssue } } : {}),
     };
   }
 
@@ -225,6 +230,7 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       { kind: "artifact", ref: `${a.run}/requirements`, hash: a.requirements.sourceHash },
       ...(a.testCases ? [{ kind: "artifact" as const, ref: `${ctx.inputs.testCasesRun}/test-cases`, hash: a.testCases.sourceHash }] : []),
       ...(a.testRun ? [{ kind: "artifact" as const, ref: `${ctx.inputs.testRunRun}/test-run`, hash: a.testRun.sourceHash }] : []),
+      ...(a.pullRequests ? [{ kind: "artifact" as const, ref: `${a.run}/pull-requests`, hash: a.pullRequests.art.sourceHash }] : []),
     ];
   }
 

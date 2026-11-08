@@ -8,7 +8,7 @@ import { configSchema, RunStore, WorkflowEngine } from "../src/core/index.js";
 import { DataAccess, PULL_REQUEST_BYTES, PULL_REQUESTS_ARTIFACT } from "../src/data/index.js";
 import { ConnectorError } from "../src/connectors/http.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
-import { documentWorkflow, REQUIREMENTS_ARTIFACT, requirementsWorkflow, testCasesWorkflow } from "../src/workflows/index.js";
+import { DOCUMENT_ARTIFACT, documentWorkflow, REQUIREMENTS_ARTIFACT, requirementsWorkflow, testCasesWorkflow } from "../src/workflows/index.js";
 import { inputFingerprint } from "../src/workflows/requirements/workflow.js";
 
 const SITE = "https://acme.atlassian.net";
@@ -181,5 +181,53 @@ describe("pull requests in the requirements analysis (S4-6)", () => {
     await plain.engine.submit(first.runId, "analyze", answer());
     await expect(plain.engine.start("document", { type: "test-plan", requirementsRun: first.runId, withPullRequests: true })).rejects.toMatchObject({ code: "INVALID_INPUTS", message: expect.stringContaining("give a key or a JQL filter") });
     await expect(plain.engine.start("test-cases", { casesRun: first.runId, withPullRequests: true })).rejects.toMatchObject({ code: "INVALID_INPUTS" });
+  });
+
+  it("adds a technical section to release notes from the analysis's pull requests (S4-7)", async () => {
+    const { engine } = setup();
+    const first = await engine.start("document", { type: "release-notes", jql: "fixVersion = 2026.11", withPullRequests: true });
+    const next = (await engine.submit(first.runId, "analyze", answer())).next;
+    expect(next.stepId).toBe("draft-release-notes");
+    expect(next.context).toContain('"pullRequests"');
+    expect(next.context).toContain("+const days = 2; // asked by <EMAIL_1>");
+    const notes = {
+      summary: "Old cases escalate sooner.",
+      highlights: [],
+      items: [
+        { key: "ABC-1", category: "improvement", note: "Old cases escalate after 2 days." },
+        { key: "ABC-2", category: "feature", note: "Owners get an email." },
+      ],
+      knownIssues: [],
+      upgradeNotes: [],
+    };
+    const bad = await engine.submit(first.runId, "draft-release-notes", { ...notes, technical: [{ key: "ABC-1", changes: "The escalation job uses 2 days.", files: ["src/nope.ts"] }] });
+    expect((bad as unknown as { errors: unknown[] }).errors).toEqual(
+      expect.arrayContaining([
+        { path: "$.technical.0.files.0", message: "src/nope.ts isn't a file of ABC-1's pullRequests" },
+        { path: "$.technical", message: "no technical entry for ABC-2" },
+      ]),
+    );
+    await engine.submit(first.runId, "draft-release-notes", {
+      ...notes,
+      technical: [
+        { key: "ABC-1", changes: "The escalation job uses 2 days instead of 3.", files: ["src/escalation.ts"] },
+        { key: "abc-2", changes: "Shares the escalation change.", files: [] },
+      ],
+    });
+    await engine.submit(first.runId, "review", { approved: true, changes: [] });
+    const doc = (await runs.readArtifact(first.runId, DOCUMENT_ARTIFACT))!;
+    expect(doc.inputs.map((i) => i.ref)).toContain(`${first.runId}/pull-requests`);
+    expect(doc.data.templateVersion).toBe("document-1/release-notes-2");
+    const md = doc.data.markdown;
+    expect(md).toContain("## Technical changes");
+    expect(md).toContain("### ABC-1: Escalate old cases\n\nThe escalation job uses 2 days instead of 3.\n\n- #7 ABC-1 ABC-2: escalate, asked by <PERSON_1> (merged, 2 file(s)): https://github.com/acme/app/pull/7\n- #8 ABC-1 fix (merged, 2 file(s)): https://github.com/acme/app/pull/8");
+    expect(md).toContain("Files: `src/escalation.ts`");
+    expect(md).not.toContain("Quillfeather");
+
+    // Without pull requests there is no technical section, and none may be written.
+    const plain = await engine.start("document", { type: "release-notes", key: "ABC-1" });
+    await engine.submit(plain.runId, "analyze", answer());
+    const refused = await engine.submit(plain.runId, "draft-release-notes", { ...notes, technical: [{ key: "ABC-1", changes: "x", files: [] }] });
+    expect((refused as unknown as { errors: unknown[] }).errors).toContainEqual({ path: "$.technical", message: "the context has no pullRequests: leave technical out" });
   });
 });
