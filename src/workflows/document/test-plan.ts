@@ -112,7 +112,7 @@ function render(plan: TestPlan, s: DocumentSources, meta: DocumentMeta): string 
   const cases = s.testCases?.data.cases;
   const casesOf = (key: string) => (cases ?? []).filter((c) => c.requirement === key);
   const from = [`requirements run ${meta.requirementsRun} (${rs.length} issue(s))`, ...(meta.testCasesRun && cases ? [`test cases run ${meta.testCasesRun} (${cases.length} reviewed case(s))`] : [])];
-  const lines = [`# ${meta.title}: ${meta.input}`, "", `Written from ${from.join(" and ")}. Personal data is masked as tokens such as <PERSON_1>.`];
+  const lines = [`# ${meta.title}: ${meta.input}`, "", `Written from ${from.join(" and ")}. Personal data is masked as tokens such as <PERSON_n>.`];
   lines.push(...section("Summary", [one(plan.summary)]));
   lines.push(...section("Objectives", bullets(plan.objectives)));
   lines.push(...section("Scope", ["### In scope", "", ...bullets(plan.inScope), "", "### Out of scope", "", ...bullets(plan.outOfScope)]));

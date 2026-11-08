@@ -315,15 +315,18 @@ describe("document workflow (S4-3)", () => {
   });
 
   it("refuses to mask edits when the requirements run's vault expired", async () => {
+    // The name is only in a description: the draft shows no token, the requirements do.
+    issues = [issue({ key: "ABC-1", summary: "Escalate old cases", description: adf("Escalate cases of Marguerite Quillfeather.\n\nAcceptance criteria:\n- A case older than 2 days is escalated") })];
     const first = await engine.start("document", { type: "test-plan", key: "ABC-1" });
-    await engine.submit(first.runId, "analyze", good);
+    await engine.submit(first.runId, "analyze", { issues: [{ key: "ABC-1", quality: { score: 70, missing: [] }, openQuestions: [], inferredCriteria: [] }] });
     const key = randomBytes(32);
     const config = configSchema.parse({ version: 1, atlassian: { site: SITE, email: "${env:E}", token: "${env:T}" } });
     const fresh = new DataAccess({ root: dir, store: runs, config, vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }), jira });
     const later = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId }).register(documentWorkflow({ data: fresh, runs }));
     const run = await later.start("document", { type: "test-plan", requirementsRun: first.runId });
     // No token in the plan's texts; the summaries in its table still hold <PERSON_1>, and so do the requirements.
-    await later.submit(run.runId, "draft-test-plan", plan({ requirements: [{ key: "ABC-1", risk: "high", focus: "x" }, { key: "ABC-2", risk: "low", focus: "y" }] }));
+    await later.submit(run.runId, "draft-test-plan", plan({ requirements: [{ key: "ABC-1", risk: "high", focus: "x" }], risks: [] }));
+    expect(JSON.stringify(await runs.readArtifact(run.runId, DOCUMENT_DRAFT_ARTIFACT))).not.toMatch(/<[A-Z]+_\d+>/);
     await expect(later.submit(run.runId, "review", { approved: true, changes: [{ path: "$.summary", value: "Mail bf@other.org" }] })).rejects.toMatchObject({ message: expect.stringContaining("expired") });
     expect((await later.submit(run.runId, "review", { approved: true, changes: [{ path: "$.outOfScope.0" }] })).status).toBe("accepted");
   });
