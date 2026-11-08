@@ -38,13 +38,20 @@ const LETTERS = "BCDFGHJKLMNPQRSTVWXZ";
 export function repoPaths(options: { mask: (text: string) => string; key: Buffer; folder: string }): RepoPaths {
   const met = new Map<string, string>();
   const given = new Map<string, string>();
-  const part = (seg: string): string => {
+  const split = (seg: string) => {
     const suffix = SUFFIX.exec(seg)?.[0] ?? "";
-    const stem = seg.slice(0, seg.length - suffix.length);
-    if (!stem || (options.mask(stem) === stem && !hasToken(stem))) return seg;
+    return { stem: seg.slice(0, seg.length - suffix.length), suffix };
+  };
+  /** The part's token, whether or not this run's detectors flag it. */
+  const tokenOf = (seg: string): string => {
+    const { stem, suffix } = split(seg);
     const hash = createHmac("sha256", options.key).update(stem.normalize("NFC")).digest();
-    const id = [...hash.subarray(0, 10)].map((b) => LETTERS[b % LETTERS.length]).join("");
-    return `<PATH_${id}_1>${suffix}`;
+    return `<PATH_${[...hash.subarray(0, 10)].map((b) => LETTERS[b % LETTERS.length]).join("")}_1>${suffix}`;
+  };
+  const part = (seg: string): string => {
+    const { stem } = split(seg);
+    if (!stem || (options.mask(stem) === stem && !hasToken(stem))) return seg;
+    return tokenOf(seg);
   };
   const shown = (path: string): string => {
     const kept = given.get(path);
@@ -70,11 +77,14 @@ export function repoPaths(options: { mask: (text: string) => string; key: Buffer
       } catch {
         entries = [];
       }
-      const found = entries.filter((e) => !e.includes("/") && part(e) === seg);
+      // Matched by the token alone: another run's detectors (another vault's names) may have flagged a part this run's don't.
+      const found = entries.filter((e) => split(e).stem !== "" && tokenOf(e) === seg);
       if (found.length !== 1) throw new ProfileError(`${path}: ${found.length ? "more than one file" : "no file"} of the folder has this masked name`);
       parts.push(found[0]!);
     }
     const out = parts.join("/");
+    // Shown as it came in, even where this run's detectors wouldn't flag the name.
+    given.set(out, path);
     met.set(out, path);
     return out;
   };
