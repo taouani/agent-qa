@@ -4,7 +4,7 @@ import { REQUIREMENTS_ARTIFACT } from "../requirements/artifact.js";
 import { analyzeStep, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
 import { TEST_CASES_ARTIFACT } from "../test-cases/artifact.js";
 import { TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
-import type { DocumentData, RequirementsData } from "../../data/index.js";
+import { PULL_REQUESTS_ARTIFACT, type DocumentData, type MaskedPullRequest, type RequirementsData } from "../../data/index.js";
 import { CONFLUENCE_PAGE_ARTIFACT, DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, type DocumentArtifact, type DocumentDraft } from "./artifact.js";
 import { code, one } from "./markdown.js";
 import { RELEASE_NOTES } from "./release-notes.js";
@@ -193,7 +193,22 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
     };
     const testCases = await read(ctx.inputs.testCasesRun, TEST_CASES_ARTIFACT);
     const testRun = await read(ctx.inputs.testRunRun, TEST_RUN_ARTIFACT);
-    return { run, requirements, testCases, testRun };
+    // The pull requests the analysis was given, as it saw them: those its requirements@1 names, with the same hash.
+    const named = typeOf(ctx).usesPullRequests ? requirements.data.requirements.filter((r) => r.pullRequests?.length) : [];
+    const prs = named.length ? await read(run, PULL_REQUESTS_ARTIFACT) : undefined;
+    let pullRequests: { art: NonNullable<typeof prs>; byIssue: Record<string, MaskedPullRequest[]> } | undefined;
+    if (prs) {
+      const byIssue: Record<string, MaskedPullRequest[]> = {};
+      for (const r of named) {
+        byIssue[r.key] = r.pullRequests!.map((want) => {
+          const found = (prs.data.byIssue[r.key] ?? []).find((p) => p.id === want.id && p.hash === want.hash);
+          if (!found) throw new Error(`Run ${run}'s pull-requests@1 no longer holds pull request ${want.id} of ${r.key} as the analysis saw it: start a new run`);
+          return found;
+        });
+      }
+      pullRequests = { art: prs, byIssue };
+    }
+    return { run, requirements, testCases, testRun, pullRequests };
   }
 
   async function sourcesOf(ctx: Ctx): Promise<DocumentSources> {
@@ -203,6 +218,7 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       ...(a.testCases ? { testCases: { run: ctx.inputs.testCasesRun!, data: a.testCases.data } } : {}),
       // Its tokens belong to another vault: hidden, so the document can't hold one meaning someone else.
       ...(a.testRun ? { testRun: { run: ctx.inputs.testRunRun!, data: JSON.parse(JSON.stringify(a.testRun.data).replace(TOKEN, "[masked]")) as typeof a.testRun.data } } : {}),
+      ...(a.pullRequests ? { pullRequests: { run: a.run, byIssue: a.pullRequests.byIssue } } : {}),
     };
   }
 
@@ -225,6 +241,7 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       { kind: "artifact", ref: `${a.run}/requirements`, hash: a.requirements.sourceHash },
       ...(a.testCases ? [{ kind: "artifact" as const, ref: `${ctx.inputs.testCasesRun}/test-cases`, hash: a.testCases.sourceHash }] : []),
       ...(a.testRun ? [{ kind: "artifact" as const, ref: `${ctx.inputs.testRunRun}/test-run`, hash: a.testRun.sourceHash }] : []),
+      ...(a.pullRequests ? [{ kind: "artifact" as const, ref: `${a.run}/pull-requests`, hash: a.pullRequests.art.sourceHash }] : []),
     ];
   }
 

@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { OutputError } from "../../core/index.js";
+import type { MaskedPullRequest } from "../../data/index.js";
 import type { RequirementsArtifact } from "../requirements/artifact.js";
 import type { TestCases } from "../test-cases/artifact.js";
 import type { TestRun } from "../run-tests/workflow.js";
@@ -17,6 +18,12 @@ export interface DocumentSources {
   requirements: { run: string; data: RequirementsArtifact };
   testCases?: { run: string; data: TestCases } | undefined;
   testRun?: { run: string; data: TestRun } | undefined;
+  /**
+   * The pull requests the requirements analysis was given (S4-7), by issue:
+   * from the requirements run's `pull-requests@1`, masked with its vault.
+   * Only when the analysis ran with withPullRequests.
+   */
+  pullRequests?: { run: string; byIssue: Record<string, MaskedPullRequest[]> } | undefined;
 }
 
 export type SourceNeed = "required" | "optional" | "unused";
@@ -29,6 +36,8 @@ export interface DocumentType<T> {
   /** Changes when the prompt or schema does, so a `sourceHash` tells documents of older templates apart. */
   templateVersion: string;
   needs: { testCases: SourceNeed; testRun: SourceNeed };
+  /** Reads the pull requests the analysis was given, when it had some (S4-7). */
+  usesPullRequests?: true;
   schema: z.ZodType<T>;
   instructions: string;
   /**
