@@ -387,7 +387,7 @@ export interface MaskedTestResult {
   durationMs?: number | undefined;
   /** Playwright's screenshot of the test, as a handle: "<masked output folder>#<hash of its path>". */
   screenshot?: string | undefined;
-  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshot?: string | undefined } | undefined;
+  failure?: { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; files?: string[] | undefined; snapshot?: string | undefined } | undefined;
 }
 
 export type TestRunOutcome =
@@ -1132,6 +1132,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
                 message: mask(x.failure.message, "test.error", 4000),
                 snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
                 at: x.failure.at,
+                ...(x.failure.files?.length ? { files: x.failure.files.slice(0, 20) } : {}),
                 snapshot,
               },
             }

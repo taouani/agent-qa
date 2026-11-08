@@ -57,7 +57,15 @@ export interface ReportedTest {
   durationMs?: number | undefined;
   /** The first failure: its message (with the call log), the code around it, and where. */
   failure?:
-    | { message: string; snippet?: string | undefined; at?: { file: string; line: number } | undefined; snapshotPath?: string | undefined; snapshot?: string | undefined }
+    | {
+        message: string;
+        snippet?: string | undefined;
+        at?: { file: string; line: number } | undefined;
+        /** The repo files every error and its stack point at, innermost first (no node_modules, nothing outside the folder). */
+        files?: string[] | undefined;
+        snapshotPath?: string | undefined;
+        snapshot?: string | undefined;
+      }
     | undefined;
   /**
    * Playwright's screenshot of the test (`screenshot: 'on'` or
@@ -82,6 +90,20 @@ function fromFolder(path: string, folder: string, base: string): string {
   if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..")) return posix.basename(full.replace(/\\/g, "/"));
   return rel.split(sep).join("/");
 }
+
+/** A path from the report, from the framework folder, when it is inside it and not a package's. */
+function inFolder(path: string, folder: string, base: string): string | undefined {
+  const full = isAbsolute(path) ? path : resolve(base, path);
+  const rel = relative(folder, full);
+  if (rel === "" || isAbsolute(rel) || rel.split(sep).includes("..") || rel.split(sep).includes("node_modules")) return undefined;
+  return rel.split(sep).join("/");
+}
+
+/** `at X (file:line:col)` or `at file:line:col` in a stack. */
+const FRAME = /^\s*at (?:.*? \()?((?:file:\/\/\/?)?(?:[A-Za-z]:)?[^():]+):(\d+):\d+\)?\s*$/;
+
+/** Generated playwright-bdd specs: git ignores them and Agent-QA never changes them. */
+export const isGenerated = (path: string) => /(^|\/)\.features-gen\//.test(path);
 
 export function parsePlaywrightReport(json: unknown, folder: string): ParsedReport {
   const parsed = report.safeParse(json);
@@ -119,7 +141,25 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
         const failed = t.results.filter((x) => x.status !== "passed" && x.status !== "skipped");
         const outcome: TestOutcome = t.status === "expected" ? "passed" : t.status === "flaky" ? "flaky" : t.status === "skipped" ? "skipped" : "failed";
         const first = failed[0];
-        const err = first?.error ?? first?.errors?.[0];
+        // Every error: on a test timeout the first only says so, and the next names the locator that waited, and where.
+        const errs = first?.errors?.length ? first.errors.map((e, i) => (i === 0 && first.error ? { ...first.error, ...e, location: e.location ?? first.error.location } : e)) : first?.error ? [first.error] : [];
+        const err = errs[0];
+        const messages = [...new Set(errs.map((e) => plain(e.message ?? "").trim()).filter(Boolean))];
+        const where = errs.flatMap((e) => [
+          ...(e.location ? [{ file: e.location.file, line: e.location.line }] : []),
+          ...(e.stack ?? "").split("\n").flatMap((l) => {
+            const m = FRAME.exec(plain(l));
+            return m ? [{ file: m[1]!.replace(/^file:\/\/\/?/, ""), line: Number(m[2]) }] : [];
+          }),
+        ]).flatMap((x) => {
+          const file = inFolder(x.file, folder, base);
+          return file ? [{ file, line: x.line }] : [];
+        });
+        const files = [...new Set(where.map((x) => x.file))];
+        // Playwright's `error` (the first) may carry the snippet that its copy in `errors` lacks.
+        const snippet = first?.error?.snippet ?? errs.find((e) => e.snippet)?.snippet;
+        // Where to look first: the innermost place in the repo's own code, not a generated spec.
+        const at = where.find((x) => !isGenerated(x.file)) ?? (err?.location ? { file: fromFolder(err.location.file, folder, base), line: err.location.line } : undefined);
         const context = first?.attachments?.find((a) => a.name === "error-context");
         const span = timeSpan(t.results);
         // A failed run's screenshot shows the failure; otherwise the last one taken.
@@ -138,9 +178,10 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
             ? {
                 failure: {
                   // Whole: cut only once masked, so a value at the edge isn't half-hidden from the detectors.
-                  message: plain(err?.message ?? `the test ended ${first.status}`),
-                  snippet: err?.snippet ? plain(err.snippet) : undefined,
-                  at: err?.location ? { file: fromFolder(err.location.file, folder, base), line: err.location.line } : undefined,
+                  message: messages.length ? messages.join("\n\n") : `the test ended ${first.status}`,
+                  snippet: snippet !== undefined ? plain(snippet) : undefined,
+                  at,
+                  ...(files.length ? { files } : {}),
                   snapshotPath: snapshotFile(context?.path),
                   snapshot: context?.body !== undefined && context.contentType?.startsWith("text/") ? Buffer.from(context.body, "base64").toString("utf8") : undefined,
                 },

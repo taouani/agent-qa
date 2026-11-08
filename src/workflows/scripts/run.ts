@@ -56,6 +56,8 @@ export const testRowSchema = z
         message: z.string(),
         snippet: z.string().optional(),
         at: z.object({ file: z.string(), line: z.number() }).strict().optional(),
+        /** The repo files the errors and their stacks point at. */
+        files: z.array(z.string()).optional(),
         snapshot: z.string().optional(),
         /** Runs before 2.0.0-alpha.2 kept a failure's screenshot here; read, no longer written. */
         screenshot: z.string().optional(),
