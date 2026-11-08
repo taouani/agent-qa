@@ -1,6 +1,5 @@
 import type { WriteGrant } from "../core/index.js";
-import type { FetchLike } from "./http.js";
-import { GitHubClient, type OpenedPullRequest, type PullRequestFiles } from "./github.js";
+import type { OpenedPullRequest, PullRequestFiles } from "./github.js";
 
 /**
  * One interface for the git hosts (S4-1): GitHub now, Azure DevOps and GitLab
@@ -105,20 +104,4 @@ export function capPatches(files: PullRequestFileChange[], maxBytes: number): Pu
     return f;
   });
   return { files: out, truncated };
-}
-
-export interface GitHostConfig {
-  platform: GitPlatform;
-  repo: string;
-  baseUrl?: string | undefined;
-}
-
-/** The client for `git` in agent-qa.yaml, with its token resolved. */
-export function createGitHost(git: GitHostConfig, token: string, options: { fetch?: FetchLike } = {}): GitHost {
-  switch (git.platform) {
-    case "github":
-      return new GitHubClient({ repo: git.repo, token, ...(git.baseUrl ? { baseUrl: git.baseUrl } : {}), ...(options.fetch ? { fetch: options.fetch } : {}) });
-    default:
-      throw new Error(`git.platform ${git.platform} isn't supported yet: GitHub only`);
-  }
 }

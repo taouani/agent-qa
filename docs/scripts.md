@@ -89,7 +89,7 @@ agent-qa run scripts --ci --input '{"testCasesRun":"<run id>"}' --accept typeche
 - a git checkout of the repo, with `agent-qa.profile.json` committed (CI never writes it);
 - the test-cases run: run `test-cases` in the same job, or restore `.agent-qa/runs/` (or `AGENT_QA_RUNS_DIR`), which is git-ignored;
 - `policy.writes.testCode` and `policy.writes.commands` not set to `deny` (in CI, anything else allows);
-- a `git` section in `agent-qa.yaml`. GitHub only for now: `gitlab` and `azure-devops` pass the schema but are refused.
+- a `git` section in `agent-qa.yaml`, for GitHub or Azure DevOps. `gitlab` passes the schema but is refused for now.
 
   ```yaml
   git:
@@ -99,7 +99,17 @@ agent-qa run scripts --ci --input '{"testCasesRun":"<run id>"}' --accept typeche
     # baseUrl: https://github.example.com/api/v3   # GitHub Enterprise Server
   ```
 
-- a token with `contents: write` and `pull-requests: write`, and the repo setting that lets GitHub Actions create pull requests (Settings, Actions, General).
+  ```yaml
+  git:
+    platform: azure-devops
+    repo: organization/project/repository   # a project name may hold spaces
+    token: ${env:ADO_TOKEN}
+  ```
+
+- on GitHub, a token with `contents: write` and `pull-requests: write`, and the repo setting that lets GitHub Actions create pull requests (Settings, Actions, General);
+- on Azure DevOps Services (https://dev.azure.com; ADO Server on premises isn't supported), either a personal access token with the Code (read and write) scope, or the pipeline's own token mapped into the job (`env: ADO_TOKEN: $(System.AccessToken)`), with the project's Build Service given Contribute, Create branch and Contribute to pull requests on the repository (Project settings, Repositories, Security).
+
+The pull request goes into the branch the job built: on GitHub Actions the pull request's head (`GITHUB_HEAD_REF`) or the pushed branch; on Azure Pipelines the pull request's source branch (`System.PullRequest.SourceBranch`) or the built branch (`Build.SourceBranch`); otherwise the repository's default branch. The token is sent only to the API the job itself runs against (`GITHUB_API_URL`, `System.CollectionUri`). On Azure DevOps a description longer than 4000 characters is cut, as Azure DevOps keeps no more.
 
 ## How it is checked
 
