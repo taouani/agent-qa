@@ -69,7 +69,7 @@ type Ctx = StepContext<DocumentInputs>;
 /** A change of the review: a new text at a path of the draft's content, or, with no value, the removal of a list item. */
 const changeSchema = z
   .object({
-    path: z.string().regex(/^\$(\.[A-Za-z0-9_]+)+$/, "must be a path such as $.objectives.2").describe("Where the text is, as the context lists it, e.g. $.objectives.2"),
+    path: z.string().regex(/^\$(\.(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9]\d*))+$/, "must be a path such as $.objectives.2, numbers with no leading zero").describe("Where the text is, as the context lists it, e.g. $.objectives.2"),
     value: z.string().max(4000).optional().describe("The new text. Leave out to remove this item of a list"),
   })
   .strict();
@@ -235,7 +235,9 @@ export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<Doc
     const parsed = type.schema.safeParse(applyChanges((await draftOf(ctx)).content, changes));
     // Paths only: the messages of a schema can't echo the person's words, and the type's checks name keys.
     if (!parsed.success) return { errors: parsed.error.issues.map((i) => ({ path: `$.${i.path.join(".")}`, message: `doesn't fit the ${type.title.toLowerCase()} once changed (${i.code})` })) };
-    return { content: parsed.data, errors: type.check(await sourcesOf(ctx), parsed.data) };
+    // The type's messages quote keys, which here may be the person's words: paths only.
+    const errors = type.check(await sourcesOf(ctx), parsed.data).map((e) => ({ path: e.path, message: `breaks a rule of the ${type.title.toLowerCase()} once changed (an issue key that isn't in the sources, or an issue named twice or not at all): undo or fix this change` }));
+    return { content: parsed.data, errors };
   }
 
   const draftSteps = DOCUMENT_TYPES.map(
@@ -318,6 +320,8 @@ export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<Doc
             const at = `$.changes.${i}`;
             if (seen.has(change.path)) errors.push({ path: `${at}.path`, message: "this text is changed more than once" });
             seen.add(change.path);
+            const removed = review.changes.find((c) => c !== change && c.value === undefined && change.path.startsWith(`${c.path}.`));
+            if (removed) errors.push({ path: `${at}.path`, message: "is inside an item this review removes: leave out one of the two changes" });
             const why = changeError(draft.content, change);
             if (why) errors.push({ path: `${at}.path`, message: why });
           });
@@ -337,7 +341,9 @@ export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<Doc
           if (edits.length === 0) return { approved: true, changes: review.changes, ...unattended };
           const run = requirementsRunOf(ctx);
           // An expired vault starts again from <PERSON_1>, which would give a new value an old token.
-          if (TOKEN_TEST.test(JSON.stringify(await draftOf(ctx))) && !(await deps.data.hasVault(run))) {
+          // Tokens of the sources count too: the requirements and cases use them, even where the draft doesn't show them.
+          const a = await artifacts(ctx);
+          if (TOKEN_TEST.test(JSON.stringify([await draftOf(ctx), a.requirements.data, a.testCases?.data])) && !(await deps.data.hasVault(run))) {
             throw new Error(`the token vault of run ${run} has expired or was deleted, so edits can't be masked consistently; start a new run`);
           }
           const masked = await deps.data.maskTexts(run, edits.map((c) => c.value!), "review.edit");
