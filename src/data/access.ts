@@ -106,7 +106,7 @@ export interface XrayData {
    * execution in Xray. Masked text only: tokens go as they are, even with
    * restoreOnWrite.
    */
-  recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean): Promise<{ status: "done"; key: string } | { status: "declined" }>;
+  recordXrayExecution(runId: string, plan: XrayExecutionPlan, runLabel: string, info: { summary: string; description: string; startedAt: Date; finishedAt: Date }, approved: boolean): Promise<{ status: "done"; key: string; datesError?: string } | { status: "declined" }>;
 }
 
 /** Running the host repo's own commands (S2-1): the test run in run-and-fix. */
@@ -457,7 +457,7 @@ export interface DataAccessOptions {
   jira?: Pick<JiraClient, "collect">;
   confluence?: Pick<ConfluenceClient, "pages">;
   xray?: Pick<XrayClient, "importAndWait"> & Partial<Pick<XrayClient, "importExecution">>;
-  labels?: Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests">>;
+  labels?: Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests" | "setExecutionDates">>;
   /** `ide` (default) or `ci`: decides what an `ask` write rule does. */
   mode?: Mode;
   /** Where write decisions are recorded; default `.agent-qa/audit.jsonl`. */
@@ -811,9 +811,12 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const dates = when?.start || when?.end
       ? { ...(when.start ? { [when.start.field]: jiraDate(info.startedAt, when.start.type) } : {}), ...(when.end ? { [when.end.field]: jiraDate(info.finishedAt, when.end.type) } : {}) }
       : undefined;
-    const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}`;
-    const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) =>
-      client.importExecution!(
+    const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}${dates ? ", and set its start and end dates in Jira" : ""}`;
+    // Jira is needed only for the dates; a missing atlassian section is found before anything is written.
+    const jira = dates ? await this.labels(config) : undefined;
+    if (jira && !jira.setExecutionDates) throw new Error("this Jira client can't set a Test Execution's dates");
+    const outcome = await this.policy(config).guard({ target: "xray", summary, runId }, async (grant) => {
+      const { key } = await client.importExecution!(
         {
           project: plan.project,
           summary: info.summary.slice(0, 255),
@@ -821,7 +824,6 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           labels: ["agent-qa", plan.label, runLabel],
           startedAt: info.startedAt,
           finishedAt: info.finishedAt,
-          ...(dates ? { fields: dates } : {}),
           tests: plan.results.map((r) => ({
             testKey: r.xrayKey,
             status: r.status,
@@ -832,9 +834,19 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           })),
         },
         grant,
-      ),
-    );
-    return outcome.status === "done" ? { status: "done" as const, key: outcome.value.key } : { status: "declined" as const };
+      );
+      // Xray's import leaves the execution's own date fields empty (live check, 8 Nov 2026), so they are set
+      // on the issue it created, under the same yes (Tarek's choice). The execution exists by now: a failure
+      // here is reported with it, never a reason to import again.
+      if (!dates || !jira?.setExecutionDates) return { key };
+      try {
+        await jira.setExecutionDates(key, dates, grant);
+        return { key };
+      } catch (error) {
+        return { key, datesError: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+      }
+    });
+    return outcome.status === "done" ? { status: "done" as const, key: outcome.value.key, ...(outcome.value.datesError ? { datesError: outcome.value.datesError } : {}) } : { status: "declined" as const };
   }
 
   /**
@@ -2065,7 +2077,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return value.startsWith("${") ? resolveSecret(value, this.secrets()) : value;
   }
 
-  private async labels(config: Config): Promise<Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests">>> {
+  private async labels(config: Config): Promise<Pick<JiraClient, "findByLabels"> & Partial<Pick<JiraClient, "findAgentTests" | "setExecutionDates">>> {
     if (this.options.labels) return this.options.labels;
     const atlassian = config.atlassian;
     if (!atlassian) throw new Error("agent-qa.yaml has no atlassian section: it is needed to find tests pushed before.");

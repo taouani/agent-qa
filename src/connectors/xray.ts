@@ -58,8 +58,6 @@ export interface XrayExecutionInput {
   labels: string[];
   startedAt: Date;
   finishedAt: Date;
-  /** More Jira fields of the Test Execution, by custom field id: its start and end dates. */
-  fields?: Record<string, string>;
   tests: XrayExecutionResult[];
 }
 
@@ -228,9 +226,8 @@ export class XrayClient {
         ...(t.evidence?.length ? { evidence: t.evidence.map((e) => ({ data: e.data, filename: e.filename, contentType: e.contentType })) } : {}),
       })),
     };
-    for (const id of Object.keys(input.fields ?? {})) if (!/^customfield_\d+$/.test(id)) throw new Error("Not a Jira custom field id");
-    // Xray ignores the results' own dates in this import: the execution's are Jira fields.
-    const info = { fields: { ...input.fields, project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
+    // The execution's own start and end date fields are set afterwards in Jira: this import leaves them empty.
+    const info = { fields: { project: { key: input.project }, summary: input.summary, description: input.description, issuetype: { name: "Test Execution" }, labels: input.labels } };
     const boundary = `agent-qa-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
     const part = (name: string, value: unknown) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${name}.json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(value)}\r\n`;
     const body = `${part("results", results)}${part("info", info)}--${boundary}--\r\n`;

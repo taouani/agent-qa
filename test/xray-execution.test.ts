@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FetchLike } from "../src/connectors/http.js";
+import { JiraClient } from "../src/connectors/jira.js";
 import { jiraDate, XrayClient, type XrayExecutionInput } from "../src/connectors/xray.js";
 import { configSchema, MemoryAuditSink, Policy, RunStore, WorkflowEngine, type WriteGrant } from "../src/core/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
@@ -48,11 +49,25 @@ describe("Xray Test Executions (S3-9): the client", () => {
     });
     expect(json("info")).toEqual({ fields: { project: { key: "QA" }, summary: "Agent-QA run r1", description: "d", issuetype: { name: "Test Execution" }, labels: ["agent-qa", "agent-qa:exec:abc"] } });
     await expect(withGrant((g) => client.importExecution({ ...INPUT, tests: [{ testKey: "not a key", status: "PASSED" }] }, g))).rejects.toThrow(/Not an Xray test key/);
-    // The execution's own dates go as Jira fields in the info part; only custom field ids.
-    await withGrant((g) => client.importExecution({ ...INPUT, fields: { customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T10:01:00.000+0000" } }, g));
-    const last = calls.filter((c) => c.path === "/api/v2/import/execution/multipart").at(-1)!;
-    expect(last.body).toContain('"customfield_10014":"2026-11-07","customfield_10505":"2026-11-07T10:01:00.000+0000","project":{"key":"QA"}');
-    await expect(withGrant((g) => client.importExecution({ ...INPUT, fields: { project: "X" } }, g))).rejects.toThrow(/custom field id/);
+  });
+
+  it("sets a Test Execution's date fields in Jira with an Xray grant only, and only date custom fields", async () => {
+    const calls: Array<{ method: string; path: string; body: string }> = [];
+    const fetch: FetchLike = async (url, init) => {
+      calls.push({ method: init.method ?? "GET", path: new URL(url).pathname, body: String(init.body ?? "") });
+      return new Response(null, { status: 204 });
+    };
+    const jira = new JiraClient({ site: "https://acme.atlassian.net", email: "e", token: "t", fetch });
+    const fields = { customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T10:01:00.000+0000" };
+    await expect(jira.setExecutionDates("QA-90", fields, undefined as unknown as WriteGrant)).rejects.toThrow();
+    await withGrant((g) => jira.setExecutionDates("QA-90", fields, g));
+    expect(calls).toEqual([{ method: "PUT", path: "/rest/api/3/issue/QA-90", body: JSON.stringify({ fields }) }]);
+    // A Jira grant isn't enough: the edit belongs to the Xray write.
+    const policy = new Policy({ rules: { xray: "deny", confluence: "ask", testCode: "ask", jira: "allow", commands: "ask" }, mode: "ide", audit: new MemoryAuditSink() });
+    await expect(policy.guard({ target: "jira", summary: "t" }, (g) => jira.setExecutionDates("QA-90", fields, g))).rejects.toThrow();
+    for (const [key, bad] of [["QA-90", { summary: "x" }], ["QA-90", { customfield_1: "soon" }], ["../x", fields], ["QA-90", {}]] as const)
+      await expect(withGrant((g) => jira.setExecutionDates(key, bad as Record<string, string>, g))).rejects.toThrow();
+    expect(calls).toHaveLength(1);
   });
 
   it("writes Jira dates as a UTC day or Jira's date-time form", () => {
@@ -185,17 +200,26 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
     expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91" });
     expect(recorded[0]).toMatchObject({ project: "QA", labels: ["agent-qa", "agent-qa:exec:abc", "agent-qa:run:r1"], tests: [{ testKey: "QA-1", status: "FAILED" }, { testKey: "QA-2", status: "PASSED" }] });
     expect([...new Set(audit.entries.map((e) => e.summary))]).toEqual(["Record 2 test result(s) (1 failed) as a Test Execution in Xray project QA"]);
-    expect(recorded[0]!.fields).toBeUndefined();
+    expect(recorded[0]).not.toHaveProperty("fields");
   });
 
-  it("sets the execution's start and end date fields from xray.executionDates (Tarek, 7 Nov 2026)", async () => {
+  it("sets the execution's start and end date fields from xray.executionDates, in Jira after the import (Tarek, 7 and 8 Nov 2026)", async () => {
     const recorded: XrayExecutionInput[] = [];
+    const dated: Array<{ key: string; fields: Record<string, string>; target: string }> = [];
+    let failDates = false;
+    const audit = new MemoryAuditSink();
     const data = new DataAccess({
       root: dir,
       store: runs,
       config: config({}, { executionDates: { start: { field: "customfield_10014", type: "date" }, end: { field: "customfield_10505" } } }),
-      audit: new MemoryAuditSink(),
-      labels: { findByLabels: async (_p, labels) => new Map(labels.map((l, i) => [l, `QA-${i + 1}`])) },
+      audit,
+      labels: {
+        findByLabels: async (_p, labels) => new Map(labels.map((l, i) => [l, `QA-${i + 1}`])),
+        setExecutionDates: async (key, fields, grant) => {
+          if (failDates) throw new Error(`Jira PUT /rest/api/3/issue/${key} failed (400)`);
+          dated.push({ key, fields, target: grant.target });
+        },
+      },
       xray: {
         importAndWait: async () => {
           throw new Error("not used");
@@ -207,8 +231,16 @@ describe("Xray Test Executions (S3-9): data access and run-tests", () => {
       },
     });
     const plan = await data.xrayExecutionPlan([row("TC-ABC-1-001 a", "passed")], "agent-qa:exec:abc", []);
-    await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", { summary: "s", description: "d", startedAt: new Date("2026-11-07T21:50:00Z"), finishedAt: new Date("2026-11-07T21:51:30Z") }, true);
-    expect(recorded[0]!.fields).toEqual({ customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T21:51:30.000+0000" });
+    const info = { summary: "s", description: "d", startedAt: new Date("2026-11-07T21:50:00Z"), finishedAt: new Date("2026-11-07T21:51:30Z") };
+    expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91" });
+    // Not in the import (Xray leaves them empty), but on the issue it created, under the same Xray grant: one yes.
+    expect(recorded[0]).not.toHaveProperty("fields");
+    expect(dated).toEqual([{ key: "QA-91", fields: { customfield_10014: "2026-11-07", customfield_10505: "2026-11-07T21:51:30.000+0000" }, target: "xray" }]);
+    expect(audit.entries.at(-1)!.summary).toMatch(/and set its start and end dates in Jira$/);
+    // The execution exists by then: a failed edit is reported with it, never a reason to import again.
+    failDates = true;
+    expect(await data.recordXrayExecution("r1", plan, "agent-qa:run:r1", info, true)).toEqual({ status: "done", key: "QA-91", datesError: "Jira PUT /rest/api/3/issue/QA-91 failed (400)" });
+    expect(recorded).toHaveLength(2);
     expect(() => config({}, { executionDates: { start: { field: "Start date" } } })).toThrow(/custom field id/);
     expect(() => config({}, { executionDates: { start: { field: "customfield_1" }, end: { field: "customfield_1" } } })).toThrow(/different fields/);
   });
