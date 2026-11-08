@@ -1,10 +1,13 @@
 import type { Provider } from "./schema.js";
 
 /**
- * The shipped model catalog: the latest five models of each direct provider
- * (Tarek's choice, refreshed every release). `models.allowed` narrows it; a
- * model outside it still runs, with a doctor warning. OpenRouter and LiteLLM
- * route to other providers' models, so they have no list of their own.
+ * The shipped model catalog. 2.0.0 lists Anthropic's current models only
+ * (Tarek's choice 3b, 8 Nov 2026): the other direct providers' IDs could not
+ * be checked, so they ship with no list and run with a doctor warning, and
+ * their models are best reached through OpenRouter or LiteLLM until they are
+ * listed. `models.allowed` narrows the catalog; a model outside it still runs,
+ * with a doctor warning. OpenRouter and LiteLLM route to any provider's
+ * models, so they have no list of their own.
  *
  * Prices are US dollars per million tokens, used by the cost report. Where a
  * price is unknown it is left out and the cost report shows tokens only.
@@ -18,7 +21,7 @@ export interface CatalogModel {
 }
 
 /** When the catalog was last checked against the providers' own model lists. */
-export const CATALOG_CHECKED = "2026-11-03";
+export const CATALOG_CHECKED = "2026-11-08";
 
 /**
  * The environment variable each provider's SDK reads its key from when
@@ -40,33 +43,11 @@ export const MODEL_CATALOG: Record<Provider, CatalogModel[]> = {
     { id: "anthropic:claude-haiku-5-5", label: "Claude Haiku 5.5", inputPerMTok: 0.1, outputPerMTok: 0.5 },
     { id: "anthropic:claude-opus-5", label: "Claude Opus 5", inputPerMTok: 5, outputPerMTok: 25 },
   ],
-  openai: [
-    { id: "openai:gpt-6.1-sol", label: "GPT-6.1 Sol" },
-    { id: "openai:gpt-6.1-terra", label: "GPT-6.1 Terra" },
-    { id: "openai:gpt-6-astra", label: "GPT-6 Astra" },
-    { id: "openai:gpt-6-luna", label: "GPT-6 Luna" },
-    { id: "openai:gpt-5.6-sol", label: "GPT-5.6 Sol" },
-  ],
-  google: [
-    { id: "google:gemini-4-argon", label: "Gemini 4 Argon", inputPerMTok: 2, outputPerMTok: 10 },
-    { id: "google:gemini-3.8-flash", label: "Gemini 3.8 Flash" },
-    { id: "google:gemini-3.5-flash", label: "Gemini 3.5 Flash" },
-    { id: "google:gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)" },
-    { id: "google:gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite" },
-  ],
-  mistral: [
-    { id: "mistral:mistral-large-4", label: "Mistral Large 4" },
-    { id: "mistral:mistral-medium-3-5", label: "Mistral Medium 3.5" },
-    { id: "mistral:mistral-small-2603", label: "Mistral Small 4" },
-    { id: "mistral:mistral-large-2512", label: "Mistral Large 3" },
-    { id: "mistral:devstral-2512", label: "Devstral 2" },
-  ],
-  xai: [
-    { id: "xai:grok-4.7", label: "Grok 4.7", inputPerMTok: 2, outputPerMTok: 6 },
-    { id: "xai:grok-4.5", label: "Grok 4.5" },
-    { id: "xai:grok-4.3", label: "Grok 4.3" },
-    { id: "xai:grok-build-0.1", label: "Grok Build 0.1" },
-  ],
+  // Not listed in 2.0.0 (choice 3b): their models run, with a doctor warning.
+  openai: [],
+  google: [],
+  mistral: [],
+  xai: [],
   openrouter: [],
   litellm: [],
 };

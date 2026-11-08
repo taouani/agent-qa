@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { realpath } from "node:fs/promises";
-import { VERSION, CATALOG_CHECKED, catalogModel, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
+import { VERSION, CATALOG_CHECKED, catalogModel, MODEL_CATALOG, ConfigError, modelAllowed, loadConfig, PROVIDER_KEY_ENV, resolveSecret, SECRET_REF, type Config } from "../core/index.js";
 import { ConnectorError, networkCause, SalesforceAuth, SalesforceAuthError, selectFetch } from "../connectors/index.js";
 import { salesforceKey, salesforceKeyPath } from "./access.js";
 import { gitWorkTree, loadIgnoreRules, isIgnored } from "./gitignore.js";
@@ -200,6 +200,17 @@ async function trackedCheck(cwd: string): Promise<CheckResult> {
   };
 }
 
+/** What doctor says of models the catalog doesn't list: a likely typo of a listed one, or a provider 2.0.0 lists nothing for. */
+function customModels(custom: string[]): string {
+  const listed = (p: string) => MODEL_CATALOG[p as keyof typeof MODEL_CATALOG] ?? [];
+  const lines = custom.map((m) => {
+    const provider = m.split(":")[0]!;
+    if (listed(provider).length === 0) return `${m}: Agent-QA lists no ${provider} models yet; it runs, untested (or use it through openrouter:${provider}/... or litellm:)`;
+    return `${m}: not a listed ${provider} model; it runs, untested. Listed: ${listed(provider).map((x) => x.id).join(", ")}`;
+  });
+  return `not in the shipped catalog (checked ${CATALOG_CHECKED}):\n${lines.join("\n")}`;
+}
+
 function modelsCheck(config: Config, env: NodeJS.ProcessEnv): CheckResult {
   const models = config.models;
   if (!models) {
@@ -212,7 +223,7 @@ function modelsCheck(config: Config, env: NodeJS.ProcessEnv): CheckResult {
   }
   // OpenRouter and LiteLLM route to any model, so only the direct providers are checked against the catalog.
   const custom = [...new Set(used)].filter((m) => !["openrouter", "litellm"].includes(m.split(":")[0]!) && !catalogModel(m));
-  const customDetail = custom.length > 0 ? `not in the shipped catalog (checked ${CATALOG_CHECKED}): ${custom.join(", ")}; they run, but are untested` : "";
+  const customDetail = custom.length > 0 ? customModels(custom) : "";
   const also = customDetail ? `\n${customDetail}` : "";
   const providers = [...new Set(used.map((m) => m.split(":")[0]!))];
   if (providers.includes("litellm") && !models.endpoints?.litellm) {
