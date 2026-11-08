@@ -7,7 +7,7 @@ Agent-QA runs in your IDE as an MCP server. `agent-qa init` sets it up for three
 | Host | File `init` writes | Notes |
 |---|---|---|
 | VS Code (Copilot agent mode) | `.vscode/mcp.json`, under `servers` | Start the server from the file (Start above `agent-qa`). |
-| Claude Code | `.mcp.json`, under `mcpServers` | Claude Code asks once whether to use the project's servers. Start `claude` in the project folder: the server finds the project from the folder it is started in. |
+| Claude Code | `.mcp.json`, under `mcpServers` | Claude Code asks once whether to use the project's servers. The server starts in the folder `claude` was started in and finds the project from there: the nearest folder up that holds `agent-qa.yaml`, within the git checkout. |
 | Cursor | `.cursor/mcp.json`, under `mcpServers` | Turn the server on in Cursor Settings, MCP. |
 
 `agent-qa init --host claude-code` (or `vscode`, `cursor`, repeatable or comma-separated) sets up only the hosts named. Each file runs this exact version with `npx -y sf-agent-qa@<version> mcp`. An existing file keeps its other servers, and one that already has an `agent-qa` server is left as it is. A file that isn't plain JSON (VS Code allows comments) is never rewritten: `init` prints the server to add by hand and exits 2.
@@ -25,7 +25,7 @@ Each workflow is an MCP prompt with one argument, `inputs`, as JSON. In VS Code 
 
 If you renamed the server in `mcp.json`, use that name instead of `agent-qa`.
 
-In Claude Code an MCP prompt is a slash command named `/mcp__<server>__<prompt>`, so `/mcp__agent-qa__test-cases`, with the inputs after it: `/mcp__agent-qa__test-cases {"key":"ABC-123"}`. In Cursor, ask the model to start the workflow with the start tool, as below.
+In Claude Code an MCP prompt is a slash command named `/mcp__<server>__<prompt>`, so `/mcp__agent-qa__test-cases`, with the inputs after it: `/mcp__agent-qa__test-cases {"key":"ABC-123"}`. Claude Code may split prompt arguments at spaces, so for inputs with spaces, such as a JQL filter, use the start tool below instead. In Cursor, ask the model to start the workflow with the start tool, as below.
 
 If the slash command doesn't show up, ask the model to call the start tool directly. This always works, and it's what the Copilot spike used:
 

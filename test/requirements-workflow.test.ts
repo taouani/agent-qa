@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -224,6 +224,23 @@ describe("projectRoot", () => {
     expect(projectRoot("/cwd", { AGENT_QA_RUNS_DIR: resolve("/elsewhere/runs") })).toBe("/cwd");
     expect(projectRoot("/cwd", { AGENT_QA_ROOT: "/root", AGENT_QA_RUNS_DIR: join(app, ".agent-qa", "runs") })).toBe(resolve("/root"));
     expect(projectRoot("/cwd", {})).toBe("/cwd");
+  });
+
+  it("finds the project from a subfolder, no higher than the git checkout, and ignores an unfilled runs folder", async () => {
+    const top = await mkdtemp(join(tmpdir(), "agent-qa-root-"));
+    try {
+      await mkdir(join(top, "repo", ".git"), { recursive: true });
+      await mkdir(join(top, "repo", "e2e", "specs"), { recursive: true });
+      await writeFile(join(top, "repo", "agent-qa.yaml"), "version: 1\n");
+      expect(projectRoot(join(top, "repo", "e2e", "specs"), {})).toBe(join(top, "repo"));
+      // A project above the checkout is not this one.
+      await rm(join(top, "repo", "agent-qa.yaml"));
+      await writeFile(join(top, "agent-qa.yaml"), "version: 1\n");
+      expect(projectRoot(join(top, "repo", "e2e"), {})).toBe(join(top, "repo", "e2e"));
+      expect(projectRoot(join(top, "repo", "e2e"), { AGENT_QA_RUNS_DIR: "${workspaceFolder}/.agent-qa/runs" })).toBe(join(top, "repo", "e2e"));
+    } finally {
+      await rm(top, { recursive: true, force: true });
+    }
   });
 });
 
