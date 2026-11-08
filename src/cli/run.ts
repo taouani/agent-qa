@@ -48,6 +48,7 @@ export interface RunOptions {
   jql?: string;
   fromRun?: string;
   pushFrom?: string;
+  publishFrom?: string;
   /** document: the document type. */
   type?: string;
   /** document: where to publish it, `confluence`. */
@@ -117,18 +118,22 @@ function inputsOf(opts: RunOptions): unknown {
 }
 
 function baseInputs(opts: RunOptions): unknown {
-  const given = [opts.key, opts.jql, opts.fromRun, opts.pushFrom, opts.input].filter((v) => v !== undefined).length;
+  const given = [opts.key, opts.jql, opts.fromRun, opts.pushFrom, opts.publishFrom, opts.input].filter((v) => v !== undefined).length;
   if (opts.resume) {
-    if (given) throw new SetupError("--resume continues a run with its own inputs: leave out --key, --jql, --from-run, --push-from and --input");
+    if (given) throw new SetupError("--resume continues a run with its own inputs: leave out --key, --jql, --from-run, --push-from, --publish-from and --input");
     return undefined;
   }
   // The profile workflow reads the repo, so it needs no input.
   if (given === 0 && opts.workflow === "profile") return {};
-  if (given !== 1) throw new SetupError("give exactly one of --key, --jql, --from-run, --push-from or --input");
+  if (given !== 1) throw new SetupError("give exactly one of --key, --jql, --from-run, --push-from, --publish-from or --input");
   if (opts.key !== undefined) return { key: opts.key };
   if (opts.jql !== undefined) return { jql: opts.jql };
   if (opts.fromRun !== undefined) return { requirementsRun: opts.fromRun };
   if (opts.pushFrom !== undefined) return { casesRun: opts.pushFrom };
+  if (opts.publishFrom !== undefined) {
+    if (opts.workflow !== "document") throw new SetupError("--publish-from is for the document workflow");
+    return { documentRun: opts.publishFrom, publish: "confluence" };
+  }
   try {
     return JSON.parse(opts.input!) as unknown;
   } catch {

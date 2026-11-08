@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { EngineError, type Artifact, type InputRef, type OutputError, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
 import { REQUIREMENTS_ARTIFACT } from "../requirements/artifact.js";
-import { analyzeStep, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
+import { analysisReuse, type ReuseDeps } from "../requirements/reuse.js";
+import { analyzeStep, sealJiraInputs, withPullRequestsInput } from "../requirements/workflow.js";
 import { TEST_CASES_ARTIFACT } from "../test-cases/artifact.js";
 import { TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
 import { PULL_REQUESTS_ARTIFACT, type DocumentData, type MaskedPullRequest, type RequirementsData } from "../../data/index.js";
@@ -51,7 +52,7 @@ const ids = DOCUMENT_TYPES.map((t) => t.id) as [string, ...string[]];
 
 export const documentInputSchema = z
   .object({
-    type: z.enum(ids).describe(`The document to write: ${DOCUMENT_TYPES.map((t) => `${t.id} (${t.title.toLowerCase()})`).join(", ")}`),
+    type: z.enum(ids).optional().describe(`The document to write: ${DOCUMENT_TYPES.map((t) => `${t.id} (${t.title.toLowerCase()})`).join(", ")}`),
     key: z.string().trim().toUpperCase().regex(KEY, "must be a Jira issue key such as ABC-123").optional().describe("One Jira issue key, e.g. ABC-123"),
     jql: z
       .string()
@@ -66,9 +67,17 @@ export const documentInputSchema = z
     testRunRun: runId("Id of a run-tests run whose results the document uses"),
     withPullRequests: withPullRequestsInput,
     publish: z.literal("confluence").optional().describe("Publish the reviewed document as a Confluence page (asks first)"),
+    documentRun: runId("Id of an earlier document run whose reviewed document (document@1) this run only publishes, with publish: confluence and nothing else"),
   })
   .strict()
-  .refine((i) => [i.key, i.jql, i.requirementsRun].filter((v) => v !== undefined).length === 1 || (i.key === undefined && i.jql === undefined && i.requirementsRun === undefined && i.testCasesRun !== undefined), {
+  .refine(
+    (i) =>
+      i.documentRun === undefined ||
+      (i.publish === "confluence" && [i.key, i.jql, i.requirementsRun, i.testCasesRun, i.testRunRun, i.withPullRequests].every((v) => v === undefined)),
+    { message: "documentRun only publishes an earlier run's reviewed document: give it with publish: confluence (and type, if you like) and nothing else" },
+  )
+  .refine((i) => i.documentRun !== undefined || i.type !== undefined, { message: "give the document type" })
+  .refine((i) => i.documentRun !== undefined || [i.key, i.jql, i.requirementsRun].filter((v) => v !== undefined).length === 1 || (i.key === undefined && i.jql === undefined && i.requirementsRun === undefined && i.testCasesRun !== undefined), {
     message: "give exactly one of key, jql or requirementsRun (or testCasesRun alone)",
   })
   .refine((i) => i.testCasesRun === undefined || (i.key === undefined && i.jql === undefined), {
@@ -168,7 +177,7 @@ function changeError(content: unknown, change: Change): string | undefined {
 const publishSchema = z.object({ approve: z.boolean().describe("true only if the user said to publish the document to Confluence") }).strict();
 type Publish = z.infer<typeof publishSchema>;
 
-export type DocumentDeps = RequirementsDeps & { data: RequirementsData & DocumentData };
+export type DocumentDeps = ReuseDeps & { data: RequirementsData & DocumentData };
 
 /** The page title: the document's heading, without backticks. */
 export const titleOf = (doc: Pick<DocumentArtifact, "markdown" | "title">) => (/^# (.+)$/m.exec(doc.markdown)?.[1] ?? doc.title).replace(/`/g, "").trim();
@@ -179,7 +188,9 @@ export const bodyOf = (doc: Pick<DocumentArtifact, "markdown" | "review">) =>
 export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<DocumentInputs> {
   const typeOf = (ctx: { inputs: DocumentInputs }) => DOCUMENT_TYPES.find((t) => t.id === ctx.inputs.type)!;
   /** The run whose requirements@1 (and vault) the document uses: given, or this run's own analysis. */
-  const requirementsRunOf = (ctx: Ctx) => ctx.inputs.requirementsRun ?? ctx.runId;
+  const { reused, step: reuseStep } = analysisReuse<DocumentInputs>(deps);
+  const documentRunOf = (ctx: Pick<Ctx, "inputs" | "runId">) => ctx.inputs.documentRun ?? ctx.runId;
+  const requirementsRunOf = (ctx: Pick<Ctx, "inputs" | "outputs" | "runId">) => ctx.inputs.requirementsRun ?? reused(ctx) ?? ctx.runId;
 
   async function artifacts(ctx: Ctx) {
     const run = requirementsRunOf(ctx);
@@ -291,7 +302,7 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       id: `draft-${type.id}`,
       kind: "generate",
       outputSchema: type.schema,
-      when: (ctx) => ctx.inputs.type === type.id,
+      when: (ctx) => ctx.inputs.documentRun === undefined && ctx.inputs.type === type.id,
       instructions: () => type.instructions,
       context: contextOf,
       check: async (ctx, content) => [...type.check(await sourcesOf(ctx), content), ...unknownTokens(content, tokensIn(await contextOf(ctx)))],
@@ -305,10 +316,27 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
     id: "document",
     description: `Write a QA document (${DOCUMENT_TYPES.map((t) => t.id).join(", ")}) from a Jira issue, a JQL filter or earlier runs (requirements, reviewed test cases, test results), let the user review it, and keep it as document@1 (document.md).`,
     inputSchema: documentInputSchema,
+    summary: async (ctx) => {
+      const doc = (await reviewed(ctx).catch(() => undefined))?.data;
+      const page = (await deps.runs.readArtifact(ctx.runId, CONFLUENCE_PAGE_ARTIFACT).catch(() => undefined))?.data;
+      if (!doc && !page) return undefined;
+      return [
+        ...(doc ? [`The ${doc.title.toLowerCase()} is document.md in the run folder of ${documentRunOf(ctx)}${doc.review.unattended ? " (not reviewed: written unattended)" : ""}.`] : []),
+        ...(page ? [`Confluence: ${page.action === "create" ? "created" : "updated"} page ${page.pageId} (version ${page.version}): ${page.url}`] : ctx.inputs.publish === "confluence" ? ["Confluence: not published."] : []),
+      ].join("\n");
+    },
     prepareInputs: async (runId, inputs) => {
       const refuse = (message: string): never => {
         throw new EngineError("INVALID_INPUTS", message);
       };
+      if (inputs.documentRun !== undefined) {
+        // Only the publish: of an earlier run's reviewed document, with its own requirements run's vault.
+        const doc = await deps.runs.readArtifact(inputs.documentRun, DOCUMENT_ARTIFACT).catch(() => undefined);
+        if (!doc) return refuse(`Run ${inputs.documentRun} has no reviewed document (document@1): give the id of a document run whose review was approved`);
+        if (inputs.type !== undefined && inputs.type !== doc.data.type) return refuse(`Run ${inputs.documentRun} holds a ${doc.data.type}, not a ${inputs.type}: leave out type`);
+        if (!(await deps.data.confluenceEnabled())) refuse("publish: confluence needs atlassian.confluence.spaceKey in agent-qa.yaml, and a write policy that doesn't deny Confluence");
+        return { ...inputs, type: doc.data.type, requirementsRun: doc.data.sources.requirements.run };
+      }
       const type = DOCUMENT_TYPES.find((t) => t.id === inputs.type)!;
       const name = type.title.toLowerCase();
       if (type.needs.testCases === "required" && inputs.testCasesRun === undefined) refuse(`A ${name} is written from reviewed test cases: give testCasesRun`);
@@ -339,12 +367,15 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       return sealJiraInputs(deps, runId, prepared);
     },
     steps: [
-      { ...analyzeStep<DocumentInputs>(deps), when: (ctx) => ctx.inputs.requirementsRun === undefined },
+      // An earlier analysis of the same, unchanged input may be reused instead (as in test-cases).
+      reuseStep(),
+      { ...analyzeStep<DocumentInputs>(deps), when: (ctx) => ctx.inputs.requirementsRun === undefined && reused(ctx) === undefined },
       ...draftSteps,
       {
         id: "review",
         kind: "confirm",
         outputSchema: reviewSchema,
+        when: (ctx) => ctx.inputs.documentRun === undefined,
         personalAnswer: true,
         answers: { yes: { approved: true, changes: [] }, no: { approved: false, changes: [] }, unattended: { approved: true, changes: [], unattended: true } },
         instructions: ({ runId }) =>
@@ -438,8 +469,8 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
           await deps.runs.writeArtifact(
             ctx.runId,
             CONFLUENCE_PAGE_ARTIFACT,
-            { document: { run: ctx.runId, sourceHash: doc.sourceHash }, space: result.page.space, pageId: result.page.id, version: result.page.version, url: result.page.url, action: result.page.action, title: result.page.title },
-            { inputs: [{ kind: "artifact", ref: `${ctx.runId}/document`, hash: doc.sourceHash }], templateVersion: DOCUMENT_ENGINE_VERSION },
+            { document: { run: documentRunOf(ctx), sourceHash: doc.sourceHash }, space: result.page.space, pageId: result.page.id, version: result.page.version, url: result.page.url, action: result.page.action, title: result.page.title },
+            { inputs: [{ kind: "artifact", ref: `${documentRunOf(ctx)}/document`, hash: doc.sourceHash }], templateVersion: DOCUMENT_ENGINE_VERSION },
           );
         },
       },
@@ -452,8 +483,9 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
     return "jql" in input ? { title: doc.title, filter: input.jql } : { title: titleOf(doc) };
   }
 
+  /** The reviewed document: this run's, or the earlier run's that `documentRun` names. */
   function reviewed(ctx: Ctx) {
-    return deps.runs.readArtifact(ctx.runId, DOCUMENT_ARTIFACT);
+    return deps.runs.readArtifact(documentRunOf(ctx), DOCUMENT_ARTIFACT);
   }
 
   async function publishQuestion(ctx: Ctx): Promise<string> {
