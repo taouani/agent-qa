@@ -127,6 +127,7 @@ export const RELEASE_NOTES: DocumentType<ReleaseNotes> = {
   title: "Release notes",
   templateVersion: "release-notes-2",
   needs: { testCases: "optional", testRun: "optional" },
+  usesPullRequests: true,
   schema: releaseNotesSchema,
   instructions: [
     "Write release notes for the issues in the context, usually one fix version's issues.",

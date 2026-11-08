@@ -36,6 +36,8 @@ export interface DocumentType<T> {
   /** Changes when the prompt or schema does, so a `sourceHash` tells documents of older templates apart. */
   templateVersion: string;
   needs: { testCases: SourceNeed; testRun: SourceNeed };
+  /** Reads the pull requests the analysis was given, when it had some (S4-7). */
+  usesPullRequests?: true;
   schema: z.ZodType<T>;
   instructions: string;
   /**
