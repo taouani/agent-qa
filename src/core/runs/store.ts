@@ -110,7 +110,7 @@ export const usageEntrySchema = z
     stepId: z.string().min(1),
     attempt: z.number().int().min(0),
     /** `api`: the CLI called the model and has its token counts. `host-model`: an IDE's model answered; only sizes are known. */
-    driver: z.enum(["api", "host-model"]),
+    driver: z.enum(["api", "host-model", "headless"]),
     model: z.string().optional(),
     inputTokens: z.number().int().min(0).optional(),
     outputTokens: z.number().int().min(0).optional(),

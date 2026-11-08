@@ -138,3 +138,22 @@ export function hostEnv(env: NodeJS.ProcessEnv, config: Config | undefined): Nod
   out.NO_COLOR = "1";
   return out;
 }
+
+/**
+ * The sign-in variables each headless agent CLI (S4-10) reads, kept in its
+ * environment: `hostEnv` drops the model keys and every secret agent-qa.yaml
+ * names, which a repo's own commands never need.
+ */
+export const MODEL_CLI_AUTH_ENV = {
+  "claude-code": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+  copilot: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN"],
+} as const;
+export type ModelCli = keyof typeof MODEL_CLI_AUTH_ENV;
+
+export function modelCliEnv(env: NodeJS.ProcessEnv, config: Config | undefined, agent: ModelCli): NodeJS.ProcessEnv {
+  const out = hostEnv(env, config);
+  // Not one agent-qa.yaml names for something else (git.token: ${env:GH_TOKEN} can write to the repo).
+  const named = new Set(config ? [...JSON.stringify(config).matchAll(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]!.toUpperCase()) : []);
+  for (const name of MODEL_CLI_AUTH_ENV[agent]) if (env[name] && !named.has(name)) out[name] = env[name];
+  return out;
+}

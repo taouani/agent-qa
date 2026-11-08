@@ -19,7 +19,7 @@ import {
   type FrameworkProfile,
   type SavedProfile,
 } from "./profile.js";
-import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS, TEST_RUN_KILL_MS, TEST_RUN_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
+import { checkHostCommand, DEFAULT_TIMEOUT_MS, HostCommandRefused, hostCwd, hostEnv, MAX_OUTPUT_BYTES, modelCliEnv, type ModelCli, MAX_TIMEOUT_MS, TEST_RUN_KILL_MS, TEST_RUN_TIMEOUT_MS, type HostCommandOutcome, type HostCommandRequest } from "./host.js";
 import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type MaskedAction, type MaskedPage, type MaskedResult, type OpenBrowser } from "./explorer.js";
 import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PreviousExecution, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
@@ -495,6 +495,9 @@ export function secretSources(env: NodeJS.ProcessEnv = process.env): SecretSourc
   return { env, keychain: keychainLookup() };
 }
 
+/** A step's answer from a headless agent CLI: big documents fit, a runaway output doesn't. */
+const MODEL_CLI_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MODEL_CLI_INSTALL: Record<ModelCli, string> = { "claude-code": "claude (npm install -g @anthropic-ai/claude-code)", copilot: "copilot (npm install -g @github/copilot)" };
 /** The default write rules, for a command run in a project with no agent-qa.yaml. */
 const DEFAULT_RULES_CONFIG: Config = configSchema.parse({ version: 1 });
 
@@ -895,6 +898,37 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     };
     await service.saveVault();
     return { status: "done" as const, result, report: outcome.value.text };
+  }
+
+  /**
+   * Starts a headless agent CLI (S4-10) for one model answer: `claude -p` or
+   * `copilot`, in an empty temporary folder, with the masked prompt on stdin.
+   * A `commands` write (it is a process on this machine), so
+   * `policy.writes.commands: deny` stops it and each call is in the audit log.
+   * The CLI keeps its own sign-in variables; the other secrets are dropped.
+   */
+  modelCli(agent: ModelCli): (call: { argv: (file: string) => string[]; stdin: string; timeoutMs: number }) => Promise<{ exitCode: number | null; timedOut: boolean; stdout: string; stderr: string; file?: string }> {
+    return async (call) => {
+      let config: Config | undefined;
+      try {
+        config = await this.loadConfig();
+      } catch (error) {
+        if (!(error instanceof ConfigError && error.code === "NOT_FOUND")) throw error;
+      }
+      const policy = this.policy(config ?? DEFAULT_RULES_CONFIG);
+      const run = this.options.host ?? runHostCommand;
+      const env = modelCliEnv(this.options.env ?? process.env, config, agent);
+      const timeoutMs = Math.min(Math.max(call.timeoutMs, 1_000), MAX_TIMEOUT_MS);
+      const outcome = await policy.guard({ target: "commands", summary: `Ask ${agent} for one step's answer (masked prompt, no tools)` }, (grant) =>
+        withScratchFile(grant, (file) => run(grant, { argv: call.argv(file), cwd: dirname(file), env, stdin: call.stdin, timeoutMs, maxOutputBytes: MODEL_CLI_OUTPUT_BYTES })).catch((error: unknown) => {
+          if (error instanceof Error && / was not found/.test(error.message)) throw new Error(`${MODEL_CLI_INSTALL[agent]} isn't on the PATH: install it and sign in (see docs/ci.md)`);
+          throw error;
+        }),
+      );
+      if (outcome.status !== "done") throw new Error(`${agent} wasn't allowed to run`);
+      const { value: r, text } = outcome.value;
+      return { exitCode: r.exitCode, timedOut: r.timedOut, stdout: r.stdout, stderr: r.stderr, ...(text !== undefined ? { file: text } : {}) };
+    };
   }
 
   async testRunReadiness(tokensRun: string): Promise<{ ready: true } | { ready: false; reason: string }> {

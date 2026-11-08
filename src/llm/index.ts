@@ -7,4 +7,6 @@ export type { ApiDriverOptions } from "./api-driver.js";
 export { CATALOG_CHECKED, catalogModel, MODEL_CATALOG, modelAllowed } from "../core/index.js";
 export type { CatalogModel } from "../core/index.js";
 export { drive, DriveError } from "./drive.js";
+export { HEADLESS_AGENTS, HeadlessDriver, modelName } from "./headless-driver.js";
+export type { HeadlessAgent, HeadlessCall, HeadlessDriverOptions, HeadlessOutcome, HeadlessRunner } from "./headless-driver.js";
 export type { DriveOptions, DriveResult, StepUsage } from "./drive.js";

@@ -24,7 +24,7 @@ const counts = {
 
 export const costSchema = z
   .object({
-    steps: z.array(z.object({ stepId: z.string(), driver: z.enum(["api", "host-model"]), model: z.string().optional(), ...counts, ...priced }).strict()),
+    steps: z.array(z.object({ stepId: z.string(), driver: z.enum(["api", "host-model", "headless"]), model: z.string().optional(), ...counts, ...priced }).strict()),
     models: z.array(z.object({ model: z.string(), ...counts, ...priced }).strict()),
     total: z
       .object({
