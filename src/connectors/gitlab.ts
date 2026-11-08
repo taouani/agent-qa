@@ -156,7 +156,8 @@ export class GitLabClient implements GitHost {
       const parts = f.path.split("/");
       for (let i = 0; i < parts.length; i++) {
         const entries = await this.folder(parts.slice(0, i).join("/"), commit, cache);
-        const hit = entries.find((e) => String(e.name).toLowerCase() === parts[i]!.toLowerCase());
+        // An exact match first: a folder can also exist in another case beside it.
+        const hit = entries.find((e) => e.name === parts[i]) ?? entries.find((e) => String(e.name).toLowerCase() === parts[i]!.toLowerCase());
         if (!hit) break;
         if (i === parts.length - 1) throw new Error(`${f.path} exists on ${base}: a new file must not be there yet`);
         if (hit.type !== "tree") throw new Error(`${f.path} runs through a file on ${base}`);
@@ -169,7 +170,8 @@ export class GitLabClient implements GitHost {
   /** The open merge request from `branch`, if any. */
   async openPullRequestFrom(branch: string): Promise<{ number: number; url: string; base: string; draft: boolean } | undefined> {
     const mrs = arr(await this.get("/merge_requests", { source_branch: branch, state: "opened", per_page: 5 }));
-    const first = mrs[0];
+    // Only a merge request from this project: one from a fork can share the branch name.
+    const first = mrs.find((m) => m.source_project_id === undefined || m.source_project_id === m.target_project_id);
     const iid = first?.iid;
     if (!first || typeof iid !== "number") return undefined;
     return { number: iid, url: this.mrUrl(iid), base: str(first.target_branch) ?? "", draft: first.draft === true || first.work_in_progress === true };
