@@ -331,8 +331,10 @@ export interface TestSelection {
   files?: string[] | undefined;
   /** Text in the tests' titles (plain text, not a pattern). */
   grep?: string | undefined;
-  /** A tag, such as @smoke. */
+  /** A tag, such as @smoke, or several: "@a @b" (tests with both), "@a|@b" (with either), "@a @b|@c". */
   tag?: string | undefined;
+  /** Show the browser (never in CI). */
+  headed?: boolean | undefined;
   /** A Playwright project of the repo's config. */
   project?: string | undefined;
   /** A Playwright JSON report in the folder: its failed and flaky tests run again. */
@@ -348,7 +350,27 @@ export interface SelectedTests {
   args: string[];
   /** From `failedIn`: the failed and flaky tests found, masked. */
   fromReport?: Array<{ title: string; file: string; line: number }> | undefined;
+  /**
+   * Several tags: Playwright lists the tests first and only those with the
+   * tags run, by file and line. One --grep would need ( ) | in an argument,
+   * which no argument may hold (cmd.exe).
+   */
+  byTags?: string[][] | undefined;
 }
+
+const TAG = /^@[\p{L}\p{N}_:.-]{1,100}$/u;
+
+/** "@a @b|@c" → [["@a", "@b"], ["@c"]]: any group, every tag of it. */
+export function tagGroups(expression: string): string[][] {
+  const groups = expression.split("|").map((g) => g.trim().split(/\s+/).filter(Boolean));
+  if (groups.some((g) => g.length === 0)) throw new ProfileError('a tag expression is tags separated by spaces (all of them) or "|" (any group), such as "@a @b|@c"');
+  for (const t of groups.flat()) if (!TAG.test(t)) throw new ProfileError(`${t.slice(0, 40)}: a tag starts with @, then letters, digits, _, :, . or -`);
+  if (groups.flat().length > 10) throw new ProfileError("at most 10 tags in one selection");
+  return groups;
+}
+
+/** Whether a test's tags (Playwright's, without "@") have every tag of one group; a tag also picks the tags that start with it. */
+const tagsMatch = (tags: readonly string[], groups: string[][]) => groups.some((g) => g.every((t) => tags.some((x) => `@${x.replace(/^@/, "")}`.startsWith(t))));
 
 /** At most this many tests from a report: more is a whole suite, not a part of it. */
 export const MAX_REPORT_TESTS = 200;
@@ -981,10 +1003,16 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (/^[/.]|^[A-Za-z]:/.test(sel.grep)) throw new ProfileError("a title text can't start with /, . or a drive letter and a colon (A:)");
       args.push(`--grep=${sel.grep.replace(/[.]/g, "\\.")}`);
     }
+    let byTags: string[][] | undefined;
     if (sel.tag !== undefined) {
-      if (!/^@[\p{L}\p{N}_:.-]{1,100}$/u.test(sel.tag)) throw new ProfileError("a tag starts with @, then letters, digits, _, :, . or -");
-      // An argument can't hold a pattern's ( ) ! safely on Windows: @smoke also picks @smoke-slow, as Playwright's own --grep does.
-      args.push(`--grep=${sel.tag.replace(/[.]/g, "\\.")}`);
+      const groups = tagGroups(sel.tag);
+      // An argument can't hold a pattern's ( ) | ! safely on Windows: @smoke also picks @smoke-slow, as Playwright's own --grep does.
+      if (groups.length === 1 && groups[0]!.length === 1) args.push(`--grep=${groups[0]![0]!.replace(/[.]/g, "\\.")}`);
+      else byTags = groups;
+    }
+    if (sel.headed) {
+      if ((this.options.mode ?? "ide") === "ci") throw new ProfileError("headed shows the browser on a screen: not in CI");
+      args.push("--headed");
     }
     const bdd = saved.kind === "playwright-bdd";
     const anchor = await this.filterAnchor(saved.folder);
@@ -1007,7 +1035,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     // cmd.exe (npx on Windows) stops at 8191 characters: a selection stays well under it.
     if (all.join(" ").length > MAX_SELECTION_CHARS) throw new ProfileError(`the selection is too long for one command (${filters.length} filters): pick a part of it`);
     checkHostCommand({ command: saved.commands.test, args: all, purpose: "run a part of the suite", cwd: saved.folder }, commandList(saved.commands));
-    return { command: saved.commands.test, args: all, ...(fromReport ? { fromReport } : {}) };
+    return { command: saved.commands.test, args: all, ...(fromReport ? { fromReport } : {}), ...(byTags ? { byTags } : {}) };
   }
 
   async runTests(runId: string, tokensRun: string, folder: string, selection: TestSelection, approved: boolean): Promise<TestRunOutcome> {
@@ -1017,7 +1045,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (!saved.commands?.test) return { status: "unavailable", reason: "the reviewed profile has no test command" };
     const picked = await this.selectTests(tokensRun, folder, selection);
     const what = selection.failedIn !== undefined ? `run again the ${picked.fromReport?.length ?? 0} test(s) that failed in ${selection.failedIn}` : "run a part of the repo's tests";
-    return this.runTestCommand(runId, tokensRun, saved, picked.args, what);
+    return this.runTestCommand(runId, tokensRun, saved, picked.args, what, picked.byTags ? { groups: picked.byTags, anchor: await this.filterAnchor(saved.folder) } : undefined);
   }
 
   /**
@@ -1072,7 +1100,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   /** Runs the profile's generate command (bddgen), then its test command with `args`, and reads the report back masked. */
-  private async runTestCommand(runId: string, tokensRun: string, saved: SavedProfile, args: string[], purpose: string): Promise<TestRunOutcome> {
+  private async runTestCommand(runId: string, tokensRun: string, saved: SavedProfile, args: string[], purpose: string, byTags?: { groups: string[][]; anchor: string }): Promise<TestRunOutcome> {
     const dir = hostCwd(this.options.root, saved.folder);
     const { service, vault } = await this.run(tokensRun);
     // What the app showed (an error's received text, a page snapshot): the vault's known values first, then the detectors, then cut.
@@ -1088,6 +1116,25 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (g.result.exitCode !== 0 || g.result.timedOut) {
         return { status: "done", exitCode: g.result.exitCode, timedOut: g.result.timedOut, durationMs, tests: [], errors: [`${saved.commands.generate.join(" ")} failed: ${tail(g.result)}`] };
       }
+    }
+    if (byTags) {
+      // Playwright lists the selection (nothing runs), then only the tests with the tags run, by file and line.
+      const listed = await this.runProfileCommand(runId, tokensRun, { command: saved.commands!.test!, args: [...args.filter((a) => a !== "--headed"), "--list"], purpose: "list the tests, to pick them by their tags", timeoutMs: TEST_RUN_KILL_MS }, true, true);
+      if (listed.status !== "done") return { status: "declined" };
+      durationMs += listed.result.durationMs;
+      let tests;
+      try {
+        tests = parsePlaywrightReport(JSON.parse(listed.report ?? "null"), dir).tests;
+      } catch {
+        return { status: "done", exitCode: listed.result.exitCode, timedOut: listed.result.timedOut, durationMs, tests: [], errors: [`Playwright couldn't list the tests: ${tail(listed.result) || "no output"}`] };
+      }
+      const picked = tests.filter((x) => tagsMatch(x.tags, byTags.groups) && isPlainRelativePath(x.file));
+      const expression = byTags.groups.map((g) => g.join(" ")).join(" | ");
+      if (picked.length === 0) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [`No tests found with the tags ${expression}`] };
+      const filters = [...new Set(picked.map((x) => `${fileFilter(x.file, false, byTags.anchor)}:${x.line}`))];
+      if ([...args, ...filters].join(" ").length > MAX_SELECTION_CHARS) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [`${filters.length} tests have the tags ${expression}: too many for one command, pick a part of them (files or a project)`] };
+      args = [...args, ...filters];
+      checkHostCommand({ command: saved.commands!.test!, args, purpose, cwd: saved.folder }, commandList(saved.commands!));
     }
     const t = await this.runProfileCommand(runId, tokensRun, { command: saved.commands!.test!, args: [...args.filter((a) => !a.startsWith("--global-timeout=")), `--global-timeout=${TEST_RUN_TIMEOUT_MS}`], purpose, timeoutMs: TEST_RUN_KILL_MS }, true, true);
     if (t.status !== "done") return { status: "declined" };

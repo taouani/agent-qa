@@ -4,7 +4,11 @@ The `debug` workflow takes your repo's own failing tests, the ones you wrote, an
 
 ## Run it
 
-Pick the tests as `run-tests` does ([run-tests.md](run-tests.md)): `files`, `grep`, `tag`, `project` or `failedIn`. Optional: `fixRounds` (0 to 5, default 3) and `stabilityRuns` (1 to 10, default 3).
+Pick the tests as `run-tests` does ([run-tests.md](run-tests.md)): `files`, `grep`, `tag` (several too), `project` or `failedIn`. Or give `testRun`, the id of a `run-tests` run, to debug the same tests it ran (one picked by `grep` can't: the run keeps that text masked, so give it again). Optional: `fixRounds` (0 to 5, default 3), `stabilityRuns` (1 to 10, default 3) and `headed` (`true` shows the browser; not in CI).
+
+```bash
+agent-qa run debug --input '{"testRun":"2026-11-08-run-tests-f5tm"}' --accept run
+```
 
 ```bash
 agent-qa run debug --input '{"failedIn":"playwright-report/report.json"}' --accept run

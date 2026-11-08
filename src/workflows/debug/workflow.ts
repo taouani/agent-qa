@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { unifiedDiff, diffStats, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
+import { EngineError, unifiedDiff, diffStats, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
 import { fixSkeleton, isGenerated, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
-import { hasSelection, selectionFields, selectionOf } from "../run-tests/workflow.js";
+import { hasSelection, selectionFields, selectionOf, TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
 import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, UI_KINDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
 import type { FileRole } from "../scripts/artifact.js";
 import { TOKEN } from "../scripts/checks.js";
@@ -33,9 +33,15 @@ export const debugInputSchema = z
     ...selectionFields,
     fixRounds: z.number().int().min(0).max(MAX_FIX_ROUNDS).default(DEFAULT_FIX_ROUNDS).describe("How many times failing tests may be fixed and run again"),
     stabilityRuns: z.number().int().min(1).max(10).default(DEFAULT_STABILITY_RUNS).describe("How many times fixed tests run again to show they are stable"),
+    testRun: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/, "must be a run id")
+      .optional()
+      .describe("Id of a run-tests run: debug runs the same tests (that run's files, tag, project or report), instead of files, grep, tag or failedIn"),
   })
   .strict()
-  .refine(hasSelection, "pick the tests: files, grep, tag or failedIn")
+  .refine((i) => i.testRun === undefined || !hasSelection(i), "testRun brings its own tests: leave out files, grep, tag and failedIn")
+  .refine((i) => i.testRun !== undefined || hasSelection(i), "pick the tests: files, grep, tag or failedIn, or testRun")
   .refine((i) => !(i.grep !== undefined && i.tag !== undefined), "pick grep or tag, not both");
 export type DebugInputs = z.infer<typeof debugInputSchema>;
 
@@ -210,6 +216,20 @@ const withoutSkipped = (a: RunAttempt): RunAttempt => ({ ...a, tests: broken(a).
 const passedAll = (a: RunAttempt) => a.errors.length === 0 && a.tests.length > 0 && a.tests.every((t) => t.outcome === "passed" || t.outcome === "skipped") && a.tests.some((t) => t.outcome === "passed");
 
 export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> {
+  /** An earlier run-tests run's selection: the same tests. A title text was kept masked, so it can't be used again. */
+  const fromTestRun = async (id: string): Promise<Partial<DebugInputs>> => {
+    const run = (await deps.runs.readArtifact(id, TEST_RUN_ARTIFACT).catch(() => undefined))?.data;
+    if (!run) throw new EngineError("INVALID_INPUTS", `${id} isn't a run-tests run with results (test-run.md): give its run id as the folder under .agent-qa/runs names it`);
+    const sel = run.selection;
+    if (sel.grep !== undefined) throw new EngineError("INVALID_INPUTS", `${id} picked its tests by a title text, which the run keeps masked: give that text again as grep`);
+    return {
+      ...(sel.files ? { files: sel.files } : {}),
+      ...(sel.tag !== undefined ? { tag: sel.tag } : {}),
+      ...(sel.project !== undefined ? { project: sel.project } : {}),
+      ...(sel.failedIn !== undefined ? { failedIn: sel.failedIn } : {}),
+      ...(sel.workers !== undefined ? { workers: sel.workers } : {}),
+    };
+  };
   const read = async (ctx: Ctx) => (await deps.runs.readArtifact(ctx.runId, DEBUG_REPORT_ARTIFACT))?.data;
   const save = (ctx: Ctx, r: DebugReport) =>
     deps.runs.writeArtifact(ctx.runId, DEBUG_REPORT_ARTIFACT, r, { inputs: [{ kind: "repo-folder", ref: r.folder, hash: "0".repeat(64) }], templateVersion: "debug-report-1" });
@@ -445,8 +465,9 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
       return r ? `${renderReport(r)}\nFile: debug-report.md in the run folder of ${ctx.runId}.` : undefined;
     },
     prepareInputs: async (runId, inputs) => {
-      await deps.data.selectTests(runId, await folder(), selectionOf(inputs));
-      return inputs;
+      const picked = inputs.testRun !== undefined ? { ...inputs, ...(await fromTestRun(inputs.testRun)) } : inputs;
+      await deps.data.selectTests(runId, await folder(), selectionOf(picked));
+      return picked;
     },
     steps: [
       {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore, WorkflowEngine } from "../src/core/index.js";
 import { ProfileError, type SavedProfile, type TestRunOutcome, type TestSelection } from "../src/data/index.js";
-import { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugWorkflow, roleOf, type DebugDeps, type RunAttempt } from "../src/workflows/index.js";
+import { checkDebugFix, DEBUG_REPORT_ARTIFACT, debugWorkflow, roleOf, TEST_RUN_ARTIFACT, type DebugDeps, type RunAttempt } from "../src/workflows/index.js";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 const SPEC = `import { test, expect } from '@playwright/test';
@@ -112,6 +112,19 @@ describe("debug workflow (S3-3)", () => {
     const fixed = PAGE.replace("getByRole('combobox', { name: 'Topic' })", "getByRole('radio', { name: 'Topic' })");
     const r = await e.submit(first.runId, "fix-1", { failures: [{ test: TITLE, kind: "selector", reason: "Topic is now a radio group" }], files: [{ path: "src/pages/new-request.ts", content: fixed }] });
     expect(r).toMatchObject({ status: "accepted", next: { stepId: "apply-1" } });
+  });
+
+  it("debugs the same tests as an earlier run-tests run, and refuses one picked by a masked title text", async () => {
+    const earlier = (selection: Record<string, unknown>) => ({ status: "failed", folder: ".", command: ["npx", "playwright", "test"], selection, exitCode: 1, timedOut: false, durationMs: 5, counts: { passed: 0, failed: 1, flaky: 0, skipped: 0 }, tests: [], errors: [] });
+    await runs.create({ workflow: "run-tests", context: "suite", host: "cli", driver: "api", id: "tests-run" });
+    await runs.writeArtifact("tests-run", TEST_RUN_ARTIFACT, earlier({ tag: "@refund @submission", project: "chromium" }) as never, { inputs: [], templateVersion: "test-run-1" });
+    const e = engine();
+    const first = await e.start("debug", { testRun: "tests-run" });
+    expect((await e.status(first.runId)).inputs).toMatchObject({ testRun: "tests-run", tag: "@refund @submission", project: "chromium" });
+    await runs.writeArtifact("tests-run", TEST_RUN_ARTIFACT, earlier({ grep: "<PERSON_1> login" }) as never, { inputs: [], templateVersion: "test-run-1" });
+    await expect(e.start("debug", { testRun: "tests-run" })).rejects.toThrow(/title text/);
+    await expect(e.start("debug", { testRun: "nope" })).rejects.toThrow(/isn't a run-tests run/);
+    await expect(e.start("debug", { testRun: "tests-run", tag: "@x" })).rejects.toThrow(/Invalid inputs/);
   });
 
   it("runs, proposes a selector fix as a diff, writes it on the person's own yes, then proves it stable", async () => {

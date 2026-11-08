@@ -16,10 +16,11 @@ agent-qa run run-tests --input '{"failedIn":"playwright-report/report.json"}' --
 |---|---|
 | `files` | spec or feature paths in the profile's folder (a spec may end with `:line`), up to 50 |
 | `grep` | text in the tests' titles (plain text, not a pattern) |
-| `tag` | a tag such as `@smoke` (tags that start with it count too); not together with `grep` |
+| `tag` | a tag such as `@smoke` (tags that start with it count too); not together with `grep`. Several: `"@a @b"` runs the tests that have both, `"@a\|@b"` those with either, `"@a @b\|@c"` those with both of the first or the last. With several, Playwright first lists the selection (nothing runs), then only the tests with the tags run, by file and line |
 | `project` | one Playwright project of your config |
 | `failedIn` | a Playwright JSON report in the folder: its failed and flaky tests run again |
 | `repeatEach`, `workers` | run each test 1 to 10 times; 1 to 4 workers (default 1) |
+| `headed` | `true` shows the browser while the tests run (Playwright's `--headed`); refused in CI |
 
 A selection Playwright can't take stops the run before anything is asked.
 
