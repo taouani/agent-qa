@@ -131,7 +131,10 @@ describe("host command checks", () => {
     const run = (args: string[]) => checkHostCommand({ command: ["npx", "playwright", "test"], args, purpose: "p" }, allowed);
     expect(run(["tests/features/Returns_Refund-above-store-limit.feature", "--reporter=json", "--retries=0", "--workers=1", "--grep=@P1 and @smoke"])).toHaveLength(8);
     expect(run(["--reporter=list,json"])).toHaveLength(4);
+    // Flags without a value are the whole argument.
+    expect(run(["--headed", "--list"])).toHaveLength(5);
     const badArgs = [
+      ...["--headedx", "--list-files", "--listx"],
       ...["../secret.ts", "/etc/passwd", "C:\\Windows\\x", "\\\\host\\share\\x", "a&b", "a|b", "%PATH%", "a b", "--config=evil.ts", "--grep=\"x\"", "-c", "x^y", "a\nb"],
       // A flag value is a path too, and a reporter only a built-in one: a path would load code from anywhere.
       ...["--reporter=./evil.js", "--reporter=/tmp/x.js", "--reporter=../../x.js", "--reporter=\\\\host@SSL\\share\\r.js", "--reporter=list,./x.js", "--project=../other", "--project=/etc", "--project=C:x"],

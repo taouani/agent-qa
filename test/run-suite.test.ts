@@ -73,6 +73,82 @@ describe("running a part of the repo's suite (S3-2)", () => {
     expect(ran).toEqual([]);
   });
 
+  it("picks tests by several tags (spaces: all, |: any) from Playwright's list, by file and line, and shows the browser on request", async () => {
+    const listing = {
+      config: { rootDir: dir },
+      stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 3 },
+      suites: [
+        {
+          title: "a.spec.ts",
+          file: "tests/a.spec.ts",
+          specs: [
+            { title: "refund above limit", file: "tests/a.spec.ts", line: 3, tags: ["refund-above-store-limit", "submission"], tests: [{ status: "skipped", results: [] }] },
+            { title: "refund below limit", file: "tests/a.spec.ts", line: 9, tags: ["refund-below-store-limit", "submission"], tests: [{ status: "skipped", results: [] }] },
+            { title: "smoke", file: "tests/a.spec.ts", line: 15, tags: ["smoke"], tests: [{ status: "skipped", results: [] }] },
+          ],
+        },
+      ],
+    };
+    const lister: typeof runHostCommand = async (grant, options) => {
+      if (!options.argv.includes("--list")) return host(grant, options);
+      assertGrant(grant, "commands");
+      ran.push(options.argv);
+      await writeFile(options.env!.PLAYWRIGHT_JSON_OUTPUT_NAME!, JSON.stringify(listing));
+      return { exitCode: 0, timedOut: false, aborted: false, stdout: "", stderr: "", truncated: false, durationMs: 5 };
+    };
+    const d = new DataAccess({ host: lister, root: dir, store: new RunStore(join(dir, ".agent-qa", "runs")), config: configSchema.parse({ version: 1, policy: { writes: { commands: "ask" } } }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink() });
+    const a = basename(dir);
+    const line = (n: number) => `${fileFilter("tests/a.spec.ts", false, a)}:${n}`;
+    // Several tags: no --grep (it would need ( ) | in an argument); Playwright lists the tests first.
+    const picked = await d.selectTests("r", ".", { tag: "@refund-above-store-limit @submission", headed: true });
+    expect(picked.args).toEqual(["--reporter=json", "--retries=0", "--workers=1", "--headed"]);
+    expect(picked.byTags).toEqual([["@refund-above-store-limit", "@submission"]]);
+    await d.runTests("r", "r", ".", { tag: "@refund-above-store-limit @submission", headed: true }, true);
+    expect(ran).toEqual([
+      ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "--list"],
+      ["npx", "playwright", "test", "--reporter=json", "--retries=0", "--workers=1", "--headed", line(3), `--global-timeout=${TEST_RUN_TIMEOUT_MS}`],
+    ]);
+    ran.length = 0;
+    // Any group; a tag also picks the tags that start with it.
+    await d.runTests("r", "r", ".", { tag: "@refund-below @submission|@smoke" }, true);
+    expect(ran[1]!.slice(5, -1)).toEqual(["--workers=1", line(9), line(15)]);
+    ran.length = 0;
+    const none = await d.runTests("r", "r", ".", { tag: "@smoke @submission" }, true);
+    expect(none).toMatchObject({ status: "done", tests: [], errors: ["No tests found with the tags @smoke @submission"] });
+    expect(ran).toHaveLength(1);
+    for (const tag of ["@a||@b", "@a @", "a @b", "@a;@b"]) await expect(d.selectTests("r", ".", { tag })).rejects.toBeInstanceOf(ProfileError);
+    // No screen in CI.
+    const ci = new DataAccess({ host: lister, root: dir, mode: "ci", store: new RunStore(join(dir, ".agent-qa", "runs")), config: configSchema.parse({ version: 1 }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink() });
+    await expect(ci.selectTests("r", ".", { tag: "@smoke", headed: true })).rejects.toThrow(/not in CI/);
+  });
+
+  it("with several tags, stops on a file Playwright couldn't load, and names a file whose path can't go on the command line", async () => {
+    const spec = (file: string, line: number, tags: string[]) => ({ title: `t${line}`, file, line, tags, tests: [{ status: "skipped", results: [] }] });
+    let listing: Record<string, unknown> = {};
+    const lister: typeof runHostCommand = async (grant, options) => {
+      if (!options.argv.includes("--list")) return host(grant, options);
+      ran.push(options.argv);
+      await writeFile(options.env!.PLAYWRIGHT_JSON_OUTPUT_NAME!, JSON.stringify(listing));
+      return { exitCode: 1, timedOut: false, aborted: false, stdout: "", stderr: "", truncated: false, durationMs: 5 };
+    };
+    const d = new DataAccess({ host: lister, root: dir, store: new RunStore(join(dir, ".agent-qa", "runs")), config: configSchema.parse({ version: 1, policy: { writes: { commands: "ask" } } }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink() });
+    listing = { config: { rootDir: dir }, stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 1 }, suites: [{ title: "b", file: "tests/b.spec.ts", specs: [spec("tests/b.spec.ts", 3, ["a", "b"])] }], errors: [{ message: "SyntaxError: Unexpected token in tests/c.spec.ts (jane.doe@example.com)" }] };
+    const broken = await d.runTests("r", "r", ".", { tag: "@a @b" }, true);
+    expect(broken).toMatchObject({ status: "done", tests: [] });
+    if (broken.status !== "done") throw new Error(broken.status);
+    expect(broken.errors[0]).toMatch(/couldn't load every test file/);
+    expect(broken.errors.join(" ")).toContain("SyntaxError");
+    expect(JSON.stringify(broken)).not.toContain("jane.doe@example.com");
+    expect(ran).toHaveLength(1);
+    ran.length = 0;
+    listing = { config: { rootDir: dir }, stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 1 }, suites: [{ title: "x", file: "tests/x.spec.ts", specs: [spec("tests/b.spec.ts", 3, ["a", "b"]), spec("tests/my dir/c.spec.ts", 4, ["a", "b"])] }] };
+    const r = await d.runTests("r", "r", ".", { tag: "@a @b" }, true);
+    if (r.status !== "done") throw new Error(r.status);
+    expect(ran).toHaveLength(2);
+    expect(ran[1]!.some((a) => a.includes("my dir"))).toBe(false);
+    expect(r.errors[0]).toMatch(/^Not run: tests\/my dir\/c\.spec\.ts have tests with the tags @a @b/);
+  });
+
   it("runs again an earlier report's failed tests, by file and line, with their titles masked", async () => {
     const d = data();
     const picked = await d.selectTests("r", ".", { failedIn: "last-run.json" });

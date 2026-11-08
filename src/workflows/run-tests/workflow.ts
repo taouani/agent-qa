@@ -20,11 +20,17 @@ import { testRowSchema } from "../scripts/run.js";
 export const selectionFields = {
     files: z.array(z.string().min(1).max(300)).min(1).max(50).optional().describe("Spec or feature paths from the profile's folder; a spec may end with :line"),
     grep: z.string().min(1).max(200).optional().describe("Text in the tests' titles (plain text)"),
-    tag: z.string().min(2).max(101).optional().describe("A tag, such as @smoke (also picks tags that start with it)"),
+    tag: z
+      .string()
+      .min(2)
+      .max(1100)
+      .optional()
+      .describe('A tag, such as @smoke (also picks tags that start with it). Several: "@a @b" runs the tests with all of them, "@a|@b" the tests with any, "@a @b|@c" either both or the last'),
     project: z.string().min(1).max(80).optional().describe("A Playwright project of the repo's config"),
     failedIn: z.string().min(1).max(300).optional().describe("A Playwright JSON report in the folder: its failed and flaky tests run again"),
     repeatEach: z.number().int().min(1).max(10).optional().describe("Run each test this many times"),
     workers: z.number().int().min(1).max(4).optional().describe("Parallel workers; default 1"),
+    headed: z.boolean().optional().describe("Show the browser while the tests run (not in CI)"),
 };
 
 /** At least one of files, grep, tag or failedIn; grep or tag, not both. */
@@ -51,7 +57,7 @@ export const testRunSchema = z
     /** The profile's test command and the arguments Agent-QA added (masked). */
     command: z.array(z.string()),
     selection: z
-      .object({ files: z.array(z.string()).optional(), grep: z.string().optional(), tag: z.string().optional(), project: z.string().optional(), failedIn: z.string().optional(), repeatEach: z.number().optional(), workers: z.number().optional() })
+      .object({ files: z.array(z.string()).optional(), grep: z.string().optional(), tag: z.string().optional(), project: z.string().optional(), failedIn: z.string().optional(), repeatEach: z.number().optional(), workers: z.number().optional(), headed: z.boolean().optional() })
       .strict(),
     /** From `failedIn`: the report's failed and flaky tests, run again. */
     fromReport: z.array(z.object({ title: z.string(), file: z.string(), line: z.number() }).strict()).optional(),
@@ -151,7 +157,7 @@ export interface RunTestsDeps {
 
 type Ctx = StepContext<RunTestsInputs>;
 
-export const selectionOf = (i: Pick<RunTestsInputs, "files" | "grep" | "tag" | "project" | "failedIn" | "repeatEach" | "workers">): TestSelection => ({ files: i.files, grep: i.grep, tag: i.tag, project: i.project, failedIn: i.failedIn, repeatEach: i.repeatEach, workers: i.workers });
+export const selectionOf = (i: Pick<RunTestsInputs, "files" | "grep" | "tag" | "project" | "failedIn" | "repeatEach" | "workers" | "headed">): TestSelection => ({ files: i.files, grep: i.grep, tag: i.tag, project: i.project, failedIn: i.failedIn, repeatEach: i.repeatEach, workers: i.workers, headed: i.headed });
 
 /** The outcome of the tests, from their rows: a skipped test counts as not run. */
 export function statusOf(tests: Pick<MaskedTestResult, "outcome">[], errors: string[]): TestRun["status"] {
@@ -180,7 +186,7 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
   };
   const describe = async (ctx: Ctx) => {
     const p = await picked(ctx);
-    const report = p.fromReport ? ` (${p.fromReport.length} test(s) that failed in ${ctx.inputs.failedIn})` : "";
+    const report = p.fromReport ? ` (${p.fromReport.length} test(s) that failed in ${ctx.inputs.failedIn})` : p.byTags ? `, then only the tests tagged ${p.byTags.map((g) => g.join(" and ")).join(", or ")} (Playwright lists them first)` : "";
     return `\`${(await shown(ctx, p)).join(" ")}\` in ${where(await folder())}${report}`;
   };
   // What the run keeps of the person's own words: a title text can name someone.

@@ -46,7 +46,7 @@ export const TEST_RUN_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 export const TEST_RUN_KILL_MS = TEST_RUN_TIMEOUT_MS + 5 * 60_000;
 
 /** Flags a workflow may add, by prefix: the ones the run-and-fix loop needs. Values are checked like paths, and reporters by name. */
-export const ALLOWED_FLAGS = ["--reporter=", "--retries=", "--workers=", "--grep=", "--grep-invert=", "--project=", "--repeat-each=", "--max-failures=", "--timeout=", "--global-timeout=", "--tags="];
+export const ALLOWED_FLAGS = ["--reporter=", "--retries=", "--workers=", "--grep=", "--grep-invert=", "--project=", "--repeat-each=", "--max-failures=", "--timeout=", "--global-timeout=", "--tags=", "--headed", "--list"];
 /** Characters an argument may hold. No quotes, %, ^, !, &, |, <, > or spaces: nothing a shell or cmd.exe could read as syntax. */
 const SAFE_ARG = /^[\p{L}\p{N}_@+=:,./\\-]{1,300}$/u;
 const SAFE_FLAG_VALUE = /^[\p{L}\p{N}_@+=:,./\\ -]{0,300}$/u;
@@ -97,7 +97,8 @@ export function checkHostCommand(request: HostCommandRequest, allowed: string[][
   const args = request.args ?? [];
   for (const arg of args) {
     if (arg.startsWith("-")) {
-      const flag = ALLOWED_FLAGS.find((f) => arg.startsWith(f));
+      // A flag with a value starts the argument; one without is the whole argument.
+      const flag = ALLOWED_FLAGS.find((f) => (f.endsWith("=") ? arg.startsWith(f) : arg === f));
       const value = flag ? arg.slice(flag.length) : "";
       const ok =
         flag !== undefined &&
