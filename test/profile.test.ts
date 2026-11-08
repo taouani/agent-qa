@@ -209,9 +209,9 @@ describe("agent-qa.profile.json", () => {
   it("lists the reviewed folder's files for script generation, and masks with another run's vault", async () => {
     await writeRepo(dir, REPO);
     const { d, run } = await data();
-    await expect(d.frameworkFiles()).rejects.toBeInstanceOf(ProfileError);
+    await expect(d.frameworkFiles("run-1")).rejects.toBeInstanceOf(ProfileError);
     await d.saveProfile(run);
-    const listing = await d.frameworkFiles();
+    const listing = await d.frameworkFiles("run-1");
     expect(listing.files).toEqual(expect.arrayContaining(["package.json", "playwright.config.ts", PROFILE_FILE]));
     expect(listing.links).toEqual([]);
     // The scan is kept in the scripts run, masked with the vault of the cases' run.

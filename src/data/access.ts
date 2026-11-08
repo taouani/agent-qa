@@ -29,6 +29,7 @@ import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js
 import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 import { isIgnored, loadIgnoreRules } from "./gitignore.js";
+import { repoPaths, type RepoPaths } from "./repo-paths.js";
 
 /**
  * What workflows use to read masked data (S1-8). One instance serves every run
@@ -178,10 +179,10 @@ export interface ScriptsData {
   /**
    * Every file in the reviewed profile's folder (relative to it), so generated
    * code never replaces one, and the symbolic links in it, which generated
-   * code must not write through. Paths only, never contents, and never shown
-   * to a model.
+   * code must not write through. Paths only, never contents, masked with
+   * `tokensRun`'s vault as every repo path a workflow sees (S5-4).
    */
-  frameworkFiles(): Promise<FolderListing>;
+  frameworkFiles(tokensRun: string): Promise<FolderListing>;
   /**
    * Type-checks generated files (paths from the profile's folder) with the
    * repo's own TypeScript and tsconfig, laid over the repo in memory: nothing
@@ -450,7 +451,7 @@ export interface DataAccessOptions {
   /** The config, else `agent-qa.yaml` in `root`, read on first use. */
   config?: Config;
   /** The token vault, else encrypted files in `.agent-qa/vault/` with the default key. */
-  vault?: Pick<Vault, "open">;
+  vault?: Pick<Vault, "open" | "derivedKey">;
   secrets?: SecretSources;
   fetch?: FetchLike;
   /** Replace the clients, for tests. */
@@ -530,7 +531,8 @@ const MAX_OPEN = 16;
 
 export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SuiteData, TestFilesData, SalesforceData, ExplorerData, DocumentData {
   private config: Promise<Config> | undefined;
-  private vault: Pick<Vault, "open"> | undefined;
+  private vault: Pick<Vault, "open" | "derivedKey"> | undefined;
+  private pathKey: Promise<Buffer> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
   private readonly profiles = new Map<string, Promise<FrameworkProfile>>();
   private sfAuth: Promise<SalesforceAuth> | undefined;
@@ -579,11 +581,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       return {};
     }
     if (files.length === 0) return {};
-    const { service } = await this.run(runId);
+    const { service, paths } = await this.repoPaths(runId);
     const out: Record<string, RelatedFeature[]> = {};
     for (const issue of issues) {
       const found = relatedFeatures(issue, files);
-      if (found.length) out[issue.key] = found.map((f) => ({ path: f.path, text: clipFeature(service.maskText(f.text, "repo.feature")), hash: f.hash }));
+      if (found.length) out[issue.key] = found.map((f) => ({ path: paths.shown(f.path), text: clipFeature(service.maskText(f.text, "repo.feature")), hash: f.hash }));
     }
     await service.saveVault();
     return out;
@@ -976,6 +978,15 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
 
   async runGeneratedTests(runId: string, tokensRun: string, folder: string, request: { files: string[]; repeatEach?: number }, approved: boolean): Promise<TestRunOutcome> {
     if (!approved) return { status: "declined" };
+    return this.withPaths(tokensRun, (paths) => {
+      const files = request.files.map((f) => paths.real(f));
+      // The files the model chose: their results name them as it did, whatever the detectors make of a name.
+      files.forEach((f, i) => paths.asGiven(request.files[i]!, f));
+      return this.runGenerated(runId, tokensRun, folder, { ...request, files }, paths);
+    });
+  }
+
+  private async runGenerated(runId: string, tokensRun: string, folder: string, request: { files: string[]; repeatEach?: number }, paths: RepoPaths): Promise<TestRunOutcome> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed since the draft (${folder} then, ${saved.folder} now): run scripts again`);
@@ -986,10 +997,31 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const anchor = await this.filterAnchor(saved.folder);
     const filters = request.files.map((f) => fileFilter(f, saved.kind === "playwright-bdd", anchor));
     const args = ["--reporter=json", "--retries=0", "--workers=1", ...(repeat > 1 ? [`--repeat-each=${repeat}`] : []), ...filters];
-    return this.runTestCommand(runId, tokensRun, saved, args, repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests");
+    return this.runTestCommand(runId, tokensRun, saved, args, repeat > 1 ? `run the generated tests ${repeat} times each, to see they are stable` : "run the generated tests", undefined, paths);
   }
 
   async selectTests(tokensRun: string, folder: string, selection: TestSelection): Promise<SelectedTests> {
+    return this.withPaths(tokensRun, async (paths) => {
+      const sel = { ...selection, ...(selection.files ? { files: selection.files.map((f) => realWithLine(paths, f)) } : {}), ...(selection.failedIn !== undefined ? { failedIn: paths.real(selection.failedIn) } : {}) };
+      const picked = await this.select(tokensRun, folder, sel);
+      const saved = (await this.savedProfile())!;
+      if (picked.fromReport) for (const t of picked.fromReport) paths.shown(t.file);
+      // The command as the model and the run record show it: each file filter built from the shown path.
+      const sep = process.platform === "win32" ? "\\\\" : "/";
+      const forms = paths.pairs().flatMap(([r, m]) => [
+        [escapeRe(r).split("/").join(sep), escapeRe(m).split("/").join(sep)],
+        ...(saved.kind === "playwright-bdd" && r.endsWith(".feature") ? [[`${sep}${escapeRe(posixBase(r))}`, `${sep}${escapeRe(posixBase(m))}`]] : []),
+      ]);
+      const shownArg = (a: string) => forms.reduce((t, [from, to]) => (t.includes(from!) ? t.split(from!).join(to!) : t), a);
+      return {
+        ...picked,
+        args: picked.args.map(shownArg),
+        ...(picked.fromReport ? { fromReport: picked.fromReport.map((t) => ({ ...t, file: paths.shown(t.file) })) } : {}),
+      };
+    });
+  }
+
+  private async select(tokensRun: string, folder: string, selection: TestSelection): Promise<SelectedTests> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run again`);
@@ -1055,7 +1087,10 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (!saved.commands?.test) return { status: "unavailable", reason: "the reviewed profile has no test command" };
-    const picked = await this.selectTests(tokensRun, folder, selection);
+    // The real command: the shown one is for the model and the run record only.
+    const picked = await this.withPaths(tokensRun, (paths) =>
+      this.select(tokensRun, folder, { ...selection, ...(selection.files ? { files: selection.files.map((f) => realWithLine(paths, f)) } : {}), ...(selection.failedIn !== undefined ? { failedIn: paths.real(selection.failedIn) } : {}) }),
+    );
     const what = selection.failedIn !== undefined ? `run again the ${picked.fromReport?.length ?? 0} test(s) that failed in ${selection.failedIn}` : "run a part of the repo's tests";
     return this.runTestCommand(runId, tokensRun, saved, picked.args, what, picked.byTags ? { groups: picked.byTags, anchor: await this.filterAnchor(saved.folder) } : undefined);
   }
@@ -1112,12 +1147,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   /** Runs the profile's generate command (bddgen), then its test command with `args`, and reads the report back masked. */
-  private async runTestCommand(runId: string, tokensRun: string, saved: SavedProfile, args: string[], purpose: string, byTags?: { groups: string[][]; anchor: string }): Promise<TestRunOutcome> {
+  private async runTestCommand(runId: string, tokensRun: string, saved: SavedProfile, args: string[], purpose: string, byTags?: { groups: string[][]; anchor: string }, given?: RepoPaths): Promise<TestRunOutcome> {
     const dir = hostCwd(this.options.root, saved.folder);
     const { service, vault } = await this.run(tokensRun);
+    const paths = given ?? (await this.repoPaths(tokensRun)).paths;
     // What the app showed (an error's received text, a page snapshot): the vault's known values first, then the detectors, then cut.
+    // A test file's path, as the model is shown it elsewhere, before either.
     const echo = vaultMasker(vault, service, "test.error");
-    const mask = (text: string, field: string, max: number) => echo.detect(local(plain(text), dir), field).slice(0, max);
+    const mask = (text: string, field: string, max: number) => echo.detect(paths.inText(local(plain(text), dir)), field).slice(0, max);
     const tail = (r: HostCommandOutcome) => (r.stderr.trim() || r.stdout.trim()).slice(-3000);
     let durationMs = 0;
     let skippedFiles: string[] = [];
@@ -1144,6 +1181,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       }
       // A file that doesn't load (a syntax error, a duplicate title) stops here: run by file and line, it would never load, and its tests would just be missing.
       if (list.errors.length) {
+        for (const x of list.tests) paths.shown(x.file);
         const errors = list.errors.map((e) => mask(e, "test.error", 4000));
         await service.saveVault();
         return listFailed([`Playwright couldn't load every test file, so the tests weren't picked by their tags:`, ...errors]);
@@ -1167,7 +1205,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           }),
         ),
       ];
-      if (unsafe.size) skippedFiles = [`Not run: ${[...unsafe].map((f) => mask(f, "test.file", 300)).join(", ")} have tests with the tags ${expression}, but their paths can't be passed to Playwright safely (rename them without spaces or quotes, or pick them with files)`];
+      if (unsafe.size) skippedFiles = [`Not run: ${[...unsafe].map((f) => paths.shown(f).slice(0, 300)).join(", ")} have tests with the tags ${expression}, but their paths can't be passed to Playwright safely (rename them without spaces or quotes, or pick them with files)`];
       if (filters.length === 0) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [...(picked.length ? skippedFiles : [`No tests found with the tags ${expression}`])] };
       if ([...args, ...filters].join(" ").length > MAX_SELECTION_CHARS) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [`${filters.length} tests have the tags ${expression}: too many for one command, pick a part of them (files or a project)`] };
       args = [...args, ...filters];
@@ -1193,6 +1231,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (!isPlainRelativePath(out)) return undefined;
       return `${echo.detect(out, "test.screenshot")}#${screenshotHash(relativePath(shot.outputDir, shot.path))}`;
     };
+    // Every path first, so an error that names one shows it as the result does.
+    for (const x of parsed.tests) for (const f of [x.file, x.failure?.at?.file, ...(x.failure?.files ?? [])]) if (f !== undefined) paths.shown(f);
     const tests: MaskedTestResult[] = [];
     for (const x of parsed.tests) {
       const raw = x.failure?.snapshot ?? (x.failure?.snapshotPath ? await readInside(dir, x.failure.snapshotPath) : undefined);
@@ -1203,7 +1243,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       tests.push({
         title: mask(x.title, "test.title", 2000),
         tags: x.tags.map((g) => mask(g, "test.tag", 200)),
-        file: x.file,
+        file: paths.shown(x.file),
         line: x.line,
         outcome: x.outcome,
         runs: x.runs,
@@ -1215,8 +1255,8 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
               failure: {
                 message: mask(x.failure.message, "test.error", 4000),
                 snippet: x.failure.snippet !== undefined ? mask(x.failure.snippet, "test.snippet", 2000) : undefined,
-                at: x.failure.at,
-                ...(x.failure.files?.length ? { files: x.failure.files.slice(0, 20) } : {}),
+                at: x.failure.at ? { ...x.failure.at, file: paths.shown(x.failure.at.file) } : undefined,
+                ...(x.failure.files?.length ? { files: x.failure.files.slice(0, 20).map((f) => paths.shown(f)) } : {}),
                 snapshot,
               },
             }
@@ -1280,6 +1320,10 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   async readTestFiles(runId: string, tokensRun: string, folder: string, paths: readonly string[]): Promise<TestFileRead[]> {
+    return this.withPaths(tokensRun, async (p) => (await this.readFiles(tokensRun, folder, paths.map((x) => p.real(x)))).map((f) => ({ ...f, path: p.shown(f.path) })));
+  }
+
+  private async readFiles(tokensRun: string, folder: string, paths: readonly string[]): Promise<TestFileRead[]> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run the workflow again`);
@@ -1307,6 +1351,13 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
 
   async editTestFiles(runId: string, tokensRun: string, folder: string, edits: ReadonlyArray<{ path: string; content: string; sha256: string }>, approved: boolean): Promise<EditFilesOutcome> {
     if (!approved) return { status: "declined" };
+    return this.withPaths(tokensRun, async (p) => {
+      const r = await this.editFiles(runId, tokensRun, folder, edits.map((e) => ({ ...e, path: p.real(e.path) })), p);
+      return r.status === "done" ? { ...r, written: r.written.map((w) => ({ ...w, path: p.shown(w.path) })) } : r;
+    });
+  }
+
+  private async editFiles(runId: string, tokensRun: string, folder: string, edits: ReadonlyArray<{ path: string; content: string; sha256: string }>, paths: RepoPaths): Promise<EditFilesOutcome> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run the workflow again`);
@@ -1330,7 +1381,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       if (createHash("sha256").update(bytes).digest("hex") !== e.sha256 && now !== content) throw new ProfileError(`${e.path} changed since Agent-QA read it: it is never overwritten. Nothing was changed.`);
       files.push({ path: e.path, content, sha256: e.sha256 });
     }
-    const summary = service.maskText(`Change ${files.length} existing test file(s) in ${folder}: ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    const summary = service.maskText(`Change ${files.length} existing test file(s) in ${folder}: ${files.map((f) => paths.shown(f.path)).join(", ")}`, "write.summary").slice(0, 500);
     await service.saveVault();
     const root = hostCwd(this.options.root);
     const sha = (t: string) => createHash("sha256").update(t).digest("hex");
@@ -1369,6 +1420,13 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
 
   async removeTestFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; sha256: string }>, approved: boolean): Promise<{ status: "done"; removed: string[] } | { status: "declined" }> {
     if (!approved) return { status: "declined" };
+    return this.withPaths(tokensRun, async (p) => {
+      const r = await this.removeFiles(runId, tokensRun, folder, files.map((f) => ({ ...f, path: p.real(f.path) })), p);
+      return r.status === "done" ? { ...r, removed: r.removed.map((x) => p.shown(x)) } : r;
+    });
+  }
+
+  private async removeFiles(runId: string, tokensRun: string, folder: string, files: ReadonlyArray<{ path: string; sha256: string }>, paths: RepoPaths): Promise<{ status: "done"; removed: string[] } | { status: "declined" }> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     if (saved.folder !== folder) throw new ProfileError(`the reviewed profile changed (${folder} then, ${saved.folder} now): run the workflow again`);
@@ -1376,7 +1434,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     await this.checkTestPaths(folder, files.map((f) => f.path));
     for (const f of files) if (!/^[0-9a-f]{64}$/.test(f.sha256)) throw new ProfileError(`${f.path}: no record of what Agent-QA wrote`);
     const { service } = await this.run(tokensRun);
-    const summary = service.maskText(`Remove ${files.length} file(s) Agent-QA wrote in ${folder}: ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    const summary = service.maskText(`Remove ${files.length} file(s) Agent-QA wrote in ${folder}: ${files.map((f) => paths.shown(f.path)).join(", ")}`, "write.summary").slice(0, 500);
     await service.saveVault();
     let outcome;
     try {
@@ -1456,6 +1514,10 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
   }
 
   async openPullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string; gitBlob?: string | undefined }>; title: string; body: string; draft: boolean }): Promise<PullRequestOutcome> {
+    return this.withPaths(tokensRun, (p) => this.pullRequest(runId, tokensRun, folder, { ...pr, files: pr.files.map((f) => ({ ...f, path: p.real(f.path) })) }, p));
+  }
+
+  private async pullRequest(runId: string, tokensRun: string, folder: string, pr: { files: ReadonlyArray<{ path: string; sha256: string; gitBlob?: string | undefined }>; title: string; body: string; draft: boolean }, paths: RepoPaths): Promise<PullRequestOutcome> {
     const ready = await this.pullRequestReadiness();
     if (!ready.ready) throw new ProfileError(ready.reason);
     const config = await this.configOrDefault();
@@ -1497,7 +1559,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const title = service.maskText(pr.title, "pr.title").replace(/\s+/g, " ").slice(0, 200);
     // Text from the model and the run: no mentions, links, images or tags (a token like <PERSON_1> would vanish as one).
     const body = mdSafe(service.maskText(pr.body, "pr.body")).slice(0, 60_000);
-    const summary = service.maskText(`Open a pull request on ${git.repo} with ${files.length} file(s): ${files.map((f) => f.path).join(", ")}`, "write.summary").slice(0, 500);
+    const summary = service.maskText(paths.inText(`Open a pull request on ${git.repo} with ${files.length} file(s): ${files.map((f) => f.path).join(", ")}`), "write.summary").slice(0, 500);
     await service.saveVault();
     const env = this.options.env ?? process.env;
     // The branch the job checked out: a pull request's base, else the pushed branch; else the repo's default.
@@ -1633,7 +1695,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
    * the scan picks from fixed lists, stay as they are.
    */
   private async maskProfile(runId: string, profile: FrameworkProfile): Promise<FrameworkProfile> {
-    const { service } = await this.run(runId);
+    const { service, paths } = await this.repoPaths(runId);
     const mask = <T>(value: T, field: string): T => {
       if (typeof value === "string") return service.maskText(value, field) as T;
       if (Array.isArray(value)) return value.map((v) => mask(v, field)) as T;
@@ -1648,8 +1710,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       ...(commands ? { commands } : {}),
       locators,
       locatorRanking,
-      steps: steps.map(({ keyword, kind: k, line, flags, ...s }) => ({ keyword, kind: k, line, ...(flags ? { flags } : {}), ...mask(s, "profile.step") })),
+      steps: steps.map(({ keyword, kind: k, line, flags, file, ...s }) => ({ keyword, kind: k, line, ...(flags ? { flags } : {}), ...mask(s, "profile.step"), file: paths.shown(file) })),
     } as FrameworkProfile;
+    // File paths as every other path the model sees (S5-4): a part at a time, the extension kept.
+    masked.pages = rest.pages.map((x, i) => ({ ...masked.pages[i]!, file: paths.shown(x.file) }));
+    masked.fixtures = rest.fixtures.map((x, i) => ({ ...masked.fixtures[i]!, file: paths.shown(x.file) }));
+    masked.features = rest.features.map((x, i) => ({ ...masked.features[i]!, file: paths.shown(x.file) }));
+    masked.authFiles = rest.authFiles.map((f) => paths.shown(f));
+    if (rest.config.file !== undefined) masked.config = { ...masked.config, file: paths.shown(rest.config.file) };
     await service.saveVault();
     return masked;
   }
@@ -1672,8 +1740,13 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return masked;
   }
 
-  async typeCheck(runId: string, tokensRun: string, files: ReadonlyArray<{ path: string; content: string }>, approved: boolean, options: TypeCheckOptions = {}): Promise<TypeCheckOutcome> {
+  async typeCheck(runId: string, tokensRun: string, shownFiles: ReadonlyArray<{ path: string; content: string }>, approved: boolean, options: TypeCheckOptions = {}): Promise<TypeCheckOutcome> {
     if (!approved) return { status: "declined" };
+    // Existing files (review, refactor) come with the paths the model was shown: checked where they really are.
+    const { paths } = await this.repoPaths(tokensRun);
+    const files = shownFiles.map((f) => ({ ...f, path: paths.real(f.path) }));
+    // Diagnostics name each file as it was given (a generated file as the model named it).
+    files.forEach((f, i) => paths.asGiven(shownFiles[i]!.path, f.path));
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
     const folder = hostCwd(this.options.root, saved.folder);
@@ -1693,10 +1766,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           : error instanceof PolicyDenied
             ? "the policy doesn't allow running the repo's TypeScript (policy.writes.commands)"
             : `the repo's TypeScript failed (${error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : "Error"})`;
-      return { status: "unavailable", reason: await this.maskReason(tokensRun, local(reason, folder)) };
+      return { status: "unavailable", reason: await this.maskReason(tokensRun, paths.inText(local(reason, folder))) };
     }
     if (outcome.status !== "done") return { status: "declined" };
-    const diagnostics = outcome.value.map((d) => ({ ...d, message: service.maskText(local(d.message, folder), "typecheck.message") }));
+    for (const d of outcome.value) paths.shown(d.file);
+    const diagnostics = outcome.value.map((d) => ({ ...d, file: paths.shown(d.file), message: service.maskText(paths.inText(local(d.message, folder)), "typecheck.message") }));
     await service.saveVault();
     return { status: "done", diagnostics };
   }
@@ -1753,10 +1827,11 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return { status: "done", written: outcome.value.paths, ...(outcome.value.via === "pull-request" ? { pullRequest: true as const } : {}) };
   }
 
-  async frameworkFiles(): Promise<FolderListing> {
+  async frameworkFiles(tokensRun: string): Promise<FolderListing> {
     const saved = await this.savedProfile();
     if (!saved) throw new ProfileError(`no reviewed framework profile: run the profile workflow and accept it to create ${PROFILE_FILE}`);
-    return listFolderFiles(hostCwd(this.options.root, saved.folder));
+    const listing = listFolderFiles(hostCwd(this.options.root, saved.folder));
+    return this.withPaths(tokensRun, async (p) => ({ files: listing.files.map((f) => p.shown(f)), links: listing.links.map((f) => p.shown(f)) }));
   }
 
   async savedProfile(): Promise<SavedProfile | undefined> {
@@ -2107,6 +2182,45 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return JSON.parse(value) as JiraInput;
   }
 
+  /** The run's repo path masker (S5-4): what goes to the model shows tokens, what comes back is real again. */
+  private async repoPaths(tokensRun: string): Promise<{ paths: RepoPaths; service: MaskedDataService }> {
+    const { service } = await this.run(tokensRun);
+    if (!this.pathKey) {
+      const pending = this.vault!.derivedKey("repo-paths");
+      this.pathKey = pending;
+      pending.catch(() => {
+        if (this.pathKey === pending) this.pathKey = undefined;
+      });
+    }
+    let folder = ".";
+    try {
+      folder = (await this.savedProfile())?.folder ?? ".";
+    } catch {
+      // A broken profile file: the project folder.
+    }
+    return { paths: repoPaths({ mask: (t) => service.maskText(t, "repo.path"), key: await this.pathKey, folder: hostCwd(this.options.root, folder) }), service };
+  }
+
+  /** Runs `fn` with the run's path masker: a refusal names the paths as the model was shown them. */
+  private async withPaths<T>(tokensRun: string, fn: (paths: RepoPaths) => Promise<T>): Promise<T> {
+    const { paths, service } = await this.repoPaths(tokensRun);
+    let result: T;
+    try {
+      result = await fn(paths);
+    } catch (error) {
+      if (error instanceof ProfileError || error instanceof HostCommandRefused) {
+        const masked = service.maskText(paths.inText(error.message), "repo.path");
+        // The stack repeats the message: it would keep the real path for anything that logs it.
+        error.stack = `${error.name}: ${masked}`;
+        error.message = masked;
+      }
+      await service.saveVault().catch(() => undefined);
+      throw error;
+    }
+    await service.saveVault();
+    return result;
+  }
+
   private run(runId: string): Promise<{ vault: RunVault; service: MaskedDataService }> {
     let entry = this.open.get(runId);
     if (entry) {
@@ -2182,6 +2296,12 @@ const posixBase = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /** A masking token in text, as the masker writes it. */
 const TOKEN_IN_TEXT = /<[A-Z][A-Z0-9_]*_\d+>/g;
+
+/** A file of a selection (tests/a.spec.ts:12): the path found again, its line kept. */
+function realWithLine(paths: RepoPaths, file: string): string {
+  const m = /^(.*?)(:\d{1,6})?$/.exec(file)!;
+  return `${paths.real(m[1]!)}${m[2] ?? ""}`;
+}
 
 /** git's id for a blob of these bytes (SHA-1 object format). */
 export function gitBlobId(bytes: Buffer): string {

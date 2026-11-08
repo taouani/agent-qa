@@ -411,7 +411,7 @@ export function refactorWorkflow(deps: RefactorDeps): WorkflowDefinition<Refacto
     if (!saved) throw new Error("no reviewed framework profile: run the profile workflow and accept it first");
     if (saved.folder !== a.folder) throw new Error(`the audit was of ${a.folder || "."}, the reviewed profile is of ${saved.folder || "."} now: audit again`);
     const profile = await deps.data.frameworkProfile(ctx.runId, saved.folder, ctx.runId).catch(() => undefined);
-    const code = (await deps.data.frameworkFiles()).files.filter((p) => CODE.test(p) && auditRoleOf(p, profile) !== "config");
+    const code = (await deps.data.frameworkFiles(ctx.runId)).files.filter((p) => CODE.test(p) && auditRoleOf(p, profile) !== "config");
     const files: TestFileRead[] = [];
     const unread: string[] = [];
     for (const p of code) {
@@ -480,7 +480,7 @@ export function refactorWorkflow(deps: RefactorDeps): WorkflowDefinition<Refacto
       const created = sim.tasks.flatMap((t) => t.created);
       const problems = created.length ? await deps.data.testPathProblems(f.folder, created) : [];
       // A file there already (one not read) would be taken for Agent-QA's and removed by a rollback.
-      const listed = new Set((await deps.data.frameworkFiles()).files);
+      const listed = new Set((await deps.data.frameworkFiles(ctx.runId)).files);
       for (const c of created) if (listed.has(c)) problems.push(`${c} already exists: create makes new files only`);
       return [...sim.errors, ...problems.map((message) => ({ path: "$.phases", message: `a new file: ${message}` }))];
     },

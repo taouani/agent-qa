@@ -314,7 +314,7 @@ export function auditWorkflow(deps: AuditDeps): WorkflowDefinition<AuditInputs> 
   const survey = async (ctx: Ctx): Promise<Survey> => {
     const f = await folder();
     const profile = await deps.data.frameworkProfile(ctx.runId, f, ctx.runId).catch(() => undefined);
-    const listed = (await deps.data.frameworkFiles()).files;
+    const listed = (await deps.data.frameworkFiles(ctx.runId)).files;
     const roles = new Map(listed.map((p) => [p, auditRoleOf(p, profile)]));
     const readable = listed.filter((p) => ["spec", "steps", "page", "fixture", "code", "feature", "data"].includes(roles.get(p)!));
     const out: TestFileRead[] = [];
