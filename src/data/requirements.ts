@@ -254,6 +254,19 @@ export class MaskedDataService {
     return masker.mask(text, { field });
   }
 
+  /**
+   * Texts masked with one masker, like `maskText`, with what it counted: for
+   * text read outside Jira and Confluence (pull requests), whose counts go to
+   * its own artifact.
+   */
+  maskBatch(items: ReadonlyArray<{ text: string; field: string }>): { masked: string[]; counts: { byDetector: Record<string, number>; byField: Record<string, number> } } {
+    const masker = this.masker();
+    masker.addNames(this.options.vault.valuesOf("PERSON"));
+    const masked = items.map((i) => masker.mask(i.text, { field: i.field }));
+    const { byDetector, byField } = masker.report();
+    return { masked, counts: { byDetector, byField } };
+  }
+
   async saveVault(): Promise<void> {
     await this.options.vault.save();
   }

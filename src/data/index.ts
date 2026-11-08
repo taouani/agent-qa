@@ -62,3 +62,5 @@ export type { JiraCollection, JiraInput, JiraIssue } from "../connectors/index.j
 export { applyRefactor, dependentSpecs, type RefactorOp, type RefactorResult } from "./refactor-ops.js";
 export { clipFeature, relatedFeatures, wordsOf, MAX_RELATED_FEATURES, MAX_RELATED_FEATURE_CHARS } from "./related-features.js";
 export type { RelatedFeature } from "./related-features.js";
+export { MAX_PULL_REQUEST_ISSUES, MAX_PULL_REQUESTS_PER_ISSUE, PULL_REQUEST_BYTES, PULL_REQUEST_TOTAL_BYTES, PULL_REQUESTS_ARTIFACT, PULL_REQUESTS_VERSION } from "./pull-requests.js";
+export type { MaskedPullRequest, PullRequestsArtifact } from "./pull-requests.js";

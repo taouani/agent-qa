@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { OutputError, RunStore, StepDefinition, WorkflowDefinition } from "../../core/index.js";
-import type { JiraInput, LoadedSources, RelatedFeature, Requirement, RequirementsData } from "../../data/index.js";
+import { EngineError, type OutputError, type RunStore, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
+import type { JiraInput, LoadedSources, MaskedPullRequest, RelatedFeature, Requirement, RequirementsData } from "../../data/index.js";
 import {
   QUALITY_GAPS,
   REQUIREMENTS_ARTIFACT,
@@ -18,7 +18,10 @@ import {
  *    is rendered; if Jira can't be read the run stays open and `workflow_next`
  *    tries again.
  * 2. Analyze, by the model: a quality score, gaps, open questions, and
- *    proposed criteria for issues that have none.
+ *    proposed criteria for issues that have none. With `withPullRequests`
+ *    (S4-6), the pull requests that name each issue on the git host, masked,
+ *    are context too, and the analysis may add code notes, each naming the
+ *    file it comes from.
  * 3. The core checks every issue is answered once and no unknown token was
  *    made up, then writes `requirements@1` (`requirements.json` and `.md`).
  */
@@ -36,6 +39,12 @@ const norm = (key: string) => key.trim().toUpperCase();
 const MAX_DESCRIPTION = 12_000;
 const MAX_PAGE = 6_000;
 
+/** The optional input that adds pull requests to the analysis (S4-6), shared by every workflow that starts from Jira. */
+export const withPullRequestsInput = z
+  .boolean()
+  .optional()
+  .describe("Also give the analysis the pull requests that name each issue key on the git host (agent-qa.yaml git section), masked, with their diffs capped per issue");
+
 export const requirementsInputSchema = z
   .object({
     key: z.string().trim().toUpperCase().regex(KEY, "must be a Jira issue key such as ABC-123").optional().describe("One Jira issue key, e.g. ABC-123"),
@@ -46,6 +55,7 @@ export const requirementsInputSchema = z
       .max(4000)
       .refine((q) => !SEALED.test(q), "must be a JQL filter, not a vault token")
       .optional().describe("A JQL filter, e.g. project = ABC AND sprint in openSprints()"),
+    withPullRequests: withPullRequestsInput,
   })
   .strict()
   .refine((i) => (i.key === undefined) !== (i.jql === undefined), { message: "give exactly one of key or jql" });
@@ -79,6 +89,18 @@ const analysisSchema = z
               )
               .max(20)
               .describe("Only for issues with no acceptance criteria: testable criteria, each with where it comes from. Empty otherwise"),
+            codeNotes: z
+              .array(
+                z
+                  .object({
+                    file: z.string().min(1).max(500).describe("The path of the changed file the note comes from, exactly as in the issue's pullRequests"),
+                    note: z.string().min(1).max(500).describe("What the change shows that matters for testing: behaviour the issue doesn't state, a limit, an error case, a gap"),
+                  })
+                  .strict(),
+              )
+              .max(15)
+              .optional()
+              .describe("Only for issues with pullRequests in the context: what their code changes show for testing. Leave out otherwise"),
           })
           .strict(),
       )
@@ -94,7 +116,7 @@ function inputOf(inputs: JiraInputs): JiraInput {
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n[cut: ${text.length - max} more characters]` : text);
 
 /** What the model sees of each issue: masked, and without hashes or ids it doesn't need. */
-function contextOf(loaded: LoadedSources, related: Record<string, RelatedFeature[]> = {}): string {
+function contextOf(loaded: LoadedSources, related: Record<string, RelatedFeature[]> = {}, prs: PullRequestsByIssue = {}): string {
   const issues = loaded.sources.requirements.map((r) => ({
     key: r.key,
     type: r.type,
@@ -112,6 +134,16 @@ function contextOf(loaded: LoadedSources, related: Record<string, RelatedFeature
     ...(r.components.length ? { components: r.components } : {}),
     ...(r.linkedPages.length ? { linkedPages: r.linkedPages.map((p) => ({ title: p.title, text: clip(p.text, MAX_PAGE) })) } : {}),
     ...(related[r.key]?.length ? { relatedFeatures: related[r.key]!.map((f) => ({ path: f.path, text: f.text })) } : {}),
+    ...(prs[r.key]?.length
+      ? {
+          pullRequests: prs[r.key]!.map((p) => ({
+            id: p.id,
+            title: p.title,
+            state: p.state,
+            files: p.files.map((f) => ({ path: f.path, status: f.status, ...(f.patch !== undefined ? { diff: f.patch } : { diff: "(left out: over the size cap, or not sent by the host)" }) })),
+          })),
+        }
+      : {}),
   }));
   const notes = [
     loaded.sources.truncated ? "The Jira read hit a limit, so some related issues are missing." : "",
@@ -127,12 +159,13 @@ const INSTRUCTIONS = [
   "openQuestions: what a tester would ask the author: undefined behaviour, error cases, limits, roles, data rules. Be specific; no generic questions.",
   'inferredCriteria: only for an issue whose acceptanceCriteria is empty, the testable criteria it implies, one per item, each as {"text", "from"}. from is "issue" for a criterion its summary, description or pages imply. Leave it empty for every issue that has criteria, and for epics that only group other issues.',
   'relatedFeatures: feature files of the repo that may describe similar behaviour, found by the issue key or by words of its summary. For an issue with no criteria, you may propose criteria from them, with from set to the file\'s path, but only for behaviour the issue makes likely to apply. A related feature can describe another process: where it may differ (limits, approvers, roles, messages), ask in openQuestions instead of copying it.',
-  "Use only this context: don't read the repository or other files yourself. What the analysis may use from the repo is already in relatedFeatures.",
+  "pullRequests: changes on the git host whose title, branch or commits name the issue key, with their diffs (masked; some diffs left out past a size cap). They show what was built, not what was asked: use them for openQuestions where the code and the issue differ, and add codeNotes, each naming the file (its path exactly as given) a note comes from. Don't treat code as acceptance criteria. Leave codeNotes out for issues with no pullRequests.",
+  "Use only this context: don't read the repository or other files yourself. What the analysis may use from the repo is already in relatedFeatures and pullRequests.",
   "Values like <PERSON_1> are masked personal data: keep them exactly as they are, never guess what they stand for, and don't make up new ones.",
 ].join("\n");
 
 /** Errors the schema can't catch: each issue answered once, criteria only where none exist, no made-up tokens. */
-function check(requirements: Requirement[], context: string, analysis: Analysis, related: Record<string, RelatedFeature[]> = {}): OutputError[] {
+function check(requirements: Requirement[], context: string, analysis: Analysis, related: Record<string, RelatedFeature[]> = {}, prs: PullRequestsByIssue = {}): OutputError[] {
   const errors: OutputError[] = [];
   const byKey = new Map(requirements.map((r) => [r.key, r]));
   const seen = new Set<string>();
@@ -154,7 +187,14 @@ function check(requirements: Requirement[], context: string, analysis: Analysis,
         errors.push({ path: `${at}.inferredCriteria.${j}.from`, message: `${from} isn't one of ${key}'s relatedFeatures; use "issue" or one of: ${[...paths].join(", ") || "(none)"}` });
       }
     });
+    const files = new Set((prs[key] ?? []).flatMap((p) => p.files.map((f) => f.path)));
+    (issue.codeNotes ?? []).forEach((n, j) => {
+      if (!files.has(n.file)) {
+        errors.push({ path: `${at}.codeNotes.${j}.file`, message: files.size ? `${n.file} isn't a file of ${key}'s pullRequests` : `${key} has no pullRequests in the context: leave codeNotes out` });
+      }
+    });
     const texts: Array<[string, string]> = [
+      ...(issue.codeNotes ?? []).map((n, j): [string, string] => [`${at}.codeNotes.${j}.note`, n.note]),
       ...issue.openQuestions.map((q, j): [string, string] => [`${at}.openQuestions.${j}`, q]),
       ...issue.inferredCriteria.map((c, j): [string, string] => [`${at}.inferredCriteria.${j}`, typeof c === "string" ? c : c.text]),
     ];
@@ -168,7 +208,7 @@ function check(requirements: Requirement[], context: string, analysis: Analysis,
   return errors;
 }
 
-function build(loaded: LoadedSources, analysis: Analysis, related: Record<string, RelatedFeature[]> = {}): RequirementsArtifact {
+function build(loaded: LoadedSources, analysis: Analysis, related: Record<string, RelatedFeature[]> = {}, prs: PullRequestsByIssue = {}): RequirementsArtifact {
   const byKey = new Map(analysis.issues.map((a) => [norm(a.key), a]));
   const requirements = loaded.sources.requirements.map((r): AnalyzedRequirement => {
     const a = byKey.get(r.key)!;
@@ -202,6 +242,8 @@ function build(loaded: LoadedSources, analysis: Analysis, related: Record<string
       quality: a.quality,
       openQuestions: a.openQuestions,
       ...(related[r.key]?.length ? { related: related[r.key]!.map((f) => ({ path: f.path, hash: f.hash })) } : {}),
+      ...(prs[r.key]?.length ? { pullRequests: prs[r.key]!.map((p) => ({ id: p.id, url: p.url, title: p.title, state: p.state, hash: p.hash })) } : {}),
+      ...(a.codeNotes?.length ? { codeNotes: a.codeNotes } : {}),
       sourceHash: r.sourceHash,
     };
   });
@@ -215,14 +257,25 @@ export async function relatedFeaturesOf(deps: RequirementsDeps, runId: string, l
   return deps.data.relatedFeatures(runId, bare);
 }
 
+/** Masked pull requests by issue key. */
+export type PullRequestsByIssue = Record<string, MaskedPullRequest[]>;
+
+/** The pull requests of the run's issues, when the inputs ask for them (S4-6). */
+export async function pullRequestsOf(deps: RequirementsDeps, runId: string, inputs: JiraInputs, loaded: LoadedSources): Promise<PullRequestsByIssue> {
+  if (!inputs.withPullRequests || !deps.data.pullRequests) return {};
+  return (await deps.data.pullRequests(runId, loaded.sources.requirements.map((r) => r.key))).byIssue;
+}
+
 /**
  * What the analysis of `loaded` would be given, as one string per issue: its
  * sourceHash and its related files. Two runs with the same fingerprint gave
  * the model the same input (Tarek, 7 Nov 2026: reuse only then).
  */
-export function inputFingerprint(issues: ReadonlyArray<{ key: string; sourceHash: string; related?: ReadonlyArray<{ path: string; hash: string }> | undefined }>): string {
+export function inputFingerprint(
+  issues: ReadonlyArray<{ key: string; sourceHash: string; related?: ReadonlyArray<{ path: string; hash: string }> | undefined; pullRequests?: ReadonlyArray<{ id: number; hash: string }> | undefined }>,
+): string {
   return issues
-    .map((r) => `${r.key} ${r.sourceHash} ${[...(r.related ?? [])].map((f) => `${f.path}@${f.hash}`).sort().join(",")}`)
+    .map((r) => `${r.key} ${r.sourceHash} ${[...(r.related ?? [])].map((f) => `${f.path}@${f.hash}`).sort().join(",")}${r.pullRequests?.length ? ` pr:${[...r.pullRequests].map((p) => `${p.id}@${p.hash}`).sort().join(",")}` : ""}`)
     .sort()
     .join("\n");
 }
@@ -230,12 +283,13 @@ export function inputFingerprint(issues: ReadonlyArray<{ key: string; sourceHash
 export { inputOf as jiraInputOf };
 
 /** Inputs of any workflow that starts from Jira: one key or one JQL filter. */
-export type JiraInputs = { key?: string | undefined; jql?: string | undefined };
+export type JiraInputs = { key?: string | undefined; jql?: string | undefined; withPullRequests?: boolean | undefined };
 
 /** The analyze step, shared with the test-cases workflow. It writes requirements@1 when accepted. */
 export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepDefinition<I, Analysis> {
   const load = (runId: string, inputs: I) => deps.data.requirements(runId, inputOf(inputs));
   const relatedOf = (runId: string, loaded: LoadedSources) => relatedFeaturesOf(deps, runId, loaded);
+  const prsOf = (runId: string, inputs: I, loaded: LoadedSources) => pullRequestsOf(deps, runId, inputs, loaded);
   return {
     id: "analyze",
     kind: "generate",
@@ -243,17 +297,20 @@ export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepD
     instructions: () => INSTRUCTIONS,
     context: async ({ runId, inputs }) => {
       const loaded = await load(runId, inputs);
-      return contextOf(loaded, await relatedOf(runId, loaded));
+      return contextOf(loaded, await relatedOf(runId, loaded), await prsOf(runId, inputs, loaded));
     },
     check: async ({ runId, inputs }, output) => {
       const loaded = await load(runId, inputs);
       const related = await relatedOf(runId, loaded);
-      return check(loaded.sources.requirements, contextOf(loaded, related), output, related);
+      const prs = await prsOf(runId, inputs, loaded);
+      return check(loaded.sources.requirements, contextOf(loaded, related, prs), output, related, prs);
     },
     onAccept: async ({ runId, inputs }, output) => {
       const loaded = await load(runId, inputs);
-      await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output, await relatedOf(runId, loaded)), {
-        inputs: loaded.inputs,
+      const prs = await prsOf(runId, inputs, loaded);
+      const prInputs = [...new Map(Object.values(prs).flat().map((p) => [p.id, { kind: "git-diff" as const, ref: `pr/${p.id}`, hash: p.hash }])).values()];
+      await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output, await relatedOf(runId, loaded), prs), {
+        inputs: [...loaded.inputs, ...prInputs],
         templateVersion: REQUIREMENTS_TEMPLATE_VERSION,
       });
     },
@@ -262,6 +319,10 @@ export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepD
 
 /** A JQL filter can name a person, so the run folder keeps a vault token instead. */
 export async function sealJiraInputs<I extends JiraInputs>(deps: RequirementsDeps, runId: string, inputs: I): Promise<I> {
+  if (inputs.withPullRequests) {
+    if (inputs.key === undefined && inputs.jql === undefined) throw new EngineError("INVALID_INPUTS", "withPullRequests adds pull requests to a new analysis: give a key or a JQL filter");
+    if (!(await deps.data.pullRequestsEnabled?.())) throw new EngineError("INVALID_INPUTS", "withPullRequests needs a git section in agent-qa.yaml (platform, repo and token) to find pull requests");
+  }
   if (inputs.key === undefined && inputs.jql === undefined) return inputs;
   const sealed = await deps.data.sealInput(runId, inputOf(inputs));
   return "key" in sealed ? { ...inputs, key: sealed.key } : { ...inputs, jql: sealed.jql };

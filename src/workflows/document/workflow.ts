@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { EngineError, type Artifact, type InputRef, type OutputError, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
 import { REQUIREMENTS_ARTIFACT } from "../requirements/artifact.js";
-import { analyzeStep, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
+import { analyzeStep, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
 import { TEST_CASES_ARTIFACT } from "../test-cases/artifact.js";
 import { TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
 import type { DocumentData, RequirementsData } from "../../data/index.js";
@@ -64,6 +64,7 @@ export const documentInputSchema = z
     requirementsRun: runId("Id of a finished requirements (or test-cases) run whose requirements@1 the document is written from, instead of reading Jira again"),
     testCasesRun: runId("Id of a test-cases run whose reviewed cases the document uses; its requirements are used too"),
     testRunRun: runId("Id of a run-tests run whose results the document uses"),
+    withPullRequests: withPullRequestsInput,
     publish: z.literal("confluence").optional().describe("Publish the reviewed document as a Confluence page (asks first)"),
   })
   .strict()
