@@ -2,7 +2,7 @@
 
 Slice 4's code is tested against stand-ins only. This guide is the live check (S4-11, S4-12). Each part is separate: do the ones you have access for, in any order, and send me what each "Report" line asks for. Run everything from your clone of master (`npm run build`, or `npm run build:tsc` on Windows), and on your corporate network set `$env:NODE_OPTIONS = "--use-system-ca"` first.
 
-Use a project with an `agent-qa.yaml` (the approval app is fine) and one Jira issue key you used before. A run's id is its folder name under `.agent-qa\runs\`.
+Use a project with an `agent-qa.yaml` (the approval app is fine) and one Jira issue key you used before. Commands that ask a model use `--headless claude-code`, so no API key is needed; drop it if you have a `models` section with its key. A run's id is its folder name under `.agent-qa\runs\`.
 
 ## 1. Claude Code
 
@@ -31,7 +31,7 @@ node <clone>\dist\cli\bin.js run test-cases --key <issue key> --headless copilot
 node <clone>\dist\cli\bin.js harness --headless claude-code
 ```
 
-Report, for each: the exit code and the last lines of output; whether `cost.json` in the run folder has token counts. For Copilot especially: did it answer at all (it must read the prompt from standard input), and did it try to use a tool. If the Copilot run fails, also send the output of `copilot --version`.
+Report, for each: the exit code and the last lines of output; whether `cost.json` in the run folder has token counts. For Copilot especially: did it answer at all (it must read the prompt from standard input), and did it try to use a tool. If the Copilot run fails, also send the output of `copilot --version`. With `--yes`, the second run may reuse the first run's analysis of the same issue, so it shows no `analyze` line: that is expected. If Claude Code fails with "The command line is too long", send the output of `where claude` too.
 
 ## 4. GitLab (your test project)
 
@@ -44,9 +44,9 @@ Report, for each: the exit code and the last lines of output; whether `cost.json
      token: ${env:GITLAB_TOKEN}   # a personal or project token, api scope, Developer role
    ```
 
-2. `node <clone>\dist\cli\bin.js run requirements --key <key named by an MR> --with-pull-requests --yes`
+2. `node <clone>\dist\cli\bin.js run requirements --key <key named by an MR> --with-pull-requests --yes --headless claude-code`
 
-Report: the exit code; `pull-requests.md` in the run folder (it lists the MRs found, masked); any error text. A wrong project gives NOT_FOUND: check `repo` first.
+Report: the exit code; `pull-requests.md` in the run folder (it lists the MRs found, masked); any error text. A wrong project gives NOT_FOUND: check `repo` first. A self-managed GitLab must be 15.7 or later (gitlab.com is fine).
 
 The CI part (a merge request opened by `scripts --ci` from a GitLab CI job) can wait for the end of the slice.
 
@@ -62,10 +62,10 @@ The CI part (a merge request opened by `scripts --ci` from a GitLab CI job) can 
 
    and keep `policy.writes.confluence: ask` (the `--accept publish` below is your yes).
 
-2. `node <clone>\dist\cli\bin.js run document --key <issue key> --type test-plan --publish confluence --accept publish`
+2. `node <clone>\dist\cli\bin.js run document --key <issue key> --type test-plan --publish confluence --accept publish --headless claude-code`
 3. Run the same command again: the page must be updated, not duplicated.
 
-Report: the page link from the output; whether it has the `agent-qa` label; how tables and code look on the page; whether the second run updated the same page.
+Report: the page link, in `confluence-page.md` in the run folder; whether it has the `agent-qa` label; how tables and code look on the page; whether the second run updated the same page.
 
 ## 6. Azure DevOps
 
