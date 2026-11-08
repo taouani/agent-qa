@@ -684,3 +684,50 @@ describe("test-cases workflow: reuse an earlier analysis of the same input (Tare
     expect((await engine.start("test-cases", { requirementsRun: a.runId })).stepId).toBe("cases");
   });
 });
+
+describe("test-cases workflow: --changed-only (S4-14)", () => {
+  const approve = { approved: true, changes: [] };
+  it("writes cases only for the issues changed since their cases were written, and ends when none did", async () => {
+    const a = await engine.start("test-cases", { key: "ABC-1" });
+    await engine.submit(a.runId, "analyze", good);
+    await engine.submit(a.runId, "cases", cases);
+    expect((await engine.submit(a.runId, "review", approve)).next.kind).toBe("done");
+
+    // Nothing changed: no analysis, no model call, the run ends.
+    const b = await engine.start("test-cases", { key: "ABC-1", changedOnly: true });
+    expect(b).toMatchObject({ stepId: "changes", kind: "confirm" });
+    expect(b.context).toContain("None of the 2 issue(s) changed since their cases were written");
+    expect(b.context).toContain(`ABC-1 (run ${a.runId})`);
+    expect((await engine.submit(b.runId, "changes", { proceed: true })).next.kind).toBe("done");
+    expect(await runs.readArtifact(b.runId, TEST_CASES_ARTIFACT)).toBeUndefined();
+
+    // ABC-2 changed in Jira: only it is analyzed and gets cases; ABC-1 is left out.
+    issues = ISSUES.map((i) => (i.key === "ABC-2" ? { ...i, updated: "2026-11-07T10:00:00.000+0000" } : i));
+    const c = await engine.start("test-cases", { key: "ABC-1", changedOnly: true });
+    expect(c.context).toContain("New or changed, to analyze and write cases for: ABC-2.");
+    expect(c.context).toContain(`left out: ABC-1 (run ${a.runId})`);
+    // The issues are Agent-QA's to name, whatever the answer says.
+    const analyze = (await engine.submit(c.runId, "changes", { proceed: true, analyze: ["ABC-1", "ABC-2"] })).next;
+    expect(analyze.stepId).toBe("analyze");
+    expect(analyze.context).toContain("ABC-2");
+    expect(analyze.context).not.toContain("Escalate cases older than 2 days");
+    const onlyTwo = { issues: [good.issues[1]!] };
+    const casesStep = (await engine.submit(c.runId, "analyze", onlyTwo)).next;
+    expect(casesStep.stepId).toBe("cases");
+    await engine.submit(c.runId, "cases", { cases: [tc("ABC-2", 1, ["AC1"])] });
+    await engine.submit(c.runId, "review", approve);
+    expect((await runs.readArtifact(c.runId, TEST_CASES_ARTIFACT))!.data.cases.map((x) => x.id)).toEqual(["TC-ABC-2-001"]);
+
+    // Now both have cases at their current version: nothing to do again. A no stops before any analysis.
+    const d = await engine.start("test-cases", { key: "ABC-1", changedOnly: true });
+    expect(d.context).toContain("None of the 2 issue(s) changed");
+    expect(d.context).toContain(`ABC-2 (run ${c.runId})`);
+    issues = ISSUES;
+    const e = await engine.start("test-cases", { key: "ABC-1", changedOnly: true });
+    expect(e.context).toContain("New or changed, to analyze and write cases for: ABC-2.");
+    expect((await engine.submit(e.runId, "changes", { proceed: false })).next.kind).toBe("done");
+
+    // Only with a key or a JQL filter.
+    await expect(engine.start("test-cases", { requirementsRun: a.runId, changedOnly: true })).rejects.toThrow(/Invalid inputs/);
+  });
+});

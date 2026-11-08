@@ -105,6 +105,7 @@ export function buildProgram(): Command {
     .option("--push-from <runId>", "test-cases: push the reviewed cases of an earlier test-cases run whose push was declined (a new run, straight to the push)")
     .option("--type <type>", "document: the document type, e.g. test-plan")
     .option("--with-pull-requests", "requirements, test-cases, document: also give the analysis the pull requests that name each issue on the git host (git section), masked")
+    .option("--changed-only", "test-cases with --key or --jql: write cases only for the issues new or changed (in Jira, related feature files or pull requests) since an earlier run wrote theirs; the step is changes")
     .option("--publish <target>", "document: publish the reviewed document, to confluence (asks first; accept with --accept publish)")
     .option("--input <json>", "the workflow's inputs as JSON")
     .option("--resume <runId>", "continue a run that stopped")
