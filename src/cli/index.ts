@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, type KeptRate, type RunnableRate } from "../harness/index.js";
-import { ApiDriver, ModelConfigError, StaticDriver, type ModelDriver } from "../llm/index.js";
+import { ApiDriver, HEADLESS_AGENTS, ModelConfigError, StaticDriver, type ModelDriver } from "../llm/index.js";
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
@@ -109,6 +109,10 @@ export function buildProgram(): Command {
     .option("--input <json>", "the workflow's inputs as JSON")
     .option("--resume <runId>", "continue a run that stopped")
     .option("--model <provider:model>", "the model for every step")
+    .option("--headless <agent>", `answer steps with a headless agent CLI, ${HEADLESS_AGENTS.join(" or ")}, signed in its own way, instead of a model API key (every agent tool off)`, (v: string) => {
+      if (!(HEADLESS_AGENTS as readonly string[]).includes(v)) throw new InvalidArgumentError(`expected ${HEADLESS_AGENTS.join(" or ")}`);
+      return v;
+    })
     .option("--yes", "answer confirm steps without asking: an earlier analysis of the same unchanged input is reused; a test-case review is accepted as unattended; the Xray push, a new repo, exploring, publishing a document, and the scripts type check, write and test run are declined (accept them with --accept push, scaffold, approve, publish, typecheck, review or run); in CI the scripts pull request is opened")
     .option("--accept <step>", "accept this confirm step, e.g. --accept push (repeatable)", collect, [])
     .option("--decline <step>", "decline this confirm step (repeatable)", collect, [])

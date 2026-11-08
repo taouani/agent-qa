@@ -18,7 +18,7 @@ import {
   type UsageEntry,
 } from "../core/index.js";
 import { DataAccess, secretSources } from "../data/index.js";
-import { ApiDriver, drive, DriveError, ModelConfigError, parseModelId, type ModelDriver, type StepUsage } from "../llm/index.js";
+import { ApiDriver, drive, DriveError, HeadlessDriver, ModelConfigError, modelName, parseModelId, type HeadlessAgent, type ModelDriver, type StepUsage } from "../llm/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 
 /**
@@ -70,6 +70,8 @@ export interface RunOptions {
   log?: (line: string) => void;
   /** Asks the person a yes/no question. Default: a terminal prompt when stdin and stderr are TTYs; `false` never asks. */
   ask?: ((question: string) => Promise<boolean | undefined>) | false;
+  /** Answers steps with a headless agent CLI (Claude Code or Copilot) instead of a model API key (S4-10). */
+  headless?: HeadlessAgent;
   /** Replaces the API driver, for tests. */
   driver?: ModelDriver;
   /** Replaces the data access, for tests. */
@@ -138,14 +140,14 @@ function usageLine(u: StepUsage): string {
   return `  ${u.stepId} attempt ${u.attempt}: ${u.inputTokens} in${cached}, ${u.outputTokens ?? 0} out${u.model ? `, ${u.model}` : ""}`;
 }
 
-const usageEntry = (u: StepUsage, model: string | undefined): UsageEntry => {
+const usageEntry = (u: StepUsage, model: string | undefined, driver: UsageEntry["driver"]): UsageEntry => {
   const { stepId, attempt, inputTokens, outputTokens, cachedInputTokens, promptChars, answerChars } = u;
   const m = u.model ?? model;
   return {
     at: new Date().toISOString(),
     stepId,
     attempt,
-    driver: "api",
+    driver,
     ...(m ? { model: m } : {}),
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
@@ -181,7 +183,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
 
     const mode: Mode = ci ? "ci" : "ide";
     const runs = new RunStore(opts.env.AGENT_QA_RUNS_DIR || join(opts.root, ".agent-qa", "runs"));
-    engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api", ...(opts.model ? { model: opts.model } : {}) }), newRunId: runs.newRunId });
+    engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: opts.headless ? "headless" : "api", ...(opts.model ? { model: opts.model } : {}) }), newRunId: runs.newRunId });
     const base = { root: opts.root, store: runs, env: opts.env, config, mode };
     data = opts.data ? opts.data(base) : new DataAccess(base);
     for (const workflow of builtinWorkflows({ data, runs })) engine.register(workflow);
@@ -197,7 +199,7 @@ export async function runCommand(opts: RunOptions): Promise<number> {
       if (error instanceof EngineError && error.code === "RUN_NOT_FOUND") throw new SetupError(`can't resume ${opts.resume}: no run ${opts.resume} in this project's run folder, or it has no saved steps (check the id, or AGENT_QA_RUNS_DIR)`);
       throw error;
     }
-    if (!opts.driver && !config.models && engine.usesModel(workflowId)) throw new SetupError("agent-qa.yaml has no models section: set models.default, e.g. anthropic:<model-id>");
+    if (!opts.driver && !opts.headless && !config.models && engine.usesModel(workflowId)) throw new SetupError("agent-qa.yaml has no models section: set models.default, e.g. anthropic:<model-id>");
     // Every flag names a real confirm step, so a typo can't let a step through.
     const confirms = engine.confirmSteps(workflowId);
     for (const id of [...(opts.accept ?? []), ...(opts.decline ?? [])]) {
@@ -205,10 +207,14 @@ export async function runCommand(opts: RunOptions): Promise<number> {
     }
     const both = (opts.accept ?? []).filter((id) => opts.decline?.includes(id));
     if (both.length) throw new SetupError(`${both.join(", ")} is both accepted and declined`);
-    const model = opts.model ?? config.models?.workflows?.[workflowId];
-    if (!opts.driver && model) checkModel(model, config);
+    // models.workflows names API models; a headless CLI takes only --model, else its own default.
+    const model = opts.headless ? opts.model : (opts.model ?? config.models?.workflows?.[workflowId]);
+    if (!opts.driver && !opts.headless && model) checkModel(model, config);
+    if (opts.headless && model) modelName(opts.headless, model);
     // No models section only when the workflow never asks a model (checked above).
-    const driver = opts.driver ?? (config.models ? new ApiDriver({ models: config.models, secrets: secretSources(opts.env) }) : undefined);
+    const driver =
+      opts.driver ??
+      (opts.headless ? new HeadlessDriver({ agent: opts.headless, runner: data.modelCli(opts.headless) }) : config.models ? new ApiDriver({ models: config.models, secrets: secretSources(opts.env) }) : undefined);
 
     let step: Step;
     if (opts.resume) {
@@ -230,11 +236,11 @@ export async function runCommand(opts: RunOptions): Promise<number> {
         // Each call is recorded as it happens, so cost@1 is right even when the run stops later.
         const id = step.runId;
         // A model the driver didn't name is the configured one only for the API driver; a custom driver's calls stay unpriced.
-        const fallback = opts.driver ? undefined : (model ?? config.models?.default);
+        const fallback = opts.driver || opts.headless ? undefined : (model ?? config.models?.default);
         const onUsage = async (u: StepUsage) => {
           log(usageLine(u));
           // The cost report must never stop a run: the answer is already paid for.
-          await recordUsage(runs, id, [usageEntry(u, fallback)]).catch((error: unknown) => log(`  (cost not recorded: ${(error instanceof Error ? error.message : String(error)).split(opts.root).join(".")})`));
+          await recordUsage(runs, id, [usageEntry(u, fallback, opts.headless ? "headless" : "api")]).catch((error: unknown) => log(`  (cost not recorded: ${(error instanceof Error ? error.message : String(error)).split(opts.root).join(".")})`));
         };
         step = (await drive(engine, step, driver!, { ...(model ? { model } : {}), onUsage })).step;
         continue;

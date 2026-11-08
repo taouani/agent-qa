@@ -250,6 +250,22 @@ describe("agent-qa run", () => {
     expect(lines.some((l) => l.includes("failed at analyze"))).toBe(true);
   });
 
+  it("answers with a headless agent CLI without a models section, and says when it isn't installed", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), YAML.replace("models:\n  default: anthropic:claude-sonnet-5-5\n", ""));
+    const headless = options({ workflow: "test-cases", key: "ABC-1", headless: "claude-code", env: { PATH: join(dir, "no-bin") } });
+    delete headless.driver;
+    expect(await runCommand(headless)).toBe(EXIT.failed);
+    expect(lines.join("\n")).toContain("claude (npm install -g @anthropic-ai/claude-code) isn't on the PATH");
+    const runId = /^Run (\S+)/.exec(lines.find((l) => l.startsWith("Run "))!)![1]!;
+    expect(JSON.parse(await readFile(join(dir, ".agent-qa", "runs", runId, "run.json"), "utf8"))).toMatchObject({ host: "cli", driver: "headless" });
+    // A model for the API, not the CLI, is refused before anything runs.
+    lines = [];
+    const wrongModel = options({ workflow: "test-cases", key: "ABC-1", headless: "claude-code", model: "openai:gpt-x", env: { PATH: join(dir, "no-bin") } });
+    delete wrongModel.driver;
+    expect(await runCommand(wrongModel)).toBe(EXIT.setup);
+    expect(lines.join("\n")).toContain("claude-code can't answer with openai:gpt-x");
+  });
+
   it("keeps the run and says how to resume when a source or Xray fails", async () => {
     const failingData = (what: "jira" | "xray") => (base: ConstructorParameters<typeof DataAccess>[0]) => {
       const data = options().data!(base);

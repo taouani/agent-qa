@@ -36,7 +36,8 @@ export { AUTH_PATH, listFolderFiles, LOCATOR_FORMS, MAX_LISTED_FILES, scanFeatur
 export { apiTestProblems, checkDependencies, codeLiterals, fixSkeleton, MAX_REACH, onlyWaitsAdded, presenceCheckedFields, scanGeneratedCode, testReach, type FixSkeleton } from "./code-scan.js";
 export type { CodeFinding, CodeScan } from "./code-scan.js";
 export type { FolderListing, LocatorForm, RepoScan, ScannedFeature, ScannedPage, ScannedStep } from "./profile-scan.js";
-export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv, TEST_RUN_TIMEOUT_MS } from "./host.js";
+export { ALLOWED_FLAGS, BUILTIN_REPORTERS, checkHostCommand, HostCommandRefused, hostCwd, hostEnv, MODEL_CLI_AUTH_ENV, modelCliEnv, TEST_RUN_TIMEOUT_MS } from "./host.js";
+export type { ModelCli } from "./host.js";
 export type { HostCommandOutcome, HostCommandRequest } from "./host.js";
 export { caseLabel, executionChanges, executionResults, tcIdOf, toXrayTest } from "./xray.js";
 export type { ExecutionResult, ExecutionRow, ExistingTest, PreviousExecution, PushCase, XrayExecutionPlan, XrayPlan, XrayPushResult } from "./xray.js";

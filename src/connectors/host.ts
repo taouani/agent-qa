@@ -23,6 +23,8 @@ export interface HostCommandOptions {
   /** Bytes kept of each of stdout and stderr: the end, where errors and summaries are. */
   maxOutputBytes: number;
   signal?: AbortSignal;
+  /** Written to the program's standard input, which is then closed; without it, stdin is closed from the start. */
+  stdin?: string;
 }
 
 export interface HostCommandResult {
@@ -117,7 +119,7 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     const child = spawn(program, args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
     });
@@ -163,6 +165,11 @@ export async function runHostCommand(grant: WriteGrant, options: HostCommandOpti
     if (options.signal?.aborted) onAbort();
     else options.signal?.addEventListener("abort", onAbort, { once: true });
 
+    if (options.stdin !== undefined && child.stdin) {
+      // A program that exits without reading closes the pipe: that is its answer, not an error here.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(options.stdin, "utf8");
+    }
     child.stdout?.on("data", (chunk: Buffer) => out.push(chunk));
     child.stderr?.on("data", (chunk: Buffer) => err.push(chunk));
     child.on("error", (error) => {
