@@ -2,7 +2,7 @@ import { z } from "zod";
 import { EngineError, type Artifact, type InputRef, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
 import type { ExistingTest, RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
-import { analyzeStep, inputFingerprint, jiraInputOf, relatedFeaturesOf, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
+import { analyzeStep, inputFingerprint, jiraInputOf, pullRequestsOf, relatedFeaturesOf, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
 import {
   TEST_CASES_ARTIFACT,
   TEST_CASES_DRAFT_ARTIFACT,
@@ -64,6 +64,7 @@ export const testCasesInputSchema = z
       .regex(RUN_ID, "must be a run id")
       .optional()
       .describe("Id of an earlier test-cases run whose reviewed cases weren't pushed (the push was declined): goes straight to the push, with no analysis, cases or review"),
+    withPullRequests: withPullRequestsInput,
   })
   .strict()
   .refine((i) => [i.key, i.jql, i.requirementsRun, i.casesRun].filter((v) => v !== undefined).length === 1, { message: "give exactly one of key, jql, requirementsRun or casesRun" });
@@ -263,7 +264,8 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         if (!deps.runs.list || ctx.inputs.requirementsRun !== undefined) return undefined;
         const loaded = await deps.data.requirements(ctx.runId, jiraInputOf(ctx.inputs));
         const related = await relatedFeaturesOf(deps, ctx.runId, loaded);
-        const want = inputFingerprint(loaded.sources.requirements.map((r) => ({ key: r.key, sourceHash: r.sourceHash, related: related[r.key] })));
+        const prs = await pullRequestsOf(deps, ctx.runId, ctx.inputs, loaded);
+        const want = inputFingerprint(loaded.sources.requirements.map((r) => ({ key: r.key, sourceHash: r.sourceHash, related: related[r.key], pullRequests: prs[r.key] })));
         let best: (Earlier & { at: string }) | undefined;
         for (const id of (await deps.runs.list()).filter((r) => r !== ctx.runId).slice(-MAX_REUSE_RUNS)) {
           const art = await deps.runs.readArtifact(id, REQUIREMENTS_ARTIFACT).catch(() => undefined);
@@ -390,6 +392,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
       const refuse = (message: string): never => {
         throw new EngineError("INVALID_INPUTS", message);
       };
+      if (inputs.withPullRequests) return refuse("withPullRequests adds pull requests to a new analysis: casesRun has none");
       const art = await deps.runs.readArtifact(inputs.casesRun, TEST_CASES_ARTIFACT).catch(() => undefined);
       if (!art) return refuse(`Run ${inputs.casesRun} has no reviewed test cases (test-cases@1): give the id of a test-cases run whose review was approved`);
       if (art.data.cases.length === 0) return refuse(`Run ${inputs.casesRun} kept no test cases in its review: there is nothing to push`);

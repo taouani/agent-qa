@@ -24,6 +24,7 @@ import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type Mas
 import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PreviousExecution, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
 import { clipFeature, featureFiles, relatedFeatures, type RelatedFeature } from "./related-features.js";
+import { MAX_PULL_REQUEST_ISSUES, MAX_PULL_REQUESTS_PER_ISSUE, PULL_REQUEST_BYTES, PULL_REQUESTS_ARTIFACT, PULL_REQUESTS_VERSION, type MaskedPullRequest, type PullRequestsArtifact } from "./pull-requests.js";
 import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
 import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
@@ -57,6 +58,14 @@ export interface RequirementsData {
    * so an IDE and CI get the same files.
    */
   relatedFeatures?(runId: string, issues: ReadonlyArray<{ key: string; summary: string }>): Promise<Record<string, RelatedFeature[]>>;
+  /** Whether pull requests can be read (S4-6): `agent-qa.yaml` has a `git` section. */
+  pullRequestsEnabled?(): Promise<boolean>;
+  /**
+   * The pull requests that name each issue key on the configured git host,
+   * with their diffs, masked with the run's vault and capped per issue. Kept
+   * in the run as `pull-requests@1`: the same keys read it from there.
+   */
+  pullRequests?(runId: string, keys: readonly string[]): Promise<PullRequestsArtifact>;
 }
 
 /** The part of data access the Xray push needs (S1-10). */
@@ -439,6 +448,8 @@ export interface DataAccessOptions {
   browser?: OpenBrowser;
   /** Replace the GitHub client, for tests. */
   github?: (repo: string) => Pick<GitHost, "openPullRequest">;
+  /** Replace the git host that pull requests are read from (S4-6), for tests. */
+  gitReader?: Pick<GitHost, "platform" | "findPullRequests" | "pullRequestDiff">;
   /** Replace the Confluence client that publishes documents, for tests. */
   confluenceWriter?: ConfluenceWriter;
 }
@@ -551,6 +562,86 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     }
     await service.saveVault();
     return out;
+  }
+
+  async pullRequestsEnabled(): Promise<boolean> {
+    if (this.options.gitReader) return true;
+    try {
+      return (await this.loadConfig()).git !== undefined;
+    } catch {
+      return false;
+    }
+  }
+
+  async pullRequests(runId: string, keys: readonly string[]): Promise<PullRequestsArtifact> {
+    const wanted = [...new Set(keys.map((k) => k.trim().toUpperCase()))].sort();
+    const cached = await this.options.store.readArtifact(runId, PULL_REQUESTS_ARTIFACT).catch(() => undefined);
+    if (cached && cached.data.keys.join(",") === wanted.slice(0, MAX_PULL_REQUEST_ISSUES).join(",")) return cached.data;
+    const host = await this.gitReader();
+    const searched = wanted.slice(0, MAX_PULL_REQUEST_ISSUES);
+    // A pull request that names two issues is read once.
+    const diffs = new Map<number, Promise<Awaited<ReturnType<typeof host.pullRequestDiff>>>>();
+    type Raw = { key: string; ref: Awaited<ReturnType<typeof host.findPullRequests>>[number]; files: Awaited<ReturnType<typeof host.pullRequestDiff>>["files"]; truncated: boolean };
+    const raw: Raw[] = [];
+    for (const key of searched) {
+      let left = PULL_REQUEST_BYTES;
+      for (const ref of await host.findPullRequests(key, { max: MAX_PULL_REQUESTS_PER_ISSUE })) {
+        let diff = diffs.get(ref.id);
+        if (!diff) {
+          diff = host.pullRequestDiff(ref.id, { maxBytes: PULL_REQUEST_BYTES });
+          diffs.set(ref.id, diff);
+        }
+        const full = await diff;
+        // The issue's own cap, over all its pull requests: a patch past it keeps only the path and status; smaller ones after it still fit.
+        let cut = false;
+        const files = full.files.map((f) => {
+          const size = f.patch === undefined ? 0 : Buffer.byteLength(f.patch, "utf8");
+          if (f.patch === undefined || size <= left) {
+            left -= size;
+            return f;
+          }
+          cut = true;
+          return { path: f.path, status: f.status, ...(f.previousPath !== undefined ? { previousPath: f.previousPath } : {}) };
+        });
+        raw.push({ key, ref, files, truncated: full.truncated || cut });
+      }
+    }
+    // One masker for every text, so the counts add up; titles, branches, paths and patches.
+    const texts = raw.flatMap((r) => [
+      { text: r.ref.title, field: "git.title" },
+      { text: r.ref.sourceBranch, field: "git.branch" },
+      ...r.files.flatMap((f) => [{ text: f.path, field: "git.path" }, ...(f.patch !== undefined ? [{ text: f.patch, field: "git.diff" }] : [])]),
+    ]);
+    const { service } = await this.run(runId);
+    const { masked, counts } = service.maskBatch(texts);
+    await service.saveVault();
+    let at = 0;
+    const next = () => masked[at++]!;
+    const byIssue: Record<string, MaskedPullRequest[]> = Object.fromEntries(searched.map((k) => [k, []]));
+    for (const r of raw) {
+      const title = next();
+      const sourceBranch = next();
+      const files = r.files.map((f) => {
+        const path = next();
+        return { path, status: f.status, ...(f.patch !== undefined ? { patch: next() } : {}) };
+      });
+      const hash = sha256(JSON.stringify({ v: PULL_REQUESTS_VERSION, id: r.ref.id, title: r.ref.title, branch: r.ref.sourceBranch, files: r.files.map((f) => [f.path, f.status, f.patch ?? null]) }));
+      byIssue[r.key]!.push({ id: r.ref.id, url: r.ref.url, title, state: r.ref.state, sourceBranch, matchedIn: r.ref.matchedIn, files, truncated: r.truncated, hash });
+    }
+    const data: PullRequestsArtifact = { platform: host.platform, keys: searched, skipped: wanted.slice(MAX_PULL_REQUEST_ISSUES), byIssue, masked: counts };
+    await this.options.store.writeArtifact(runId, PULL_REQUESTS_ARTIFACT, data, {
+      inputs: [...new Map(Object.values(byIssue).flat().map((p) => [p.id, { kind: "git-diff" as const, ref: `${host.platform}:pr/${p.id}`, hash: p.hash }])).values()],
+      templateVersion: PULL_REQUESTS_VERSION,
+    });
+    return data;
+  }
+
+  private async gitReader(): Promise<Pick<GitHost, "platform" | "findPullRequests" | "pullRequestDiff">> {
+    if (this.options.gitReader) return this.options.gitReader;
+    const config = await this.loadConfig();
+    const git = config.git;
+    if (!git) throw new Error("withPullRequests needs a git section in agent-qa.yaml (platform, repo and token) to find pull requests");
+    return createGitHost(git, await resolveSecret(git.token, this.secrets()), this.options.fetch ? { fetch: this.options.fetch } : {});
   }
 
   async restoresOnWrite(): Promise<boolean> {

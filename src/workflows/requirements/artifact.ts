@@ -58,6 +58,12 @@ export const analyzedRequirementSchema = z
     openQuestions: z.array(z.string()),
     /** The related feature files the analysis was given (none for an issue with criteria): with sourceHash, what makes a later run's input the same. */
     related: z.array(z.object({ path: z.string(), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict()).optional(),
+    /** The pull requests the analysis was given (S4-6, withPullRequests): with sourceHash, what makes a later run's input the same. */
+    pullRequests: z
+      .array(z.object({ id: z.number().int().min(0), url: z.string(), title: z.string(), state: z.enum(["open", "merged", "closed"]), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict())
+      .optional(),
+    /** What the pull requests' code shows for testing, each from one changed file. Check it with the author: code is what was built, not what was asked. */
+    codeNotes: z.array(z.object({ file: z.string(), note: z.string() }).strict()).optional(),
     /** The issue's own hash from `sources@1`: same hash, same source. */
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
   })
@@ -113,6 +119,14 @@ export function renderRequirements(data: RequirementsArtifact): string {
     if (r.openQuestions.length) {
       lines.push("", "### Open questions", "");
       for (const q of r.openQuestions) lines.push(`- ${one(q)}`);
+    }
+    if (r.codeNotes?.length) {
+      lines.push("", "### From the code", "");
+      for (const n of r.codeNotes) lines.push(`- ${code(one(n.file))}: ${one(n.note)}`);
+    }
+    if (r.pullRequests?.length) {
+      lines.push("", "### Pull requests", "");
+      for (const p of r.pullRequests) lines.push(`- #${p.id} ${one(p.title)} (${p.state}): ${p.url}`);
     }
     if (r.links.length || r.children.length || r.linkedPages.length) {
       lines.push("", "### Related", "");

@@ -52,6 +52,8 @@ export interface RunOptions {
   type?: string;
   /** document: where to publish it, `confluence`. */
   publish?: string;
+  /** requirements, test-cases, document: add the issues' pull requests to the analysis. */
+  withPullRequests?: boolean;
   /** Inputs as JSON, for workflows the flags don't cover. */
   input?: string;
   model?: string;
@@ -93,7 +95,12 @@ async function terminalAsk(question: string): Promise<boolean | undefined> {
 const ciFromEnv = (env: NodeJS.ProcessEnv) => Boolean(env.CI) && !/^(false|0)$/i.test(env.CI!);
 
 function inputsOf(opts: RunOptions): unknown {
-  const inputs = baseInputs(opts);
+  let inputs = baseInputs(opts);
+  if (opts.withPullRequests) {
+    if (opts.resume) throw new SetupError("--resume continues a run with its own inputs: leave out --with-pull-requests");
+    if (!["requirements", "test-cases", "document"].includes(opts.workflow ?? "")) throw new SetupError("--with-pull-requests is for the requirements, test-cases and document workflows");
+    inputs = { ...(inputs as object), withPullRequests: true };
+  }
   if (opts.type === undefined && opts.publish === undefined) return inputs;
   if (opts.resume) throw new SetupError("--resume continues a run with its own inputs: leave out --type and --publish");
   if (opts.workflow !== "document") throw new SetupError("--type and --publish are for the document workflow");

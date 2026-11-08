@@ -11,7 +11,7 @@ Two rules shape the design:
 
 ## Status
 
-v2 is in alpha, on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis, test cases pushed to Xray, Playwright scripts (Gherkin with playwright-bdd, specs, or API tests) written into your repo and run there, and maintaining an existing suite (run, debug, review, audit, refactor). It also writes QA documents (strategy, plan, charter, risk register, test data, traceability and release notes) and can publish them to Confluence. For everything else v1 did (commit analysis, accessibility), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).
+v2 is in alpha, on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis, test cases pushed to Xray, Playwright scripts (Gherkin with playwright-bdd, specs, or API tests) written into your repo and run there, and maintaining an existing suite (run, debug, review, audit, refactor). It also writes QA documents (strategy, plan, charter, risk register, test data, traceability and release notes) and can publish them to Confluence. The analysis can also read the pull requests that name each issue. For everything else v1 did (accessibility), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).
 
 ## Quickstart
 
