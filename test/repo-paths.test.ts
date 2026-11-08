@@ -16,39 +16,47 @@ const NAMED = "tests/users/marie-curie.spec.ts";
 const EMAIL = "tests/jane.doe@example.com.spec.ts";
 
 describe("repo paths are masked like any other text the model sees (S5-4)", () => {
-  it("masks each part alone, keeps the extension, and gives every path back exactly", () => {
-    const entries = new Map<string, string>();
-    const counters: Record<string, number> = {};
-    const vault = {
-      tokenFor: (kind: string, value: string) => {
-        for (const [t, v] of entries) if (v === value && t.startsWith(`<${kind}_`)) return t;
-        const t = `<${kind}_${(counters[kind] = (counters[kind] ?? 0) + 1)}>`;
-        entries.set(t, value);
-        return t;
-      },
-      valueOf: (t: string) => entries.get(t),
-    };
-    // A stand-in for the detectors: an email whole, a known name in pieces.
-    const mask = (text: string) =>
-      text.replace(/[\w.]+@[\w.]+/g, (m) => vault.tokenFor("EMAIL", m)).replace(/\b(marie|curie)\b/gi, () => vault.tokenFor("PERSON", "Marie Curie"));
-    const p = repoPaths(mask, vault);
-    expect(p.shown("tests/login.spec.ts")).toBe("tests/login.spec.ts");
-    expect(p.shown(EMAIL)).toBe("tests/<EMAIL_1>.spec.ts");
-    // <PERSON_1>-<PERSON_1> would come back as "Marie Curie-Marie Curie": the whole part is one token.
-    expect(p.shown(NAMED)).toBe("tests/users/<PATH_1>.spec.ts");
-    expect(p.shown("marie/curie.feature")).toBe("<PATH_2>/<PATH_3>.feature");
-    for (const path of ["tests/login.spec.ts", EMAIL, NAMED, "marie/curie.feature", "tests/<X_1>.spec.ts"]) expect(p.real(p.shown(path))).toBe(path);
-    // The same path, the same tokens, every time.
-    expect(p.shown(NAMED)).toBe("tests/users/<PATH_1>.spec.ts");
-    expect(p.inText(`${NAMED}:3:5 failed, and so did ${EMAIL}`)).toBe("tests/users/<PATH_1>.spec.ts:3:5 failed, and so did tests/<EMAIL_1>.spec.ts");
+  it("masks each part alone, keeps the suffix, and finds the real file again in any run", async () => {
+    const folder = await mkdtemp(join(tmpdir(), "agent-qa-paths-unit-"));
+    try {
+      for (const f of ["tests/login.spec.ts", EMAIL, NAMED, "marie/curie.feature", "pages/marie-curie.page.ts", "tests/anne-marie.spec.ts"]) {
+        await mkdir(join(folder, f, ".."), { recursive: true });
+        await writeFile(join(folder, f), "");
+      }
+      // A stand-in for the detectors: an email, a known name in pieces.
+      const mask = (text: string) => text.replace(/[\w.]+@[\w.]+/g, "<EMAIL_1>").replace(/\b(marie|curie)\b/gi, "<PERSON_1>");
+      const p = repoPaths({ mask, key: Buffer.alloc(32, 1), folder });
+      expect(p.shown("tests/login.spec.ts")).toBe("tests/login.spec.ts");
+      expect(p.shown(EMAIL)).toMatch(/^tests\/<PATH_[B-Z]+_1>\.spec\.ts$/);
+      expect(p.shown(NAMED)).toMatch(/^tests\/users\/<PATH_[B-Z]+_1>\.spec\.ts$/);
+      expect(p.shown("pages/marie-curie.page.ts")).toMatch(/^pages\/<PATH_[B-Z]+_1>\.page\.ts$/);
+      expect(p.shown("marie/curie.feature")).toMatch(/^<PATH_[B-Z]+_1>\/<PATH_[B-Z]+_1>\.feature$/);
+      // The same file, the same token, in another run (another masker, the same key); another key, another token.
+      const again = repoPaths({ mask, key: Buffer.alloc(32, 1), folder });
+      expect(again.shown(NAMED)).toBe(p.shown(NAMED));
+      expect(repoPaths({ mask, key: Buffer.alloc(32, 2), folder }).shown(NAMED)).not.toBe(p.shown(NAMED));
+      for (const path of ["tests/login.spec.ts", EMAIL, NAMED, "marie/curie.feature", "pages/marie-curie.page.ts"]) expect(again.real(p.shown(path))).toBe(path);
+      // A token no file of the folder masks to is refused, never guessed.
+      expect(() => p.real("tests/<PATH_BBBBBBBBBB_1>.spec.ts")).toThrow(/no file of the folder has this masked name/);
+      // A whole path only: marie.spec.ts isn't replaced inside anne-marie.spec.ts.
+      const short = p.shown("marie.spec.ts");
+      expect(p.inText(`${NAMED}:3:5 failed, and so did tests/anne-marie.spec.ts and marie.spec.ts.`)).toBe(`${p.shown(NAMED)}:3:5 failed, and so did tests/anne-marie.spec.ts and ${short}.`);
+      // A path the model chose is shown as it chose it.
+      p.asGiven("tests/new-marie.spec.ts", "tests/new-marie.spec.ts");
+      expect(p.shown("tests/new-marie.spec.ts")).toBe("tests/new-marie.spec.ts");
+    } finally {
+      await rm(folder, { recursive: true, force: true });
+    }
   });
 
   describe("through the data layer", () => {
     let dir: string;
     const vaults = new MemoryVaultStorage();
     const key = Buffer.alloc(32, 9);
+    const ran: string[][] = [];
     const host: typeof runHostCommand = async (grant, options) => {
       assertGrant(grant, "commands");
+      ran.push(options.argv);
       const file = options.env?.PLAYWRIGHT_JSON_OUTPUT_NAME;
       if (file) await writeFile(file, FIXTURE.replaceAll("/PROJECT", dir.replace(/\\/g, "\\\\")).replaceAll("a.spec.ts", "users/marie-curie.spec.ts"));
       return { exitCode: 1, timedOut: false, aborted: false, stdout: "", stderr: "", truncated: false, durationMs: 5 };
@@ -83,11 +91,13 @@ describe("repo paths are masked like any other text the model sees (S5-4)", () =
       const listing = await d.frameworkFiles("run-1");
       expect(leaks(listing.files)).toBe(false);
       const named = listing.files.find((f) => f.startsWith("tests/users/"))!;
-      expect(named).toMatch(/^tests\/users\/<[A-Z]+_\d+>\.spec\.ts$/);
-      expect(listing.files).toContainEqual(expect.stringMatching(/^tests\/<EMAIL_\d+>\.spec\.ts$/));
+      expect(named).toMatch(/^tests\/users\/<PATH_[B-Z]+_1>\.spec\.ts$/);
+      expect(listing.files).toContainEqual(expect.stringMatching(/^tests\/<PATH_[B-Z]+_1>\.spec\.ts$/));
 
       const [f] = await d.readTestFiles("run-1", "run-1", ".", [named]);
       expect(f!.path).toBe(named);
+      // Another run (an audit's finding read by a refactor): the same token names the same file.
+      expect((await d.readTestFiles("run-2", "run-2", ".", [named]))[0]!.path).toBe(named);
       // The person may name the real path: it comes back masked.
       expect((await d.readTestFiles("run-1", "run-1", ".", [NAMED]))[0]!.path).toBe(named);
 
@@ -109,10 +119,13 @@ describe("repo paths are masked like any other text the model sees (S5-4)", () =
       const d = await seeded(data(async (_grant, files) => files.map((f) => ({ file: f.path, line: 1, code: 2304, message: `Cannot find name 'x' in ${f.path}.` }))), "run-1");
       const [f] = await d.readTestFiles("run-1", "run-1", ".", [NAMED]);
       const selected = await d.selectTests("run-1", ".", { files: [`${f!.path}:3`] });
-      // Playwright gets the real file.
-      expect(selected.args.some((a) => a.includes("marie-curie"))).toBe(true);
+      // The command as the model and the run record see it: the shown path, escaped as Playwright reads it.
+      expect(leaks(selected.args)).toBe(false);
+      expect(selected.args.at(-1)).toContain(`${f!.path.replace(/\./g, "\\.")}:3`.split("/").join(process.platform === "win32" ? "\\\\" : "/"));
 
       const r = await d.runTests("run-1", "run-1", ".", { files: [f!.path] }, true);
+      // Playwright gets the real file.
+      expect(ran.at(-1)!.some((a) => a.includes("marie-curie"))).toBe(true);
       if (r.status !== "done") throw new Error(r.status);
       expect(r.tests.length).toBeGreaterThan(0);
       expect(r.tests.every((t) => t.file === f!.path)).toBe(true);
@@ -133,7 +146,7 @@ describe("repo paths are masked like any other text the model sees (S5-4)", () =
       const profile = await d.frameworkProfile("2026-11-08-p-a", ".");
       const listing = await d.frameworkFiles("2026-11-08-p-a");
       const page = profile.pages.find((p) => p.file.startsWith("pages/"));
-      expect(page?.file).toMatch(/^pages\/<PATH_\d+>\.ts$/);
+      expect(page?.file).toMatch(/^pages\/<PATH_[B-Z]+_1>\.page\.ts$/);
       expect(listing.files).toContain(page!.file);
       expect(leaks(profile.pages.map((p) => p.file))).toBe(false);
     });

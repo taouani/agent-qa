@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -287,6 +287,11 @@ export class Vault {
   constructor(private readonly options: VaultOptions) {
     this.ttlMs = options.ttlMs ?? 30 * DAY;
     this.now = options.now ?? (() => new Date());
+  }
+
+  /** A key for another use (`label`), derived from the vault key with HMAC-SHA256: never the vault key itself. */
+  async derivedKey(label: string): Promise<Buffer> {
+    return createHmac("sha256", await this.options.keys.getKey()).update(`agent-qa:${label}`).digest();
   }
 
   /** Open (or create) the vault for one run. Expired vaults are deleted and start empty. */
