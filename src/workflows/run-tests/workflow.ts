@@ -401,7 +401,8 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             return void (await uncertain({ ...base, status: "recording" }, `the import failed (${message})`));
           }
           if (r.status !== "done") return void (await write({ ...base, status: "declined" }));
-          const datesError = r.datesError ? (await deps.data.maskTexts(ctx.runId, [one(r.datesError)], "xray.error").catch(() => ["(its message couldn't be masked)"]))[0] : undefined;
+          // Masked whole, then cut: a value at the edge is never half-hidden from the detectors.
+          const datesError = r.datesError ? (await deps.data.maskTexts(ctx.runId, [one(r.datesError)], "xray.error").catch(() => ["(its message couldn't be masked)"]))[0]!.slice(0, 300) : undefined;
           await write({ ...base, status: "recorded", key: r.key, ...(datesError ? { datesError } : {}) });
         },
       },

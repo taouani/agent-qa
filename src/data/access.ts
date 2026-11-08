@@ -811,7 +811,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const dates = when?.start || when?.end
       ? { ...(when.start ? { [when.start.field]: jiraDate(info.startedAt, when.start.type) } : {}), ...(when.end ? { [when.end.field]: jiraDate(info.finishedAt, when.end.type) } : {}) }
       : undefined;
-    const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}${dates ? ", and set its start and end dates in Jira" : ""}`;
+    const summary = `Record ${plan.results.length} test result(s) (${failed} failed${shots.size ? `, ${shots.size} unmasked screenshot(s)` : ""}) as a Test Execution in Xray project ${plan.project}${dates ? `, and set its ${when?.start && when?.end ? "start and end dates" : when?.start ? "start date" : "end date"} in Jira` : ""}`;
     // Jira is needed only for the dates; a missing atlassian section is found before anything is written.
     const jira = dates ? await this.labels(config) : undefined;
     if (jira && !jira.setExecutionDates) throw new Error("this Jira client can't set a Test Execution's dates");
@@ -843,7 +843,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         await jira.setExecutionDates(key, dates, grant);
         return { key };
       } catch (error) {
-        return { key, datesError: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+        return { key, datesError: error instanceof Error ? error.message : String(error) };
       }
     });
     return outcome.status === "done" ? { status: "done" as const, key: outcome.value.key, ...(outcome.value.datesError ? { datesError: outcome.value.datesError } : {}) } : { status: "declined" as const };
