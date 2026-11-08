@@ -15,7 +15,8 @@ How Agent-QA v2 was planned. These are exports of the planning docs, in the orde
 | 09 | [Slice 2 plan (Playwright scripts)](09-slice2-plan.md) | 4 Nov 2026 |
 | 10 | [Plan and status](10-plan-and-status-2026-11-04.md) | 4 Nov 2026 |
 | 11 | [Live check guide (slice 2)](11-live-check-guide-2026-11-05.md) | 5 Nov 2026 |
-| 12 | [Plan and status](12-plan-and-status-2026-11-07.md): **the current master plan** | 7 Nov 2026 |
+| 12 | [Plan and status](12-plan-and-status-2026-11-07.md) | 7 Nov 2026 |
 | 13 | [Live check guide (slice 4)](13-live-check-guide-slice4-2026-11-08.md) | 8 Nov 2026 |
+| 14 | [Plan and status](14-plan-and-status-2026-11-08.md): **the current master plan** | 8 Nov 2026 |
 
 The backlog is in [../backlog.md](../backlog.md).
