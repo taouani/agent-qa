@@ -2,6 +2,7 @@ import { z } from "zod";
 import { EngineError, type Artifact, type InputRef, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
 import type { ExistingTest, RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
+import { analysisReuse, MAX_REUSE_RUNS } from "../requirements/reuse.js";
 import { analyzeStep, inputFingerprint, jiraInputOf, onlyIssues, pullRequestsOf, relatedFeaturesOf, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
 import {
   TEST_CASES_ARTIFACT,
@@ -214,17 +215,6 @@ export type TestCasesDeps = RequirementsDeps & {
 /** The claim a run takes on the reviewed cases' run while it pushes them, so two processes don't push them at once. */
 const PUSH_CLAIM = "xray-push";
 
-/** Runs searched for an earlier analysis of the same input: the newest this many. */
-const MAX_REUSE_RUNS = 200;
-
-const reuseSchema = z
-  .object({
-    reuse: z.boolean().describe("true to reuse the earlier analysis named in the context, false to analyze again"),
-    /** Set by Agent-QA, never by the model: the run whose analysis is reused. */
-    run: z.string().optional(),
-  })
-  .strict();
-type Reuse = z.infer<typeof reuseSchema>;
 const changesSchema = z
   .object({
     proceed: z.boolean().describe("true to write cases for the changed issues the context lists, false to stop"),
@@ -235,69 +225,14 @@ const changesSchema = z
   .strict();
 type Changes = z.infer<typeof changesSchema>;
 
-/** An earlier run whose analysis had the same input as this run's. */
-interface Earlier {
-  run: string;
-  created: string;
-  issues: number;
-  criteria: number;
-  quality: number;
-}
-
 export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestCasesInputs> {
-  const reused = (ctx: Ctx) => {
-    const r = ctx.outputs.reuse as Reuse | undefined;
-    return r?.reuse && r.run ? r.run : undefined;
-  };
+  const { reused, step: reuseStep } = analysisReuse<TestCasesInputs>(deps);
   /** The run whose reviewed cases this run pushes: its own, or the earlier one `casesRun` names. */
   const casesRunOf = (ctx: Ctx) => ctx.inputs.casesRun ?? ctx.runId;
   const fresh = (ctx: Ctx) => ctx.inputs.casesRun === undefined;
   const requirementsRunOf = async (ctx: Ctx): Promise<string> =>
     ctx.inputs.casesRun !== undefined ? (await reviewedOf(ctx)).data.requirements.run : (ctx.inputs.requirementsRun ?? reused(ctx) ?? ctx.runId);
 
-  /** Whether an earlier run of this key left an analysis whose tokens are still in its vault: no Jira read (the run may not exist yet). */
-  const analyzedBefore = async (ctx: Ctx): Promise<boolean> => {
-    const key = ctx.inputs.key;
-    if (!deps.runs.list || ctx.inputs.requirementsRun !== undefined || key === undefined) return false;
-    for (const id of (await deps.runs.list()).filter((r) => r !== ctx.runId).slice(-MAX_REUSE_RUNS).reverse()) {
-      const art = await deps.runs.readArtifact(id, REQUIREMENTS_ARTIFACT).catch(() => undefined);
-      if (art && "key" in art.data.input && art.data.input.key === key && (await deps.data.hasVault(id))) return true;
-    }
-    return false;
-  };
-  const earlierMemo = new Map<string, Promise<Earlier | undefined>>();
-  /**
-   * The newest earlier run whose analysis was given the same input as this one
-   * would be: the same issues at the same Jira version (sourceHash), and the
-   * same related feature files (Tarek, 7 Nov 2026). Its vault must still hold
-   * the tokens. Jira is read for this, with no model.
-   */
-  const earlierOf = (ctx: Ctx, fresh = false): Promise<Earlier | undefined> => {
-    let found = fresh ? undefined : earlierMemo.get(ctx.runId);
-    if (!found) {
-      found = (async () => {
-        if (!deps.runs.list || ctx.inputs.requirementsRun !== undefined) return undefined;
-        const loaded = await deps.data.requirements(ctx.runId, jiraInputOf(ctx.inputs));
-        const related = await relatedFeaturesOf(deps, ctx.runId, loaded);
-        const prs = await pullRequestsOf(deps, ctx.runId, ctx.inputs, loaded);
-        const want = inputFingerprint(loaded.sources.requirements.map((r) => ({ key: r.key, sourceHash: r.sourceHash, related: related[r.key], pullRequests: prs[r.key] })));
-        let best: (Earlier & { at: string }) | undefined;
-        for (const id of (await deps.runs.list()).filter((r) => r !== ctx.runId).slice(-MAX_REUSE_RUNS)) {
-          const art = await deps.runs.readArtifact(id, REQUIREMENTS_ARTIFACT).catch(() => undefined);
-          if (!art || inputFingerprint(art.data.requirements) !== want) continue;
-          if (best && best.at >= art.createdAt) continue;
-          if (!(await deps.data.hasVault(id))) continue;
-          const rs = art.data.requirements;
-          best = { run: id, at: art.createdAt, created: art.createdAt.slice(0, 10), issues: rs.length, criteria: rs.reduce((n, r) => n + r.acceptanceCriteria.length, 0), quality: rs.length ? Math.round(rs.reduce((n, r) => n + r.quality.score, 0) / rs.length) : 0 };
-        }
-        return best && { run: best.run, created: best.created, issues: best.issues, criteria: best.criteria, quality: best.quality };
-      })();
-      found.catch(() => earlierMemo.delete(ctx.runId));
-      if (earlierMemo.size > 16) earlierMemo.delete(earlierMemo.keys().next().value!);
-      earlierMemo.set(ctx.runId, found);
-    }
-    return found;
-  };
   const changesMemo = new Map<string, Promise<{ analyze: string[]; unchanged: { key: string; run: string }[] }>>();
   /**
    * `changedOnly` (S4-14): which issues of the input are new or changed since
@@ -505,33 +440,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           return { proceed: out.proceed, analyze, unchanged };
         },
       },
-      {
-        id: "reuse",
-        kind: "confirm",
-        outputSchema: reuseSchema,
-        // Unattended (--yes), the same input gives the same analysis: reuse it.
-        answers: { yes: { reuse: true }, no: { reuse: false }, unattended: { reuse: true } },
-        // Entered when an earlier run analyzed the same key; whether Jira and the repo files are unchanged
-        // needs Jira, which is read once the run exists (in the context).
-        when: (ctx) => !ctx.inputs.changedOnly && analyzedBefore(ctx),
-        instructions: () =>
-          [
-            "The context says whether an earlier run analyzed the same Jira issues, unchanged since, with the same related feature files of the repo.",
-            "If it names such a run, ask the user whether to reuse that analysis (its criteria, quality scores and open questions) or analyze again, and wait for their answer: submit reuse: true to reuse it, reuse: false to analyze again.",
-            "If it says the input changed, don't ask: submit reuse: false.",
-          ].join("\n"),
-        context: async (ctx) => {
-          const e = await earlierOf(ctx);
-          if (!e) return "No earlier analysis with the same input can be reused (the issues or the related feature files changed since, or its run is gone): it will be analyzed again. Submit reuse: false without asking.";
-          return `Run ${e.run} (${e.created}) analyzed the same ${e.issues} issue(s), unchanged in Jira since, with the same related feature files: ${e.criteria} criteria, average quality ${e.quality}/100. Its requirements.md is in that run's folder.`;
-        },
-        // The run is Agent-QA's to name: the one found, whatever the answer says; with none, nothing is reused.
-        sanitize: async (ctx, out: Reuse) => {
-          // Checked again at the answer: Jira or the repo may have changed while the question waited.
-          const e = out.reuse ? await earlierOf(ctx, true) : undefined;
-          return e ? { reuse: true, run: e.run } : { reuse: false };
-        },
-      },
+      reuseStep((ctx) => !ctx.inputs.changedOnly),
       {
         ...analyzeStep<TestCasesInputs>(deps, (ctx, loaded) => {
           const c = ctx.outputs.changes as Changes | undefined;

@@ -7,7 +7,7 @@ import type { JiraCollection, JiraInput, JiraIssue } from "../src/connectors/ind
 import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type WriteGrant } from "../src/core/index.js";
 import { CONFLUENCE_LABEL, DataAccess, type ConfluenceWriter } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
-import { CONFLUENCE_PAGE_ARTIFACT, documentWorkflow, requirementsWorkflow, type TestPlan } from "../src/workflows/index.js";
+import { CONFLUENCE_PAGE_ARTIFACT, DOCUMENT_ARTIFACT, documentWorkflow, requirementsWorkflow, type TestPlan } from "../src/workflows/index.js";
 
 const SITE = "https://acme.atlassian.net";
 const adf = (text: string) => ({ text, mentions: [], links: [] });
@@ -120,6 +120,8 @@ function setup(over: { confluence?: boolean; restoreOnWrite?: boolean; rule?: "a
 /** A test plan run up to the publish step. */
 async function reviewedPlan(engine: WorkflowEngine, input: { key: string } | { jql: string } = { key: "ABC-1" }) {
   const first = await engine.start("document", { type: "test-plan", ...input, publish: "confluence" });
+  // An earlier run analyzed the same issue: analyze again here.
+  if (first.stepId === "reuse") await engine.submit(first.runId, "reuse", { reuse: false });
   await engine.submit(first.runId, "analyze", { issues: [{ key: "ABC-1", quality: { score: 80, missing: [] }, openQuestions: [], inferredCriteria: [] }] });
   await engine.submit(first.runId, "draft-test-plan", plan);
   const publishing = await engine.submit(first.runId, "review", { approved: true, changes: [] });
@@ -154,6 +156,44 @@ describe("publishing a document to Confluence (S4-5)", () => {
       ["confluence", 'Publish "Test plan: ABC-1" to Confluence space QA', runId, "approved"],
       ["confluence", 'Publish "Test plan: ABC-1" to Confluence space QA', runId, "done"],
     ]);
+  });
+
+  it("reuses an earlier analysis of the same issue, and publishes an earlier run's reviewed document later, in a run of its own", async () => {
+    const { engine } = setup();
+    // Reviewed, but not published then.
+    const a = await reviewedPlan(engine);
+    expect((await engine.submit(a.runId, "publish", { approve: false })).next).toMatchObject({ kind: "done", context: expect.stringContaining("Confluence: not published.") });
+    expect(confluence.writes).toEqual([]);
+
+    // The same issue again: the earlier analysis is offered, and a yes goes straight to the draft.
+    const b = await engine.start("document", { type: "test-strategy", key: "ABC-1" });
+    expect(b).toMatchObject({ stepId: "reuse", kind: "confirm" });
+    expect(b.context).toContain(`Run ${a.runId}`);
+    expect((await engine.submit(b.runId, "reuse", { reuse: true })).next.stepId).toBe("draft-test-strategy");
+
+    // Later: only the publish, of run a's document.
+    const c = await engine.start("document", { documentRun: a.runId, publish: "confluence" });
+    expect(c).toMatchObject({ stepId: "publish", kind: "confirm" });
+    expect(c.context).toContain('Publish the test plan "Test plan: ABC-1" to Confluence space QA?');
+    const done = await engine.submit(c.runId, "publish", { approve: true });
+    expect(done.next.context).toMatch(/Confluence: created page \d+ \(version 1\)/);
+    expect(done.next.context).toContain(`document.md in the run folder of ${a.runId}`);
+    expect((await runs.readArtifact(c.runId, CONFLUENCE_PAGE_ARTIFACT))!.data.document.run).toBe(a.runId);
+    expect(confluence.pages).toHaveLength(1);
+
+    await expect(engine.start("document", { documentRun: a.runId })).rejects.toThrow(/Invalid inputs/);
+    await expect(engine.start("document", { documentRun: a.runId, publish: "confluence", key: "ABC-1" })).rejects.toThrow(/Invalid inputs/);
+    await expect(engine.start("document", { documentRun: a.runId, publish: "confluence", type: "test-strategy" })).rejects.toThrow(/holds a test-plan/);
+    await expect(engine.start("document", { documentRun: b.runId, publish: "confluence" })).rejects.toThrow(/no reviewed document/);
+
+    // A document written unattended says so in the question; one whose requirements run is gone is refused at start.
+    const doc = (await runs.readArtifact(a.runId, DOCUMENT_ARTIFACT))!.data;
+    await runs.create({ workflow: "document", context: "ABC-1", host: "cli", driver: "api", id: "unattended-doc" });
+    await runs.writeArtifact("unattended-doc", DOCUMENT_ARTIFACT, { ...doc, review: { ...doc.review, unattended: true } }, { inputs: [], templateVersion: "document-1" });
+    expect((await engine.start("document", { documentRun: "unattended-doc", publish: "confluence" })).context).toContain("Nobody reviewed this document");
+    await runs.create({ workflow: "document", context: "ABC-1", host: "cli", driver: "api", id: "orphan-doc" });
+    await runs.writeArtifact("orphan-doc", DOCUMENT_ARTIFACT, { ...doc, sources: { ...doc.sources, requirements: { ...doc.sources.requirements, run: "gone-run" } } }, { inputs: [], templateVersion: "document-1" });
+    await expect(engine.start("document", { documentRun: "orphan-doc", publish: "confluence" })).rejects.toThrow(/no requirements@1 any more/);
   });
 
   it("updates its own page on a rerun, to the next version", async () => {
@@ -213,6 +253,7 @@ describe("publishing a document to Confluence (S4-5)", () => {
     expect(await setup({ mode: "ci", rule: "allow" }).data.confluenceEnabled()).toBe(true);
     // Without publish there is no publish step.
     const plain = await engine.start("document", { type: "test-plan", key: "ABC-1" });
+    await engine.submit(plain.runId, "reuse", { reuse: false });
     await engine.submit(plain.runId, "analyze", { issues: [{ key: "ABC-1", quality: { score: 80, missing: [] }, openQuestions: [], inferredCriteria: [] }] });
     await engine.submit(plain.runId, "draft-test-plan", plan);
     expect((await engine.submit(plain.runId, "review", { approved: true, changes: [] })).next.kind).toBe("done");

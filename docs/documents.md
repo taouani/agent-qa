@@ -37,7 +37,8 @@ Give one of these:
 
 | Step | What it does |
 |---|---|
-| `analyze` | only from a key or JQL: the requirements analysis |
+| `reuse` | only from a key that an earlier run analyzed: when the issues, their related feature files and pull requests are unchanged since, asks whether to reuse that analysis instead of asking the model again (as in `test-cases`; `--yes` reuses it) |
+| `analyze` | only from a key or JQL, when nothing is reused: the requirements analysis |
 | `draft-{type}` | the model writes the document from a masked context; Agent-QA checks the type's rules (table above), that every issue it names exists, and that every masked value comes from the context. The draft is `document-draft.md`. |
 | `review` | you change texts or remove list items by path (`$.objectives.2`). Your words are masked before the run keeps them, and the result is checked again. |
 | `publish` | only with `publish: confluence`: asks whether to publish the reviewed document to Confluence, then creates or updates the page (`confluence-page@1`) |
@@ -78,6 +79,14 @@ Then run with `publish: confluence` (or `--publish confluence`). After the revie
 - No page with that title in the space: a new page is created under `parentPageId` and labelled `agent-qa`.
 - Agent-QA's page (it has the `agent-qa` label) has the title: it is updated to the next version, with the run id as the version message. Running the same document again updates the same page.
 - Another page has the title and no `agent-qa` label: nothing is written. Rename or move that page, or add the label to let Agent-QA update it.
+
+**Publishing later.** Said no to the publish, or ran without `publish`? A new run publishes the reviewed document of the earlier one, with nothing analyzed or drafted again:
+
+```bash
+agent-qa run document --publish-from <run id> --accept publish
+```
+
+In the IDE, the inputs are `{"documentRun":"<run id>","publish":"confluence"}`. The page is found as above, so publishing a later version of the same document updates the same page.
 
 The page holds masked values such as `<PERSON_1>` unless `masking.restoreOnWrite: true`, which puts the real values back from the requirements run's vault. If that vault expired, publishing stops rather than send the tokens.
 

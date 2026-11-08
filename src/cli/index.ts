@@ -103,6 +103,7 @@ export function buildProgram(): Command {
     .option("--jql <filter>", "a JQL filter")
     .option("--from-run <runId>", "start test-cases from an earlier requirements run")
     .option("--push-from <runId>", "test-cases: push the reviewed cases of an earlier test-cases run whose push was declined (a new run, straight to the push)")
+    .option("--publish-from <runId>", "document: publish the reviewed document of an earlier document run to Confluence (a new run, straight to the publish; accept it with --accept publish)")
     .option("--type <type>", "document: the document type, e.g. test-plan")
     .option("--with-pull-requests", "requirements, test-cases, document: also give the analysis the pull requests that name each issue on the git host (git section), masked")
     .option("--changed-only", "test-cases with --key or --jql: write cases only for the issues new or changed (in Jira, related feature files or pull requests) since an earlier run wrote theirs; the step is changes")
