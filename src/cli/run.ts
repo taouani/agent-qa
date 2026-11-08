@@ -54,6 +54,8 @@ export interface RunOptions {
   publish?: string;
   /** requirements, test-cases, document: add the issues' pull requests to the analysis. */
   withPullRequests?: boolean;
+  /** test-cases: write cases only for the issues new or changed since an earlier run wrote theirs. */
+  changedOnly?: boolean;
   /** Inputs as JSON, for workflows the flags don't cover. */
   input?: string;
   model?: string;
@@ -102,6 +104,11 @@ function inputsOf(opts: RunOptions): unknown {
     if (opts.resume) throw new SetupError("--resume continues a run with its own inputs: leave out --with-pull-requests");
     if (!["requirements", "test-cases", "document"].includes(opts.workflow ?? "")) throw new SetupError("--with-pull-requests is for the requirements, test-cases and document workflows");
     inputs = { ...(inputs as object), withPullRequests: true };
+  }
+  if (opts.changedOnly) {
+    if (opts.resume) throw new SetupError("--resume continues a run with its own inputs: leave out --changed-only");
+    if (opts.workflow !== "test-cases") throw new SetupError("--changed-only is for the test-cases workflow");
+    inputs = { ...(inputs as object), changedOnly: true };
   }
   if (opts.type === undefined && opts.publish === undefined) return inputs;
   if (opts.resume) throw new SetupError("--resume continues a run with its own inputs: leave out --type and --publish");

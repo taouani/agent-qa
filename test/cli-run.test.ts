@@ -165,7 +165,7 @@ describe("agent-qa run", () => {
 
   it("rejects --accept or --decline naming no confirm step, and both at once", async () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", yes: true, decline: ["pushh"] }))).toBe(EXIT.setup);
-    expect(lines.at(-1)).toBe("agent-qa run: test-cases has no confirm step pushh; its confirm steps are reuse, review, push");
+    expect(lines.at(-1)).toBe("agent-qa run: test-cases has no confirm step pushh; its confirm steps are changes, reuse, review, push");
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1", accept: ["push"], decline: ["push"] }))).toBe(EXIT.setup);
     expect(sent).toHaveLength(0);
   });
@@ -230,6 +230,8 @@ describe("agent-qa run", () => {
     expect(await runCommand(options({ workflow: "nope", key: "ABC-1" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ workflow: "test-cases", key: "not a key" }))).toBe(EXIT.setup);
     expect(await runCommand(options({ workflow: "test-cases", input: "{" }))).toBe(EXIT.setup);
+    expect(await runCommand(options({ workflow: "requirements", key: "ABC-1", changedOnly: true }))).toBe(EXIT.setup);
+    expect(lines.at(-1)).toContain("--changed-only is for the test-cases workflow");
     expect(await runCommand(options({ resume: "2026-11-03-x-abcd" }))).toBe(EXIT.setup);
     expect(lines.at(-1)).toMatch(/no run 2026-11-03-x-abcd in this project's run folder/);
     expect(await runCommand(options({ resume: "../../etc" }))).toBe(EXIT.setup);

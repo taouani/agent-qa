@@ -2,7 +2,7 @@ import { z } from "zod";
 import { EngineError, type Artifact, type InputRef, type OutputError, type RunStore, type StepContext, type WorkflowDefinition } from "../../core/index.js";
 import type { ExistingTest, RequirementsData, XrayData } from "../../data/index.js";
 import { REQUIREMENTS_ARTIFACT, type AnalyzedRequirement, type RequirementsArtifact } from "../requirements/artifact.js";
-import { analyzeStep, inputFingerprint, jiraInputOf, pullRequestsOf, relatedFeaturesOf, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
+import { analyzeStep, inputFingerprint, jiraInputOf, onlyIssues, pullRequestsOf, relatedFeaturesOf, sealJiraInputs, withPullRequestsInput, type RequirementsDeps } from "../requirements/workflow.js";
 import {
   TEST_CASES_ARTIFACT,
   TEST_CASES_DRAFT_ARTIFACT,
@@ -65,9 +65,14 @@ export const testCasesInputSchema = z
       .optional()
       .describe("Id of an earlier test-cases run whose reviewed cases weren't pushed (the push was declined): goes straight to the push, with no analysis, cases or review"),
     withPullRequests: withPullRequestsInput,
+    changedOnly: z
+      .boolean()
+      .optional()
+      .describe("With key or jql: write cases only for the issues that are new or changed (in Jira, their related feature files or pull requests) since an earlier run wrote their cases"),
   })
   .strict()
-  .refine((i) => [i.key, i.jql, i.requirementsRun, i.casesRun].filter((v) => v !== undefined).length === 1, { message: "give exactly one of key, jql, requirementsRun or casesRun" });
+  .refine((i) => [i.key, i.jql, i.requirementsRun, i.casesRun].filter((v) => v !== undefined).length === 1, { message: "give exactly one of key, jql, requirementsRun or casesRun" })
+  .refine((i) => !i.changedOnly || i.key !== undefined || i.jql !== undefined, { message: "changedOnly compares the issues of a key or a JQL filter with earlier runs: give key or jql" });
 export type TestCasesInputs = z.infer<typeof testCasesInputSchema>;
 
 const casesOutputSchema = z.object({ cases: z.array(testCaseSchema).min(1) }).strict();
@@ -220,6 +225,16 @@ const reuseSchema = z
   })
   .strict();
 type Reuse = z.infer<typeof reuseSchema>;
+const changesSchema = z
+  .object({
+    proceed: z.boolean().describe("true to write cases for the changed issues the context lists, false to stop"),
+    /** Set by Agent-QA, never by the model: the issues analyzed in this run, and the ones left out with the run that wrote their cases. */
+    analyze: z.array(z.string()).optional(),
+    unchanged: z.array(z.object({ key: z.string(), run: z.string() }).strict()).optional(),
+  })
+  .strict();
+type Changes = z.infer<typeof changesSchema>;
+
 /** An earlier run whose analysis had the same input as this run's. */
 interface Earlier {
   run: string;
@@ -282,6 +297,58 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
       earlierMemo.set(ctx.runId, found);
     }
     return found;
+  };
+  const changesMemo = new Map<string, Promise<{ analyze: string[]; unchanged: { key: string; run: string }[] }>>();
+  /**
+   * `changedOnly` (S4-14): which issues of the input are new or changed since
+   * an earlier run wrote test cases for them. An issue is unchanged when the
+   * newest earlier test-cases run has cases for it and its analysis had the
+   * same input: the same Jira version (sourceHash), related feature files and
+   * pull requests. Jira is read for this, with no model.
+   */
+  const changesOf = (ctx: Ctx, fresh = false) => {
+    let found = fresh ? undefined : changesMemo.get(ctx.runId);
+    if (!found) {
+      found = (async () => {
+        const loaded = await deps.data.requirements(ctx.runId, jiraInputOf(ctx.inputs));
+        const related = await relatedFeaturesOf(deps, ctx.runId, loaded);
+        const prs = await pullRequestsOf(deps, ctx.runId, ctx.inputs, loaded);
+        const keys = new Set(loaded.sources.requirements.map((r) => r.key));
+        const earlier = new Map<string, { fingerprint: string; run: string; at: string }>();
+        for (const id of (await (deps.runs.list?.() ?? Promise.resolve([]))).filter((r) => r !== ctx.runId).slice(-MAX_REUSE_RUNS)) {
+          const cases = await deps.runs.readArtifact(id, TEST_CASES_ARTIFACT).catch(() => undefined);
+          if (!cases) continue;
+          const reqs = await deps.runs.readArtifact(cases.data.requirements.run, REQUIREMENTS_ARTIFACT).catch(() => undefined);
+          if (!reqs) continue;
+          const covered = new Set(cases.data.cases.map((c) => c.requirement));
+          for (const r of reqs.data.requirements) {
+            if (!keys.has(r.key) || !covered.has(r.key)) continue;
+            const seen = earlier.get(r.key);
+            if (seen && seen.at >= cases.createdAt) continue;
+            earlier.set(r.key, { fingerprint: inputFingerprint([r]), run: id, at: cases.createdAt });
+          }
+        }
+        const analyze: string[] = [];
+        const unchanged: { key: string; run: string }[] = [];
+        for (const r of loaded.sources.requirements) {
+          const now = inputFingerprint([{ key: r.key, sourceHash: r.sourceHash, related: related[r.key], pullRequests: prs[r.key] }]);
+          const e = earlier.get(r.key);
+          if (e && e.fingerprint === now) unchanged.push({ key: r.key, run: e.run });
+          else analyze.push(r.key);
+        }
+        return { analyze, unchanged };
+      })();
+      found.catch(() => changesMemo.delete(ctx.runId));
+      if (changesMemo.size > 16) changesMemo.delete(changesMemo.keys().next().value!);
+      changesMemo.set(ctx.runId, found);
+    }
+    return found;
+  };
+  /** False when changedOnly found nothing to do, or the person said stop. */
+  const proceeding = (ctx: Ctx) => {
+    if (!ctx.inputs.changedOnly) return true;
+    const c = ctx.outputs.changes as Changes | undefined;
+    return Boolean(c?.proceed && c.analyze?.length);
   };
   const requirements = async (ctx: Ctx): Promise<Artifact<RequirementsArtifact>> => {
     const run = await requirementsRunOf(ctx);
@@ -414,6 +481,31 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
     },
     steps: [
       {
+        id: "changes",
+        kind: "confirm",
+        outputSchema: changesSchema,
+        // Unattended (--yes, CI), go on with the changed issues: nothing is written outside the run without its own yes.
+        answers: { yes: { proceed: true }, no: { proceed: false }, unattended: { proceed: true } },
+        when: (ctx) => fresh(ctx) && ctx.inputs.changedOnly === true,
+        instructions: () =>
+          [
+            "The context lists which issues are new or changed since an earlier run wrote their test cases, and which are unchanged and left out.",
+            "If some changed, tell the user and ask whether to write cases for those: submit proceed: true to go on, proceed: false to stop.",
+            "If none changed, tell the user there is nothing to do and submit proceed: true without asking: the run ends.",
+          ].join("\n"),
+        context: async (ctx) => {
+          const { analyze, unchanged } = await changesOf(ctx);
+          const left = unchanged.length ? ` Unchanged since their cases were written, left out: ${unchanged.map((u) => `${u.key} (run ${u.run})`).join(", ")}.` : "";
+          if (analyze.length === 0) return `None of the ${unchanged.length} issue(s) changed since their cases were written: there is nothing to do, and the run ends.${left}`;
+          return `New or changed, to analyze and write cases for: ${analyze.join(", ")}.${left}`;
+        },
+        // The issues are Agent-QA's to name, checked again at the answer: Jira may have changed while the question waited.
+        sanitize: async (ctx, out: Changes) => {
+          const { analyze, unchanged } = await changesOf(ctx, true);
+          return { proceed: out.proceed, analyze, unchanged };
+        },
+      },
+      {
         id: "reuse",
         kind: "confirm",
         outputSchema: reuseSchema,
@@ -421,7 +513,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         answers: { yes: { reuse: true }, no: { reuse: false }, unattended: { reuse: true } },
         // Entered when an earlier run analyzed the same key; whether Jira and the repo files are unchanged
         // needs Jira, which is read once the run exists (in the context).
-        when: (ctx) => analyzedBefore(ctx),
+        when: (ctx) => !ctx.inputs.changedOnly && analyzedBefore(ctx),
         instructions: () =>
           [
             "The context says whether an earlier run analyzed the same Jira issues, unchanged since, with the same related feature files of the repo.",
@@ -440,12 +532,18 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
           return e ? { reuse: true, run: e.run } : { reuse: false };
         },
       },
-      { ...analyzeStep<TestCasesInputs>(deps), when: (ctx) => fresh(ctx) && ctx.inputs.requirementsRun === undefined && reused(ctx) === undefined },
+      {
+        ...analyzeStep<TestCasesInputs>(deps, (ctx, loaded) => {
+          const c = ctx.outputs.changes as Changes | undefined;
+          return ctx.inputs.changedOnly && c?.analyze ? onlyIssues(loaded, new Set(c.analyze)) : loaded;
+        }),
+        when: (ctx) => fresh(ctx) && proceeding(ctx) && ctx.inputs.requirementsRun === undefined && reused(ctx) === undefined,
+      },
       {
         id: "cases",
         kind: "generate",
         outputSchema: casesOutputSchema,
-        when: fresh,
+        when: (ctx) => fresh(ctx) && proceeding(ctx),
         batches: async (ctx) => Math.ceil(testable((await requirements(ctx)).data).length / ISSUES_PER_BATCH),
         instructions: (ctx) =>
           [
@@ -504,7 +602,7 @@ export function testCasesWorkflow(deps: TestCasesDeps): WorkflowDefinition<TestC
         outputSchema: reviewSchema,
         personalAnswer: true,
         answers: { yes: { approved: true, changes: [] }, no: { approved: false, changes: [] }, unattended: { approved: true, changes: [], unattended: true } },
-        when: async (ctx) => fresh(ctx) && testable((await requirements(ctx)).data).length > 0,
+        when: async (ctx) => fresh(ctx) && proceeding(ctx) && testable((await requirements(ctx)).data).length > 0,
         instructions: ({ runId }) =>
           [
             `Ask the user to review the draft test cases: they are listed in the context, and in full in test-cases-draft.md in this run's folder (.agent-qa/runs/${runId}/).`,

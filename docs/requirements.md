@@ -39,3 +39,16 @@ When `test-cases` starts from a `key` that an earlier run already analyzed (a `r
 The match covers the input only: an analysis made by an older Agent-QA version (another prompt) with the same input is offered too.
 
 Not offered for a JQL filter (the stored filter is a vault token, different in each run), or when the earlier run's vault has expired (30 days). Runs analyzed before this change have no `related` hashes, so they are only reused when no related feature file is found now.
+
+## Only what changed
+
+With `changedOnly: true` (CLI `--changed-only`), on `test-cases` from a `key` or a `jql`, cases are written only for the issues that are new or changed since an earlier run wrote theirs. The first step is `changes`: Agent-QA reads Jira (no model) and, for each issue, finds the newest earlier `test-cases` run with cases for it. An issue is unchanged when the analysis of that run was given the same input: the same `sourceHash`, related feature files and pull requests. Unchanged issues are left out of the analysis and the cases, and the step names the run that has their cases; the others go on as usual, to the review and the push.
+
+- **Nothing changed:** the step says so and the run ends, with no model call.
+- **Some changed:** you're asked whether to go on with them. In the CLI, `--yes` or `--accept changes` goes on, `--decline changes` stops. In CI, a run without one of these stops at this step (exit 3, waiting).
+
+This works for a JQL filter too, since it compares issues, not the filter. Agent-QA names the issues, never the model, and checks them again when the answer arrives. The reuse step isn't offered with `changedOnly`: the analysis covers the changed issues only.
+
+```bash
+agent-qa run test-cases --jql "project = ABC AND fixVersion = 2.4" --changed-only --yes --accept push
+```

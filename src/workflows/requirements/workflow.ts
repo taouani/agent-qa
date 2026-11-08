@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EngineError, type OutputError, type RunStore, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
+import { EngineError, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
 import type { JiraInput, LoadedSources, MaskedPullRequest, RelatedFeature, Requirement, RequirementsData } from "../../data/index.js";
 import {
   QUALITY_GAPS,
@@ -285,9 +285,22 @@ export { inputOf as jiraInputOf };
 /** Inputs of any workflow that starts from Jira: one key or one JQL filter. */
 export type JiraInputs = { key?: string | undefined; jql?: string | undefined; withPullRequests?: boolean | undefined };
 
+/** Leaves some issues out of an analysis: `--changed-only` drops the ones unchanged since their cases were written. */
+export type NarrowSources<I> = (ctx: StepContext<I>, loaded: LoadedSources) => LoadedSources | Promise<LoadedSources>;
+
+/** Only the issues `keep` names, and only their own inputs in the artifact's sourceHash. */
+export function onlyIssues(loaded: LoadedSources, keep: ReadonlySet<string>): LoadedSources {
+  const requirements = loaded.sources.requirements.filter((r) => keep.has(r.key));
+  const dropped = new Set(loaded.sources.requirements.filter((r) => !keep.has(r.key)).map((r) => r.key));
+  return { ...loaded, sources: { ...loaded.sources, requirements }, inputs: loaded.inputs.filter((i) => !(i.kind === "jira-issue" && dropped.has(i.ref))) };
+}
+
 /** The analyze step, shared with the test-cases workflow. It writes requirements@1 when accepted. */
-export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepDefinition<I, Analysis> {
-  const load = (runId: string, inputs: I) => deps.data.requirements(runId, inputOf(inputs));
+export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps, narrow?: NarrowSources<I>): StepDefinition<I, Analysis> {
+  const loadFor = async (ctx: StepContext<I>) => {
+    const loaded = await deps.data.requirements(ctx.runId, inputOf(ctx.inputs));
+    return narrow ? narrow(ctx, loaded) : loaded;
+  };
   const relatedOf = (runId: string, loaded: LoadedSources) => relatedFeaturesOf(deps, runId, loaded);
   const prsOf = (runId: string, inputs: I, loaded: LoadedSources) => pullRequestsOf(deps, runId, inputs, loaded);
   return {
@@ -295,18 +308,21 @@ export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps): StepD
     kind: "generate",
     outputSchema: analysisSchema,
     instructions: () => INSTRUCTIONS,
-    context: async ({ runId, inputs }) => {
-      const loaded = await load(runId, inputs);
+    context: async (ctx) => {
+      const { runId, inputs } = ctx;
+      const loaded = await loadFor(ctx);
       return contextOf(loaded, await relatedOf(runId, loaded), await prsOf(runId, inputs, loaded));
     },
-    check: async ({ runId, inputs }, output) => {
-      const loaded = await load(runId, inputs);
+    check: async (ctx, output) => {
+      const { runId, inputs } = ctx;
+      const loaded = await loadFor(ctx);
       const related = await relatedOf(runId, loaded);
       const prs = await prsOf(runId, inputs, loaded);
       return check(loaded.sources.requirements, contextOf(loaded, related, prs), output, related, prs);
     },
-    onAccept: async ({ runId, inputs }, output) => {
-      const loaded = await load(runId, inputs);
+    onAccept: async (ctx, output) => {
+      const { runId, inputs } = ctx;
+      const loaded = await loadFor(ctx);
       const prs = await prsOf(runId, inputs, loaded);
       const prInputs = [...new Map(Object.values(prs).flat().map((p) => [p.id, { kind: "git-diff" as const, ref: `pr/${p.id}`, hash: p.hash }])).values()];
       await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output, await relatedOf(runId, loaded), prs), {
