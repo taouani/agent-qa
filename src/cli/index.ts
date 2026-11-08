@@ -7,19 +7,39 @@ import { ApiDriver, ModelConfigError, StaticDriver, type ModelDriver } from "../
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
-import { initCommand } from "./init.js";
+import { initCommand, MCP_HOSTS, type McpHost } from "./init.js";
 import { runCommand } from "./run.js";
 
 /**
  * The project folder: `AGENT_QA_ROOT`, else the folder holding
  * `.agent-qa/runs` when `AGENT_QA_RUNS_DIR` points at one (IDE hosts start the
- * server without a working folder), else `cwd`.
+ * server without a working folder), else the nearest folder from `cwd` up
+ * that holds `agent-qa.yaml`, no higher than the git checkout (Claude Code
+ * starts the server in the folder `claude` was started in), else `cwd`.
  */
 export function projectRoot(cwd: string, env: NodeJS.ProcessEnv): string {
   if (env.AGENT_QA_ROOT) return resolve(env.AGENT_QA_ROOT);
-  const runsDir = env.AGENT_QA_RUNS_DIR ? resolve(env.AGENT_QA_RUNS_DIR) : undefined;
+  const runsDir = runsDirOf(env) ? resolve(runsDirOf(env)!) : undefined;
   if (runsDir && basename(runsDir) === "runs" && basename(dirname(runsDir)) === ".agent-qa") return dirname(dirname(runsDir));
-  return cwd;
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "agent-qa.yaml")) || existsSync(join(dir, "agent-qa.yml"))) return dir;
+    if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return cwd;
+  }
+}
+
+/**
+ * `AGENT_QA_RUNS_DIR`, unless a host left a variable in it unexpanded
+ * (`${workspaceFolder}` on a host that doesn't fill it in): that would make a
+ * folder named after the variable.
+ */
+export function runsDirOf(env: NodeJS.ProcessEnv): string | undefined {
+  const dir = env.AGENT_QA_RUNS_DIR;
+  if (!dir) return undefined;
+  if (dir.includes("${")) {
+    process.emitWarning(`agent-qa: AGENT_QA_RUNS_DIR (${dir}) holds a variable the host didn't fill in; using the project's .agent-qa/runs`, { code: "AGENT_QA_RUNS_DIR" });
+    return undefined;
+  }
+  return dir;
 }
 
 /**
@@ -34,11 +54,19 @@ export function createEngine(cwd = process.cwd(), env: NodeJS.ProcessEnv = proce
 /** The engine and its run store, for the MCP server (which records the host's answers for cost@1). */
 export function createMcpContext(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): { engine: WorkflowEngine; runs: RunStore } {
   const root = projectRoot(cwd, env);
-  const runs = new RunStore(env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs"));
+  const runs = new RunStore(runsDirOf(env) ?? join(root, ".agent-qa", "runs"));
   const engine = new WorkflowEngine({ store: runs.stateStore({ host: "other", driver: "host-model" }), newRunId: runs.newRunId });
   const data = new DataAccess({ root, store: runs, env });
   for (const workflow of builtinWorkflows({ data, runs })) engine.register(workflow);
   return { engine, runs };
+}
+
+/** Commander collector for --host: vscode, claude-code or cursor, repeatable or comma-separated. */
+function collectHosts(value: string, previous: McpHost[]): McpHost[] {
+  const hosts = value.split(",").map((v) => v.trim());
+  const bad = hosts.find((h) => !(MCP_HOSTS as readonly string[]).includes(h));
+  if (bad !== undefined) throw new InvalidArgumentError(`expected ${MCP_HOSTS.join(", ")}`);
+  return [...new Set([...previous, ...(hosts as McpHost[])])];
 }
 
 /** Commander collector for a repeatable option: --accept review --accept run, or --accept review,run. */
@@ -57,14 +85,16 @@ export function buildProgram(): Command {
 
   program
     .command("init")
-    .description("write agent-qa.yaml, .vscode/mcp.json and the .gitignore lines")
+    .description("write agent-qa.yaml, the MCP settings of VS Code, Claude Code and Cursor, and the .gitignore lines")
     .option("--site <url>", "Jira site, e.g. https://acme.atlassian.net")
     .option("--model <provider:model>", "the default model")
     .option("--xray-project <key>", "Xray project key (adds the xray section)")
     .option("--force", "replace an existing agent-qa.yaml")
+    .option("--host <host>", `IDE host to set up: ${MCP_HOSTS.join(", ")} (repeatable or comma-separated; default all three)`, collectHosts, [])
     .option("--cwd <dir>", "project folder (default: the current folder)")
-    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; cwd?: string }) => {
-      process.exitCode = await initCommand({ ...opts, root: resolve(opts.cwd ?? process.cwd()) });
+    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; host: McpHost[]; cwd?: string }) => {
+      const { host, ...rest } = opts;
+      process.exitCode = await initCommand({ ...rest, ...(host.length ? { hosts: host } : {}), root: resolve(opts.cwd ?? process.cwd()) });
     });
   program
     .command("run [workflow]")
@@ -178,7 +208,7 @@ export function buildProgram(): Command {
       // From the project's own runs, where people reviewed the cases; the harness's runs never count.
       let kept: KeptRate | undefined;
       let runnable: RunnableRate | undefined;
-      const own = new RunStore(process.env.AGENT_QA_RUNS_DIR || join(root, ".agent-qa", "runs"));
+      const own = new RunStore(runsDirOf(process.env) ?? join(root, ".agent-qa", "runs"));
       try {
         kept = await keptRate(own);
       } catch {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { configTemplate, initCommand, MCP_SERVER } from "../src/cli/init.js";
+import { CLAUDE_CODE_SERVER, configTemplate, CURSOR_SERVER, initCommand, MCP_SERVER } from "../src/cli/init.js";
 import { EXIT, runCommand, type RunOptions } from "../src/cli/run.js";
 import { buildProgram } from "../src/cli/index.js";
 import type { JiraCollection, JiraInput, JiraIssue, XrayTest } from "../src/connectors/index.js";
@@ -288,6 +288,11 @@ describe("agent-qa init", () => {
     expect(config.models?.default).toMatch(/^anthropic:/);
     expect(JSON.parse(await readFile(join(root, ".vscode", "mcp.json"), "utf8"))).toEqual({ servers: { "agent-qa": MCP_SERVER } });
     expect(MCP_SERVER).not.toHaveProperty("cwd");
+    expect(JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"))).toEqual({ mcpServers: { "agent-qa": CLAUDE_CODE_SERVER } });
+    // Claude Code expands only ${VAR}: no ${workspaceFolder} there.
+    expect(JSON.stringify(CLAUDE_CODE_SERVER)).not.toContain("workspaceFolder");
+    expect(CLAUDE_CODE_SERVER.args).toEqual(MCP_SERVER.args);
+    expect(JSON.parse(await readFile(join(root, ".cursor", "mcp.json"), "utf8"))).toEqual({ mcpServers: { "agent-qa": CURSOR_SERVER } });
     expect(await readFile(join(root, ".gitignore"), "utf8")).toContain(".agent-qa/\n");
 
     // Again: nothing is overwritten or added twice.
@@ -296,7 +301,13 @@ describe("agent-qa init", () => {
     expect(await initCommand({ root, log: (l) => lines.push(l) })).toBe(0);
     expect(await readFile(join(root, "agent-qa.yaml"), "utf8")).toBe("version: 1\n");
     expect((await readFile(join(root, ".gitignore"), "utf8")).match(/\.agent-qa\//g)).toHaveLength(1);
-    expect(lines.slice(0, 3)).toEqual(["agent-qa.yaml: kept (exists; --force replaces it)", ".vscode/mcp.json: kept (it already has an agent-qa server)", ".gitignore: kept (.agent-qa/ is ignored)"]);
+    expect(lines.slice(0, 5)).toEqual([
+      "agent-qa.yaml: kept (exists; --force replaces it)",
+      ".vscode/mcp.json: kept (it already has an agent-qa server)",
+      ".mcp.json: kept (it already has an agent-qa server)",
+      ".cursor/mcp.json: kept (it already has an agent-qa server)",
+      ".gitignore: kept (.agent-qa/ is ignored)",
+    ]);
   });
 
   it("adds to an existing mcp.json, and leaves one with comments alone", async () => {
@@ -311,6 +322,29 @@ describe("agent-qa init", () => {
     await writeFile(join(root, ".vscode", "mcp.json"), '// mine\n{ "servers": {} }');
     expect(await initCommand({ root, force: true, log: (l) => lines.push(l) })).toBe(2);
     expect(await readFile(join(root, ".vscode", "mcp.json"), "utf8")).toBe('// mine\n{ "servers": {} }');
+  });
+
+  it("sets up only the hosts asked for, adds to an existing .mcp.json, and leaves one of another shape alone", async () => {
+    const root = join(dir, "h");
+    await mkdir(root);
+    await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
+    expect(await initCommand({ root, hosts: ["claude-code"], log: (l) => lines.push(l) })).toBe(0);
+    expect(JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"))).toEqual({ mcpServers: { other: { command: "x" }, "agent-qa": CLAUDE_CODE_SERVER } });
+    await expect(readFile(join(root, ".vscode", "mcp.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(join(root, ".cursor", "mcp.json"), "utf8")).rejects.toThrow();
+
+    await mkdir(join(root, ".cursor"));
+    await writeFile(join(root, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: [] }));
+    lines = [];
+    expect(await initCommand({ root, hosts: ["cursor"], log: (l) => lines.push(l) })).toBe(2);
+    expect(await readFile(join(root, ".cursor", "mcp.json"), "utf8")).toBe(JSON.stringify({ mcpServers: [] }));
+    expect(lines.join("\n")).toContain('.cursor/mcp.json: not changed (it isn\'t plain JSON with a mcpServers object). Add this server under "mcpServers"');
+  });
+
+  it("refuses an IDE host it doesn't know", async () => {
+    const program = buildProgram().exitOverride().configureOutput({ writeErr: () => {} });
+    program.commands.forEach((c) => c.exitOverride().configureOutput({ writeErr: () => {} }));
+    await expect(program.parseAsync(["node", "agent-qa", "init", "--host", "vscode,emacs"])).rejects.toThrow(/expected vscode, claude-code, cursor/);
   });
 
   it("refuses settings that don't make a valid config", async () => {
