@@ -1,4 +1,5 @@
 import { assertGrant, type WriteGrant } from "../core/index.js";
+import { capPatches, checkIssueKey, DEFAULT_DIFF_BYTES, DEFAULT_PULL_REQUESTS, namesKey, type DiffOptions, type FindPullRequestsOptions, type GitHost, type PullRequestDiff, type PullRequestFileChange, type PullRequestRef } from "./git-host.js";
 import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 
 /**
@@ -54,7 +55,9 @@ const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 export const BRANCH = /^(?!.*\.\.)(?!.*\/\/)(?!\/)(?!.*\/$)(?!.*\.lock$)(?!\.)[A-Za-z0-9._/-]{1,200}$/;
 const seg = (s: string) => s.split("/").map(encodeURIComponent).join("/");
 
-export class GitHubClient {
+export class GitHubClient implements GitHost {
+  readonly platform = "github" as const;
+  readonly service = "GitHub";
   readonly http: HttpClient;
   private readonly repo: string;
 
@@ -242,5 +245,77 @@ export class GitHubClient {
     const url = str(made.html_url);
     if (typeof number !== "number" || !url) throw this.bad("POST", "/pulls", "no pull request number");
     return { number, url, base, branch: pr.branch, draft: made.draft === true, created: true };
+  }
+  /**
+   * Pull requests naming the key: GitHub's issue search (title and
+   * description) and commit search (each commit's pull requests), then kept
+   * only where the key is a whole word in the title, description, branch or a
+   * commit message. Commit search finds commits on the default branch only.
+   */
+  async findPullRequests(key: string, options: FindPullRequestsOptions = {}): Promise<PullRequestRef[]> {
+    checkIssueKey(key);
+    const max = options.max ?? DEFAULT_PULL_REQUESTS;
+    const found = new Map<number, PullRequestRef>();
+    const add = (p: Raw, where: PullRequestRef["matchedIn"]) => {
+      const id = p.number;
+      const url = str(p.html_url);
+      if (typeof id !== "number" || !url) return;
+      const known = found.get(id);
+      if (known) {
+        for (const w of where) if (!known.matchedIn.includes(w)) known.matchedIn.push(w);
+        return;
+      }
+      const merged = !!str(p.merged_at) || !!str(obj(p.pull_request).merged_at);
+      const state = p.state === "open" ? "open" : merged ? "merged" : "closed";
+      found.set(id, { id, url, title: str(p.title) ?? "", sourceBranch: str(obj(p.head).ref) ?? "", targetBranch: str(obj(p.base).ref) ?? "", state, matchedIn: [...where] });
+    };
+    const issues = obj(await this.http.get("/search/issues", { query: { q: `repo:${this.repo} is:pr "${key}"`, sort: "created", order: "desc", per_page: Math.min(50, max * 3) } }));
+    for (const item of Array.isArray(issues.items) ? issues.items.map(obj) : []) {
+      const where: PullRequestRef["matchedIn"] = [];
+      if (namesKey(str(item.title), key)) where.push("title");
+      if (namesKey(str(item.body), key)) where.push("description");
+      if (where.length) add(item, where);
+    }
+    const commits = obj(await this.http.get("/search/commits", { query: { q: `repo:${this.repo} "${key}"`, sort: "committer-date", order: "desc", per_page: 10 } }));
+    for (const item of Array.isArray(commits.items) ? commits.items.map(obj) : []) {
+      const sha = str(item.sha);
+      if (!sha || !/^[0-9a-f]{40}$/.test(sha) || !namesKey(str(obj(item.commit).message), key)) continue;
+      const pulls = await this.http.get<unknown>(this.path(`/commits/${sha}/pulls`), { query: { per_page: 5 } });
+      for (const p of Array.isArray(pulls) ? pulls.map(obj) : []) add(p, ["commit"]);
+    }
+    // The branch: the issue search's results carry none, so their pull requests are read for it.
+    for (const ref of found.values()) {
+      if (ref.sourceBranch) continue;
+      const p = obj(await this.http.get(this.path(`/pulls/${ref.id}`)));
+      ref.sourceBranch = str(obj(p.head).ref) ?? "";
+      ref.targetBranch = str(obj(p.base).ref) ?? "";
+      if (str(p.merged_at)) ref.state = "merged";
+    }
+    for (const ref of found.values()) if (namesKey(ref.sourceBranch, key) && !ref.matchedIn.includes("branch")) ref.matchedIn.push("branch");
+    return [...found.values()].sort((a, b) => b.id - a.id).slice(0, max);
+  }
+
+  /** The files a pull request changes, with their patches up to `maxBytes`; GitHub lists at most 3000 files. */
+  async pullRequestDiff(id: number, options: DiffOptions = {}): Promise<PullRequestDiff> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`${id} isn't a pull request number`);
+    const files: PullRequestFileChange[] = [];
+    let truncated = false;
+    for (let page = 1; page <= 30; page++) {
+      const list = await this.http.get<unknown>(this.path(`/pulls/${id}/files`), { query: { per_page: 100, page } });
+      const items = Array.isArray(list) ? list.map(obj) : [];
+      for (const f of items) {
+        const path = str(f.filename);
+        if (!path) continue;
+        const status = f.status === "added" || f.status === "copied" ? "added" : f.status === "removed" ? "removed" : f.status === "renamed" ? "renamed" : "modified";
+        const patch = str(f.patch);
+        // GitHub leaves the patch out of a binary or very large file.
+        if (patch === undefined && f.status !== "removed" && f.changes !== 0) truncated = true;
+        files.push({ path, status, ...(str(f.previous_filename) ? { previousPath: str(f.previous_filename)! } : {}), ...(patch !== undefined ? { patch } : {}) });
+      }
+      if (items.length < 100) break;
+      if (page === 30) truncated = true;
+    }
+    const capped = capPatches(files, options.maxBytes ?? DEFAULT_DIFF_BYTES);
+    return { files: capped.files, truncated: truncated || capped.truncated };
   }
 }
