@@ -53,6 +53,8 @@ export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: 
   const token = randomBytes(16).toString("hex");
   const started = Date.now();
   let seen: { stamp: string; since: number } | undefined;
+  // The last error moving a stale lock away, named if we give up: it tells a slow holder from a file we can't move.
+  let lastError: string | undefined;
   try {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // mkdir's mode doesn't apply to a folder that already exists.
@@ -72,7 +74,7 @@ export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: 
         await handle.writeFile(token);
       } catch {
         await handle.close().catch(() => undefined);
-        await rm(file, { force: true }).catch(() => undefined);
+        await removeRetrying(file);
         return await fn();
       }
       await handle.close();
@@ -83,12 +85,12 @@ export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: 
       const stamp = `${held.mtimeMs}:${held.content}`;
       if (seen?.stamp !== stamp) seen = { stamp, since: Date.now() };
       if (Date.now() - seen.since > staleMs) {
-        await takeOver(file, held.content);
+        lastError = (await takeOver(file, held.content)) ?? lastError;
         seen = undefined;
         continue;
       }
     }
-    if (Date.now() - started > waitMs) throw new Error(`Another Agent-QA process is creating the vault key. If none is running, delete ${file} and try again.`);
+    if (Date.now() - started > waitMs) throw new Error(`Another Agent-QA process is creating the vault key. If none is running, delete ${file} and try again.${lastError ? ` (Moving the old lock away last failed with ${lastError}.)` : ""}`);
     await new Promise((r) => setTimeout(r, 100));
   }
   const refresh = setInterval(() => {
@@ -101,7 +103,7 @@ export async function withKeyCreationLock<T>(fn: () => Promise<T> | T, options: 
   } finally {
     clearInterval(refresh);
     // Retried while Windows reports the file busy, so a lock isn't left to go stale (minutes) for the next process.
-    if ((await readFile(file, "utf8").catch(() => undefined)) === token) await rm(file, { force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+    if ((await readFile(file, "utf8").catch(() => undefined)) === token) await removeRetrying(file);
   }
 }
 
@@ -117,22 +119,43 @@ async function lockState(file: string): Promise<{ mtimeMs: number; content: stri
 /** Errors Windows gives while another handle (an antivirus scan, a reader) has the file open. */
 const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
 
-/** Moves a stale lock away; if what moved is not the lock we judged stale (someone just took it), puts it back. */
-async function takeOver(file: string, staleContent: string): Promise<void> {
+/** Removes a file, retrying briefly while Windows reports it busy. */
+async function removeRetrying(file: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rm(file, { force: true });
+      return;
+    } catch (error) {
+      if (!BUSY.has((error as NodeJS.ErrnoException).code ?? "") || attempt >= 5) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+}
+
+/**
+ * Moves a stale lock away; if what moved is not the lock we judged stale (someone just took it), puts it back.
+ * A busy rename (Windows) is retried briefly, each time only while the file still holds the stale content.
+ * Returns the error code of a rename that failed for another reason than the file being gone.
+ */
+async function takeOver(file: string, staleContent: string): Promise<string | undefined> {
   const aside = `${file}.${randomBytes(6).toString("hex")}.stale`;
   for (let attempt = 0; ; attempt++) {
     try {
       await rename(file, aside);
       break;
     } catch (error) {
-      // Gone: another waiter moved it first. Busy (Windows: a scanner or reader has it open): try again shortly.
-      if (!BUSY.has((error as NodeJS.ErrnoException).code ?? "") || attempt >= 5) return;
+      const code = (error as NodeJS.ErrnoException).code ?? "an unknown error";
+      if (code === "ENOENT") return undefined; // Another waiter moved it first.
+      if (!BUSY.has(code) || attempt >= 5) return code;
       await new Promise((r) => setTimeout(r, 50));
+      // Taken meanwhile (or gone): it's no longer the lock we judged stale.
+      if ((await readFile(file, "utf8").catch(() => undefined)) !== staleContent) return undefined;
     }
   }
   const moved = await readFile(aside, "utf8").catch(() => staleContent);
   if (moved !== staleContent) await link(aside, file).catch(() => undefined);
-  await rm(aside, { force: true, maxRetries: 5, retryDelay: 50 }).catch(() => undefined);
+  await removeRetrying(aside);
+  return undefined;
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
