@@ -1,3 +1,4 @@
+import type { WriteGrant } from "../core/index.js";
 import { adfToText, type AdfText } from "./adf.js";
 import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 
@@ -156,6 +157,11 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 export class JiraClient {
   readonly http: HttpClient;
+  /**
+   * Writes that belong to an Xray write: only the date fields of a Test
+   * Execution that Xray import just created, under that import's grant.
+   */
+  private readonly executions: HttpClient;
   private fieldCache: JiraField[] | undefined;
 
   constructor(options: JiraClientOptions) {
@@ -169,6 +175,21 @@ export class JiraClient {
       readOnlyPosts: [(path) => path === SEARCH_PATH],
       headers: () => ({ Authorization: auth }),
     });
+    this.executions = new HttpClient({ ...rest, service: "Jira", baseUrl: site, writeTarget: "xray", headers: () => ({ Authorization: auth }) });
+  }
+
+  /**
+   * Sets the start and end date fields of a Test Execution that Agent-QA's
+   * own Xray import just created (live check, 8 Nov 2026: Xray's import
+   * leaves them empty even when they are sent with it). Only custom field
+   * ids with date strings; part of the Xray write, so its grant is an Xray one.
+   */
+  async setExecutionDates(key: string, fields: Record<string, string>, grant: WriteGrant): Promise<void> {
+    assertKey(key);
+    const ids = Object.keys(fields);
+    if (ids.length === 0 || ids.length > 2) throw new Error("A Test Execution has a start and an end date field");
+    for (const id of ids) if (!/^customfield_\d+$/.test(id) || !/^\d{4}-\d{2}-\d{2}(T[\d:.]+\+0000)?$/.test(fields[id]!)) throw new Error("Not a Jira date custom field");
+    await this.executions.request(`/rest/api/3/issue/${key}`, { method: "PUT", body: { fields }, grant, expect: "none" });
   }
 
   async fields(): Promise<JiraField[]> {

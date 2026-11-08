@@ -58,4 +58,4 @@ xray:
     end: { field: customfield_10505, type: datetime }    # the default type
 ```
 
-The start is when the run step began and the end is when it finished.
+The start is when the run step began and the end is when it finished. Xray's import leaves these fields empty even when they are sent with it, so Agent-QA sets them on the new execution with a Jira edit right after the import, under the same yes (the policy summary says so; `writes.jira` stays `deny`). It needs the `atlassian` section, and both fields must be editable on the Test Execution. If the edit fails, the execution is still recorded, and the run says to set the dates by hand.

@@ -107,6 +107,8 @@ export const xrayExecutionSchema = z
     reason: z.string().optional(),
     project: z.string().optional(),
     key: z.string().optional(),
+    /** Recorded, but its start and end dates couldn't be set in Jira: why, masked. */
+    datesError: z.string().optional(),
     label: z.string(),
     previous: z.object({ key: z.string(), created: z.string() }).strict().optional(),
     results: z.array(resultSchema),
@@ -138,7 +140,7 @@ function renderXrayExecution(x: XrayExecution): string {
   const failed = x.results.filter((r) => r.status === "FAILED").length;
   const head = x.status === "recorded" ? `# Xray: recorded as ${x.key}` : x.status === "declined" ? "# Xray: not recorded" : x.status === "unavailable" ? "# Xray: Jira couldn't be read, nothing recorded" : x.status === "recording" ? "# Xray: recording" : x.status === "uncertain" ? "# Xray: may or may not be recorded" : "# Xray: nothing to record";
   if (x.status === "unavailable" || x.project === undefined) return `${[head, "", ...(x.reason ? [one(x.reason)] : [])].join("\n")}\n`;
-  const lines = [head, "", ...(x.status === "uncertain" && x.reason ? [one(x.reason), ""] : []), `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
+  const lines = [head, "", ...(x.status === "uncertain" && x.reason ? [one(x.reason), ""] : []), ...(x.datesError ? [`Its start and end dates couldn't be set in Jira (${one(x.datesError)}); set them on ${x.key} by hand.`, ""] : []), `Project ${x.project}. ${x.results.length} result(s), ${failed} failed${x.skipped ? `, ${x.skipped} skipped (not recorded)` : ""}.`, "", ...changeLines(x), ""];
   for (const r of x.results) lines.push(`- ${r.tcId} (${r.xrayKey}): ${r.status}${r.before ? `, was ${r.before}` : ""}${r.comment ? `: ${one(r.comment).slice(0, 300)}` : ""}`);
   if (x.notInXray.length) lines.push("", `Not in Xray, not recorded: ${x.notInXray.map(one).join("; ")}`);
   return `${lines.join("\n")}\n`;
@@ -398,7 +400,10 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
             const [message] = await deps.data.maskTexts(ctx.runId, [one(error instanceof Error ? error.message : String(error)).slice(0, 300)], "xray.error").catch(() => ["(its message couldn't be masked)"]);
             return void (await uncertain({ ...base, status: "recording" }, `the import failed (${message})`));
           }
-          await write(r.status === "done" ? { ...base, status: "recorded", key: r.key } : { ...base, status: "declined" });
+          if (r.status !== "done") return void (await write({ ...base, status: "declined" }));
+          // Masked whole, then cut: a value at the edge is never half-hidden from the detectors.
+          const datesError = r.datesError ? (await deps.data.maskTexts(ctx.runId, [one(r.datesError)], "xray.error").catch(() => ["(its message couldn't be masked)"]))[0]!.slice(0, 300) : undefined;
+          await write({ ...base, status: "recorded", key: r.key, ...(datesError ? { datesError } : {}) });
         },
       },
     ],
