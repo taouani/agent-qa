@@ -48,6 +48,10 @@ export interface RunOptions {
   jql?: string;
   fromRun?: string;
   pushFrom?: string;
+  /** document: the document type. */
+  type?: string;
+  /** document: where to publish it, `confluence`. */
+  publish?: string;
   /** Inputs as JSON, for workflows the flags don't cover. */
   input?: string;
   model?: string;
@@ -89,6 +93,14 @@ async function terminalAsk(question: string): Promise<boolean | undefined> {
 const ciFromEnv = (env: NodeJS.ProcessEnv) => Boolean(env.CI) && !/^(false|0)$/i.test(env.CI!);
 
 function inputsOf(opts: RunOptions): unknown {
+  const inputs = baseInputs(opts);
+  if (opts.type === undefined && opts.publish === undefined) return inputs;
+  if (opts.resume) throw new SetupError("--resume continues a run with its own inputs: leave out --type and --publish");
+  if (opts.workflow !== "document") throw new SetupError("--type and --publish are for the document workflow");
+  return { ...(inputs as object), ...(opts.type !== undefined ? { type: opts.type } : {}), ...(opts.publish !== undefined ? { publish: opts.publish } : {}) };
+}
+
+function baseInputs(opts: RunOptions): unknown {
   const given = [opts.key, opts.jql, opts.fromRun, opts.pushFrom, opts.input].filter((v) => v !== undefined).length;
   if (opts.resume) {
     if (given) throw new SetupError("--resume continues a run with its own inputs: leave out --key, --jql, --from-run, --push-from and --input");

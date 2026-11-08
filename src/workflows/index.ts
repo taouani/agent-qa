@@ -10,7 +10,7 @@ import { debugWorkflow, type DebugDeps } from "./debug/workflow.js";
 import { reviewWorkflow, type ReviewDeps } from "./review/workflow.js";
 import { auditWorkflow, type AuditDeps } from "./audit/workflow.js";
 import { refactorWorkflow, type RefactorDeps } from "./refactor/workflow.js";
-import { documentWorkflow } from "./document/workflow.js";
+import { documentWorkflow, type DocumentDeps } from "./document/workflow.js";
 
 export const MODULE = "workflows";
 export { spikeWorkflow } from "./spike/workflow.js";
@@ -34,7 +34,7 @@ export type { Exploration, ExploreAction } from "./explore/artifact.js";
 
 /** Every built-in workflow, registered by the front doors. The data workflows need the run store and data access. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps & RunTestsDeps & DebugDeps & ReviewDeps & AuditDeps & RefactorDeps): ReadonlyArray<WorkflowDefinition<any>> {
+export function builtinWorkflows(deps: TestCasesDeps & ProfileDeps & ExploreDeps & ScriptsDeps & RunTestsDeps & DebugDeps & ReviewDeps & AuditDeps & RefactorDeps & DocumentDeps): ReadonlyArray<WorkflowDefinition<any>> {
   // The Copilot spike's toy workflow is kept for tests only: users get the real ones.
   return [requirementsWorkflow(deps), testCasesWorkflow(deps), profileWorkflow(deps), exploreWorkflow(deps), scriptsWorkflow(deps), runTestsWorkflow(deps), debugWorkflow(deps), reviewWorkflow(deps), auditWorkflow(deps), refactorWorkflow(deps), documentWorkflow(deps)];
 }
@@ -59,10 +59,10 @@ export { AUDIT_AREAS, AUDIT_ARTIFACT, AUDIT_ROLES, auditInputSchema, auditOutput
 export type { Audit, AuditArea, AuditDeps, AuditFinding, AuditInputs, AuditOutput, AuditRole } from "./audit/workflow.js";
 export { checkRefactored, MAX_REFACTOR_READ, REFACTOR_REPORT_ARTIFACT, refactorInputSchema, refactorPlanSchema, refactorPrBody, refactorReportSchema, refactorWorkflow, simulatePlan } from "./refactor/workflow.js";
 export type { RefactorDeps, RefactorInputs, RefactorPlan, RefactorReport, RefactorTask } from "./refactor/workflow.js";
-export { DOCUMENT_TYPES, documentInputSchema, documentWorkflow } from "./document/workflow.js";
-export type { DocumentInputs } from "./document/workflow.js";
-export { DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, documentDraftSchema, documentSchema } from "./document/artifact.js";
-export type { DocumentArtifact, DocumentDraft } from "./document/artifact.js";
+export { bodyOf, DOCUMENT_TYPES, documentInputSchema, documentWorkflow, titleOf } from "./document/workflow.js";
+export type { DocumentDeps, DocumentInputs } from "./document/workflow.js";
+export { CONFLUENCE_PAGE_ARTIFACT, confluencePageSchema, DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, documentDraftSchema, documentSchema } from "./document/artifact.js";
+export type { ConfluencePage, DocumentArtifact, DocumentDraft } from "./document/artifact.js";
 export { TEST_PLAN, testPlanSchema } from "./document/test-plan.js";
 export type { TestPlan } from "./document/test-plan.js";
 export { TEST_LEVELS, TEST_STRATEGY, TEST_TYPES, testStrategySchema } from "./document/test-strategy.js";

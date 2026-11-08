@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath, sep } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, createGitHost, type GitHost, BRANCH, GITHUB_API, AZURE_DEVOPS_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, createGitHost, type GitHost, BRANCH, GITHUB_API, AZURE_DEVOPS_API, type SalesforceSession, ConfluenceClient, markdownToStorage, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -439,6 +439,39 @@ export interface DataAccessOptions {
   browser?: OpenBrowser;
   /** Replace the GitHub client, for tests. */
   github?: (repo: string) => Pick<GitHost, "openPullRequest">;
+  /** Replace the Confluence client that publishes documents, for tests. */
+  confluenceWriter?: ConfluenceWriter;
+}
+
+export type ConfluenceWriter = Pick<ConfluenceClient, "spaceId" | "pageByTitle" | "createPage" | "updatePage" | "addLabel">;
+
+/** The label on every page Agent-QA creates: only such a page is ever updated. */
+export const CONFLUENCE_LABEL = "agent-qa";
+
+/** What publishing a document would do (S4-5). Titles are masked; links hold the page id only, never a title. */
+export interface ConfluencePlan {
+  space: string;
+  /** The page title, masked. */
+  title: string;
+  /** create: no page has the title; update: Agent-QA's page has it; conflict: someone else's page has it, so nothing is written. */
+  action: "create" | "update" | "conflict";
+  page?: { id: string; version: number; url: string } | undefined;
+  parentPageId?: string | undefined;
+}
+
+/** Publishing documents (S4-5). */
+export interface DocumentData {
+  /** Whether a document can be published: `atlassian.confluence.spaceKey` is set and the policy doesn't deny Confluence. */
+  confluenceEnabled(): Promise<boolean>;
+  /** What publishing would do, found by the page title in the space (reads only). `tokensRun` restores the title with restoreOnWrite. */
+  confluencePlan(tokensRun: string, title: string): Promise<ConfluencePlan>;
+  /**
+   * Creates or updates the page through `Policy.guard` (target confluence).
+   * With restoreOnWrite, tokens are replaced with `tokensRun`'s values; else
+   * the page holds the tokens. A page with the title that Agent-QA didn't
+   * create (no agent-qa label) is never overwritten.
+   */
+  publishToConfluence(runId: string, tokensRun: string, doc: { title: string; markdown: string }, approved: boolean): Promise<{ status: "done"; page: { id: string; version: number; url: string; action: "create" | "update"; space: string } } | { status: "declined" }>;
 }
 
 /** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
@@ -454,7 +487,7 @@ const SEALED = /^<INPUT_\d+>$/;
 /** Open runs kept in memory; an MCP server can serve many runs in a day. */
 const MAX_OPEN = 16;
 
-export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SuiteData, TestFilesData, SalesforceData, ExplorerData {
+export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SuiteData, TestFilesData, SalesforceData, ExplorerData, DocumentData {
   private config: Promise<Config> | undefined;
   private vault: Pick<Vault, "open"> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
@@ -1683,6 +1716,88 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     this.config ??= this.options.config ? Promise.resolve(this.options.config) : loadConfig(this.options.root).then((l) => l.config);
     this.config.catch(() => (this.config = undefined));
     return this.config;
+  }
+
+  async confluenceEnabled(): Promise<boolean> {
+    let config: Config;
+    try {
+      config = await this.loadConfig();
+    } catch {
+      return false;
+    }
+    return config.atlassian?.confluence?.spaceKey !== undefined && this.policy(config).decide("confluence").kind !== "deny";
+  }
+
+  /** The title as it goes to Confluence: real values with restoreOnWrite, no backticks. Throws when the vault lacks a token. */
+  private async publishText(config: Config, tokensRun: string): Promise<(text: string) => string> {
+    if (!config.masking.restoreOnWrite) return (text) => text;
+    const { vault } = await this.run(tokensRun);
+    return (text) => {
+      const missing = [...new Set(text.match(/<[A-Z][A-Z0-9_]*_\d+>/g) ?? [])].filter((t) => vault.valueOf(t) === undefined);
+      if (missing.length) throw new Error(`the token vault of run ${tokensRun} has no value for ${missing.length} token(s): it expired or was deleted, so the real values can't be restored. Start a new run.`);
+      return restorer((t) => vault.valueOf(t))(text);
+    };
+  }
+
+  private confluenceSetup(config: Config): { site: string; space: string; parentPageId?: string | undefined } {
+    const atlassian = config.atlassian;
+    if (!atlassian?.confluence) throw new Error("agent-qa.yaml has no atlassian.confluence section: add spaceKey (and parentPageId) to publish documents.");
+    return { site: new URL(atlassian.site).origin, space: atlassian.confluence.spaceKey, parentPageId: atlassian.confluence.parentPageId };
+  }
+
+  private async confluenceWriter(config: Config): Promise<ConfluenceWriter> {
+    if (this.options.confluenceWriter) return this.options.confluenceWriter;
+    const atlassian = config.atlassian!;
+    return new ConfluenceClient({ site: atlassian.site, email: await this.reveal(atlassian.email), token: await resolveSecret(atlassian.token, this.secrets()), ...(this.options.fetch ? { fetch: this.options.fetch } : {}) });
+  }
+
+  /** The page found by its real title: its plan, and its id for the write. */
+  private async findPage(config: Config, client: ConfluenceWriter, realTitle: string): Promise<{ spaceId: string; found?: { id: string; version: number; ours: boolean } }> {
+    const { space } = this.confluenceSetup(config);
+    const spaceId = await client.spaceId(space);
+    if (!spaceId) throw new Error(`Confluence space ${space} (atlassian.confluence.spaceKey) wasn't found, or the account can't read it`);
+    const page = await client.pageByTitle(spaceId, realTitle);
+    return page ? { spaceId, found: { id: page.id, version: page.version, ours: page.labels.includes(CONFLUENCE_LABEL) } } : { spaceId };
+  }
+
+  async confluencePlan(tokensRun: string, title: string): Promise<ConfluencePlan> {
+    const config = await this.loadConfig();
+    const { site, space, parentPageId } = this.confluenceSetup(config);
+    const real = (await this.publishText(config, tokensRun))(title);
+    const { found } = await this.findPage(config, await this.confluenceWriter(config), real);
+    const page = found ? { id: found.id, version: found.version, url: `${site}/wiki/pages/viewpage.action?pageId=${found.id}` } : undefined;
+    return { space, title, action: !found ? "create" : found.ours ? "update" : "conflict", page, parentPageId };
+  }
+
+  async publishToConfluence(runId: string, tokensRun: string, doc: { title: string; markdown: string }, approved: boolean) {
+    // "No" never reaches the policy: under an `allow` rule it would not ask again.
+    if (!approved) return { status: "declined" as const };
+    const config = await this.loadConfig();
+    const { site, space, parentPageId } = this.confluenceSetup(config);
+    const real = await this.publishText(config, tokensRun);
+    const title = real(doc.title);
+    const storage = markdownToStorage(real(doc.markdown));
+    const client = await this.confluenceWriter(config);
+    const policy = this.policy(config);
+    const outcome = await policy.guard({ target: "confluence", summary: `Publish "${doc.title}" to Confluence space ${space}`, runId }, async (grant) => {
+      const { spaceId, found } = await this.findPage(config, client, title);
+      if (found && !found.ours) throw new Error(`Confluence space ${space} already has a page titled "${doc.title}" that Agent-QA didn't create (no ${CONFLUENCE_LABEL} label): it isn't overwritten. Rename or move that page, or add the label to let Agent-QA update it.`);
+      if (found) {
+        const page = await client.updatePage({ id: found.id, title, storage, version: found.version + 1, message: `Agent-QA run ${runId}` }, grant);
+        return { id: page.id, version: page.version, action: "update" as const };
+      }
+      const page = await client.createPage({ spaceId, parentId: parentPageId, title, storage }, grant);
+      try {
+        await client.addLabel(page.id, CONFLUENCE_LABEL, grant);
+      } catch (error) {
+        // Without the label a rerun refuses to touch the page: say how to fix it.
+        throw new Error(`Page ${page.id} was created in Confluence space ${space}, but its ${CONFLUENCE_LABEL} label couldn't be added (${error instanceof Error ? error.message : "error"}): add the label by hand so Agent-QA can update the page, then submit again.`);
+      }
+      return { id: page.id, version: page.version, action: "create" as const };
+    });
+    if (outcome.status !== "done") return { status: "declined" as const };
+    const { id, version, action } = outcome.value;
+    return { status: "done" as const, page: { id, version, action, space, url: `${site}/wiki/pages/viewpage.action?pageId=${id}` } };
   }
 
   /** The write policy. `confirm` says yes: the workflow's confirm step already asked the user. */

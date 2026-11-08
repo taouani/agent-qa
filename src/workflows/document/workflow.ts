@@ -4,7 +4,8 @@ import { REQUIREMENTS_ARTIFACT } from "../requirements/artifact.js";
 import { analyzeStep, sealJiraInputs, type RequirementsDeps } from "../requirements/workflow.js";
 import { TEST_CASES_ARTIFACT } from "../test-cases/artifact.js";
 import { TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
-import { DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, type DocumentDraft } from "./artifact.js";
+import type { DocumentData, RequirementsData } from "../../data/index.js";
+import { CONFLUENCE_PAGE_ARTIFACT, DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, type DocumentArtifact, type DocumentDraft } from "./artifact.js";
 import { code, one } from "./markdown.js";
 import { RELEASE_NOTES } from "./release-notes.js";
 import { RISK_REGISTER } from "./risk-register.js";
@@ -27,6 +28,9 @@ import type { DocumentMeta, DocumentSources, DocumentType } from "./types.js";
  * 3. Review (confirm): the person changes or removes texts by path; their
  *    words are masked with the requirements run's vault, the result is
  *    checked again, and the core writes `document@1` (`document.md`).
+ * 4. Publish (confirm, S4-5; only with `publish: confluence`): the person's
+ *    own yes publishes the document as a Confluence page, created under
+ *    `parentPageId` or updated when Agent-QA made it; `confluence-page@1`.
  *
  * The document's tokens are those of the requirements run's vault. A test
  * run masks with its own vault, so its tokens are shown as [masked] and
@@ -60,6 +64,7 @@ export const documentInputSchema = z
     requirementsRun: runId("Id of a finished requirements (or test-cases) run whose requirements@1 the document is written from, instead of reading Jira again"),
     testCasesRun: runId("Id of a test-cases run whose reviewed cases the document uses; its requirements are used too"),
     testRunRun: runId("Id of a run-tests run whose results the document uses"),
+    publish: z.literal("confluence").optional().describe("Publish the reviewed document as a Confluence page (asks first)"),
   })
   .strict()
   .refine((i) => [i.key, i.jql, i.requirementsRun].filter((v) => v !== undefined).length === 1 || (i.key === undefined && i.jql === undefined && i.requirementsRun === undefined && i.testCasesRun !== undefined), {
@@ -159,7 +164,18 @@ function changeError(content: unknown, change: Change): string | undefined {
   return undefined;
 }
 
-export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<DocumentInputs> {
+const publishSchema = z.object({ approve: z.boolean().describe("true only if the user said to publish the document to Confluence") }).strict();
+type Publish = z.infer<typeof publishSchema>;
+
+export type DocumentDeps = RequirementsDeps & { data: RequirementsData & DocumentData };
+
+/** The page title: the document's heading, without backticks. */
+export const titleOf = (doc: Pick<DocumentArtifact, "markdown" | "title">) => (/^# (.+)$/m.exec(doc.markdown)?.[1] ?? doc.title).replace(/`/g, "").trim();
+/** The page body: the markdown without its heading, which Confluence shows as the title. */
+export const bodyOf = (doc: Pick<DocumentArtifact, "markdown" | "review">) =>
+  `${doc.review.unattended ? "> Not reviewed: written unattended (--yes).\n\n" : ""}${doc.markdown.replace(/^# .*\n+/, "")}`;
+
+export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<DocumentInputs> {
   const typeOf = (ctx: { inputs: DocumentInputs }) => DOCUMENT_TYPES.find((t) => t.id === ctx.inputs.type)!;
   /** The run whose requirements@1 (and vault) the document uses: given, or this run's own analysis. */
   const requirementsRunOf = (ctx: Ctx) => ctx.inputs.requirementsRun ?? ctx.runId;
@@ -296,6 +312,9 @@ export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<Doc
         const art = await deps.runs.readArtifact(prepared.requirementsRun, REQUIREMENTS_ARTIFACT).catch(() => undefined);
         if (!art) return refuse(`Run ${prepared.requirementsRun} has no requirements@1: give the id of a finished requirements or test-cases run, or start from a key or JQL`);
       }
+      if (inputs.publish === "confluence" && !(await deps.data.confluenceEnabled())) {
+        refuse("publish: confluence needs atlassian.confluence.spaceKey in agent-qa.yaml, and a write policy that doesn't deny Confluence");
+      }
       if (inputs.testRunRun !== undefined && !(await deps.runs.readArtifact(inputs.testRunRun, TEST_RUN_ARTIFACT).catch(() => undefined))) {
         refuse(`Run ${inputs.testRunRun} has no test results (test-run@1): give the id of a run-tests run`);
       }
@@ -376,6 +395,51 @@ export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<Doc
           );
         },
       },
+      {
+        id: "publish",
+        kind: "confirm",
+        outputSchema: publishSchema,
+        // Publishing is never unattended: it takes the person's own yes (a terminal answer or --accept publish).
+        answers: { yes: { approve: true }, no: { approve: false }, unattended: { approve: false } },
+        approval: { question: async (ctx) => publishQuestion(ctx) },
+        when: async (ctx) => ctx.inputs.publish === "confluence" && (await reviewed(ctx).catch(() => undefined)) !== undefined,
+        instructions: () =>
+          [
+            "Ask the user whether to publish the reviewed document to Confluence. The context names the space and says whether a new page is created or Agent-QA's earlier page is updated. Wait for their answer.",
+            "Submit approve: true only if they said yes; approve: false publishes nothing and ends the run. If the context says another page has the title, don't ask: submit approve: false.",
+          ].join("\n"),
+        context: async (ctx) => publishQuestion(ctx),
+        onAccept: async (ctx, out: Publish) => {
+          if (!out.approve) return;
+          // Resumed after a crash between the write and the saved answer: published already.
+          if (await deps.runs.readArtifact(ctx.runId, CONFLUENCE_PAGE_ARTIFACT).catch(() => undefined)) return;
+          const doc = (await reviewed(ctx))!;
+          const result = await deps.data.publishToConfluence(ctx.runId, requirementsRunOf(ctx), { title: titleOf(doc.data), markdown: bodyOf(doc.data) }, true);
+          if (result.status !== "done") return;
+          await deps.runs.writeArtifact(
+            ctx.runId,
+            CONFLUENCE_PAGE_ARTIFACT,
+            { document: { run: ctx.runId, sourceHash: doc.sourceHash }, space: result.page.space, pageId: result.page.id, version: result.page.version, url: result.page.url, action: result.page.action, title: titleOf(doc.data) },
+            { inputs: [{ kind: "artifact", ref: `${ctx.runId}/document`, hash: doc.sourceHash }], templateVersion: DOCUMENT_ENGINE_VERSION },
+          );
+        },
+      },
     ],
   };
+
+  function reviewed(ctx: Ctx) {
+    return deps.runs.readArtifact(ctx.runId, DOCUMENT_ARTIFACT);
+  }
+
+  async function publishQuestion(ctx: Ctx): Promise<string> {
+    const doc = (await reviewed(ctx))!;
+    const plan = await deps.data.confluencePlan(requirementsRunOf(ctx), titleOf(doc.data));
+    const what =
+      plan.action === "create"
+        ? `It creates a new page${plan.parentPageId ? ` under page ${plan.parentPageId}` : " at the top of the space"}.`
+        : plan.action === "update"
+          ? `It updates Agent-QA's page ${plan.page!.id} (now version ${plan.page!.version}): ${plan.page!.url}`
+          : `Page ${plan.page!.id} already has this title and Agent-QA didn't create it, so it can't be published: rename or move that page first.`;
+    return `Publish the ${doc.data.title.toLowerCase()} "${plan.title}" to Confluence space ${plan.space}? ${what}`;
+  }
 }
