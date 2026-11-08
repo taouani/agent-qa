@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { GitHost, JiraCollection, JiraInput, JiraIssue, PullRequestDiff, PullRequestRef } from "../src/connectors/index.js";
 import { configSchema, RunStore, WorkflowEngine } from "../src/core/index.js";
 import { DataAccess, PULL_REQUEST_BYTES, PULL_REQUESTS_ARTIFACT } from "../src/data/index.js";
+import { ConnectorError } from "../src/connectors/http.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 import { documentWorkflow, REQUIREMENTS_ARTIFACT, requirementsWorkflow, testCasesWorkflow } from "../src/workflows/index.js";
 import { inputFingerprint } from "../src/workflows/requirements/workflow.js";
@@ -55,7 +56,7 @@ beforeEach(async () => {
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
-function setup(over: { git?: boolean } = {}) {
+function setup(over: { git?: boolean; reader?: Pick<GitHost, "platform" | "findPullRequests" | "pullRequestDiff"> } = {}) {
   const key = randomBytes(32);
   const config = configSchema.parse({ version: 1, atlassian: { site: SITE, email: "${env:E}", token: "${env:T}" } });
   const data = new DataAccess({
@@ -65,7 +66,7 @@ function setup(over: { git?: boolean } = {}) {
     vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => key } }),
     jira,
     confluence: { pages: async () => ({ pages: [], skipped: [] }) },
-    ...(over.git === false ? {} : { gitReader: host }),
+    ...(over.git === false ? {} : { gitReader: over.reader ?? host }),
   });
   const engine = new WorkflowEngine({ store: runs.stateStore({ host: "cli", driver: "api" }), newRunId: runs.newRunId })
     .register(requirementsWorkflow({ data, runs }))
@@ -111,6 +112,24 @@ describe("pull requests in the requirements analysis (S4-6)", () => {
     const eight = (await data.pullRequests(runId, ["ABC-1"])).byIssue["ABC-1"]!.find((p) => p.id === 8)!;
     expect(eight.truncated).toBe(true);
     expect(eight.files).toEqual([{ path: "src/big.ts", status: "modified" }, { path: "src/small.ts", status: "added", patch: "+z" }]);
+  });
+
+  it("caps the run's diffs over every issue, and says what a refused token needs", async () => {
+    const patch = "+x\n".repeat(Math.floor(190_000 / 3));
+    const reader = {
+      platform: "github" as const,
+      findPullRequests: async (key: string) => [ref(Number(key.slice(4)), `${key} change`)],
+      pullRequestDiff: async (): Promise<PullRequestDiff> => ({ files: [{ path: "src/a.ts", status: "modified", patch }], truncated: false }),
+    };
+    const { data, engine } = setup({ reader });
+    const { runId } = await engine.start("requirements", { key: "ABC-1", withPullRequests: true });
+    const prs = await data.pullRequests(runId, ["ABC-1", "ABC-2", "ABC-3", "ABC-4"]);
+    expect(["ABC-1", "ABC-2", "ABC-3", "ABC-4"].map((k) => prs.byIssue[k]![0]!.files[0]!.patch !== undefined)).toEqual([true, true, true, false]);
+    expect(prs.byIssue["ABC-4"]![0]!.truncated).toBe(true);
+
+    const refused = setup({ reader: { ...reader, findPullRequests: async () => { throw new ConnectorError("FORBIDDEN", "GitHub", "GET", "/search/issues", 403); } } });
+    const run2 = await refused.engine.start("requirements", { key: "ABC-1", withPullRequests: true }).catch((e: unknown) => e);
+    expect(String(run2)).toMatch(/GitHub refused git.token \(403\) when reading pull requests: it needs read access/);
   });
 
   it("gives the analysis the diffs and keeps code notes that name a changed file", async () => {

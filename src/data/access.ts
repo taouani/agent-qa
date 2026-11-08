@@ -24,7 +24,7 @@ import { Explorer, vaultMasker, type ExplorerTarget, type ExploreSetup, type Mas
 import { caseLabel, caseTokens, executionChanges, executionResults, restorer, results, tcIdOf, toXrayTest, type ExecutionRow, type ExistingTest, type PreviousExecution, type PushCase, type XrayExecutionPlan, type XrayPlan, type XrayPushResult } from "./xray.js";
 import { listFolderFiles, type FolderListing } from "./profile-scan.js";
 import { clipFeature, featureFiles, relatedFeatures, type RelatedFeature } from "./related-features.js";
-import { MAX_PULL_REQUEST_ISSUES, MAX_PULL_REQUESTS_PER_ISSUE, PULL_REQUEST_BYTES, PULL_REQUESTS_ARTIFACT, PULL_REQUESTS_VERSION, type MaskedPullRequest, type PullRequestsArtifact } from "./pull-requests.js";
+import { MAX_PULL_REQUEST_ISSUES, MAX_PULL_REQUESTS_PER_ISSUE, PULL_REQUEST_BYTES, PULL_REQUEST_TOTAL_BYTES, PULL_REQUESTS_ARTIFACT, PULL_REQUESTS_VERSION, type MaskedPullRequest, type PullRequestsArtifact } from "./pull-requests.js";
 import { parsePlaywrightReport, plain, type TestOutcome } from "./test-report.js";
 import { maskAriaSnapshot } from "./snapshot.js";
 import { hasToken, isPlainRelativePath, isProtectedPath } from "./generated-files.js";
@@ -575,29 +575,47 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
 
   async pullRequests(runId: string, keys: readonly string[]): Promise<PullRequestsArtifact> {
     const wanted = [...new Set(keys.map((k) => k.trim().toUpperCase()))].sort();
+    const { host, source } = await this.gitReader();
     const cached = await this.options.store.readArtifact(runId, PULL_REQUESTS_ARTIFACT).catch(() => undefined);
-    if (cached && cached.data.keys.join(",") === wanted.slice(0, MAX_PULL_REQUEST_ISSUES).join(",")) return cached.data;
-    const host = await this.gitReader();
+    if (cached && cached.data.source === source && cached.data.keys.join(",") === wanted.slice(0, MAX_PULL_REQUEST_ISSUES).join(",")) return cached.data;
     const searched = wanted.slice(0, MAX_PULL_REQUEST_ISSUES);
     // A pull request that names two issues is read once.
     const diffs = new Map<number, Promise<Awaited<ReturnType<typeof host.pullRequestDiff>>>>();
     type Raw = { key: string; ref: Awaited<ReturnType<typeof host.findPullRequests>>[number]; files: Awaited<ReturnType<typeof host.pullRequestDiff>>["files"]; truncated: boolean };
     const raw: Raw[] = [];
+    // A token the host refuses: say what it needs, never the host's own text.
+    const read = async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (error) {
+        if (error instanceof ConnectorError && (error.code === "FORBIDDEN" || error.code === "AUTH")) {
+          throw new ProfileError(
+            host.platform === "azure-devops"
+              ? `Azure DevOps refused git.token (${error.status ?? error.code}) when reading pull requests: it needs the Code (read) scope on the repository`
+              : `${host.platform === "github" ? "GitHub" : "The git host"} refused git.token (${error.status ?? error.code}) when reading pull requests: it needs read access to the repository's contents and pull requests`,
+          );
+        }
+        throw error;
+      }
+    };
+    let total = PULL_REQUEST_TOTAL_BYTES;
     for (const key of searched) {
       let left = PULL_REQUEST_BYTES;
-      for (const ref of await host.findPullRequests(key, { max: MAX_PULL_REQUESTS_PER_ISSUE })) {
+      for (const ref of await read(() => host.findPullRequests(key, { max: MAX_PULL_REQUESTS_PER_ISSUE }))) {
         let diff = diffs.get(ref.id);
         if (!diff) {
-          diff = host.pullRequestDiff(ref.id, { maxBytes: PULL_REQUEST_BYTES });
+          diff = read(() => host.pullRequestDiff(ref.id, { maxBytes: PULL_REQUEST_BYTES }));
           diffs.set(ref.id, diff);
         }
         const full = await diff;
-        // The issue's own cap, over all its pull requests: a patch past it keeps only the path and status; smaller ones after it still fit.
+        // The issue's cap over all its pull requests, and the run's over every issue: a patch past
+        // either keeps only the path and status; smaller ones after it still fit.
         let cut = false;
         const files = full.files.map((f) => {
           const size = f.patch === undefined ? 0 : Buffer.byteLength(f.patch, "utf8");
-          if (f.patch === undefined || size <= left) {
+          if (f.patch === undefined || (size <= left && size <= total)) {
             left -= size;
+            total -= size;
             return f;
           }
           cut = true;
@@ -628,7 +646,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       const hash = sha256(JSON.stringify({ v: PULL_REQUESTS_VERSION, id: r.ref.id, title: r.ref.title, branch: r.ref.sourceBranch, files: r.files.map((f) => [f.path, f.status, f.patch ?? null]) }));
       byIssue[r.key]!.push({ id: r.ref.id, url: r.ref.url, title, state: r.ref.state, sourceBranch, matchedIn: r.ref.matchedIn, files, truncated: r.truncated, hash });
     }
-    const data: PullRequestsArtifact = { platform: host.platform, keys: searched, skipped: wanted.slice(MAX_PULL_REQUEST_ISSUES), byIssue, masked: counts };
+    const data: PullRequestsArtifact = { platform: host.platform, source, keys: searched, skipped: wanted.slice(MAX_PULL_REQUEST_ISSUES), byIssue, masked: counts };
     await this.options.store.writeArtifact(runId, PULL_REQUESTS_ARTIFACT, data, {
       inputs: [...new Map(Object.values(byIssue).flat().map((p) => [p.id, { kind: "git-diff" as const, ref: `${host.platform}:pr/${p.id}`, hash: p.hash }])).values()],
       templateVersion: PULL_REQUESTS_VERSION,
@@ -636,12 +654,14 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return data;
   }
 
-  private async gitReader(): Promise<Pick<GitHost, "platform" | "findPullRequests" | "pullRequestDiff">> {
-    if (this.options.gitReader) return this.options.gitReader;
+  /** The git host pull requests are read from, and which host and repo it is. */
+  private async gitReader(): Promise<{ host: Pick<GitHost, "platform" | "findPullRequests" | "pullRequestDiff">; source: string }> {
+    if (this.options.gitReader) return { host: this.options.gitReader, source: this.options.gitReader.platform };
     const config = await this.loadConfig();
     const git = config.git;
     if (!git) throw new Error("withPullRequests needs a git section in agent-qa.yaml (platform, repo and token) to find pull requests");
-    return createGitHost(git, await resolveSecret(git.token, this.secrets()), this.options.fetch ? { fetch: this.options.fetch } : {});
+    const host = createGitHost(git, await resolveSecret(git.token, this.secrets()), this.options.fetch ? { fetch: this.options.fetch } : {});
+    return { host, source: `${git.platform}:${git.baseUrl ?? ""}:${git.repo}` };
   }
 
   async restoresOnWrite(): Promise<boolean> {

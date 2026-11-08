@@ -9,11 +9,15 @@ import type { ArtifactSpec } from "../core/index.js";
  *
  * Per issue, at most MAX_PULL_REQUESTS_PER_ISSUE pull requests and
  * PULL_REQUEST_BYTES of patch text in all; past the cap a file keeps only its
- * path and status. At most MAX_PULL_REQUEST_ISSUES issues are searched.
+ * path and status. PULL_REQUEST_TOTAL_BYTES caps the run the same way, so a
+ * JQL filter of many issues stays one context. At most
+ * MAX_PULL_REQUEST_ISSUES issues are searched.
  */
 
 export const MAX_PULL_REQUESTS_PER_ISSUE = 5;
 export const PULL_REQUEST_BYTES = 200_000;
+/** Patch text for the whole run, over every issue: what one analysis context can hold. */
+export const PULL_REQUEST_TOTAL_BYTES = 600_000;
 export const MAX_PULL_REQUEST_ISSUES = 25;
 export const PULL_REQUESTS_VERSION = "pull-requests-1";
 
@@ -41,7 +45,7 @@ export const maskedPullRequestSchema = z
         })
         .strict(),
     ),
-    /** Some patches were left out: over the issue's cap, or not sent by the host. */
+    /** Some patches were left out: over the issue's or the run's cap, or not sent by the host. */
     truncated: z.boolean(),
     /** sha256 of the pull request as read (title, branch, files and patches): same hash, same input. */
     hash,
@@ -52,6 +56,8 @@ export type MaskedPullRequest = z.infer<typeof maskedPullRequestSchema>;
 export const pullRequestsSchema = z
   .object({
     platform: z.enum(["github", "gitlab", "azure-devops"]),
+    /** Where they were read: platform and repo. A change of git settings reads them again. */
+    source: z.string(),
     /** The issues searched, sorted. */
     keys: z.array(z.string()),
     /** Issues not searched: over MAX_PULL_REQUEST_ISSUES. */

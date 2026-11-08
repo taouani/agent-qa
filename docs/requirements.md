@@ -23,9 +23,9 @@ agent-qa run test-cases --input '{"key":"ABC-123","withPullRequests":true}'
 ```
 
 - **Found by key, with no model.** A pull request counts when its title, description, source branch or a commit message names the key as a whole word (`ABC-1`, not `ABC-12`). At most 5 per issue, newest first, and at most 25 issues per run; the others are listed as not searched. A pull request whose text doesn't name the key isn't found: `requirements.md` lists the ones used, so you see what is missing.
-- **Masked and capped.** Titles, branch names, file paths and diffs are masked like Jira text, with the run's vault. Each issue gets at most 200 KB of diff in all; past that a file keeps only its path and status. The pull requests are kept in the run as `pull-requests@1` (`pull-requests.json` and `.md`), with what masking replaced in them (counts only).
+- **Masked and capped.** Titles, branch names, file paths and diffs are masked like Jira text, with the run's vault. Each issue gets at most 200 KB of diff in all, and the run at most 600 KB over every issue; past either cap a file keeps only its path and status. The pull requests are kept in the run as `pull-requests@1` (read again if the `git` settings change) (`pull-requests.json` and `.md`), with what masking replaced in them (counts only).
 - **Code notes.** The model may add `codeNotes` to an issue, each naming the changed file it comes from (checked: the path must be one of that issue's pull request files). They show in `requirements.md` under "From the code". Code shows what was built, not what was asked, so the model is told to ask open questions where they differ rather than turn code into criteria.
-- **The token** is `git.token`, read access is enough: on GitHub, Contents and Pull requests (read); on Azure DevOps, Code (read).
+- **The token** is `git.token`; read access is enough, and a token the host refuses stops the analysis with what it needs: on GitHub, Contents and Pull requests (read); on Azure DevOps, Code (read).
 
 `withPullRequests` needs a `git` section, and a new analysis: it is refused with `requirementsRun`, `testCasesRun` or `casesRun`. In `test-cases`, an earlier analysis is reused only if it was given the same pull requests (their hashes are kept in `requirements@1`).
 
