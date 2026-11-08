@@ -23,13 +23,15 @@ Slice 4's code is built and merged. None of it has run against a real ADO, GitLa
 | S4-2 Azure DevOps | #94 | Pull requests in CI from Azure Pipelines; the token goes only to the job's own org |
 | S4-3, S4-4 Document engine | #95, #96 | `run document --type ...`: strategy, plan, charter, risk register, test data, traceability, release notes |
 | S4-5 Confluence publish | #97 | `--publish confluence`, after a yes; creates under your parent page with the `agent-qa` label, and updates only a page it labelled |
-| S4-6 PR context (`commits` a) | #98 | `--with-pull-requests`: the masked diffs of the PRs naming each issue go into the requirements analysis, capped (5 PRs and 200 KB per issue) |
-| S4-7 Technical release notes (`commits` b) | #99 | A "Technical changes" section in release notes, from the PRs of the fix version |
+| S4-6 PR context (`commits` a) | #98 | `--with-pull-requests`: the masked diffs of the PRs naming each issue go into the requirements analysis, capped (5 PRs and 200 KB of diff per issue, 600 KB per run, 25 issues per run) |
+| S4-7 Technical release notes (`commits` b) | #99 | A "Technical changes" section in release notes, from the PRs that name each issue, when the analysis ran with `--with-pull-requests` |
 | S4-8 GitLab | #100 | Merge requests in CI from GitLab CI; GitLab 15.7 or later |
 | S4-9 Host setup | #101 | `init --host claude-code` / `cursor` writes `.mcp.json` / `.cursor/mcp.json`; the server finds the project from a subfolder |
 | S4-10 Headless drivers | #102 | `--headless claude-code` or `copilot`: each step answered by the CLI and its own sign-in, every agent tool off, in an empty folder. CI job examples in `docs/ci.md` |
 | S4-11 Harness | #103 | `harness --headless`, and the live check guide [13](13-live-check-guide-slice4-2026-11-08.md) |
 | S4-14 `--changed-only` | #104 | `run test-cases --changed-only`: only the issues new or changed since their cases were written are analyzed |
+
+S4-12 is the live check (section 4). S4-13 is this document.
 
 **Exit check (final plan):** every workflow passes the harness on all three hosts and the CLI. Not met yet: it needs the live check.
 
@@ -40,8 +42,9 @@ From the reviews; each is small, none blocks the alpha.
 - **Unverified API shapes.** The ADO, GitLab and Confluence REST calls, Copilot CLI's flags (`--available-tools=` with an empty list, the prompt on standard input, its usage file) are built from the docs. Assumption: some will need a fix after the live check.
 - **Headless design.** I built option A of the card I sent you (one CLI call per step, tools off). Option B (the CLI as an agent with Agent-QA's MCP server) is not built. Your answer on the card is still open; A can stay either way.
 - **Confluence:** a document from a JQL filter is titled with a hash of the filter; if its vault entry expires, the next publish makes a new page instead of updating.
-- **Pull requests:** a wrong `repo` gives NOT_FOUND without a hint about the token; PR masking counts are in `pull-requests@1`, not the masking report.
-- **`--changed-only`:** an issue counts as covered only when an earlier run wrote at least one case for it. An issue whose cases were all dropped at review is analyzed again.
+- **Pull requests:** on GitLab, a wrong `repo` or a token that can't see the project gives NOT_FOUND with no hint about the token; PR masking counts are in `pull-requests@1`, not the masking report.
+- **`--changed-only`:** an issue counts as covered only when an earlier run wrote at least one case for it. An issue whose cases were all dropped at review, or that was skipped for having no criteria, is analyzed again on each run. With `--with-pull-requests`, a PR's hash is taken after the 600 KB per-run cap, so once an input's diffs pass 600 KB, issues can show as changed on every run.
+- **Copilot CLI** may keep its (masked) session under `~/.copilot` (`docs/ci.md`).
 
 ## 4. What remains
 
