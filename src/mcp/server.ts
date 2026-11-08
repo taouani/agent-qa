@@ -13,7 +13,7 @@ export const LOOP_INSTRUCTIONS = [
   "3. For kind `confirm`: ask the user the question in `instructions`, wait for their answer, then submit it. When the instructions say Agent-QA asks the user itself in a prompt from the IDE, don't ask in chat: submit as they say, and the user answers in that prompt.",
   "4. If the result is `rejected`, fix every error listed (each has a JSON path) and submit the same stepId again.",
   "5. Continue with the `next` step from the result. Do not stop between steps unless a step needs the user.",
-  "6. When the kind is `done`, tell the user the run finished. When it is `failed`, show the errors.",
+  "6. When the kind is `done`, tell the user the run finished, with what its context says (the result and where its files are). When it is `failed`, show the errors.",
 ].join("\n");
 
 /** Where a result holds a step: the step itself, or the next one after a submit. */

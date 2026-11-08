@@ -388,7 +388,9 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
               true,
             );
           } catch (error) {
-            return void (await uncertain({ ...base, status: "recording" }, `the import failed (${one(error instanceof Error ? error.message : String(error)).slice(0, 300)})`));
+            // Masked: the reason is shown to the host model in the run's summary.
+            const [message] = await deps.data.maskTexts(ctx.runId, [one(error instanceof Error ? error.message : String(error)).slice(0, 300)], "xray.error").catch(() => ["(its message couldn't be masked)"]);
+            return void (await uncertain({ ...base, status: "recording" }, `the import failed (${message})`));
           }
           await write(r.status === "done" ? { ...base, status: "recorded", key: r.key } : { ...base, status: "declined" });
         },

@@ -450,7 +450,6 @@ export class WorkflowEngine {
     }
   }
 
-  /** The step's context. A failure (Jira unreachable, say) leaves the run open: `next` tries again. */
   /** The done step's context: the workflow's summary, cut to SUMMARY_CHARS. */
   private async summary(workflow: WorkflowDefinition<unknown>, state: RunState): Promise<string> {
     if (!workflow.summary) return "";
@@ -462,6 +461,7 @@ export class WorkflowEngine {
     }
   }
 
+  /** The step's context. A failure (Jira unreachable, say) leaves the run open: `next` tries again. */
   private async context(def: StepDefinition<unknown, unknown>, ctx: StepContext<unknown>): Promise<string> {
     try {
       return (await def.context?.(ctx)) ?? "";
