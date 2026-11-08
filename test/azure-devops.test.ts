@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AzureDevOpsClient, createGitHost, unifiedDiff } from "../src/connectors/index.js";
 import { configSchema, MemoryAuditSink, Policy, RunStore, type WriteGrant } from "../src/core/index.js";
-import { DataAccess, jobApiOrigin, prBase } from "../src/data/index.js";
+import { DataAccess, jobApiOrigin, jobOrganization, prBase } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
 
 const ciGrant = async <T>(fn: (g: WriteGrant) => Promise<T>) => {
@@ -21,7 +21,7 @@ const ROOT = "/org/My%20Project/_apis/git/repositories/repo";
 /** An Azure DevOps Git API in memory for org/My Project/repo, with every call recorded. */
 function fakeAdo(start: { tree?: Array<{ relativePath: string; gitObjectType: string; objectId?: string; mode?: string }>; status?: number } = {}) {
   const branches: Record<string, string> = { "refs/heads/main": sha("a") };
-  const commits: Record<string, { parents: string[]; treeId: string; changes: Array<{ item: { path: string; objectId: string } }> }> = { [sha("a")]: { parents: [], treeId: sha("e"), changes: [] } };
+  const commits: Record<string, { parents: string[]; treeId: string; changes: Array<{ item: { path: string; objectId: string; isFolder?: boolean; gitObjectType?: string } }> }> = { [sha("a")]: { parents: [], treeId: sha("e"), changes: [] } };
   const pulls: Array<Record<string, unknown>> = [];
   const pushes: Array<Record<string, unknown>> = [];
   const calls: string[] = [];
@@ -57,7 +57,11 @@ function fakeAdo(start: { tree?: Array<{ relativePath: string; gitObjectType: st
       pushes.push(body);
       const c = sha(String(++n));
       const commit = (body.commits as Array<{ parents: string[]; changes: Array<{ item: { path: string }; newContent: { content: string } }> }>)[0]!;
-      commits[c] = { parents: commit.parents, treeId: sha("f"), changes: commit.changes.map((ch) => ({ item: { path: ch.item.path, objectId: blobId(Buffer.from(ch.newContent.content, "base64").toString("utf8")) } })) };
+      commits[c] = { parents: commit.parents, treeId: sha("f"), changes: [
+          // As Azure DevOps lists them: the folders a push made, then the files.
+          { item: { path: "/e2e/tests", isFolder: true, gitObjectType: "tree", objectId: sha("9") } },
+          ...commit.changes.map((ch) => ({ item: { path: ch.item.path, objectId: blobId(Buffer.from(ch.newContent.content, "base64").toString("utf8")) } })),
+        ] };
       branches[(body.refUpdates as Array<{ name: string }>)[0]!.name] = c;
       return json(201, { commits: [{ commitId: c }] });
     }
@@ -128,7 +132,7 @@ describe("Azure DevOps (S4-2)", () => {
         });
       if (path === "/commits") return json(200, { value: [{ commitId: sha("c"), comment: "ABC-1 fix" }, { commitId: sha("d"), comment: "ABC-12" }] });
       if (path === "/pullrequestquery") {
-        expect(JSON.parse(String(init.body))).toEqual({ queries: [{ type: "commit", items: [sha("c")] }] });
+        expect(JSON.parse(String(init.body))).toEqual({ queries: [{ type: "commit", items: [sha("c")] }, { type: "lastMergeCommit", items: [sha("c")] }] });
         return json(200, { results: [{ [sha("c")]: [{ pullRequestId: 9, title: "Hotfix", status: "abandoned", sourceRefName: "refs/heads/hotfix", targetRefName: "refs/heads/main" }] }] });
       }
       return json(404, {});
@@ -184,6 +188,9 @@ describe("Azure DevOps (S4-2)", () => {
     expect(unifiedDiff("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", "1\nX\n3\n4\n5\n6\n7\n8\nY\n10\n")).toBe("@@ -1,10 +1,10 @@\n 1\n-2\n+X\n 3\n 4\n 5\n 6\n 7\n 8\n-9\n+Y\n 10");
     expect(unifiedDiff("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n", "X\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\nY\n")).toBe("@@ -1,4 +1,4 @@\n-1\n+X\n 2\n 3\n 4\n@@ -9,4 +9,4 @@\n 9\n 10\n 11\n-12\n+Y");
     expect(unifiedDiff("a\0", "b")).toBeUndefined();
+    // Two unrelated large files: given up on (more than 1000 edits) rather than compared at any cost.
+    const many = (p: string) => Array.from({ length: 9000 }, (_, i) => `${p}${i}`).join("\n");
+    expect(unifiedDiff(many("a"), many("b"))).toBeUndefined();
   });
 
   it("reads Azure Pipelines' branch and API, and accepts an old visualstudio.com collection", () => {
@@ -195,6 +202,9 @@ describe("Azure DevOps (S4-2)", () => {
     expect(jobApiOrigin("azure-devops", { SYSTEM_COLLECTIONURI: "https://ado.corp.example/tfs/" })).toBe("https://ado.corp.example");
     expect(jobApiOrigin("azure-devops", {})).toBeUndefined();
     expect(jobApiOrigin("github", { SYSTEM_COLLECTIONURI: "https://x.example/" })).toBeUndefined();
+    expect(jobOrganization({ SYSTEM_COLLECTIONURI: "https://dev.azure.com/org/" })).toBe("org");
+    expect(jobOrganization({ SYSTEM_COLLECTIONURI: "https://old.visualstudio.com/" })).toBe("old");
+    expect(jobOrganization({})).toBeUndefined();
   });
 
   describe("from the data layer", () => {

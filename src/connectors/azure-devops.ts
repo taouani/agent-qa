@@ -16,6 +16,8 @@ import { unifiedDiff } from "./unified-diff.js";
 export const AZURE_DEVOPS_API = "https://dev.azure.com";
 const API_VERSION = "7.1";
 const ZERO = "0".repeat(40);
+/** Files compared at most per pull request (two blob reads each). */
+const MAX_COMPARED = 200;
 /** An ADO pull request description holds at most 4000 characters. */
 const MAX_DESCRIPTION = 4000;
 
@@ -172,7 +174,8 @@ export class AzureDevOpsClient implements GitHost {
       if (onBase) {
         await this.checkBase(pr.files, baseHead, base);
         const listed = obj(await this.get(`/commits/${existing}/changes`)).changes;
-        const changes = (Array.isArray(listed) ? listed : []).map(obj);
+        // A push lists the folders it made too: only files count.
+        const changes = (Array.isArray(listed) ? listed : []).map(obj).filter((c) => obj(c.item).isFolder !== true && obj(c.item).gitObjectType !== "tree");
         const changed = new Map(changes.map((c) => [String(obj(c.item).path).replace(/^\//, ""), str(obj(c.item).objectId)]));
         same = changed.size === pr.files.length && pr.files.every((f) => changed.get(f.path) === blobId(f.content));
       }
@@ -246,7 +249,8 @@ export class AzureDevOpsClient implements GitHost {
       .filter((c): c is string => !!c && SHA.test(c))
       .slice(0, 20);
     if (commits.length) {
-      const answer = obj(await this.post(undefined, "/pullrequestquery", { queries: [{ type: "commit", items: commits }] }));
+      // A pull request's own commits, and the commit a squash or rebase merge left on the branch.
+      const answer = obj(await this.post(undefined, "/pullrequestquery", { queries: [{ type: "commit", items: commits }, { type: "lastMergeCommit", items: commits }] }));
       for (const result of Array.isArray(answer.results) ? answer.results.map(obj) : []) {
         for (const prs of Object.values(result)) for (const p of Array.isArray(prs) ? prs.map(obj) : []) add(p, ["commit"]);
       }
@@ -257,7 +261,7 @@ export class AzureDevOpsClient implements GitHost {
   /**
    * The files of the pull request's latest iteration. Azure DevOps gives no
    * patch, so each changed text file is read on both sides and compared here,
-   * until `maxBytes` of patch text; the files past it keep their path and status.
+   * until `maxBytes` of patch text or 200 files; the files past it keep their path and status.
    */
   async pullRequestDiff(id: number, options: DiffOptions = {}): Promise<PullRequestDiff> {
     if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`${id} isn't a pull request id`);
@@ -269,6 +273,7 @@ export class AzureDevOpsClient implements GitHost {
     const entries = (Array.isArray(answer.changeEntries) ? answer.changeEntries : []).map(obj);
     let truncated = typeof answer.nextSkip === "number" && answer.nextSkip > 0;
     let left = maxBytes;
+    let compared = 0;
     const files: PullRequestFileChange[] = [];
     for (const e of entries) {
       const item = obj(e.item);
@@ -281,7 +286,7 @@ export class AzureDevOpsClient implements GitHost {
       const previous = str(e.originalPath);
       if (status === "renamed" && previous) change.previousPath = previous.replace(/^\//, "");
       files.push(change);
-      if (status === "removed" || left <= 0) {
+      if (status === "removed" || left <= 0 || compared >= MAX_COMPARED) {
         if (status !== "removed") truncated = true;
         continue;
       }
@@ -294,6 +299,7 @@ export class AzureDevOpsClient implements GitHost {
         truncated = true;
         continue;
       }
+      compared++;
       change.patch = patch;
       left -= Buffer.byteLength(patch, "utf8");
     }

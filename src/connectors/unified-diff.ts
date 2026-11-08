@@ -9,7 +9,7 @@ const CONTEXT = 3;
 /** Lines on both sides together above which no patch is made (Myers is O((N+M)·D)). */
 const MAX_LINES = 20_000;
 /** Edits above which the comparison stops: such a patch would be cut by the byte cap anyway. */
-const MAX_EDITS = 4_000;
+const MAX_EDITS = 1_000;
 
 type Op = { kind: " " | "-" | "+"; line: string };
 
@@ -30,7 +30,8 @@ function myers(a: string[], b: string[]): Op[] | undefined {
   const trace: Int32Array[] = [];
   let found = -1;
   outer: for (let d = 0; d <= max; d++) {
-    trace.push(v.slice());
+    // Only the diagonals step d can read (-d-1 to d+1), not the whole array: memory grows with d², not d·(N+M).
+    trace.push(v.slice(offset - d - 1, offset + d + 2));
     for (let k = -d; k <= d; k += 2) {
       let x = k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!) ? v[offset + k + 1]! : v[offset + k - 1]! + 1;
       let y = x - k;
@@ -50,11 +51,12 @@ function myers(a: string[], b: string[]): Op[] | undefined {
   let x = n;
   let y = m;
   for (let d = found; d > 0; d--) {
-    const prev = trace[d]!;
+    const saved = trace[d]!;
+    const prev = (diagonal: number) => saved[diagonal + d + 1]!;
     const k = x - y;
-    const down = k === -d || (k !== d && prev[offset + k - 1]! < prev[offset + k + 1]!);
+    const down = k === -d || (k !== d && prev(k - 1) < prev(k + 1));
     const pk = down ? k + 1 : k - 1;
-    const px = prev[offset + pk]!;
+    const px = prev(pk);
     const py = px - pk;
     while (x > px && y > py) {
       ops.push({ kind: " ", line: a[--x]! });

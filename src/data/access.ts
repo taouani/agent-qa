@@ -1237,6 +1237,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const jobApi = jobApiOrigin(git.platform, env);
     const api = new URL(git.baseUrl ?? (git.platform === "azure-devops" ? AZURE_DEVOPS_API : GITHUB_API)).origin;
     if (jobApi && jobApi !== api) throw new ProfileError(`git.baseUrl (${api}) isn't the API this job runs against (${jobApi})`);
+    // On Azure DevOps the organization too: the pipeline's token belongs to the job's own.
+    const jobOrg = git.platform === "azure-devops" ? jobOrganization(env) : undefined;
+    if (jobOrg && jobOrg.toLowerCase() !== git.repo.split("/")[0]!.toLowerCase()) throw new ProfileError(`git.repo's organization (${git.repo.split("/")[0]}) isn't the one this job runs in (${jobOrg})`);
     const branch = `agent-qa/${runId.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+|[.-]+$/g, "")}`.slice(0, 200);
     if (!BRANCH.test(branch)) throw new ProfileError("the run's id doesn't make a branch name");
     const client = this.options.github
@@ -1828,6 +1831,18 @@ export function prBase(env: NodeJS.ProcessEnv): string | undefined {
   const branch = env.GITHUB_HEAD_REF || heads(env.GITHUB_REF) || heads(env.SYSTEM_PULLREQUEST_SOURCEBRANCH) || heads(env.BUILD_SOURCEBRANCH);
   if (!branch || branch.startsWith("gh-readonly-queue/")) return undefined;
   return branch;
+}
+
+/** The Azure DevOps organization the pipeline runs in, from System.CollectionUri. */
+export function jobOrganization(env: NodeJS.ProcessEnv): string | undefined {
+  try {
+    const url = new URL(env.SYSTEM_COLLECTIONURI ?? "");
+    const old = /^([A-Za-z0-9-]+)\.visualstudio\.com$/.exec(url.hostname);
+    if (old) return old[1];
+    return url.hostname === "dev.azure.com" ? url.pathname.split("/").filter(Boolean)[0] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
