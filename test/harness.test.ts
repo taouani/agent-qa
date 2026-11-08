@@ -341,6 +341,9 @@ describe("agent-qa harness exit codes", () => {
     await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: anthropic:claude-opus-5-5\n  keys:\n    anthropic: ${env:AGENT_QA_TEST_UNSET_KEY}\n");
     expect(await runCli(["harness", "--model", "anthropic:claude-opus-5-5", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/key for anthropic/) });
     expect(await runCli(["harness", "--model", "nope", "--cwd", dir])).toMatchObject({ code: 2 });
+    expect(await runCli(["harness", "--headless", "cursor", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/use claude-code or copilot/) });
+    expect(await runCli(["harness", "--headless", "copilot", "--model", "openai:gpt-x", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/copilot can't answer with openai:gpt-x/) });
+    expect(await runCli(["harness", "--pipeline", "empty", "--headless", "claude-code", "--cwd", dir])).toMatchObject({ code: 2, err: expect.stringMatching(/--headless has no effect/) });
   });
 });
 
