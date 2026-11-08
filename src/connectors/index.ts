@@ -24,6 +24,8 @@ export type { StorageText } from "./storage.js";
 export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient, jiraDate } from "./xray.js";
 export type { XrayClientOptions, XrayEvidence, XrayExecutionInput, XrayExecutionResult, XrayJobIssue, XrayJobResult, XrayRunStatus, XrayStep, XrayTest } from "./xray.js";
 export { BRANCH, GITHUB_API, GitHubClient } from "./github.js";
+export { capPatches, checkIssueKey, createGitHost, DEFAULT_DIFF_BYTES, DEFAULT_PULL_REQUESTS, namesKey } from "./git-host.js";
+export type { DiffOptions, FindPullRequestsOptions, GitHost, GitHostConfig, GitPlatform, PullRequestDiff, PullRequestFileChange, PullRequestRef } from "./git-host.js";
 export type { GitHubClientOptions, OpenedPullRequest, PullRequestFiles } from "./github.js";
 export { runHostCommand } from "./host.js";
 export type { HostCommandOptions, HostCommandResult } from "./host.js";

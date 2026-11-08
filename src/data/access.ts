@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath, sep } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, GitHubClient, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, createGitHost, type GitHost, BRANCH, GITHUB_API, type SalesforceSession, type ConfluenceClient, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -438,7 +438,7 @@ export interface DataAccessOptions {
   /** Replace the explorer's browser, for tests. */
   browser?: OpenBrowser;
   /** Replace the GitHub client, for tests. */
-  github?: (repo: string) => Pick<GitHubClient, "openPullRequest">;
+  github?: (repo: string) => Pick<GitHost, "openPullRequest">;
 }
 
 /** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
@@ -1240,7 +1240,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if (!BRANCH.test(branch)) throw new ProfileError("the run's id doesn't make a branch name");
     const client = this.options.github
       ? this.options.github(git.repo)
-      : new GitHubClient({ repo: git.repo, token: await resolveSecret(git.token, this.secrets()), ...(git.baseUrl ? { baseUrl: git.baseUrl } : {}), ...(this.options.fetch ? { fetch: this.options.fetch } : {}) });
+      : createGitHost(git, await resolveSecret(git.token, this.secrets()), this.options.fetch ? { fetch: this.options.fetch } : {});
     let outcome;
     try {
       outcome = await this.policy(config).guard({ target: "testCode", summary, runId }, async (grant) => {
