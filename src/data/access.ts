@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, join, posix, relative as relativePath, resolve as resolvePath, sep } from "node:path";
 import { ConfigError, configSchema, FileAuditSink, loadConfig, Policy, PolicyDenied, resolveSecret, type AuditSink, type Config, type Mode, type RunStore, type SecretSources, type WriteGrant } from "../core/index.js";
-import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, createGitHost, type GitHost, BRANCH, GITHUB_API, AZURE_DEVOPS_API, type SalesforceSession, ConfluenceClient, markdownToStorage, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
+import { ConnectorError, findTypeScript, JiraClient, createRepoFile, removeCreatedRepoFile, removeRepoFile, readPlainFile, replaceCreatedRepoFile, replaceRepoFile, withScratchFile, withScratchFolder, loadTypeScript, type CreatedRepoFile, local, runHostCommand, TypeCheckError, typeCheckFiles, type TypeCheckOptions, type TypeDiagnostic, SalesforceAuth, writeRepoFile, XRAY_BULK_LIMIT, XrayClient, jiraDate, createGitHost, type GitHost, BRANCH, GITHUB_API, AZURE_DEVOPS_API, GITLAB_API, type SalesforceSession, ConfluenceClient, markdownToStorage, type FetchLike, type JiraInput, type XrayEvidence } from "../connectors/index.js";
 import { defaultKeyProvider, FileVaultStorage, keychainLookup, Vault, type RunVault } from "../masking/index.js";
 import { MaskedDataService, type LoadedSources, type LoadOptions } from "./requirements.js";
 import { createHash } from "node:crypto";
@@ -592,7 +592,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           throw new ProfileError(
             host.platform === "azure-devops"
               ? `Azure DevOps refused git.token (${error.status ?? error.code}) when reading pull requests: it needs the Code (read) scope on the repository`
-              : `${host.platform === "github" ? "GitHub" : "The git host"} refused git.token (${error.status ?? error.code}) when reading pull requests: it needs read access to the repository's contents and pull requests`,
+              : host.platform === "gitlab"
+                ? `GitLab refused git.token (${error.status ?? error.code}) when reading merge requests: it needs the read_api scope (or api) and at least the Reporter role`
+                : `${host.platform === "github" ? "GitHub" : "The git host"} refused git.token (${error.status ?? error.code}) when reading pull requests: it needs read access to the repository's contents and pull requests`,
           );
         }
         throw error;
@@ -1330,7 +1332,6 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     if ((this.options.mode ?? "ide") !== "ci") return { ready: false, reason: "pull requests are opened from CI only (agent-qa run --ci)" };
     const git = (await this.configOrDefault()).git;
     if (!git) return { ready: false, reason: "agent-qa.yaml has no git section (platform: github, repo: owner/name, token)" };
-    if (git.platform === "gitlab") return { ready: false, reason: "merge requests on GitLab aren't supported yet: GitHub and Azure DevOps only" };
     if (this.policy(await this.configOrDefault()).decide("testCode").kind !== "pull-request") return { ready: false, reason: "the policy doesn't allow test code to leave (policy.writes.testCode)" };
     return { ready: true, repo: git.repo };
   }
@@ -1384,7 +1385,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const base = prBase(env);
     // The token goes only to the API this job runs against.
     const jobApi = jobApiOrigin(git.platform, env);
-    const api = new URL(git.baseUrl ?? (git.platform === "azure-devops" ? AZURE_DEVOPS_API : GITHUB_API)).origin;
+    const api = new URL(git.baseUrl ?? (git.platform === "azure-devops" ? AZURE_DEVOPS_API : git.platform === "gitlab" ? GITLAB_API : GITHUB_API)).origin;
     if (jobApi && jobApi !== api) throw new ProfileError(`git.baseUrl (${api}) isn't the API this job runs against (${jobApi})`);
     // On Azure DevOps the organization too: the pipeline's token belongs to the job's own.
     const jobOrg = git.platform === "azure-devops" ? jobOrganization(env) : undefined;
@@ -1405,7 +1406,9 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
         throw new ProfileError(
           git.platform === "azure-devops"
             ? `Azure DevOps refused the token (${error.status ?? error.code}): a PAT needs the Code (read and write) scope; with $(System.AccessToken), give the project's Build Service Contribute, Create branch and Contribute to pull requests on the repository`
-            : `GitHub refused the token (${error.status ?? error.code}): give the job permissions contents: write and pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General)`,
+            : git.platform === "gitlab"
+              ? `GitLab refused the token (${error.status ?? error.code}): use a project, group or personal access token with the api scope and at least the Developer role (CI_JOB_TOKEN can't create commits or merge requests)`
+              : `GitHub refused the token (${error.status ?? error.code}): give the job permissions contents: write and pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General)`,
         );
       }
       if (error instanceof ConnectorError || error instanceof PolicyDenied) throw error;
@@ -2074,8 +2077,15 @@ export function gitBlobId(bytes: Buffer): string {
  */
 export function prBase(env: NodeJS.ProcessEnv): string | undefined {
   const heads = (ref: string | undefined) => (ref?.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : "");
-  // GitHub Actions, then Azure Pipelines (a pull request build's source branch, else the built branch).
-  const branch = env.GITHUB_HEAD_REF || heads(env.GITHUB_REF) || heads(env.SYSTEM_PULLREQUEST_SOURCEBRANCH) || heads(env.BUILD_SOURCEBRANCH);
+  // GitHub Actions, then Azure Pipelines (a pull request build's source branch, else the built branch),
+  // then GitLab CI (a merge request pipeline's source branch, else the branch pipeline's).
+  const branch =
+    env.GITHUB_HEAD_REF ||
+    heads(env.GITHUB_REF) ||
+    heads(env.SYSTEM_PULLREQUEST_SOURCEBRANCH) ||
+    heads(env.BUILD_SOURCEBRANCH) ||
+    env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME ||
+    env.CI_COMMIT_BRANCH;
   if (!branch || branch.startsWith("gh-readonly-queue/")) return undefined;
   return branch;
 }
@@ -2095,7 +2105,8 @@ export function jobOrganization(env: NodeJS.ProcessEnv): string | undefined {
 /**
  * The origin of the API the CI job itself runs against, when the job says:
  * GitHub Actions' GITHUB_API_URL, Azure Pipelines' System.CollectionUri
- * (an old https://ORG.visualstudio.com collection is https://dev.azure.com).
+ * (an old https://ORG.visualstudio.com collection is https://dev.azure.com),
+ * GitLab CI's CI_API_V4_URL.
  */
 export function jobApiOrigin(platform: string, env: NodeJS.ProcessEnv): string | undefined {
   const origin = (url: string | undefined) => {
@@ -2110,6 +2121,7 @@ export function jobApiOrigin(platform: string, env: NodeJS.ProcessEnv): string |
     const o = origin(env.SYSTEM_COLLECTIONURI);
     return o && /^https:\/\/[A-Za-z0-9-]+\.visualstudio\.com$/.test(o) ? AZURE_DEVOPS_API : o;
   }
+  if (platform === "gitlab") return origin(env.CI_API_V4_URL);
   return undefined;
 }
 

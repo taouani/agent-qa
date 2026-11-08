@@ -1,6 +1,7 @@
 import { AzureDevOpsClient } from "./azure-devops.js";
 import type { GitHost, GitPlatform } from "./git-host.js";
 import { GitHubClient } from "./github.js";
+import { GitLabClient } from "./gitlab.js";
 import type { FetchLike } from "./http.js";
 
 export interface GitHostConfig {
@@ -16,7 +17,9 @@ export function createGitHost(git: GitHostConfig, token: string, options: { fetc
       return new GitHubClient({ repo: git.repo, token, ...(git.baseUrl ? { baseUrl: git.baseUrl } : {}), ...(options.fetch ? { fetch: options.fetch } : {}) });
     case "azure-devops":
       return new AzureDevOpsClient({ repo: git.repo, token, ...(git.baseUrl ? { baseUrl: git.baseUrl } : {}), ...(options.fetch ? { fetch: options.fetch } : {}) });
+    case "gitlab":
+      return new GitLabClient({ repo: git.repo, token, ...(git.baseUrl ? { baseUrl: git.baseUrl } : {}), ...(options.fetch ? { fetch: options.fetch } : {}) });
     default:
-      throw new Error(`git.platform ${git.platform} isn't supported yet: GitHub and Azure DevOps only`);
+      throw new Error(`git.platform ${String(git.platform)} isn't supported`);
   }
 }

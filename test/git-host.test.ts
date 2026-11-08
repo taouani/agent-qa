@@ -140,7 +140,7 @@ describe("git hosts (S4-1)", () => {
 
   it("makes the client for the configured platform", () => {
     expect(createGitHost({ platform: "github", repo: "o/r" }, "tok").service).toBe("GitHub");
-    expect(() => createGitHost({ platform: "gitlab", repo: "g/p" }, "tok")).toThrow("git.platform gitlab isn't supported yet");
+    expect(createGitHost({ platform: "gitlab", repo: "g/p" }, "tok").service).toBe("GitLab");
   });
 
   it("joins where a pull request matched, reads branches only of the ones kept, and names GitHub's search limit", async () => {

@@ -229,7 +229,7 @@ describe("Azure DevOps (S4-2)", () => {
         mode: "ci",
       });
 
-    it("is ready on Azure DevOps in CI, not yet on GitLab", async () => {
+    it("is ready on Azure DevOps and GitLab in CI", async () => {
       expect(await data({}, fakeAdo().fetch).pullRequestReadiness()).toEqual({ ready: true, repo: "org/My Project/repo" });
       const gitlab = new DataAccess({
         root: join(dir, "e2e"),
@@ -238,7 +238,7 @@ describe("Azure DevOps (S4-2)", () => {
         vault: new Vault({ storage: new MemoryVaultStorage(), keys: { description: "t", getKey: async () => Buffer.alloc(32, 1) } }),
         mode: "ci",
       });
-      expect(await gitlab.pullRequestReadiness()).toMatchObject({ ready: false, reason: expect.stringContaining("GitLab aren't supported yet") });
+      expect(await gitlab.pullRequestReadiness()).toEqual({ ready: true, repo: "g/p" });
     });
   });
 });

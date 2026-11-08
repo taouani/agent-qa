@@ -89,7 +89,7 @@ agent-qa run scripts --ci --input '{"testCasesRun":"<run id>"}' --accept typeche
 - a git checkout of the repo, with `agent-qa.profile.json` committed (CI never writes it);
 - the test-cases run: run `test-cases` in the same job, or restore `.agent-qa/runs/` (or `AGENT_QA_RUNS_DIR`), which is git-ignored;
 - `policy.writes.testCode` and `policy.writes.commands` not set to `deny` (in CI, anything else allows);
-- a `git` section in `agent-qa.yaml`, for GitHub or Azure DevOps. `gitlab` passes the schema but is refused for now.
+- a `git` section in `agent-qa.yaml`, for GitHub, Azure DevOps or GitLab.
 
   ```yaml
   git:
@@ -106,10 +106,19 @@ agent-qa run scripts --ci --input '{"testCasesRun":"<run id>"}' --accept typeche
     token: ${env:ADO_TOKEN}
   ```
 
-- on GitHub, a token with `contents: write` and `pull-requests: write`, and the repo setting that lets GitHub Actions create pull requests (Settings, Actions, General);
-- on Azure DevOps Services (https://dev.azure.com; ADO Server on premises isn't supported), either a personal access token with the Code (read and write) scope, or the pipeline's own token mapped into the job (`env: ADO_TOKEN: $(System.AccessToken)`), with the project's Build Service given Contribute, Create branch and Contribute to pull requests on the repository (Project settings, Repositories, Security).
+  ```yaml
+  git:
+    platform: gitlab
+    repo: group/subgroup/project   # the project's full path
+    token: ${env:GITLAB_TOKEN}
+    # baseUrl: https://gitlab.example.com/api/v4   # self-managed GitLab
+  ```
 
-The pull request goes into the branch the job built: on GitHub Actions the pull request's head (`GITHUB_HEAD_REF`) or the pushed branch; on Azure Pipelines the pull request's source branch (`System.PullRequest.SourceBranch`) or the built branch (`Build.SourceBranch`); otherwise the repository's default branch. The token is sent only to the API the job itself runs against (`GITHUB_API_URL`, `System.CollectionUri`). On Azure DevOps a description longer than 4000 characters is cut, as Azure DevOps keeps no more.
+- on GitHub, a token with `contents: write` and `pull-requests: write`, and the repo setting that lets GitHub Actions create pull requests (Settings, Actions, General);
+- on Azure DevOps Services (https://dev.azure.com; ADO Server on premises isn't supported), either a personal access token with the Code (read and write) scope, or the pipeline's own token mapped into the job (`env: ADO_TOKEN: $(System.AccessToken)`), with the project's Build Service given Contribute, Create branch and Contribute to pull requests on the repository (Project settings, Repositories, Security);
+- on GitLab, a project or personal access token with the `api` scope and at least the Developer role, stored as a masked CI/CD variable (`GITLAB_TOKEN`). The job's own `CI_JOB_TOKEN` can't commit or open merge requests, so it isn't enough. The pull request is a merge request, marked as a draft by a `Draft:` title, and its branch is removed when it is merged.
+
+The pull request goes into the branch the job built: on GitHub Actions the pull request's head (`GITHUB_HEAD_REF`) or the pushed branch; on Azure Pipelines the pull request's source branch (`System.PullRequest.SourceBranch`) or the built branch (`Build.SourceBranch`); on GitLab CI the merge request's source branch (`CI_MERGE_REQUEST_SOURCE_BRANCH_NAME`) or the built branch (`CI_COMMIT_BRANCH`); otherwise the repository's default branch. The token is sent only to the API the job itself runs against (`GITHUB_API_URL`, `System.CollectionUri`, `CI_API_V4_URL`). On Azure DevOps a description longer than 4000 characters is cut, as Azure DevOps keeps no more.
 
 ## How it is checked
 
