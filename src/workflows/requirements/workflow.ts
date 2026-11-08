@@ -297,33 +297,34 @@ export function onlyIssues(loaded: LoadedSources, keep: ReadonlySet<string>): Lo
 
 /** The analyze step, shared with the test-cases workflow. It writes requirements@1 when accepted. */
 export function analyzeStep<I extends JiraInputs>(deps: RequirementsDeps, narrow?: NarrowSources<I>): StepDefinition<I, Analysis> {
+  // Pull requests are read for every issue of the input, then narrowed with it: a capped
+  // read of fewer keys can find other PRs, and --changed-only compares hashes from a full read.
   const loadFor = async (ctx: StepContext<I>) => {
-    const loaded = await deps.data.requirements(ctx.runId, inputOf(ctx.inputs));
-    return narrow ? narrow(ctx, loaded) : loaded;
+    const full = await deps.data.requirements(ctx.runId, inputOf(ctx.inputs));
+    const allPrs = await pullRequestsOf(deps, ctx.runId, ctx.inputs, full);
+    const loaded = narrow ? await narrow(ctx, full) : full;
+    const keys = new Set(loaded.sources.requirements.map((r) => r.key));
+    const prs: PullRequestsByIssue = Object.fromEntries(Object.entries(allPrs).filter(([k]) => keys.has(k)));
+    return { loaded, prs };
   };
   const relatedOf = (runId: string, loaded: LoadedSources) => relatedFeaturesOf(deps, runId, loaded);
-  const prsOf = (runId: string, inputs: I, loaded: LoadedSources) => pullRequestsOf(deps, runId, inputs, loaded);
   return {
     id: "analyze",
     kind: "generate",
     outputSchema: analysisSchema,
     instructions: () => INSTRUCTIONS,
     context: async (ctx) => {
-      const { runId, inputs } = ctx;
-      const loaded = await loadFor(ctx);
-      return contextOf(loaded, await relatedOf(runId, loaded), await prsOf(runId, inputs, loaded));
+      const { loaded, prs } = await loadFor(ctx);
+      return contextOf(loaded, await relatedOf(ctx.runId, loaded), prs);
     },
     check: async (ctx, output) => {
-      const { runId, inputs } = ctx;
-      const loaded = await loadFor(ctx);
-      const related = await relatedOf(runId, loaded);
-      const prs = await prsOf(runId, inputs, loaded);
+      const { loaded, prs } = await loadFor(ctx);
+      const related = await relatedOf(ctx.runId, loaded);
       return check(loaded.sources.requirements, contextOf(loaded, related, prs), output, related, prs);
     },
     onAccept: async (ctx, output) => {
-      const { runId, inputs } = ctx;
-      const loaded = await loadFor(ctx);
-      const prs = await prsOf(runId, inputs, loaded);
+      const { runId } = ctx;
+      const { loaded, prs } = await loadFor(ctx);
       const prInputs = [...new Map(Object.values(prs).flat().map((p) => [p.id, { kind: "git-diff" as const, ref: `pr/${p.id}`, hash: p.hash }])).values()];
       await deps.runs.writeArtifact(runId, REQUIREMENTS_ARTIFACT, build(loaded, output, await relatedOf(runId, loaded), prs), {
         inputs: [...loaded.inputs, ...prInputs],
