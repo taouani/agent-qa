@@ -6,8 +6,14 @@ export const one = (s: string) => s.replace(/\s+/g, " ").trim();
 /** A table cell: one line, with pipes escaped. */
 export const cell = (s: string) => one(s).replace(/\|/g, "\\|") || " ";
 
-export function table(head: string[], rows: string[][]): string[] {
-  return [`| ${head.map(cell).join(" | ")} |`, `|${head.map(() => " --- ").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)];
+/** A cell already made safe for a table (one line, pipes escaped): written as it is. */
+export interface RawCell {
+  raw: string;
+}
+
+export function table(head: string[], rows: Array<Array<string | RawCell>>): string[] {
+  const out = (c: string | RawCell) => (typeof c === "string" ? cell(c) : c.raw);
+  return [`| ${head.map(cell).join(" | ")} |`, `|${head.map(() => " --- ").join("|")}|`, ...rows.map((r) => `| ${r.map(out).join(" | ")} |`)];
 }
 
 /** A bullet list, or `none` when empty. */

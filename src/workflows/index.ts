@@ -65,4 +65,16 @@ export { DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, do
 export type { DocumentArtifact, DocumentDraft } from "./document/artifact.js";
 export { TEST_PLAN, testPlanSchema } from "./document/test-plan.js";
 export type { TestPlan } from "./document/test-plan.js";
+export { TEST_LEVELS, TEST_STRATEGY, TEST_TYPES, testStrategySchema } from "./document/test-strategy.js";
+export type { TestStrategy } from "./document/test-strategy.js";
+export { AREA_KINDS, TEST_CHARTER, testCharterSchema } from "./document/test-charter.js";
+export type { TestCharter } from "./document/test-charter.js";
+export { levelOf, RISK_CATEGORIES, RISK_REGISTER, riskRegisterSchema, scoreOf, WEAK_QUALITY } from "./document/risk-register.js";
+export type { RiskRegister } from "./document/risk-register.js";
+export { DATA_KINDS, TEST_DATA, testDataSchema } from "./document/test-data.js";
+export type { TestData } from "./document/test-data.js";
+export { matrixOf, TRACEABILITY, traceabilitySchema } from "./document/traceability.js";
+export type { Traceability } from "./document/traceability.js";
+export { RELEASE_CATEGORIES, RELEASE_NOTES, releaseNotesSchema, versionsOf } from "./document/release-notes.js";
+export type { ReleaseNotes } from "./document/release-notes.js";
 export type { DocumentMeta, DocumentSources, DocumentType, SourceNeed } from "./document/types.js";

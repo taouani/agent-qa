@@ -36,6 +36,8 @@ export class FixtureDriver implements ModelDriver {
                   ? review(contextText(request))
                   : step === "audit"
                   ? audit(contextText(request))
+                  : step.startsWith("draft-")
+                  ? documentDraft(step.slice("draft-".length), contextText(request))
                   : /^fix-\d+$/.test(step)
                   ? debugFix(contextText(request), request.messages.length > 2 ? (request.messages.at(-1)?.content ?? "") : undefined)
                   : undefined;
@@ -248,4 +250,95 @@ function audit(context: string) {
       findings.push({ key: "checks-in-page-objects", area: "layering", title: "Page objects check the app", severity: "medium", impact: "medium", risk: "low", effort: 1, problem: "A page object holds a check, so a spec doesn't show what it checks", good: "Page objects act and return locators; specs check", evidence: [{ path: f.path, line: at + 1 }] });
   }
   return { findings, notAssessed: ["Scalability: the sample has one spec"] };
+}
+
+/**
+ * A document of each type (S4-4) from its context: every issue named once,
+ * its masked summary echoed into the texts the way a real model would.
+ */
+function documentDraft(type: string, context: string): unknown {
+  const parsed = JSON.parse(context.slice(context.indexOf("{"))) as { issues?: ContextIssue[]; matrix?: string[] };
+  const issues = parsed.issues ?? [];
+  const keys = issues.map((i) => i.key);
+  // Cut with no marker: the schemas cap these lengths.
+  const cut = (text: string, max: number) => text.slice(0, max);
+  const about = (i: ContextIssue) => cut(`Testing ${i.summary}`, 1000);
+  const first = issues[0];
+  const summary = cut(`Covers ${issues.map((i) => i.summary).join("; ")}`, 2000);
+  switch (type) {
+    case "test-plan":
+      return {
+        summary,
+        objectives: ["Every acceptance criterion is checked"],
+        inScope: issues.map(about),
+        outOfScope: [],
+        approach: "Functional and negative tests from the reviewed cases.",
+        requirements: issues.map((i) => ({ key: i.key, risk: i.acceptanceCriteria.length ? "medium" : "high", focus: about(i) })),
+        risks: [],
+        environments: ["Test sandbox"],
+        testData: [],
+        entryCriteria: ["Build deployed"],
+        exitCriteria: ["No open P1 defect"],
+        assumptions: [],
+      };
+    case "test-strategy":
+      return {
+        summary,
+        context: { releaseType: "unknown", businessImpact: "medium", targetUsers: [], integrations: [], dependencies: [] },
+        objectives: ["Every acceptance criterion is checked"],
+        levels: [{ level: "system", objective: "The flows work end to end", approach: "Scripted cases in a sandbox.", entryCriteria: ["Build deployed"], exitCriteria: ["No open P1 defect"] }],
+        types: [
+          { type: "functional", reason: "Core behaviour", requirements: keys },
+          { type: "regression", reason: "Existing behaviour", requirements: [] },
+        ],
+        automation: { approach: "Automate the P1 cases first.", candidates: keys.slice(0, 1) },
+        environments: [],
+        tools: [],
+        defects: "Logged and retested.",
+        metrics: ["Pass rate"],
+        risks: [],
+        assumptions: [],
+      };
+    case "test-charter":
+      return {
+        mission: summary,
+        inScope: issues.map(about),
+        outOfScope: [],
+        areas: { complex: [], edgeCases: [], integrations: [], unclear: issues.filter((i) => !i.acceptanceCriteria.length).map((i) => ({ area: about(i), requirements: [i.key] })) },
+        techniques: ["Boundary exploration"],
+        heuristics: [],
+        sessions: [{ title: "First look", focus: cut(summary, 1000), timeboxMinutes: 60, requirements: keys }],
+        personas: [],
+        testData: [],
+        debrief: "Notes per session.",
+        risks: [],
+      };
+    case "risk-register":
+      return {
+        summary,
+        risks: [{ title: "Unclear requirements", description: summary, category: "requirements", probability: 3, impact: 3, response: "mitigate", mitigation: "Ask the product owner", contingency: "Test what is known", trigger: "Questions stay open", owner: "QA lead", requirements: keys }],
+        assumptions: [],
+      };
+    case "test-data":
+      return {
+        summary,
+        sets: issues.flatMap((i) => [
+          { requirement: i.key, kind: "valid", description: about(i), fields: [{ name: "name", value: "Test User" }], expected: "Accepted", cases: [] },
+          { requirement: i.key, kind: "empty", description: about(i), fields: [{ name: "name", value: "" }], expected: "Refused", cases: [] },
+        ]),
+        setup: [],
+        rules: [],
+      };
+    case "traceability": {
+      const gaps = (parsed.matrix ?? [])
+        .map((line) => line.split(" | "))
+        .filter(([, , cases, result]) => cases === "no case" || ["failed", "flaky", "not run"].includes(result ?? ""))
+        .map(([key, criterion]) => ({ requirement: key!, ...(criterion && criterion !== "(no criteria)" ? { criterion } : {}), note: "Needs a passing case" }));
+      return { summary, gaps, recommendations: [] };
+    }
+    case "release-notes":
+      return { summary, highlights: first ? [about(first)] : [], items: issues.map((i) => ({ key: i.key, category: "feature", note: cut(i.summary, 1000) })), knownIssues: [], upgradeNotes: [] };
+    default:
+      return undefined;
+  }
 }

@@ -28,6 +28,8 @@ A fourth case, **approval-request-review**, runs the `review` workflow, with no 
 
 A fifth case, **approval-request-audit**, runs the `audit` workflow on the same suite, also with no browser. The code scan must count the fixed wait at its line. The model must report the check inside the page object, with evidence in that file. An audit is read-only, so no file may change.
 
+Two cases run the `document` workflow. Each first runs `test-cases` on its issues, then writes the document from the reviewed cases. **escalation-test-plan** writes a test plan from a key. **refund-traceability-jql** writes a traceability report over a JQL filter that names a person. In both, the harness's review types every seed into the document's summary, and the gate checks that the kept document holds only tokens.
+
 The stand-in Jira is simpler than the real one in two ways: field ids are made up, so `masking.fields` rules written with real field ids (`customfield_10042`) don't apply (rules by field name do), and the read limits in `atlassian.jira` (depth, issue count) are ignored.
 
 Your own cases go in a fixtures folder named in `agent-qa.yaml` (`harness.sources`), with seeds in `harness.seededPersonalData`. A ticket has `key`, `summary` and `description`, and optionally `type`, `status`, `priority`, `acceptanceCriteria`, `fields`, `people`, `mentions`, `labels`, `components`, `fixVersions`, `pages`, `parent` and `links`. Every seed a case names must appear whole in its tickets. Jira sources are skipped for now.

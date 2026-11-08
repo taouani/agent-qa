@@ -233,6 +233,39 @@ const DEFAULT_CASE_INPUTS: HarnessCaseInput[] = [
     tickets: [{ key: "QAH-11", summary: "Audit the request suite", description: "The suite opens the request of Marguerite Quillfeather." }],
     seeds: ["seed-name-1"],
   },
+  {
+    id: "escalation-test-plan",
+    description: "A test plan (document workflow) written from the reviewed cases of a story with a name, phone and email; the review types every seed into the plan's summary.",
+    workflow: "document",
+    inputs: { type: "test-plan", key: "QAH-20" },
+    tickets: [
+      {
+        key: "QAH-20",
+        summary: "Escalate old cases",
+        description: "Escalate the cases of Marguerite Quillfeather after 2 days and call +33 6 39 98 12 34.",
+        acceptanceCriteria: "- A case older than 2 days is escalated\n- The owner m.quillfeather@example.com is emailed",
+      },
+    ],
+    seeds: ["seed-name-1", "seed-phone-1", "seed-email-1"],
+  },
+  {
+    id: "refund-traceability-jql",
+    description: "A traceability report (document workflow) over a JQL filter that names a person: a card in the criteria, a linked task with no criteria naming the reporter and their email.",
+    workflow: "document",
+    inputs: { type: "traceability", jql: 'project = QAH AND reporter = "Tobias Wrenhallow"' },
+    tickets: [
+      {
+        key: "QAH-21",
+        summary: "Refund to the card",
+        description: "Refund card 4111 1111 1111 1111 when asked.",
+        acceptanceCriteria: "- The card 4111 1111 1111 1111 is refunded",
+        people: [{ role: "reporter", displayName: "Tobias Wrenhallow" }],
+        links: [{ type: "Relates", key: "QAH-22" }],
+      },
+      { key: "QAH-22", type: "Task", summary: "Tell the reporter", description: "Mail Tobias Wrenhallow at t.wrenhallow@example.org once refunded." },
+    ],
+    seeds: ["seed-card-1", "seed-name-2", "seed-email-2"],
+  },
 ];
 
 export const DEFAULT_CASES: HarnessCase[] = DEFAULT_CASE_INPUTS.map((c) => harnessCaseSchema.parse(c));
