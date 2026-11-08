@@ -118,6 +118,7 @@ async function lockState(file: string): Promise<{ mtimeMs: number; content: stri
 
 /** Errors Windows gives while another handle (an antivirus scan, a reader) has the file open. */
 const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
+const BUSY_READ = Symbol("busy");
 
 /** Removes a file, retrying briefly while Windows reports it busy. */
 async function removeRetrying(file: string): Promise<void> {
@@ -148,8 +149,10 @@ async function takeOver(file: string, staleContent: string): Promise<string | un
       if (code === "ENOENT") return undefined; // Another waiter moved it first.
       if (!BUSY.has(code) || attempt >= 5) return code;
       await new Promise((r) => setTimeout(r, 50));
-      // Taken meanwhile (or gone): it's no longer the lock we judged stale.
-      if ((await readFile(file, "utf8").catch(() => undefined)) !== staleContent) return undefined;
+      // Taken meanwhile (or gone): it's no longer the lock we judged stale. Unreadable too: still busy, so keep the code.
+      const now = await readFile(file, "utf8").catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? undefined : BUSY_READ));
+      if (now === BUSY_READ) return code;
+      if (now !== staleContent) return undefined;
     }
   }
   const moved = await readFile(aside, "utf8").catch(() => staleContent);
