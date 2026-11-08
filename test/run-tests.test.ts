@@ -44,6 +44,7 @@ describe("Playwright's JSON report", () => {
       "    at NewRequest.selectLightningCombobox (/repo/src/pages/base/base-page.ts:40:20)",
       "    at NewRequest.selectRequestType (/repo/src/pages/flows/new-request.ts:35:5)",
       "    at /repo/tests/step-definitions/request-steps.ts:11:3",
+      "    at file:///repo/src/pages/esm%20page.ts:7:3",
       "    at /repo/node_modules/playwright-bdd/dist/run.js:5:1",
       "    at /repo/.features-gen/tests/features/refund.feature.spec.js:9:7",
     ].join("\n");
@@ -83,7 +84,9 @@ describe("Playwright's JSON report", () => {
     expect(failure.message).toBe("Test timeout of 180000ms exceeded.\n\nError: locator.waitFor: Test timeout of 180000ms exceeded.\nCall log:\n  - waiting for locator('lightning-combobox')");
     expect(failure.at).toEqual({ file: "src/pages/base/base-page.ts", line: 40 });
     expect(failure.snippet).toContain("combo.waitFor()");
-    expect(failure.files).toEqual(["src/pages/base/base-page.ts", "src/pages/flows/new-request.ts", "tests/step-definitions/request-steps.ts", ".features-gen/tests/features/refund.feature.spec.js"]);
+    expect(failure.files!.filter((f) => !f.includes("esm"))).toEqual(["src/pages/base/base-page.ts", "src/pages/flows/new-request.ts", "tests/step-definitions/request-steps.ts", ".features-gen/tests/features/refund.feature.spec.js"]);
+    // A file URL (an ESM stack) is read as its path, %20 decoded (a POSIX path here).
+    if (process.platform !== "win32") expect(failure.files![3]).toBe("src/pages/esm page.ts");
   });
 
   it("keeps Playwright's screenshot only from a project's output folder, a passed test's too", () => {

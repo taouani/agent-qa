@@ -143,7 +143,7 @@ export const fixSchema = z
           .object({
             test: z.string().max(2000).describe("The failing test's title, exactly as the context shows it"),
             kind: z.enum(FAILURE_KINDS).describe("selector: a locator finds nothing or the wrong element; timing: a wait is missing or too short; data: the test data is wrong for the app; flake: it passed in another run with no change; environment: sign-in, the app or the network is down or misconfigured; defect: the app does something the test case says it must not; request (API tests only): the test sends the wrong path, method, payload or field"),
-            reason: z.string().min(1).max(500).describe("What the error, the code and the page snapshot show"),
+            reason: z.string().min(1).max(1000).describe("What the error, the code and the page snapshot show"),
           })
           .strict(),
       )

@@ -263,7 +263,10 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
     const last = state.attempts.at(-1)!;
     // The test, where it failed, and every repo file its errors' stacks pass through (step definitions, page objects);
     // never a generated playwright-bdd spec, which git ignores and the next bddgen writes again.
-    const all = [...new Set(broken(last).flatMap((t) => [...(t.failure?.at ? [t.failure.at.file] : []), ...(t.failure?.files ?? []), t.file]))].filter((p) => !isGenerated(p));
+    // The failing tests' own files and where they failed first, so a long stack never crowds them out.
+    const all = [
+      ...new Set([...broken(last).flatMap((t) => [t.file, ...(t.failure?.at ? [t.failure.at.file] : [])]), ...broken(last).flatMap((t) => t.failure?.files ?? [])]),
+    ].filter((p) => !isGenerated(p));
     const paths = all.slice(0, MAX_SHOWN);
     const files: TestFileRead[] = [];
     const left: string[] = all.slice(MAX_SHOWN).map((p) => `${p}: more than ${MAX_SHOWN} files in one round`);

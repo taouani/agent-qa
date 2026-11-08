@@ -1,4 +1,5 @@
 import { isAbsolute, posix, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 /**
@@ -149,7 +150,17 @@ export function parsePlaywrightReport(json: unknown, folder: string): ParsedRepo
           ...(e.location ? [{ file: e.location.file, line: e.location.line }] : []),
           ...(e.stack ?? "").split("\n").flatMap((l) => {
             const m = FRAME.exec(plain(l));
-            return m ? [{ file: m[1]!.replace(/^file:\/\/\/?/, ""), line: Number(m[2]) }] : [];
+            if (!m) return [];
+            let file = m[1]!;
+            // A file URL (ESM stacks): its path, %20 decoded; one that isn't valid is skipped.
+            if (file.startsWith("file:")) {
+              try {
+                file = fileURLToPath(file);
+              } catch {
+                return [];
+              }
+            }
+            return [{ file, line: Number(m[2]) }];
           }),
         ]).flatMap((x) => {
           const file = inFolder(x.file, folder, base);
