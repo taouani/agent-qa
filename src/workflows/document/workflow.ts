@@ -332,10 +332,13 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
       if (inputs.documentRun !== undefined) {
         // Only the publish: of an earlier run's reviewed document, with its own requirements run's vault.
         const doc = await deps.runs.readArtifact(inputs.documentRun, DOCUMENT_ARTIFACT).catch(() => undefined);
-        if (!doc) return refuse(`Run ${inputs.documentRun} has no reviewed document (document@1): give the id of a document run whose review was approved`);
+        if (!doc) return refuse(`Run ${inputs.documentRun} has no reviewed document (document@1): give the id of a document run whose review was approved or that wrote it unattended (--yes)`);
         if (inputs.type !== undefined && inputs.type !== doc.data.type) return refuse(`Run ${inputs.documentRun} holds a ${doc.data.type}, not a ${inputs.type}: leave out type`);
         if (!(await deps.data.confluenceEnabled())) refuse("publish: confluence needs atlassian.confluence.spaceKey in agent-qa.yaml, and a write policy that doesn't deny Confluence");
-        return { ...inputs, type: doc.data.type, requirementsRun: doc.data.sources.requirements.run };
+        const own = doc.data.sources.requirements.run;
+        // The page's title and the real values come from that run: it must still be there.
+        if (!(await deps.runs.readArtifact(own, REQUIREMENTS_ARTIFACT).catch(() => undefined))) return refuse(`Run ${inputs.documentRun}'s document was written from the requirements of run ${own}, which has no requirements@1 any more: write the document again`);
+        return { ...inputs, type: doc.data.type, requirementsRun: own };
       }
       const type = DOCUMENT_TYPES.find((t) => t.id === inputs.type)!;
       const name = type.title.toLowerCase();
@@ -498,6 +501,7 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
         : plan.action === "update"
           ? `It updates Agent-QA's page ${plan.page!.id} (now version ${plan.page!.version}): ${plan.page!.url}`
           : `Page ${plan.page!.id} already has this title and Agent-QA didn't create it, so it can't be published: rename or move that page first.`;
-    return `Publish the ${doc.data.title.toLowerCase()} "${plan.title}" to Confluence space ${plan.space}? ${what}`;
+    const unreviewed = doc.data.review.unattended ? " Nobody reviewed this document: it was written unattended (--yes)." : "";
+    return `Publish the ${doc.data.title.toLowerCase()} "${plan.title}" to Confluence space ${plan.space}?${unreviewed} ${what}`;
   }
 }

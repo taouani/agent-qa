@@ -7,7 +7,7 @@ import type { JiraCollection, JiraInput, JiraIssue } from "../src/connectors/ind
 import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type WriteGrant } from "../src/core/index.js";
 import { CONFLUENCE_LABEL, DataAccess, type ConfluenceWriter } from "../src/data/index.js";
 import { MemoryVaultStorage, Vault } from "../src/masking/index.js";
-import { CONFLUENCE_PAGE_ARTIFACT, documentWorkflow, requirementsWorkflow, type TestPlan } from "../src/workflows/index.js";
+import { CONFLUENCE_PAGE_ARTIFACT, DOCUMENT_ARTIFACT, documentWorkflow, requirementsWorkflow, type TestPlan } from "../src/workflows/index.js";
 
 const SITE = "https://acme.atlassian.net";
 const adf = (text: string) => ({ text, mentions: [], links: [] });
@@ -185,6 +185,15 @@ describe("publishing a document to Confluence (S4-5)", () => {
     await expect(engine.start("document", { documentRun: a.runId, publish: "confluence", key: "ABC-1" })).rejects.toThrow(/Invalid inputs/);
     await expect(engine.start("document", { documentRun: a.runId, publish: "confluence", type: "test-strategy" })).rejects.toThrow(/holds a test-plan/);
     await expect(engine.start("document", { documentRun: b.runId, publish: "confluence" })).rejects.toThrow(/no reviewed document/);
+
+    // A document written unattended says so in the question; one whose requirements run is gone is refused at start.
+    const doc = (await runs.readArtifact(a.runId, DOCUMENT_ARTIFACT))!.data;
+    await runs.create({ workflow: "document", context: "ABC-1", host: "cli", driver: "api", id: "unattended-doc" });
+    await runs.writeArtifact("unattended-doc", DOCUMENT_ARTIFACT, { ...doc, review: { ...doc.review, unattended: true } }, { inputs: [], templateVersion: "document-1" });
+    expect((await engine.start("document", { documentRun: "unattended-doc", publish: "confluence" })).context).toContain("Nobody reviewed this document");
+    await runs.create({ workflow: "document", context: "ABC-1", host: "cli", driver: "api", id: "orphan-doc" });
+    await runs.writeArtifact("orphan-doc", DOCUMENT_ARTIFACT, { ...doc, sources: { ...doc.sources, requirements: { ...doc.sources.requirements, run: "gone-run" } } }, { inputs: [], templateVersion: "document-1" });
+    await expect(engine.start("document", { documentRun: "orphan-doc", publish: "confluence" })).rejects.toThrow(/no requirements@1 any more/);
   });
 
   it("updates its own page on a rerun, to the next version", async () => {
