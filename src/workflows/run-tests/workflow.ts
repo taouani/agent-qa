@@ -243,6 +243,12 @@ export function runTestsWorkflow(deps: RunTestsDeps): WorkflowDefinition<RunTest
     id: "run-tests",
     description: "Run a chosen part of the repo's own Playwright suite (spec paths, a title text, a tag, or an earlier report's failures) and record the results, after the user's yes.",
     inputSchema: runTestsInputSchema,
+    summary: async (ctx) => {
+      const run = await testRun(ctx);
+      if (!run) return undefined;
+      const xray = (await deps.runs.readArtifact(ctx.runId, XRAY_EXECUTION_ARTIFACT).catch(() => undefined))?.data;
+      return [renderTestRun(run), ...(xray ? [renderXrayExecution(xray)] : []), `Files: test-run.md${xray ? " and xray-execution.md" : ""} in the run folder of ${ctx.runId}.`].join("\n");
+    },
     // Checked at once: a selection Playwright can't take, or a report without failures, stops before any question.
     prepareInputs: async (runId, inputs) => {
       await deps.data.selectTests(runId, await folder(), selectionOf(inputs));

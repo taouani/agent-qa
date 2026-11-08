@@ -95,7 +95,13 @@ describe("usage recording", () => {
     await createMcpServer(engine, { runs }).connect(serverSide);
     const client = new Client({ name: "t", version: "0" });
     await client.connect(clientSide);
-    const call = async (name: string, args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name, arguments: args })).content as Array<{ text: string }>)[0]!.text);
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const [json, context] = (await client.callTool({ name, arguments: args })).content as Array<{ text: string }>;
+      const body = JSON.parse(json!.text);
+      // A step's context comes as its own text after the JSON.
+      if (context) (body.next ?? body).context = context.text.replace(/^## Context of step [^\n]*\n\n/, "");
+      return body;
+    };
     const start = await call("workflow_start", { workflow: "spike-test-cases", inputs: { ticket: "SPIKE-1" } });
     const output = { summary: "Create a case.", acceptanceCriteria: ["Pre-fills"], ambiguities: [] };
     await call("workflow_submit", { runId: start.runId, stepId: "analyze", output });

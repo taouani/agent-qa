@@ -118,7 +118,10 @@ describe("debug workflow (S3-3)", () => {
     await expect(e.submit(first.runId, "apply-1", { apply: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
 
     outcomes.push(done(result("passed")), done({ ...result("passed"), runs: 2 }));
-    expect((await e.submit(first.runId, "apply-1", { apply: true }, { byPerson: true })).next.kind).toBe("done");
+    const finished = (await e.submit(first.runId, "apply-1", { apply: true }, { byPerson: true })).next;
+    expect(finished.kind).toBe("done");
+    expect(finished.context).toContain("# Debug: passed");
+    expect(finished.context).toContain(`File: debug-report.md in the run folder of ${first.runId}.`);
     expect(edits).toEqual([[{ path: "tests/a.spec.ts", content: FIXED, sha256: sha(SPEC) }]]);
     expect(ran.map((s) => s.repeatEach)).toEqual([undefined, undefined, 2]);
     const r = await report(first.runId);

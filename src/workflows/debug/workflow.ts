@@ -435,6 +435,10 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
     id: "debug",
     description: "Debug failing tests of the repo's own suite: run a chosen part, classify each failure (selector, timing, data, flake, environment, defect), propose only allowed fixes as a diff for the user's yes, run again; a defect is reported, never fixed in the test.",
     inputSchema: debugInputSchema,
+    summary: async (ctx) => {
+      const r = await read(ctx);
+      return r ? `${renderReport(r)}\nFile: debug-report.md in the run folder of ${ctx.runId}.` : undefined;
+    },
     prepareInputs: async (runId, inputs) => {
       await deps.data.selectTests(runId, await folder(), selectionOf(inputs));
       return inputs;

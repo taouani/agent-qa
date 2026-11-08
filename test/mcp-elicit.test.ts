@@ -52,8 +52,15 @@ async function connect(options: { elicit?: Elicit; capabilities?: Record<string,
 
 async function call(client: Client, name: string, args: Record<string, unknown>) {
   const result = await client.callTool({ name, arguments: args });
-  const [first] = result.content as Array<{ type: string; text: string }>;
-  return { isError: result.isError === true, body: JSON.parse(first!.text) };
+  const [first, second] = result.content as Array<{ type: string; text: string }>;
+  const body = JSON.parse(first!.text);
+  // A step's context comes as its own text after the JSON.
+  if (second) {
+    const context = second.text.replace(/^## Context of step [^\n]*\n\n/, "");
+    if (body.next) body.next.context = context;
+    else body.context = context;
+  }
+  return { isError: result.isError === true, body };
 }
 
 const start = (client: Client) => call(client, "workflow_start", { workflow: "push-only", inputs: { n: 3 } });
