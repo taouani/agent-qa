@@ -2,8 +2,8 @@ import type { WriteGrant } from "../core/index.js";
 import type { OpenedPullRequest, PullRequestFiles } from "./github.js";
 
 /**
- * One interface for the git hosts (S4-1): GitHub now, Azure DevOps and GitLab
- * next. A host opens a pull request from CI (one commit of files on a new
+ * One interface for the git hosts (S4-1): GitHub, Azure DevOps (S4-2) and
+ * GitLab (S4-8). A host opens a pull request from CI (one commit of files on a new
  * branch, never a push to the base) and reads pull requests that name an
  * issue key, with their diffs, for `commits`. Whatever a host calls a pull
  * request (a merge request on GitLab), it is one here.

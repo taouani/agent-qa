@@ -26,6 +26,7 @@ export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient, jiraDate } from "./xray.js
 export type { XrayClientOptions, XrayEvidence, XrayExecutionInput, XrayExecutionResult, XrayJobIssue, XrayJobResult, XrayRunStatus, XrayStep, XrayTest } from "./xray.js";
 export { BRANCH, GITHUB_API, GitHubClient } from "./github.js";
 export { AZURE_DEVOPS_API, AzureDevOpsClient } from "./azure-devops.js";
+export { GITLAB_API, GitLabClient } from "./gitlab.js";
 export type { AzureDevOpsClientOptions } from "./azure-devops.js";
 export { unifiedDiff } from "./unified-diff.js";
 export { createGitHost } from "./create-git-host.js";
