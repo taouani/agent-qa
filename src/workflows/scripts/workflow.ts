@@ -207,7 +207,7 @@ export function scriptsWorkflow(deps: ScriptsDeps): WorkflowDefinition<ScriptsIn
   };
   const existing = (ctx: Ctx) =>
     once(filesMemo, ctx.runId, async () => {
-      const listing = await deps.data.frameworkFiles();
+      const listing = await deps.data.frameworkFiles((await testCases(ctx)).data.requirements.run);
       return { files: new Set(listing.files.map(pathKey)), links: listing.links };
     });
   const approved = (ctx: Ctx) => (ctx.outputs.typecheck as { approve?: boolean } | undefined)?.approve === true;

@@ -315,10 +315,10 @@ export function reviewWorkflow(deps: ReviewDeps): WorkflowDefinition<ReviewInput
   };
 
   /** The paths named, globs matched against the folder's files; a named file must be reviewable, a matched one is skipped with a reason. */
-  const select = async (inputs: ReviewInputs): Promise<{ named: string[]; matched: string[] }> => {
+  const select = async (runId: string, inputs: ReviewInputs): Promise<{ named: string[]; matched: string[] }> => {
     const named = inputs.paths.filter((p) => !isGlob(p));
     const globs = inputs.paths.filter(isGlob).map(globRegExp);
-    const matched = globs.length ? (await deps.data.frameworkFiles()).files.filter((f) => CODE_FILE.test(f) && !named.includes(f) && globs.some((g) => g.test(f))) : [];
+    const matched = globs.length ? (await deps.data.frameworkFiles(runId)).files.filter((f) => CODE_FILE.test(f) && !named.includes(f) && globs.some((g) => g.test(f))) : [];
     for (const p of named) if (!CODE_FILE.test(p)) throw new Error(`${p} isn't test code (.ts or .js): a review reads code only`);
     if (new Set(named).size > MAX_REVIEW_FILES) throw new Error(`${new Set(named).size} files named: a review reads at most ${MAX_REVIEW_FILES}, so name fewer or use a glob`);
     if (named.length + matched.length === 0) throw new Error("no test code matches these paths");
@@ -328,7 +328,7 @@ export function reviewWorkflow(deps: ReviewDeps): WorkflowDefinition<ReviewInput
   /** The files read now, masked; at most MAX_REVIEW_FILES and MAX_REVIEW_CHARS. */
   const shown = async (ctx: Ctx): Promise<{ files: TestFileRead[]; left: string[] }> => {
     const f = await folder();
-    const { named, matched } = await select(ctx.inputs);
+    const { named, matched } = await select(ctx.runId, ctx.inputs);
     const files: TestFileRead[] = [];
     const left: string[] = [];
     let chars = 0;
@@ -346,7 +346,8 @@ export function reviewWorkflow(deps: ReviewDeps): WorkflowDefinition<ReviewInput
         left.push(`${p}: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
-      if (!read) continue;
+      // A file named and matched by a glob too: the glob saw it masked, the name as given (S5-4).
+      if (!read || files.some((x) => x.path === read.path)) continue;
       if (chars + read.content.length > MAX_REVIEW_CHARS) {
         left.push(`${p}: the review is already ${chars} characters long`);
         continue;
@@ -517,7 +518,7 @@ export function reviewWorkflow(deps: ReviewDeps): WorkflowDefinition<ReviewInput
     inputSchema: reviewInputSchema,
     prepareInputs: async (runId, inputs) => {
       await folder();
-      await select(inputs);
+      await select(runId, inputs);
       return inputs;
     },
     steps: [reviewStep, applyStep, prStep],

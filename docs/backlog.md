@@ -10,10 +10,6 @@ Moved out of slice 3 on 6 Nov 2026 (it was S3-7, estimated at 6 to 8 h). `@axe-c
 
 Decided on 6 Nov 2026 (PR #69 review): `debug` reports a test-data failure and changes nothing for it. To fix data, it would have to find the JSON a failing test loads (by path, or by scenario name as playwright-bdd suites do) and protect every value a check anywhere in the suite compares against, not only in the files shown.
 
-## Masking repo paths
-
-Found in the PR #72 review (6 Nov 2026). `review` and `debug` send test-file paths to the model as they are, and record them that way in their reports. A file named after a person, such as `tests/users/<a name>.spec.ts`, is therefore not masked. Today paths are refused only when they already hold tokens. The fix belongs in the data layer, so that it applies to every workflow.
-
 ## Branches per test in `review` fixes
 
 Found in the PR #72 review (6 Nov 2026). A review fix may not add a branch, but branches are counted for the whole file. A fix that removes one `if` and puts a check behind a new one keeps the total and passes. Counting branches per test would close this.
