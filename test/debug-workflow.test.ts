@@ -90,6 +90,30 @@ describe("debug workflow (S3-3)", () => {
   const report = async (runId: string) => (await runs.readArtifact(runId, DEBUG_REPORT_ARTIFACT))!.data;
   const FIX = { failures: [{ test: TITLE, kind: "selector", reason: "the button is now called Save draft" }], files: [{ path: "tests/a.spec.ts", content: FIXED }] };
 
+  it("shows the page object and steps a playwright-bdd test's stack passes through, never the generated spec, and takes the fix there", async () => {
+    const PAGE = "export class NewRequest {\n  constructor(private page) {}\n  async selectType(t: string) {\n    await this.page.getByRole('combobox', { name: 'Topic' }).click();\n  }\n}\n";
+    const STEPS = "When('I pick {string}', async ({ pages }, t) => {\n  await pages.newRequest.selectType(t);\n});\n";
+    files.set("src/pages/new-request.ts", PAGE);
+    files.set("tests/steps/request.steps.ts", STEPS);
+    const GEN = ".features-gen/tests/features/refund.feature.spec.js";
+    const bdd = {
+      ...result("failed", "Test timeout of 180000ms exceeded.\n\nError: locator.click: Test timeout of 180000ms exceeded."),
+      file: GEN,
+      failure: { message: "Test timeout of 180000ms exceeded.", at: { file: "src/pages/new-request.ts", line: 4 }, files: ["src/pages/new-request.ts", "tests/steps/request.steps.ts", GEN], snapshot: "- radiogroup \"Topic\"" },
+    };
+    const e = engine();
+    const first = await e.start("debug", { tag: "@submission" });
+    outcomes.push(done(bdd as ReturnType<typeof result>));
+    const fix = (await e.submit(first.runId, "run", { run: true }, { byPerson: true })).next;
+    expect(fix.stepId).toBe("fix-1");
+    expect(fix.context).toContain("### src/pages/new-request.ts (page)");
+    expect(fix.context).toContain("### tests/steps/request.steps.ts (steps)");
+    expect(fix.context).not.toContain(`### ${GEN}`);
+    const fixed = PAGE.replace("getByRole('combobox', { name: 'Topic' })", "getByRole('radio', { name: 'Topic' })");
+    const r = await e.submit(first.runId, "fix-1", { failures: [{ test: TITLE, kind: "selector", reason: "Topic is now a radio group" }], files: [{ path: "src/pages/new-request.ts", content: fixed }] });
+    expect(r).toMatchObject({ status: "accepted", next: { stepId: "apply-1" } });
+  });
+
   it("runs, proposes a selector fix as a diff, writes it on the person's own yes, then proves it stable", async () => {
     const e = engine();
     const first = await e.start("debug", { files: ["tests/a.spec.ts"], stabilityRuns: 2 });

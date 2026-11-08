@@ -3,7 +3,7 @@ export const MODULE = "data";
 export { CONFLUENCE_LABEL, DataAccess, salesforceKey, salesforceKeyPath, secretSources } from "./access.js";
 export type { ConfluencePlan, ConfluenceWriter, DataAccessOptions, DocumentData, ExplorerData, HostData, MaskedTestResult, ProfileData, RequirementsData, SalesforceData, ScriptsData, TestRunOutcome, TypeCheckOutcome, WriteFilesOutcome, PullRequestOutcome, XrayData, TestFilesData, TestFileRead, EditFilesOutcome, SuiteData, TestSelection, SelectedTests } from "./access.js";
 export { gitBlobId, jobApiOrigin, jobOrganization, MAX_REPORT_TESTS, mdSafe, prBase } from "./access.js";
-export { parsePlaywrightReport, type ParsedReport, type ReportedTest, type TestOutcome } from "./test-report.js";
+export { isGenerated, parsePlaywrightReport, type ParsedReport, type ReportedTest, type TestOutcome } from "./test-report.js";
 export { isPlainRelativePath, isProtectedPath } from "./generated-files.js";
 export { isSalesforceSandbox, openRepoBrowser } from "./explorer.js";
 export type { BrowserLike, ExplorerTarget, ExploreSetup, MaskedAction, MaskedPage, MaskedResult, OpenBrowser } from "./explorer.js";

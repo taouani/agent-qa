@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { unifiedDiff, diffStats, type ArtifactSpec, type OutputError, type RunStore, type StepContext, type StepDefinition, type WorkflowDefinition } from "../../core/index.js";
-import { fixSkeleton, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
+import { fixSkeleton, isGenerated, presenceCheckedFields, ProfileError, scanGeneratedCode, type MaskedTestResult, type ProfileData, type RequirementsData, type ScriptsData, type SuiteData, type TestFileRead, type TestFilesData, type TestRunOutcome } from "../../data/index.js";
 import { hasSelection, selectionFields, selectionOf } from "../run-tests/workflow.js";
 import { attemptSchema, checkFix, DEFAULT_FIX_ROUNDS, DEFAULT_STABILITY_RUNS, FAILURE_KINDS, MAX_FIX_ROUNDS, UI_KINDS, type CodeFacts, type RunAttempt } from "../scripts/run.js";
 import type { FileRole } from "../scripts/artifact.js";
@@ -117,7 +117,7 @@ export const debugFixSchema = z
           .object({
             test: z.string().max(2000).describe("The failing test's title, exactly as the context shows it"),
             kind: z.enum(UI_KINDS).describe("selector: a locator finds nothing or the wrong element; timing: a wait is missing or too short; data: the test data is wrong for the app; flake: it passed in another run with no change; environment: sign-in, the app or the network is down or misconfigured; defect: the app does something its test says it must not"),
-            reason: z.string().min(1).max(500).describe("What the error, the code and the page snapshot show"),
+            reason: z.string().min(1).max(1000).describe("What the error, the code and the page snapshot show"),
           })
           .strict(),
       )
@@ -194,7 +194,7 @@ const row = (t: MaskedTestResult): RunAttempt["tests"][number] => ({
   outcome: t.outcome,
   runs: t.runs,
   failedRuns: t.failedRuns,
-  ...(t.failure ? { failure: { message: t.failure.message, ...(t.failure.snippet !== undefined ? { snippet: t.failure.snippet } : {}), ...(t.failure.at ? { at: t.failure.at } : {}), ...(t.failure.snapshot !== undefined ? { snapshot: t.failure.snapshot } : {}) } } : {}),
+  ...(t.failure ? { failure: { message: t.failure.message, ...(t.failure.snippet !== undefined ? { snippet: t.failure.snippet } : {}), ...(t.failure.at ? { at: t.failure.at } : {}), ...(t.failure.files?.length ? { files: t.failure.files } : {}), ...(t.failure.snapshot !== undefined ? { snapshot: t.failure.snapshot } : {}) } } : {}),
 });
 
 const attemptOf = (r: Exclude<TestRunOutcome, { status: "declined" }>, kind: RunAttempt["kind"], changed: string[], classified: RunAttempt["classified"]): RunAttempt =>
@@ -261,7 +261,12 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
   /** The files a round shows: the failing specs and the files their errors point at, read now (masked), and why others aren't. */
   const shownFiles = async (ctx: Ctx, state: DebugReport): Promise<{ files: TestFileRead[]; left: string[] }> => {
     const last = state.attempts.at(-1)!;
-    const all = [...new Set(broken(last).flatMap((t) => [t.file, ...(t.failure?.at ? [t.failure.at.file] : [])]))];
+    // The test, where it failed, and every repo file its errors' stacks pass through (step definitions, page objects);
+    // never a generated playwright-bdd spec, which git ignores and the next bddgen writes again.
+    // The failing tests' own files and where they failed first, so a long stack never crowds them out.
+    const all = [
+      ...new Set([...broken(last).flatMap((t) => [t.file, ...(t.failure?.at ? [t.failure.at.file] : [])]), ...broken(last).flatMap((t) => t.failure?.files ?? [])]),
+    ].filter((p) => !isGenerated(p));
     const paths = all.slice(0, MAX_SHOWN);
     const files: TestFileRead[] = [];
     const left: string[] = all.slice(MAX_SHOWN).map((p) => `${p}: more than ${MAX_SHOWN} files in one round`);
