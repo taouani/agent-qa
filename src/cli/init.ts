@@ -6,8 +6,8 @@ import { parse as parseYaml } from "yaml";
 import { writeSetupFile } from "./setup-files.js";
 
 /**
- * `agent-qa init` (S1-11): writes `agent-qa.yaml`, the VS Code MCP settings
- * and the `.gitignore` lines. It never overwrites a file it didn't write
+ * `agent-qa init` (S1-11): writes `agent-qa.yaml`, the MCP settings of each
+ * IDE host (VS Code, Claude Code, Cursor) and the `.gitignore` lines. It never overwrites a file it didn't write
  * (`--force` replaces `agent-qa.yaml`), and secrets stay `${env:…}`
  * references: init asks for none.
  */
@@ -21,6 +21,8 @@ export interface InitOptions {
   /** Xray project key; adds the xray section. */
   xrayProject?: string;
   force?: boolean;
+  /** The IDE hosts to set up; all three by default. */
+  hosts?: readonly McpHost[];
   log?: (line: string) => void;
 }
 
@@ -35,6 +37,60 @@ export const MCP_SERVER = {
   // No `cwd`: VS Code only partly supports it. The server finds the project from the runs folder.
   env: { AGENT_QA_RUNS_DIR: "${workspaceFolder}/.agent-qa/runs" },
 };
+
+/**
+ * Claude Code (S4-9) reads the project's `.mcp.json` and starts the server in
+ * the project folder, so it needs no runs folder: the server finds the project
+ * from its working folder. Claude Code expands only `${VAR}` there.
+ */
+export const CLAUDE_CODE_SERVER = { type: "stdio", command: MCP_SERVER.command, args: MCP_SERVER.args };
+
+/** Cursor (S4-9) reads `.cursor/mcp.json` and fills in `${workspaceFolder}`, as VS Code does. */
+export const CURSOR_SERVER = MCP_SERVER;
+
+export const MCP_HOSTS = ["vscode", "claude-code", "cursor"] as const;
+export type McpHost = (typeof MCP_HOSTS)[number];
+
+interface HostConfig {
+  file: ".vscode/mcp.json" | ".mcp.json" | ".cursor/mcp.json";
+  /** The object that holds the servers: VS Code's `servers`, Claude Code's and Cursor's `mcpServers`. */
+  key: "servers" | "mcpServers";
+  server: Record<string, unknown>;
+}
+
+const HOST_CONFIG: Record<McpHost, HostConfig> = {
+  vscode: { file: ".vscode/mcp.json", key: "servers", server: MCP_SERVER },
+  "claude-code": { file: ".mcp.json", key: "mcpServers", server: CLAUDE_CODE_SERVER },
+  cursor: { file: ".cursor/mcp.json", key: "mcpServers", server: CURSOR_SERVER },
+};
+
+/** Adds the agent-qa server to one host's file; false when the file couldn't be changed. */
+async function addServer(root: string, host: HostConfig, log: (line: string) => void): Promise<boolean> {
+  const existing = await readOptional(join(root, ...host.file.split("/")));
+  let mcp: Record<string, unknown> = {};
+  if (existing !== undefined) {
+    try {
+      const value = JSON.parse(existing) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+      mcp = value as Record<string, unknown>;
+      const servers = mcp[host.key];
+      if (servers !== undefined && (!servers || typeof servers !== "object" || Array.isArray(servers))) throw new Error(`${host.key} is not an object`);
+    } catch {
+      // Rewriting a file with comments (VS Code allows them) or of another shape would lose what is there.
+      log(`${host.file}: not changed (it isn't plain JSON with a ${host.key} object). Add this server under "${host.key}":\n${JSON.stringify({ "agent-qa": host.server }, null, 2)}`);
+      return false;
+    }
+  }
+  const servers = (mcp[host.key] ?? {}) as Record<string, unknown>;
+  if ("agent-qa" in servers) {
+    log(`${host.file}: kept (it already has an agent-qa server)`);
+    return true;
+  }
+  mcp[host.key] = { ...servers, "agent-qa": host.server };
+  await writeSetupFile(root, host.file, JSON.stringify(mcp, null, 2) + "\n", existing === undefined ? "create" : "replace");
+  log(`${host.file}: ${existing === undefined ? "written" : "agent-qa server added"}`);
+  return true;
+}
 
 const IGNORE_LINES = ["# agent-qa: token vault, run folders and audit log", ".agent-qa/"];
 
@@ -118,32 +174,7 @@ export async function initCommand(opts: InitOptions): Promise<number> {
     log("agent-qa.yaml: written");
   }
 
-  // .vscode/mcp.json
-  const mcpFile = join(opts.root, ".vscode", "mcp.json");
-  const existing = await readOptional(mcpFile);
-  let mcp: { servers?: Record<string, unknown> } & Record<string, unknown> = {};
-  let usable = true;
-  if (existing !== undefined) {
-    try {
-      const value = JSON.parse(existing) as unknown;
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
-      mcp = value as typeof mcp;
-      if (mcp.servers !== undefined && (!mcp.servers || typeof mcp.servers !== "object" || Array.isArray(mcp.servers))) throw new Error("servers is not an object");
-    } catch {
-      // VS Code allows comments in mcp.json; rewriting it would lose them.
-      usable = false;
-      log(`.vscode/mcp.json: not changed (it isn't plain JSON with a servers object). Add this server under "servers":\n${JSON.stringify({ "agent-qa": MCP_SERVER }, null, 2)}`);
-      code = 2;
-    }
-  }
-  if (usable) {
-    if (mcp.servers && typeof mcp.servers === "object" && "agent-qa" in mcp.servers) log(".vscode/mcp.json: kept (it already has an agent-qa server)");
-    else {
-      mcp.servers = { ...(mcp.servers ?? {}), "agent-qa": MCP_SERVER };
-      await writeSetupFile(opts.root, ".vscode/mcp.json", JSON.stringify(mcp, null, 2) + "\n", existing === undefined ? "create" : "replace");
-      log(`.vscode/mcp.json: ${existing === undefined ? "written" : "agent-qa server added"}`);
-    }
-  }
+  for (const host of opts.hosts ?? MCP_HOSTS) if (!(await addServer(opts.root, HOST_CONFIG[host], log))) code = 2;
 
   // .gitignore
   const targets = [".agent-qa/vault/x.vault", ".agent-qa/runs/x/run.json", ".agent-qa/audit.jsonl"];

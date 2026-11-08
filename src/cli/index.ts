@@ -7,7 +7,7 @@ import { ApiDriver, ModelConfigError, StaticDriver, type ModelDriver } from "../
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
-import { initCommand } from "./init.js";
+import { initCommand, MCP_HOSTS, type McpHost } from "./init.js";
 import { runCommand } from "./run.js";
 
 /**
@@ -41,6 +41,14 @@ export function createMcpContext(cwd = process.cwd(), env: NodeJS.ProcessEnv = p
   return { engine, runs };
 }
 
+/** Commander collector for --host: vscode, claude-code or cursor, repeatable or comma-separated. */
+function collectHosts(value: string, previous: McpHost[]): McpHost[] {
+  const hosts = value.split(",").map((v) => v.trim());
+  const bad = hosts.find((h) => !(MCP_HOSTS as readonly string[]).includes(h));
+  if (bad !== undefined) throw new InvalidArgumentError(`expected ${MCP_HOSTS.join(", ")}`);
+  return [...new Set([...previous, ...(hosts as McpHost[])])];
+}
+
 /** Commander collector for a repeatable option: --accept review --accept run, or --accept review,run. */
 function collect(value: string, previous: string[]): string[] {
   const ids = value.split(",").map((v) => v.trim());
@@ -57,14 +65,16 @@ export function buildProgram(): Command {
 
   program
     .command("init")
-    .description("write agent-qa.yaml, .vscode/mcp.json and the .gitignore lines")
+    .description("write agent-qa.yaml, the MCP settings of VS Code, Claude Code and Cursor, and the .gitignore lines")
     .option("--site <url>", "Jira site, e.g. https://acme.atlassian.net")
     .option("--model <provider:model>", "the default model")
     .option("--xray-project <key>", "Xray project key (adds the xray section)")
     .option("--force", "replace an existing agent-qa.yaml")
+    .option("--host <host>", `IDE host to set up: ${MCP_HOSTS.join(", ")} (repeatable or comma-separated; default all three)`, collectHosts, [])
     .option("--cwd <dir>", "project folder (default: the current folder)")
-    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; cwd?: string }) => {
-      process.exitCode = await initCommand({ ...opts, root: resolve(opts.cwd ?? process.cwd()) });
+    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; host: McpHost[]; cwd?: string }) => {
+      const { host, ...rest } = opts;
+      process.exitCode = await initCommand({ ...rest, ...(host.length ? { hosts: host } : {}), root: resolve(opts.cwd ?? process.cwd()) });
     });
   program
     .command("run [workflow]")

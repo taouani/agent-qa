@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
  * the policy layer: the project setup files `agent-qa init` writes when the
  * user runs it. Only these paths, never run data or model output.
  */
-export const SETUP_FILES = ["agent-qa.yaml", ".vscode/mcp.json", ".gitignore"] as const;
+export const SETUP_FILES = ["agent-qa.yaml", ".vscode/mcp.json", ".mcp.json", ".cursor/mcp.json", ".gitignore"] as const;
 export type SetupFile = (typeof SETUP_FILES)[number];
 
 /**

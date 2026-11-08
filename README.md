@@ -22,7 +22,7 @@ cd your-project
 npx -y sf-agent-qa@next init --site https://your-site.atlassian.net --xray-project QA
 ```
 
-`init` writes `agent-qa.yaml` (settings only: secrets stay in environment variables or your OS keychain), `.vscode/mcp.json` and the `.gitignore` lines for `.agent-qa/`. Then set the variables it names and check the setup:
+`init` writes `agent-qa.yaml` (settings only: secrets stay in environment variables or your OS keychain), the MCP settings for VS Code (`.vscode/mcp.json`), Claude Code (`.mcp.json`) and Cursor (`.cursor/mcp.json`), and the `.gitignore` lines for `.agent-qa/`. Then set the variables it names and check the setup:
 
 ```bash
 export ATLASSIAN_EMAIL=you@example.com ATLASSIAN_TOKEN=... XRAY_CLIENT_ID=... XRAY_CLIENT_SECRET=...

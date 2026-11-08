@@ -1,6 +1,18 @@
 # Using Agent-QA in your IDE
 
-Agent-QA runs in your IDE as an MCP server. `agent-qa init` writes `.vscode/mcp.json` for VS Code; the IDE's own model (Copilot, Claude Code, Cursor) answers each step, and Agent-QA checks every answer before it goes on.
+Agent-QA runs in your IDE as an MCP server. `agent-qa init` sets it up for three hosts; the IDE's own model (Copilot, Claude Code, Cursor) answers each step, and Agent-QA checks every answer before it goes on.
+
+## Setting up the host
+
+| Host | File `init` writes | Notes |
+|---|---|---|
+| VS Code (Copilot agent mode) | `.vscode/mcp.json`, under `servers` | Start the server from the file (Start above `agent-qa`). |
+| Claude Code | `.mcp.json`, under `mcpServers` | Claude Code asks once whether to use the project's servers. Start `claude` in the project folder: the server finds the project from the folder it is started in. |
+| Cursor | `.cursor/mcp.json`, under `mcpServers` | Turn the server on in Cursor Settings, MCP. |
+
+`agent-qa init --host claude-code` (or `vscode`, `cursor`, repeatable or comma-separated) sets up only the hosts named. Each file runs this exact version with `npx -y sf-agent-qa@<version> mcp`. An existing file keeps its other servers, and one that already has an `agent-qa` server is left as it is. A file that isn't plain JSON (VS Code allows comments) is never rewritten: `init` prints the server to add by hand and exits 2.
+
+Not checked live yet on Claude Code and Cursor: the slash command names below and the start folder come from each host's documentation.
 
 ## Starting a workflow
 
@@ -12,6 +24,8 @@ Each workflow is an MCP prompt with one argument, `inputs`, as JSON. In VS Code 
 ```
 
 If you renamed the server in `mcp.json`, use that name instead of `agent-qa`.
+
+In Claude Code an MCP prompt is a slash command named `/mcp__<server>__<prompt>`, so `/mcp__agent-qa__test-cases`, with the inputs after it: `/mcp__agent-qa__test-cases {"key":"ABC-123"}`. In Cursor, ask the model to start the workflow with the start tool, as below.
 
 If the slash command doesn't show up, ask the model to call the start tool directly. This always works, and it's what the Copilot spike used:
 
