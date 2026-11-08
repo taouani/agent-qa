@@ -202,7 +202,7 @@ describe("document workflow (S4-3)", () => {
     const first = await engine.start("document", { type: "test-plan", testCasesRun: cases.runId });
     expect(first.stepId).toBe("draft-test-plan");
     expect((await engine.status(first.runId)).inputs).toMatchObject({ requirementsRun: cases.runId, testCasesRun: cases.runId });
-    expect(first.context).toContain("TC-ABC-1-001 | P1 | positive | Case 1 for ABC-1");
+    expect(first.context).toContain("TC-ABC-1-001 | ABC-1 | P1 | positive | covers AC1 | Case 1 for ABC-1");
     expect(first.context).toContain('"ABC-1 AC2"');
     await engine.submit(first.runId, "draft-test-plan", plan());
     await engine.submit(first.runId, "review", { approved: true, changes: [], unattended: true });

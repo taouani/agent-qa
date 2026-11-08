@@ -11,7 +11,7 @@ Two rules shape the design:
 
 ## Status
 
-v2 is in alpha, on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis, test cases pushed to Xray, Playwright scripts (Gherkin with playwright-bdd, specs, or API tests) written into your repo and run there, and maintaining an existing suite (run, debug, review, audit, refactor). It also writes test plans. For everything else v1 did (strategies, release notes and more), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).
+v2 is in alpha, on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis, test cases pushed to Xray, Playwright scripts (Gherkin with playwright-bdd, specs, or API tests) written into your repo and run there, and maintaining an existing suite (run, debug, review, audit, refactor). It also writes QA documents: strategy, plan, charter, risk register, test data, traceability and release notes. For everything else v1 did (commit analysis, Confluence publishing, accessibility), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).
 
 ## Quickstart
 
@@ -53,7 +53,7 @@ npx -y sf-agent-qa@next run test-cases --jql "project = ABC AND fixVersion = 2.4
 - `review` reviews the files you name, with optional small fixes: [docs/review.md](docs/review.md).
 - `audit` is a read-only architecture audit of the suite: [docs/audit.md](docs/audit.md).
 - `refactor` carries out an audit's findings phase by phase, keeping what every test checks: [docs/refactor.md](docs/refactor.md).
-- `document` writes a QA document, a test plan for now, from the requirements and the reviewed test cases: [docs/documents.md](docs/documents.md).
+- `document` writes a test strategy, plan, charter, risk register, test data, traceability report or release notes from the requirements, reviewed test cases and test results: [docs/documents.md](docs/documents.md).
 
 ## Development
 

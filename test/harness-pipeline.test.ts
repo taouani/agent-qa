@@ -18,9 +18,10 @@ const run = (config?: ReturnType<typeof parseConfig>) =>
 describe("masked pipeline (S1-14)", () => {
   it("runs the real workflows on the shipped cases with no seeded value reaching the model", async () => {
     const report = await run();
-    expect(report.summary).toEqual({ cases: 5, passed: 5, failed: 0, errors: 0, seededLeaks: 0 });
+    expect(report.summary).toEqual({ cases: 7, passed: 7, failed: 0, errors: 0, seededLeaks: 0 });
     const runs = (await readdir(join(dir, "runs"))).sort();
-    expect(runs).toHaveLength(5);
+    // A document case runs test-cases first: two runs each.
+    expect(runs).toHaveLength(9);
     // The run folders keep masked text only: nothing seeded is on disk.
     for (const r of runs) {
       const files = [...(await readdir(join(dir, "runs", r))).filter((f) => f.includes(".")), ...(await readdir(join(dir, "runs", r, "steps"))).map((f) => join("steps", f))];
@@ -31,7 +32,10 @@ describe("masked pipeline (S1-14)", () => {
       }
     }
     // The review edited one case with a seeded value: it was masked before it was kept.
-    const cases = runs.filter((r) => !r.includes("QAH-6") && !r.includes("review") && !r.includes("audit"));
+    const has = async (r: string, file: string) => (await readdir(join(dir, "runs", r))).includes(file);
+    const cases: string[] = [];
+    for (const r of runs) if (await has(r, "test-cases.json")) cases.push(r);
+    expect(cases).toHaveLength(4);
     for (const r of cases) {
       const art = JSON.parse(await readFile(join(dir, "runs", r, "test-cases.json"), "utf8"));
       expect(art.data.review).toMatchObject({ edited: 1, unattended: true });
@@ -41,7 +45,16 @@ describe("masked pipeline (S1-14)", () => {
       expect(state.outputs.push).toEqual({ approve: false });
     }
     // Unattended reviews never count toward the kept rate, read from the real run store.
-    expect(await keptRate(new RunStore(join(dir, "runs")))).toMatchObject({ runs: 0, unattendedRuns: 2, generated: 0 });
+    // The document review typed every seed into the summary: masked before it was kept.
+    const documents: string[] = [];
+    for (const r of runs) if (await has(r, "document.json")) documents.push(r);
+    expect(documents).toHaveLength(2);
+    for (const r of documents) {
+      const art = JSON.parse(await readFile(join(dir, "runs", r, "document.json"), "utf8"));
+      expect(art.data.review).toEqual({ edited: 1, unattended: true });
+      expect(art.data.content.summary).toMatch(/^Reviewed with <[A-Z_]+_\d+>/);
+    }
+    expect(await keptRate(new RunStore(join(dir, "runs")))).toMatchObject({ runs: 0, unattendedRuns: 4, generated: 0 });
   }, 30_000);
 
   it("fails the gate when masking is switched off", async () => {
@@ -49,7 +62,7 @@ describe("masked pipeline (S1-14)", () => {
     const report = await run(parseConfig("version: 1\nmasking:\n  detectors: [name]\n"));
     // Only the review and audit cases pass: their one seed is a name.
     expect(report.cases.filter((c) => c.status === "pass").map((c) => c.id)).toEqual(["approval-request-review", "approval-request-audit"]);
-    expect(report.summary.failed).toBe(3);
+    expect(report.summary.failed).toBe(5);
     const leaked = new Set(report.cases.flatMap((c) => c.seededLeaks.map((l) => l.seedId)));
     for (const id of ["seed-email-1", "seed-phone-1", "seed-card-1", "seed-iban-1", "seed-national-id-1"]) expect(leaked).toContain(id);
     expect(JSON.stringify(report)).not.toContain("4111");

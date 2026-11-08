@@ -6,7 +6,7 @@ import { configSchema, MemoryAuditSink, RunStore, WorkflowEngine, type Config, t
 import { DataAccess, openRepoBrowser, type JiraCollection, type JiraInput, type JiraIssue, type OpenBrowser } from "../data/index.js";
 import { drive } from "../llm/index.js";
 import { MemoryVaultStorage, Vault } from "../masking/index.js";
-import { AUDIT_ARTIFACT, auditWorkflow, DEBUG_REPORT_ARTIFACT, debugWorkflow, EXPLORATION_ARTIFACT, exploreWorkflow, FINDINGS_ARTIFACT, reviewWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow } from "../workflows/index.js";
+import { AUDIT_ARTIFACT, auditWorkflow, DEBUG_REPORT_ARTIFACT, debugWorkflow, EXPLORATION_ARTIFACT, exploreWorkflow, FINDINGS_ARTIFACT, reviewWorkflow, requirementsWorkflow, SCRIPTS_DRAFT_ARTIFACT, SCRIPTS_RUN_ARTIFACT, scriptsWorkflow, TEST_CASES_DRAFT_ARTIFACT, testCasesWorkflow, documentWorkflow } from "../workflows/index.js";
 import type { Seed, SyntheticTicket } from "./cases.js";
 import { FIXTURE_SPEC } from "./fixture-driver.js";
 import { HAND_WRITTEN_PAGE, HAND_WRITTEN_SPEC, handWrittenSuite } from "./hand-written.js";
@@ -127,7 +127,8 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
     .register(scriptsWorkflow({ data, runs }))
     .register(debugWorkflow({ data, runs }))
     .register(reviewWorkflow({ data, runs }))
-    .register(auditWorkflow({ data, runs }));
+    .register(auditWorkflow({ data, runs }))
+    .register(documentWorkflow({ data, runs }));
 
   const run = async (workflow: string, inputs: Record<string, unknown>) => {
     let step: Step = await engine.start(workflow, inputs);
@@ -139,7 +140,13 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
           observe(`${step.instructions}\n${step.context}`);
           // The person's yes to explore, and to write and run the scripts: the stand-in app and repo are the harness's own.
           const yes = PERSON_YES[`${workflow}/${step.stepId}`];
-          const answer = yes ?? (workflow === "test-cases" && step.stepId === "review" ? await editedReview(runs, step.runId, seeds) : await engine.fixedAnswer(step.runId, "unattended"));
+          const answer =
+            yes ??
+            (step.stepId === "review" && workflow === "test-cases"
+              ? await editedReview(runs, step.runId, seeds)
+              : step.stepId === "review" && workflow === "document"
+                ? editedDocument(seeds)
+                : await engine.fixedAnswer(step.runId, "unattended"));
           if (answer === undefined) throw new Error(`Step ${step.stepId} has no unattended answer`);
           step = (await engine.submit(step.runId, step.stepId, answer, { byPerson: yes !== undefined })).next;
         } else break;
@@ -154,6 +161,12 @@ async function runCase(options: MaskedPipelineOptions, runs: RunStore, config: C
   try {
     if (repo && c.workflow === "review") return await reviewCase(data, runs, repo, seeds, c.inputs, run);
     if (repo && c.workflow === "audit") return await auditCase(data, runs, repo, seeds, c.inputs, run);
+    // A document is written from reviewed cases, so the case runs test-cases on the same issues first.
+    if (c.workflow === "document") {
+      const { type, ...jira } = c.inputs;
+      const testCasesRun = await run("test-cases", jira);
+      return { runId: await run("document", { type, testCasesRun }), testCasesRun };
+    }
     if (!app) return { runId: await run(c.workflow, c.inputs) };
     if (repo && c.workflow === "debug") return await debugCase(data, runs, app, repo, seeds, c.inputs, run);
     if (repo) return await scriptsCase(data, runs, app, repo, c.inputs, run);
@@ -330,6 +343,12 @@ async function editedReview(runs: RunStore, runId: string, seeds: Seed[]): Promi
   // Every seed of the case, so values the masker doesn't know from the ticket's people (emails, phones...) are tested too.
   const steps = [{ ...first.steps[0]!, data: seeds.map((s) => s.value).join("; ") }, ...first.steps.slice(1)];
   return { approved: true, changes: [{ id: first.id, decision: "edited", case: { ...first, title, steps } }], unattended: true };
+}
+
+/** A document review that types every seed into the summary: it must be masked before it is kept. */
+function editedDocument(seeds: Seed[]): unknown {
+  if (seeds.length === 0) return { approved: true, changes: [], unattended: true };
+  return { approved: true, changes: [{ path: "$.summary", value: `Reviewed with ${seeds.map((s) => s.value).join("; ")}` }], unattended: true };
 }
 
 /** Every file of the run folder, which an IDE's model may be told to read. */

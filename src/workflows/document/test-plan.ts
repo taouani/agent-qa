@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { OutputError } from "../../core/index.js";
 import type { DocumentMeta, DocumentSources, DocumentType } from "./types.js";
-import { bullets, clip, one, section, table } from "./markdown.js";
+import { bullets, one, section, table } from "./markdown.js";
+import { casesContext, everyIssueOnce, issuesContext, knownKeys } from "./shared.js";
 
 /**
  * The `test-plan` document type (S4-3): scope, approach, risk per
@@ -53,57 +54,15 @@ export const testPlanSchema = z
   .strict();
 export type TestPlan = z.infer<typeof testPlanSchema>;
 
-const MAX_DESCRIPTION = 1500;
-const MAX_CASES_SHOWN = 300;
-
 function context(s: DocumentSources) {
-  const rs = s.requirements.data.requirements;
-  const cases = s.testCases?.data.cases ?? [];
-  return {
-    issues: rs.map((r) => ({
-      key: r.key,
-      type: r.type,
-      summary: r.summary,
-      ...(r.parent ? { parent: r.parent } : {}),
-      ...(r.priority ? { priority: r.priority } : {}),
-      ...(r.fixVersions.length ? { fixVersions: r.fixVersions } : {}),
-      ...(r.components.length ? { components: r.components } : {}),
-      quality: r.quality.score,
-      ...(r.quality.missing.length ? { missing: r.quality.missing } : {}),
-      description: clip(r.description, MAX_DESCRIPTION),
-      acceptanceCriteria: r.acceptanceCriteria.map((ac) => `${ac.id}: ${ac.text}${ac.origin === "inferred" ? " (inferred, not written in the issue)" : ""}`),
-      ...(r.openQuestions.length ? { openQuestions: r.openQuestions } : {}),
-    })),
-    ...(s.testCases
-      ? {
-          testCases: {
-            total: cases.length,
-            shown: cases.slice(0, MAX_CASES_SHOWN).map((c) => `${c.id} | ${c.priority} | ${c.type} | ${c.title}`),
-            uncovered: s.testCases.data.uncovered.map((u) => `${u.requirement} ${u.criterion}`),
-          },
-        }
-      : {}),
-  };
+  return { issues: issuesContext(s), ...casesContext(s.testCases?.data) };
 }
 
 function check(s: DocumentSources, plan: TestPlan): OutputError[] {
-  const keys = new Set(s.requirements.data.requirements.map((r) => r.key));
-  const errors: OutputError[] = [];
-  const seen = new Set<string>();
-  plan.requirements.forEach((r, i) => {
-    const key = r.key.trim().toUpperCase();
-    if (!keys.has(key)) errors.push({ path: `$.requirements.${i}.key`, message: `${r.key} isn't an issue of the context (${[...keys].join(", ")})` });
-    else if (seen.has(key)) errors.push({ path: `$.requirements.${i}.key`, message: `${key} is listed more than once` });
-    seen.add(key);
-  });
-  const missing = [...keys].filter((k) => !seen.has(k));
-  if (missing.length) errors.push({ path: "$.requirements", message: `no entry for ${missing.join(", ")}` });
-  plan.risks.forEach((risk, i) =>
-    risk.requirements.forEach((k, j) => {
-      if (!keys.has(k.trim().toUpperCase())) errors.push({ path: `$.risks.${i}.requirements.${j}`, message: `${k} isn't an issue of the context` });
-    }),
-  );
-  return errors;
+  return [
+    ...everyIssueOnce(s, "$.requirements", plan.requirements.map((r) => r.key)),
+    ...knownKeys(s, plan.risks.flatMap((risk, i) => risk.requirements.map((k, j): [string, string] => [`$.risks.${i}.requirements.${j}`, k]))),
+  ];
 }
 
 function render(plan: TestPlan, s: DocumentSources, meta: DocumentMeta): string {

@@ -6,7 +6,13 @@ import { TEST_CASES_ARTIFACT } from "../test-cases/artifact.js";
 import { TEST_RUN_ARTIFACT } from "../run-tests/workflow.js";
 import { DOCUMENT_ARTIFACT, DOCUMENT_DRAFT_ARTIFACT, DOCUMENT_ENGINE_VERSION, type DocumentDraft } from "./artifact.js";
 import { code, one } from "./markdown.js";
+import { RELEASE_NOTES } from "./release-notes.js";
+import { RISK_REGISTER } from "./risk-register.js";
+import { TEST_CHARTER } from "./test-charter.js";
+import { TEST_DATA } from "./test-data.js";
 import { TEST_PLAN } from "./test-plan.js";
+import { TEST_STRATEGY } from "./test-strategy.js";
+import { TRACEABILITY } from "./traceability.js";
 import type { DocumentMeta, DocumentSources, DocumentType } from "./types.js";
 
 /**
@@ -28,7 +34,7 @@ import type { DocumentMeta, DocumentSources, DocumentType } from "./types.js";
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const DOCUMENT_TYPES: ReadonlyArray<DocumentType<any>> = [TEST_PLAN];
+export const DOCUMENT_TYPES: ReadonlyArray<DocumentType<any>> = [TEST_STRATEGY, TEST_PLAN, TEST_CHARTER, RISK_REGISTER, TEST_DATA, TRACEABILITY, RELEASE_NOTES];
 
 const KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
