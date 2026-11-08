@@ -41,6 +41,9 @@ describe("git hosts (S4-1)", () => {
     expect(namesKey("[ABC-1] done", "ABC-1")).toBe(true);
     expect(namesKey("ABC-12 other", "ABC-1")).toBe(false);
     expect(namesKey("XABC-1", "ABC-1")).toBe(false);
+    expect(namesKey("feature_ABC-1-login", "ABC-1")).toBe(true);
+    expect(namesKey("bugfix_AB_C-1", "AB_C-1")).toBe(true);
+    expect(namesKey("XAB_C-1", "AB_C-1")).toBe(false);
     expect(namesKey(undefined, "ABC-1")).toBe(false);
     expect(() => namesKey("x", "abc) OR (1")).toThrow("isn't a Jira issue key");
   });
@@ -61,6 +64,15 @@ describe("git hosts (S4-1)", () => {
       { path: "c.png", status: "added" },
     ]);
     expect(capPatches([{ path: "a.ts", status: "modified", patch: "abc" }], 10).truncated).toBe(false);
+    // A patch too large to fit is left out; smaller ones after it still fit.
+    const skipped = capPatches(
+      [
+        { path: "big.ts", status: "modified", patch: "z".repeat(50) },
+        { path: "small.ts", status: "modified", patch: "s" },
+      ],
+      10,
+    );
+    expect(skipped.files.map((f) => f.patch)).toEqual([undefined, "s"]);
   });
 
   it("finds GitHub pull requests by title, description, branch and commit, newest first, without near misses", async () => {
@@ -90,7 +102,7 @@ describe("git hosts (S4-1)", () => {
     ]);
     // The commit naming ABC-10 isn't followed.
     expect(calls.filter((c) => c.includes("/commits/"))).toEqual([`/repos/o/r/commits/${sha("a")}/pulls?per_page=5`]);
-    expect(new URL(`https://x${calls[0]!}`).searchParams.get("q")).toBe('repo:o/r is:pr "ABC-1"');
+    expect(new URL(`https://x${calls[0]!}`).searchParams.get("q")).toBe('repo:o/r is:pr in:title,body "ABC-1"');
     expect(await gh.findPullRequests("ABC-1", { max: 1 })).toHaveLength(1);
     await expect(gh.findPullRequests('ABC-1" OR repo:x/y')).rejects.toThrow("isn't a Jira issue key");
   });
@@ -129,5 +141,33 @@ describe("git hosts (S4-1)", () => {
   it("makes the client for the configured platform", () => {
     expect(createGitHost({ platform: "github", repo: "o/r" }, "tok").service).toBe("GitHub");
     expect(() => createGitHost({ platform: "gitlab", repo: "g/p" }, "tok")).toThrow("git.platform gitlab isn't supported yet");
+    expect(() => createGitHost({ platform: "azure-devops", repo: "o/p/r" }, "tok")).toThrow("git.platform azure-devops isn't supported yet");
+  });
+
+  it("joins where a pull request matched, reads branches only of the ones kept, and names GitHub's search limit", async () => {
+    const { fetch, calls } = fakeSearch({
+      issues: [
+        { number: 3, html_url: "https://github.com/o/r/pull/3", title: "ABC-1 old", state: "closed" },
+        { number: 4, html_url: "https://github.com/o/r/pull/4", title: "ABC-1 new", state: "open" },
+      ],
+      commits: [{ sha: sha("c"), commit: { message: "ABC-1 step" } }],
+      pullsOfCommit: { [sha("c")]: [{ number: 4, html_url: "https://github.com/o/r/pull/4", state: "open", head: { ref: "x" }, base: { ref: "main" } }] },
+      pulls: { 3: { number: 3, head: { ref: "y" }, base: { ref: "main" } } },
+    });
+    const gh = new GitHubClient({ repo: "o/r", token: "tok", fetch });
+    const [only] = await gh.findPullRequests("ABC-1", { max: 1 });
+    expect(only).toMatchObject({ id: 4, matchedIn: ["title", "commit"], sourceBranch: "x" });
+    expect(calls.some((c) => c.startsWith("/repos/o/r/pulls/3"))).toBe(false);
+
+    const limited = new GitHubClient({ repo: "o/r", token: "tok", retries: 0, fetch: async () => json(403, { message: "API rate limit exceeded" }) });
+    await expect(limited.findPullRequests("ABC-1")).rejects.toThrow("GitHub's search limit (30 calls a minute) was reached while looking for pull requests of ABC-1");
+  });
+
+  it("marks a diff truncated past GitHub's 3000 files", async () => {
+    const full = Array.from({ length: 3000 }, (_, i) => ({ filename: `f${i}.ts`, status: "modified", changes: 1, patch: "+" }));
+    const { fetch } = fakeSearch({ files: { 9: [...full, { filename: "more.ts", status: "added", changes: 1, patch: "+" }] } });
+    const diff = await new GitHubClient({ repo: "o/r", token: "tok", fetch }).pullRequestDiff(9);
+    expect(diff.files).toHaveLength(3000);
+    expect(diff.truncated).toBe(true);
   });
 });

@@ -263,36 +263,53 @@ export class GitHubClient implements GitHost {
       const known = found.get(id);
       if (known) {
         for (const w of where) if (!known.matchedIn.includes(w)) known.matchedIn.push(w);
+        // A full pull request (from a commit) carries the branches the issue search left out.
+        if (!known.sourceBranch && str(obj(p.head).ref)) {
+          known.sourceBranch = str(obj(p.head).ref)!;
+          known.targetBranch = str(obj(p.base).ref) ?? "";
+        }
         return;
       }
       const merged = !!str(p.merged_at) || !!str(obj(p.pull_request).merged_at);
       const state = p.state === "open" ? "open" : merged ? "merged" : "closed";
       found.set(id, { id, url, title: str(p.title) ?? "", sourceBranch: str(obj(p.head).ref) ?? "", targetBranch: str(obj(p.base).ref) ?? "", state, matchedIn: [...where] });
     };
-    const issues = obj(await this.http.get("/search/issues", { query: { q: `repo:${this.repo} is:pr "${key}"`, sort: "created", order: "desc", per_page: Math.min(50, max * 3) } }));
+    const search = async (path: string, query: Record<string, string | number>) => {
+      try {
+        return obj(await this.http.get(path, { query }));
+      } catch (error) {
+        // Search allows 30 calls a minute; GitHub says so with a 403 or a 429.
+        if (error instanceof ConnectorError && (error.status === 403 || error.status === 429)) {
+          throw new ConnectorError(error.code, "GitHub", "GET", path, error.status, `GitHub's search limit (30 calls a minute) was reached while looking for pull requests of ${key}: wait a minute, or ask for fewer issues at once`);
+        }
+        throw error;
+      }
+    };
+    const issues = await search("/search/issues", { q: `repo:${this.repo} is:pr in:title,body "${key}"`, sort: "created", order: "desc", per_page: Math.min(50, max * 3) });
     for (const item of Array.isArray(issues.items) ? issues.items.map(obj) : []) {
       const where: PullRequestRef["matchedIn"] = [];
       if (namesKey(str(item.title), key)) where.push("title");
       if (namesKey(str(item.body), key)) where.push("description");
       if (where.length) add(item, where);
     }
-    const commits = obj(await this.http.get("/search/commits", { query: { q: `repo:${this.repo} "${key}"`, sort: "committer-date", order: "desc", per_page: 10 } }));
+    const commits = await search("/search/commits", { q: `repo:${this.repo} "${key}"`, sort: "committer-date", order: "desc", per_page: 10 });
     for (const item of Array.isArray(commits.items) ? commits.items.map(obj) : []) {
       const sha = str(item.sha);
       if (!sha || !/^[0-9a-f]{40}$/.test(sha) || !namesKey(str(obj(item.commit).message), key)) continue;
       const pulls = await this.http.get<unknown>(this.path(`/commits/${sha}/pulls`), { query: { per_page: 5 } });
       for (const p of Array.isArray(pulls) ? pulls.map(obj) : []) add(p, ["commit"]);
     }
-    // The branch: the issue search's results carry none, so their pull requests are read for it.
-    for (const ref of found.values()) {
+    const newest = [...found.values()].sort((a, b) => b.id - a.id).slice(0, max);
+    // The branch: the issue search's results carry none, so their pull requests are read for it (only those kept).
+    for (const ref of newest) {
       if (ref.sourceBranch) continue;
       const p = obj(await this.http.get(this.path(`/pulls/${ref.id}`)));
       ref.sourceBranch = str(obj(p.head).ref) ?? "";
       ref.targetBranch = str(obj(p.base).ref) ?? "";
       if (str(p.merged_at)) ref.state = "merged";
     }
-    for (const ref of found.values()) if (namesKey(ref.sourceBranch, key) && !ref.matchedIn.includes("branch")) ref.matchedIn.push("branch");
-    return [...found.values()].sort((a, b) => b.id - a.id).slice(0, max);
+    for (const ref of newest) if (namesKey(ref.sourceBranch, key) && !ref.matchedIn.includes("branch")) ref.matchedIn.push("branch");
+    return newest;
   }
 
   /** The files a pull request changes, with their patches up to `maxBytes`; GitHub lists at most 3000 files. */

@@ -75,15 +75,19 @@ export function checkIssueKey(key: string): string {
   return key;
 }
 
-/** Whether a text names the key as a whole word: not ABC-12 for ABC-1, nor XABC-1. */
+/**
+ * Whether a text names the key as a whole word: not ABC-12 for ABC-1, nor
+ * XABC-1. An underscore before it is a separator (`feature_ABC-1`).
+ */
 export function namesKey(text: string | undefined, key: string): boolean {
   if (!text) return false;
-  return new RegExp(`(^|[^A-Za-z0-9_])${checkIssueKey(key)}(?![0-9])`, "i").test(text);
+  return new RegExp(`(^|[^A-Za-z0-9])${checkIssueKey(key)}(?![0-9])`, "i").test(text);
 }
 
 /**
- * Keeps patches until `maxBytes` of patch text, in the order given; the files
- * past it keep their path and status.
+ * Keeps patches, in the order given, while they fit in `maxBytes` of patch
+ * text; a patch that doesn't fit is left out (its file keeps its path and
+ * status) and smaller ones after it are still kept.
  */
 export function capPatches(files: PullRequestFileChange[], maxBytes: number): PullRequestDiff {
   let left = maxBytes;
@@ -93,7 +97,6 @@ export function capPatches(files: PullRequestFileChange[], maxBytes: number): Pu
     const size = Buffer.byteLength(f.patch, "utf8");
     if (size > left) {
       truncated = true;
-      left = 0;
       const rest: PullRequestFileChange = { path: f.path, status: f.status };
       if (f.previousPath !== undefined) rest.previousPath = f.previousPath;
       return rest;
