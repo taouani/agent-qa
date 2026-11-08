@@ -13,7 +13,8 @@ The CLI is used as a model, not as an agent:
 - every tool is off, and no MCP server, slash command, skill or project instruction file is loaded;
 - it runs in a new empty temporary folder, never in your checkout;
 - the masked prompt goes on standard input, so it never shows in a process list;
-- its environment keeps only its own sign-in variables of the secrets: the Jira, Xray and git tokens, and the other providers' keys, are removed;
+- its environment keeps only its own sign-in variables of the secrets (and not one that `agent-qa.yaml` names for something else, such as `git.token: ${env:GH_TOKEN}`): the Jira, Xray and git tokens, and the other providers' keys, are removed;
+- Claude Code loads no user settings, hooks or `~/.claude/CLAUDE.md`, and keeps no session. Copilot CLI is also denied the shell, writes and the rest of the temp folder, and writes its logs to the temporary folder; it may still keep the session (masked text) under `~/.copilot`;
 - each call is a `commands` write in the audit log, so `policy.writes.commands: deny` turns it off.
 
 | CLI | Install | Sign-in in CI | `--model` |

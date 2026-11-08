@@ -47,8 +47,12 @@ export interface HeadlessDriverOptions {
   command?: string[];
 }
 
-/** Claude Code puts a schema on the command line; past this it stays only in the prompt (which `drive` always fills). */
-const MAX_SCHEMA_ARG = 8_000;
+/**
+ * Claude Code takes a schema on the command line; past this it stays only in
+ * the prompt (which `drive` always fills). Windows starts an npm `.cmd` shim
+ * through cmd.exe, whose 8,191-character line the escaping fills fast.
+ */
+const MAX_SCHEMA_ARG = process.platform === "win32" ? 2_000 : 8_000;
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 /** The providers a `provider:model` id may name for each agent. */
 const PROVIDERS: Record<HeadlessAgent, string[]> = { "claude-code": ["anthropic", "claude-code"], copilot: ["copilot"] };
@@ -84,6 +88,9 @@ export class HeadlessDriver implements ModelDriver {
       "",
       "--strict-mcp-config",
       "--disable-slash-commands",
+      // Only the empty folder's settings, which are none: no user hooks or ~/.claude/CLAUDE.md see the prompt.
+      "--setting-sources",
+      "project",
       "--no-session-persistence",
       "--system-prompt",
       system,
@@ -118,6 +125,12 @@ export class HeadlessDriver implements ModelDriver {
       "--no-custom-instructions",
       "--disable-builtin-mcps",
       "--available-tools=",
+      // Again, whatever an empty list turns out to mean: no shell, no writes, and not the rest of the temp folder.
+      "--deny-tool=shell",
+      "--deny-tool=write",
+      "--disallow-temp-dir",
+      "--log-dir",
+      dirOf(file),
       "--no-ask-user",
       "--no-auto-update",
       "--disable-client-telemetry",

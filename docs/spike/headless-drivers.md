@@ -7,8 +7,8 @@
 | | Claude Code | Copilot CLI |
 |---|---|---|
 | Non-interactive | `-p`, prompt on stdin | `-p <text>`, or piped stdin (from the help of `--fleet`; to check live) |
-| Tools off | `--tools ""` | `--available-tools=` (to check live that an empty list means none) |
-| No MCP or instructions | `--strict-mcp-config`, `--disable-slash-commands`, empty folder (no CLAUDE.md) | `--disable-builtin-mcps`, `--no-custom-instructions`, `-C <empty folder>` |
+| Tools off | `--tools ""` | `--available-tools=` (to check live that an empty list means none), plus `--deny-tool=shell`, `--deny-tool=write`, `--disallow-temp-dir` |
+| No MCP, settings or instructions | `--strict-mcp-config`, `--disable-slash-commands`, `--setting-sources project` in an empty folder (no hooks, no CLAUDE.md); not `--bare`, which refuses OAuth | `--disable-builtin-mcps`, `--no-custom-instructions`, `-C <empty folder>` |
 | Structured answer | `--output-format json`, `--json-schema` (answer in `structured_output`) | none: the schema is in the prompt, the engine validates and retries |
 | Usage | `usage` in the JSON result | `--usage-output-file` (shape not documented) |
 | CI sign-in | `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`) or `ANTHROPIC_API_KEY` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` |

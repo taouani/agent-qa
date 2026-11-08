@@ -152,6 +152,8 @@ export type ModelCli = keyof typeof MODEL_CLI_AUTH_ENV;
 
 export function modelCliEnv(env: NodeJS.ProcessEnv, config: Config | undefined, agent: ModelCli): NodeJS.ProcessEnv {
   const out = hostEnv(env, config);
-  for (const name of MODEL_CLI_AUTH_ENV[agent]) if (env[name]) out[name] = env[name];
+  // Not one agent-qa.yaml names for something else (git.token: ${env:GH_TOKEN} can write to the repo).
+  const named = new Set(config ? [...JSON.stringify(config).matchAll(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]!.toUpperCase()) : []);
+  for (const name of MODEL_CLI_AUTH_ENV[agent]) if (env[name] && !named.has(name)) out[name] = env[name];
   return out;
 }

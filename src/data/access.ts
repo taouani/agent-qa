@@ -495,10 +495,10 @@ export function secretSources(env: NodeJS.ProcessEnv = process.env): SecretSourc
   return { env, keychain: keychainLookup() };
 }
 
-/** The default write rules, for a command run in a project with no agent-qa.yaml. */
 /** A step's answer from a headless agent CLI: big documents fit, a runaway output doesn't. */
 const MODEL_CLI_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MODEL_CLI_INSTALL: Record<ModelCli, string> = { "claude-code": "claude (npm install -g @anthropic-ai/claude-code)", copilot: "copilot (npm install -g @github/copilot)" };
+/** The default write rules, for a command run in a project with no agent-qa.yaml. */
 const DEFAULT_RULES_CONFIG: Config = configSchema.parse({ version: 1 });
 
 /** A sealed JQL input: the vault token that stands for it. */

@@ -66,7 +66,7 @@ describe("headless drivers (S4-10)", () => {
     const driver = new HeadlessDriver({ agent: "claude-code", runner: access.modelCli("claude-code"), command: [NODE, join(dir, "claude.js")] });
     const answer = await driver.complete({ ...request, model: "anthropic:claude-test-1" });
     const seen = JSON.parse(answer.text) as { args: string[]; input: string; files: string[]; env: string[] };
-    expect(seen.args.slice(0, 11)).toEqual(["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--system-prompt", request.messages[0]!.content, "--json-schema"]);
+    expect(seen.args.slice(0, 13)).toEqual(["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "project", "--no-session-persistence", "--system-prompt", request.messages[0]!.content, "--json-schema"]);
     expect(seen.args.slice(-2)).toEqual(["--model", "claude-test-1"]);
     expect(seen.input).toBe(request.messages[1]!.content);
     expect(seen.args.join(" ")).not.toContain("ABC-1");
@@ -86,10 +86,20 @@ describe("headless drivers (S4-10)", () => {
     const driver = new HeadlessDriver({ agent: "copilot", runner: access.modelCli("copilot"), command: [NODE, join(dir, "copilot.js")] });
     const answer = await driver.complete(request);
     const seen = JSON.parse(answer.text) as { args: string[]; input: string };
-    expect(seen.args).toEqual(expect.arrayContaining(["-s", "--no-custom-instructions", "--disable-builtin-mcps", "--available-tools=", "--no-ask-user"]));
+    expect(seen.args).toEqual(expect.arrayContaining(["-s", "--no-custom-instructions", "--disable-builtin-mcps", "--available-tools=", "--deny-tool=shell", "--deny-tool=write", "--disallow-temp-dir", "--no-ask-user"]));
+    expect(seen.args[seen.args.indexOf("--log-dir") + 1]).toBe(seen.args[1]);
     expect(seen.args[0]).toBe("-C");
     expect(seen.input).toBe(`${request.messages[0]!.content}\n\n${request.messages[1]!.content}`);
     expect(answer.usage).toEqual({ inputTokens: 40, outputTokens: 4 });
+  });
+
+  it("never hands the CLI a variable agent-qa.yaml names for something else", async () => {
+    const access = await data({ PATH: process.env.PATH, GH_TOKEN: "repo-write", COPILOT_GITHUB_TOKEN: "gh" }, "version: 1\ngit:\n  platform: github\n  repo: o/r\n  token: ${env:GH_TOKEN}\n");
+    const calls: string[] = [];
+    await writeFile(join(dir, "env.js"), "process.stdin.resume(); process.stdin.on('end', () => console.log(Object.keys(process.env).filter((k) => /TOKEN/.test(k)).sort().join(',')));");
+    const driver = new HeadlessDriver({ agent: "copilot", runner: access.modelCli("copilot"), command: [NODE, join(dir, "env.js")] });
+    calls.push((await driver.complete(request)).text);
+    expect(calls).toEqual(["COPILOT_GITHUB_TOKEN"]);
   });
 
   it("doesn't start when policy.writes.commands is deny", async () => {
