@@ -21,11 +21,13 @@ describe("markdownToStorage (S4-5)", () => {
     expect(storageInline("** not bold")).toBe("** not bold");
   });
 
-  it("builds tables, splitting only on pipes that aren't escaped or in code", () => {
-    const md = ["| Field | Value | Note |", "| --- | :---: | --- |", "| a\\|b | `x | y` | **n** |", "| short |"].join("\n");
+  it("builds tables, splitting only on pipes that aren't escaped, even with a stray backtick", () => {
+    const md = ["| Field | Value | Note |", "| --- | :---: | --- |", "| a\\|b | `x \\| y` | **n** |", "| don`t retry | high | `ok` |", "| short |"].join("\n");
     expect(markdownToStorage(md)).toBe(
-      "<table><tbody><tr><th>Field</th><th>Value</th><th>Note</th></tr><tr><td>a|b</td><td><code>x | y</code></td><td><strong>n</strong></td></tr><tr><td>short</td><td></td><td></td></tr></tbody></table>",
+      "<table><tbody><tr><th>Field</th><th>Value</th><th>Note</th></tr><tr><td>a|b</td><td><code>x | y</code></td><td><strong>n</strong></td></tr><tr><td>don`t retry</td><td>high</td><td><code>ok</code></td></tr><tr><td>short</td><td></td><td></td></tr></tbody></table>",
     );
+    // Outside a table, an escaped pipe in code stays as written.
+    expect(storageInline("`a\\|b`")).toBe("<code>a\\|b</code>");
     // A pipe line with no separator is a paragraph.
     expect(markdownToStorage("| a | b |")).toBe("<p>| a | b |</p>");
   });
@@ -34,5 +36,7 @@ describe("markdownToStorage (S4-5)", () => {
     expect(markdownToStorage("# A\r\n\r\ntext\r\n")).toBe("<h1>A</h1><p>text</p>");
     expect(markdownToStorage("")).toBe("");
     expect(markdownToStorage("#nospace")).toBe("<p>#nospace</p>");
+    // Characters XML doesn't allow are dropped.
+    expect(markdownToStorage("a\u0001b\u000Bc\tok")).toBe("<p>abc\tok</p>");
   });
 });

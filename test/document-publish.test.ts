@@ -118,8 +118,8 @@ function setup(over: { confluence?: boolean; restoreOnWrite?: boolean; rule?: "a
 }
 
 /** A test plan run up to the publish step. */
-async function reviewedPlan(engine: WorkflowEngine) {
-  const first = await engine.start("document", { type: "test-plan", key: "ABC-1", publish: "confluence" });
+async function reviewedPlan(engine: WorkflowEngine, input: { key: string } | { jql: string } = { key: "ABC-1" }) {
+  const first = await engine.start("document", { type: "test-plan", ...input, publish: "confluence" });
   await engine.submit(first.runId, "analyze", { issues: [{ key: "ABC-1", quality: { score: 80, missing: [] }, openQuestions: [], inferredCriteria: [] }] });
   await engine.submit(first.runId, "draft-test-plan", plan);
   const publishing = await engine.submit(first.runId, "review", { approved: true, changes: [] });
@@ -166,6 +166,24 @@ describe("publishing a document to Confluence (S4-5)", () => {
     expect(confluence.pages).toHaveLength(1);
     expect(confluence.pages[0]!.version).toBe(2);
     expect((await runs.readArtifact(b.runId, CONFLUENCE_PAGE_ARTIFACT))!.data).toMatchObject({ action: "update", version: 2 });
+  });
+
+  it("gives each JQL filter its own page, kept across reruns, with no filter text in the title", async () => {
+    const { engine, data } = setup({ restoreOnWrite: true });
+    const one = await reviewedPlan(engine, { jql: "fixVersion = 1.0 AND reporter = 'Marguerite Quillfeather'" });
+    expect(one.publishing.next.context).toMatch(/"Test plan: JQL #[0-9a-f]{10}"/);
+    await engine.submit(one.runId, "publish", { approve: true });
+    const two = await reviewedPlan(engine, { jql: "fixVersion = 2.0" });
+    await engine.submit(two.runId, "publish", { approve: true });
+    const again = await reviewedPlan(engine, { jql: "fixVersion = 2.0" });
+    await engine.submit(again.runId, "publish", { approve: true });
+    expect(confluence.pages.map((p) => [p.title.replace(/#[0-9a-f]{10}/, "#h"), p.version])).toEqual([["Test plan: JQL #h", 1], ["Test plan: JQL #h", 2]]);
+    expect(confluence.pages[0]!.title).not.toBe(confluence.pages[1]!.title);
+    for (const p of confluence.pages) expect(p.title).not.toContain("fixVersion");
+    expect((await runs.readArtifact(two.runId, CONFLUENCE_PAGE_ARTIFACT))!.data.title).toBe(confluence.pages[1]!.title);
+
+    const long = await data.confluencePlan(one.runId, `Test plan: ${"x".repeat(400)}`);
+    expect(long.title).toHaveLength(255);
   });
 
   it("never overwrites a page with the title that Agent-QA didn't create", async () => {

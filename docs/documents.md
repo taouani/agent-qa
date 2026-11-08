@@ -64,7 +64,7 @@ atlassian:
 
 Then run with `publish: confluence` (or `--publish confluence`). After the review, the `publish` step asks first:
 
-- The page title is the document's heading, for example `Test plan: ABC-123`. The body is the document without that heading, in Confluence storage format: headings, paragraphs, lists, tables, quotes, bold and code. Everything else stays plain text, so nothing the model wrote becomes markup or a macro.
+- The page title is the document's heading, for example `Test plan: ABC-123`. A document of a JQL filter is titled with the type and a short hash of the filter, for example `Test plan: JQL #3f9a0c12de`: each filter gets its own page, and the filter text, which may name people, never reaches the title. Titles are cut to Confluence's 255 characters. The body is the document without that heading, in Confluence storage format: headings, paragraphs, lists, tables, quotes, bold and code. Everything else stays plain text, control characters XML doesn't allow are dropped, so nothing the model wrote becomes markup or a macro.
 - No page with that title in the space: a new page is created under `parentPageId` and labelled `agent-qa`.
 - Agent-QA's page (it has the `agent-qa` label) has the title: it is updated to the next version, with the run id as the version message. Running the same document again updates the same page.
 - Another page has the title and no `agent-qa` label: nothing is written. Rename or move that page, or add the label to let Agent-QA update it.

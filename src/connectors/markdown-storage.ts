@@ -5,10 +5,11 @@
  * as plain, escaped text, so nothing a model wrote becomes markup.
  */
 
-const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+// Control characters XML 1.0 doesn't allow are dropped: one would make the page body invalid.
+const escape = (s: string) => s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** Inline markdown: `code` (any fence length), **bold**, backslash escapes. Everything is escaped first. */
-export function inline(text: string): string {
+/** Inline markdown: `code` (any fence length), **bold**, backslash escapes. Everything is escaped first. In a table cell, `\|` in code is a pipe, as in GFM. */
+export function inline(text: string, inTable = false): string {
   let out = "";
   let i = 0;
   while (i < text.length) {
@@ -19,7 +20,7 @@ export function inline(text: string): string {
       if (close > 0 && text[close + fence[0].length] !== "`") {
         let code = text.slice(i + fence[0].length, close);
         if (code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "") code = code.slice(1, -1);
-        out += `<code>${escape(code)}</code>`;
+        out += `<code>${escape(inTable ? code.replace(/\\\|/g, "|") : code)}</code>`;
         i = close + fence[0].length;
         continue;
       }
@@ -30,7 +31,7 @@ export function inline(text: string): string {
     if (text.startsWith("**", i)) {
       const close = text.indexOf("**", i + 2);
       if (close > i + 2) {
-        out += `<strong>${inline(text.slice(i + 2, close))}</strong>`;
+        out += `<strong>${inline(text.slice(i + 2, close), inTable)}</strong>`;
         i = close + 2;
         continue;
       }
@@ -46,12 +47,11 @@ export function inline(text: string): string {
   return out;
 }
 
-/** The cells of a table row, split on pipes that aren't escaped or inside code. */
+/** The cells of a table row, split on pipes that aren't escaped (as GFM does, in code too). */
 function cells(row: string): string[] {
-  const body = row.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const body = row.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
   const out: string[] = [];
   let cur = "";
-  let fence = 0;
   for (let i = 0; i < body.length; i++) {
     const c = body[i]!;
     if (c === "\\" && body[i + 1] === "|") {
@@ -59,15 +59,7 @@ function cells(row: string): string[] {
       i++;
       continue;
     }
-    if (c === "`") {
-      let n = 1;
-      while (body[i + n] === "`") n++;
-      fence = fence === 0 ? n : fence === n ? 0 : fence;
-      cur += "`".repeat(n);
-      i += n - 1;
-      continue;
-    }
-    if (c === "|" && fence === 0) {
+    if (c === "|") {
       out.push(cur.trim());
       cur = "";
       continue;
@@ -104,7 +96,7 @@ export function markdownToStorage(markdown: string): string {
       i += 2;
       while (i < lines.length && isTableRow(lines[i]!)) rows.push(cells(lines[i++]!));
       out.push(
-        `<table><tbody><tr>${head.map((h) => `<th>${inline(h)}</th>`).join("")}</tr>${rows.map((r) => `<tr>${head.map((_, j) => `<td>${inline(r[j] ?? "")}</td>`).join("")}</tr>`).join("")}</tbody></table>`,
+        `<table><tbody><tr>${head.map((h) => `<th>${inline(h, true)}</th>`).join("")}</tr>${rows.map((r) => `<tr>${head.map((_, j) => `<td>${inline(r[j] ?? "", true)}</td>`).join("")}</tr>`).join("")}</tbody></table>`,
       );
       continue;
     }

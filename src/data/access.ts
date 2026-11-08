@@ -447,11 +447,12 @@ export type ConfluenceWriter = Pick<ConfluenceClient, "spaceId" | "pageByTitle" 
 
 /** The label on every page Agent-QA creates: only such a page is ever updated. */
 export const CONFLUENCE_LABEL = "agent-qa";
+const CONFLUENCE_TITLE_MAX = 255;
 
 /** What publishing a document would do (S4-5). Titles are masked; links hold the page id only, never a title. */
 export interface ConfluencePlan {
   space: string;
-  /** The page title, masked. */
+  /** The page title, masked; a JQL filter's document shows the filter as # and a short hash. */
   title: string;
   /** create: no page has the title; update: Agent-QA's page has it; conflict: someone else's page has it, so nothing is written. */
   action: "create" | "update" | "conflict";
@@ -463,15 +464,19 @@ export interface ConfluencePlan {
 export interface DocumentData {
   /** Whether a document can be published: `atlassian.confluence.spaceKey` is set and the policy doesn't deny Confluence. */
   confluenceEnabled(): Promise<boolean>;
-  /** What publishing would do, found by the page title in the space (reads only). `tokensRun` restores the title with restoreOnWrite. */
-  confluencePlan(tokensRun: string, title: string): Promise<ConfluencePlan>;
+  /**
+   * What publishing would do, found by the page title in the space (reads
+   * only). `tokensRun` restores the title with restoreOnWrite. With `filter`
+   * (a masked JQL filter) the title is `{title}: JQL #{hash of the filter}`.
+   */
+  confluencePlan(tokensRun: string, title: string, filter?: string): Promise<ConfluencePlan>;
   /**
    * Creates or updates the page through `Policy.guard` (target confluence).
    * With restoreOnWrite, tokens are replaced with `tokensRun`'s values; else
    * the page holds the tokens. A page with the title that Agent-QA didn't
    * create (no agent-qa label) is never overwritten.
    */
-  publishToConfluence(runId: string, tokensRun: string, doc: { title: string; markdown: string }, approved: boolean): Promise<{ status: "done"; page: { id: string; version: number; url: string; action: "create" | "update"; space: string } } | { status: "declined" }>;
+  publishToConfluence(runId: string, tokensRun: string, doc: { title: string; markdown: string; filter?: string | undefined }, approved: boolean): Promise<{ status: "done"; page: { id: string; version: number; url: string; action: "create" | "update"; space: string; title: string } } | { status: "declined" }>;
 }
 
 /** Where secrets are read: the environment, then the OS keychain (service sf-agent-qa). */
@@ -1739,6 +1744,23 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     };
   }
 
+  /**
+   * The page title, shown and sent. A document of a JQL filter (`filter`, as
+   * masked) is titled `{title}: JQL #` and a short hash of the real filter, so
+   * two filters never share a page, a filter's reruns keep theirs, and no
+   * filter text reaches Confluence. `shown` holds masked values only; `sent`
+   * has the real ones with restoreOnWrite. Both fit Confluence's 255 characters.
+   */
+  private async pageTitle(config: Config, tokensRun: string, title: string, filter?: string): Promise<{ shown: string; sent: string }> {
+    let base = title;
+    if (filter !== undefined) {
+      const { vault } = await this.run(tokensRun);
+      base = `${title}: JQL #${sha256(restorer((t) => vault.valueOf(t))(filter)).slice(0, 10)}`;
+    }
+    const fit = (t: string) => (t.length > CONFLUENCE_TITLE_MAX ? `${t.slice(0, CONFLUENCE_TITLE_MAX - 1)}…` : t);
+    return { shown: fit(base), sent: fit((await this.publishText(config, tokensRun))(base)) };
+  }
+
   private confluenceSetup(config: Config): { site: string; space: string; parentPageId?: string | undefined } {
     const atlassian = config.atlassian;
     if (!atlassian?.confluence) throw new Error("agent-qa.yaml has no atlassian.confluence section: add spaceKey (and parentPageId) to publish documents.");
@@ -1760,28 +1782,27 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     return page ? { spaceId, found: { id: page.id, version: page.version, ours: page.labels.includes(CONFLUENCE_LABEL) } } : { spaceId };
   }
 
-  async confluencePlan(tokensRun: string, title: string): Promise<ConfluencePlan> {
+  async confluencePlan(tokensRun: string, title: string, filter?: string): Promise<ConfluencePlan> {
     const config = await this.loadConfig();
     const { site, space, parentPageId } = this.confluenceSetup(config);
-    const real = (await this.publishText(config, tokensRun))(title);
-    const { found } = await this.findPage(config, await this.confluenceWriter(config), real);
+    const { shown, sent } = await this.pageTitle(config, tokensRun, title, filter);
+    const { found } = await this.findPage(config, await this.confluenceWriter(config), sent);
     const page = found ? { id: found.id, version: found.version, url: `${site}/wiki/pages/viewpage.action?pageId=${found.id}` } : undefined;
-    return { space, title, action: !found ? "create" : found.ours ? "update" : "conflict", page, parentPageId };
+    return { space, title: shown, action: !found ? "create" : found.ours ? "update" : "conflict", page, parentPageId };
   }
 
-  async publishToConfluence(runId: string, tokensRun: string, doc: { title: string; markdown: string }, approved: boolean) {
+  async publishToConfluence(runId: string, tokensRun: string, doc: { title: string; markdown: string; filter?: string | undefined }, approved: boolean) {
     // "No" never reaches the policy: under an `allow` rule it would not ask again.
     if (!approved) return { status: "declined" as const };
     const config = await this.loadConfig();
     const { site, space, parentPageId } = this.confluenceSetup(config);
-    const real = await this.publishText(config, tokensRun);
-    const title = real(doc.title);
-    const storage = markdownToStorage(real(doc.markdown));
+    const { shown, sent: title } = await this.pageTitle(config, tokensRun, doc.title, doc.filter);
+    const storage = markdownToStorage((await this.publishText(config, tokensRun))(doc.markdown));
     const client = await this.confluenceWriter(config);
     const policy = this.policy(config);
-    const outcome = await policy.guard({ target: "confluence", summary: `Publish "${doc.title}" to Confluence space ${space}`, runId }, async (grant) => {
+    const outcome = await policy.guard({ target: "confluence", summary: `Publish "${shown}" to Confluence space ${space}`, runId }, async (grant) => {
       const { spaceId, found } = await this.findPage(config, client, title);
-      if (found && !found.ours) throw new Error(`Confluence space ${space} already has a page titled "${doc.title}" that Agent-QA didn't create (no ${CONFLUENCE_LABEL} label): it isn't overwritten. Rename or move that page, or add the label to let Agent-QA update it.`);
+      if (found && !found.ours) throw new Error(`Confluence space ${space} already has a page titled "${shown}" that Agent-QA didn't create (no ${CONFLUENCE_LABEL} label): it isn't overwritten. Rename or move that page, or add the label to let Agent-QA update it.`);
       if (found) {
         const page = await client.updatePage({ id: found.id, title, storage, version: found.version + 1, message: `Agent-QA run ${runId}` }, grant);
         return { id: page.id, version: page.version, action: "update" as const };
@@ -1797,7 +1818,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     });
     if (outcome.status !== "done") return { status: "declined" as const };
     const { id, version, action } = outcome.value;
-    return { status: "done" as const, page: { id, version, action, space, url: `${site}/wiki/pages/viewpage.action?pageId=${id}` } };
+    return { status: "done" as const, page: { id, version, action, space, title: shown, url: `${site}/wiki/pages/viewpage.action?pageId=${id}` } };
   }
 
   /** The write policy. `confirm` says yes: the workflow's confirm step already asked the user. */

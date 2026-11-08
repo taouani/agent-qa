@@ -414,12 +414,13 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
           // Resumed after a crash between the write and the saved answer: published already.
           if (await deps.runs.readArtifact(ctx.runId, CONFLUENCE_PAGE_ARTIFACT).catch(() => undefined)) return;
           const doc = (await reviewed(ctx))!;
-          const result = await deps.data.publishToConfluence(ctx.runId, requirementsRunOf(ctx), { title: titleOf(doc.data), markdown: bodyOf(doc.data) }, true);
+          const page = await pageOf(ctx, doc.data);
+          const result = await deps.data.publishToConfluence(ctx.runId, requirementsRunOf(ctx), { ...page, markdown: bodyOf(doc.data) }, true);
           if (result.status !== "done") return;
           await deps.runs.writeArtifact(
             ctx.runId,
             CONFLUENCE_PAGE_ARTIFACT,
-            { document: { run: ctx.runId, sourceHash: doc.sourceHash }, space: result.page.space, pageId: result.page.id, version: result.page.version, url: result.page.url, action: result.page.action, title: titleOf(doc.data) },
+            { document: { run: ctx.runId, sourceHash: doc.sourceHash }, space: result.page.space, pageId: result.page.id, version: result.page.version, url: result.page.url, action: result.page.action, title: result.page.title },
             { inputs: [{ kind: "artifact", ref: `${ctx.runId}/document`, hash: doc.sourceHash }], templateVersion: DOCUMENT_ENGINE_VERSION },
           );
         },
@@ -427,13 +428,20 @@ export function documentWorkflow(deps: DocumentDeps): WorkflowDefinition<Documen
     ],
   };
 
+  /** The page title: the heading of a key's document; for a JQL filter's, the type and the filter (hashed by the data layer). */
+  async function pageOf(ctx: Ctx, doc: DocumentArtifact): Promise<{ title: string; filter?: string }> {
+    const input = (await deps.runs.readArtifact(requirementsRunOf(ctx), REQUIREMENTS_ARTIFACT))!.data.input;
+    return "jql" in input ? { title: doc.title, filter: input.jql } : { title: titleOf(doc) };
+  }
+
   function reviewed(ctx: Ctx) {
     return deps.runs.readArtifact(ctx.runId, DOCUMENT_ARTIFACT);
   }
 
   async function publishQuestion(ctx: Ctx): Promise<string> {
     const doc = (await reviewed(ctx))!;
-    const plan = await deps.data.confluencePlan(requirementsRunOf(ctx), titleOf(doc.data));
+    const page = await pageOf(ctx, doc.data);
+    const plan = await deps.data.confluencePlan(requirementsRunOf(ctx), page.title, page.filter);
     const what =
       plan.action === "create"
         ? `It creates a new page${plan.parentPageId ? ` under page ${plan.parentPageId}` : " at the top of the space"}.`
