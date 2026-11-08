@@ -58,3 +58,26 @@ export const DOCUMENT_ARTIFACT: ArtifactSpec<DocumentArtifact> = {
   data: documentSchema,
   render: (d) => (d.review.unattended ? d.markdown.replace(/\n/, "\n\n> Not reviewed: written unattended (--yes).\n") : d.markdown),
 };
+
+/** `confluence-page@1` (S4-5): the page a run published its document to. */
+export const confluencePageSchema = z
+  .object({
+    document: source,
+    space: z.string(),
+    pageId: z.string(),
+    version: z.number().int().min(1),
+    /** The page by its id: a link with no title in it. */
+    url: z.string(),
+    action: z.enum(["create", "update"]),
+    /** The page title, masked. */
+    title: z.string(),
+  })
+  .strict();
+export type ConfluencePage = z.infer<typeof confluencePageSchema>;
+
+export const CONFLUENCE_PAGE_ARTIFACT: ArtifactSpec<ConfluencePage> = {
+  name: "confluence-page",
+  schema: "confluence-page@1",
+  data: confluencePageSchema,
+  render: (p) => `# Published to Confluence\n\n${p.action === "create" ? "Created" : "Updated"} page ${p.pageId} (version ${p.version}) in space ${p.space}: ${p.url}\n\nTitle: ${p.title}\n`,
+};

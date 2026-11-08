@@ -1,10 +1,15 @@
+import type { WriteGrant } from "../core/index.js";
 import { ConnectorError, HttpClient, type FetchLike, type HttpClientOptions } from "./http.js";
 import { storageToText, type StorageText } from "./storage.js";
 
 /**
- * Confluence Cloud client (slice 1, S1-3). Read-only: it fetches the pages a
- * Jira issue links to, through the v2 API, as plain text. The page version
- * goes into the requirement's `sourceHash`, so an edited page is a new input.
+ * Confluence Cloud client (slice 1, S1-3). It fetches the pages a Jira issue
+ * links to, through the v2 API, as plain text. The page version goes into
+ * the requirement's `sourceHash`, so an edited page is a new input.
+ *
+ * Since S4-5 it also publishes a document as a page: it creates the page,
+ * or updates it to a new version, and labels it. Writes need a policy grant
+ * for `confluence`.
  *
  * What it returns is NOT masked. Only the data service calls connectors.
  */
@@ -110,7 +115,7 @@ export class ConfluenceClient {
       ...rest,
       service: "Confluence",
       baseUrl: `${this.site}/wiki`,
-      // Read-only in slice 1: no write target, so every write is refused.
+      writeTarget: "confluence",
       headers: () => ({ Authorization: auth }),
     });
   }
@@ -174,4 +179,82 @@ export class ConfluenceClient {
     }
     return { pages, skipped };
   }
+
+  /** The id of the space with this key, or undefined. */
+  async spaceId(key: string): Promise<string | undefined> {
+    const raw = obj(await this.http.get("/api/v2/spaces", { query: { keys: key, limit: "1" } }));
+    const first = obj(Array.isArray(raw.results) ? raw.results[0] : undefined);
+    return idOf(first.id);
+  }
+
+  /** The current page with this exact title in the space, with its version and labels. */
+  async pageByTitle(spaceId: string, title: string): Promise<PageRef | undefined> {
+    const raw = obj(await this.http.get("/api/v2/pages", { query: { "space-id": spaceId, title, status: "current", limit: "5" } }));
+    const found = (Array.isArray(raw.results) ? raw.results : []).map(obj).find((p) => str(p.title) === title);
+    const id = found && idOf(found.id);
+    return id ? this.pageRef(id) : undefined;
+  }
+
+  /** A page's id, title, version, labels and link; undefined when it doesn't exist (any more). */
+  async pageRef(id: string): Promise<PageRef | undefined> {
+    if (!PAGE_ID.test(id)) throw new Error(`Not a Confluence page id: ${JSON.stringify(id.slice(0, 40))}`);
+    let raw: Raw;
+    try {
+      raw = obj(await this.http.get(`/api/v2/pages/${id}`));
+    } catch (error) {
+      if (error instanceof ConnectorError && error.code === "NOT_FOUND") return undefined;
+      throw error;
+    }
+    const version = obj(raw.version).number;
+    if (typeof version !== "number") throw new ConnectorError("INVALID_RESPONSE", "Confluence", "GET", "/api/v2/pages/{id}", 200);
+    const labels = obj(await this.http.get(`/api/v2/pages/${id}/labels`, { query: { limit: "50" } }));
+    return {
+      id,
+      title: str(raw.title) ?? "",
+      version,
+      labels: (Array.isArray(labels.results) ? labels.results : []).flatMap((l) => str(obj(l).name) ?? []),
+      url: this.urlOf(raw, id),
+    };
+  }
+
+  /** Creates a page in storage format, under `parentId` when given. */
+  async createPage(page: { spaceId: string; parentId?: string | undefined; title: string; storage: string }, grant: WriteGrant): Promise<{ id: string; version: number; url: string }> {
+    const body = { spaceId: page.spaceId, status: "current", title: page.title, ...(page.parentId ? { parentId: page.parentId } : {}), body: { representation: "storage", value: page.storage } };
+    const raw = obj(await this.http.request("/api/v2/pages", { method: "POST", body, grant }));
+    const id = idOf(raw.id);
+    if (!id) throw new ConnectorError("INVALID_RESPONSE", "Confluence", "POST", "/api/v2/pages", 200);
+    return { id, version: typeof obj(raw.version).number === "number" ? (obj(raw.version).number as number) : 1, url: this.urlOf(raw, id) };
+  }
+
+  /** Replaces a page's title and body as version `version` (the current one plus 1). */
+  async updatePage(page: { id: string; title: string; storage: string; version: number; message: string }, grant: WriteGrant): Promise<{ id: string; version: number; url: string }> {
+    if (!PAGE_ID.test(page.id)) throw new Error(`Not a Confluence page id: ${JSON.stringify(page.id.slice(0, 40))}`);
+    const body = { id: page.id, status: "current", title: page.title, body: { representation: "storage", value: page.storage }, version: { number: page.version, message: page.message } };
+    const raw = obj(await this.http.request(`/api/v2/pages/${page.id}`, { method: "PUT", body, grant }));
+    return { id: page.id, version: page.version, url: this.urlOf(raw, page.id) };
+  }
+
+  /** Adds a global label to a page (the v1 API: v2 has no label write). */
+  async addLabel(id: string, name: string, grant: WriteGrant): Promise<void> {
+    if (!PAGE_ID.test(id)) throw new Error(`Not a Confluence page id: ${JSON.stringify(id.slice(0, 40))}`);
+    await this.http.request(`/rest/api/content/${id}/label`, { method: "POST", body: [{ prefix: "global", name }], grant });
+  }
+
+  private urlOf(raw: Raw, id: string): string {
+    const webui = str(obj(raw._links).webui);
+    return webui ? `${this.site}/wiki${webui.startsWith("/") ? "" : "/"}${webui}` : `${this.site}/wiki/pages/viewpage.action?pageId=${id}`;
+  }
 }
+
+export interface PageRef {
+  id: string;
+  title: string;
+  version: number;
+  labels: string[];
+  url: string;
+}
+
+const idOf = (v: unknown): string | undefined => {
+  const id = typeof v === "number" ? String(v) : str(v);
+  return id && PAGE_ID.test(id) ? id : undefined;
+};

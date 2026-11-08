@@ -18,7 +18,8 @@ export type {
   AgentTest,
 } from "./jira.js";
 export { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "./confluence.js";
-export type { ConfluenceClientOptions, ConfluencePage, SkippedPage } from "./confluence.js";
+export type { ConfluenceClientOptions, ConfluencePage, PageRef, SkippedPage } from "./confluence.js";
+export { inline as storageInline, markdownToStorage } from "./markdown-storage.js";
 export { decodeEntities, parseStorage, storageToText } from "./storage.js";
 export type { StorageText } from "./storage.js";
 export { XRAY_BULK_LIMIT, XRAY_CLOUD_URL, XrayClient, jiraDate } from "./xray.js";

@@ -170,6 +170,29 @@ describe("agent-qa run", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("writes a document with --type, and keeps --type and --publish to the document workflow", async () => {
+    answers["draft-test-plan"] = {
+      summary: "Tests escalation for <PERSON_1>.",
+      objectives: ["Old cases are escalated"],
+      inScope: ["Escalation"],
+      outOfScope: [],
+      approach: "Functional tests.",
+      requirements: [{ key: "ABC-1", risk: "high", focus: "The boundary" }],
+      risks: [],
+      environments: ["UAT"],
+      testData: [],
+      entryCriteria: ["Stories done"],
+      exitCriteria: ["No open P1"],
+      assumptions: [],
+    };
+    expect(await runCommand(options({ workflow: "document", type: "test-plan", key: "ABC-1", yes: true }))).toBe(EXIT.done);
+    expect(await readFile(join(dir, ".agent-qa", "runs", runIdIn(), "document.md"), "utf8")).toContain("# Test plan: ABC-1");
+    expect(await runCommand(options({ workflow: "test-cases", type: "test-plan", key: "ABC-1" }))).toBe(EXIT.setup);
+    expect(await runCommand(options({ workflow: "document", type: "test-plan", key: "ABC-1", publish: "confluence", yes: true }))).toBe(EXIT.setup);
+    expect(lines.join("\n")).toContain("publish: confluence needs atlassian.confluence.spaceKey");
+    expect(await runCommand(options({ resume: runIdIn(), type: "test-plan" }))).toBe(EXIT.setup);
+  });
+
   it("stops at a confirm step with nobody to ask, then resumes with --decline", async () => {
     expect(await runCommand(options({ workflow: "test-cases", key: "ABC-1" }))).toBe(EXIT.waiting);
     const runId = runIdIn();

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ConfluenceClient, pageIdFromUrl, pageIdToTiny, tinyToPageId } from "../src/connectors/confluence.js";
 import type { FetchLike } from "../src/connectors/http.js";
 import { decodeEntities, storageToText } from "../src/connectors/storage.js";
-import { PolicyDenied } from "../src/core/index.js";
+import { MemoryAuditSink, Policy, PolicyDenied, type WriteGrant } from "../src/core/index.js";
 
 const SITE = "https://example.atlassian.net";
 
@@ -201,7 +201,7 @@ describe("ConfluenceClient", () => {
     expect(calls).toHaveLength(4);
   });
 
-  it("refuses bad page ids and has no way to write", async () => {
+  it("refuses bad page ids and a write without a grant", async () => {
     const { fetch, calls } = fakeConfluence({});
     const c = client(fetch);
     await expect(c.page("1/../../x")).rejects.toThrow(/Not a Confluence page id/);
@@ -212,5 +212,59 @@ describe("ConfluenceClient", () => {
   it("stays under /wiki on the configured site", async () => {
     const { fetch } = fakeConfluence({});
     await expect(client(fetch).http.get("/../rest/api/3/myself")).rejects.toMatchObject({ code: "OFF_ORIGIN" });
+  });
+});
+
+describe("ConfluenceClient writes (S4-5)", () => {
+  const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
+  async function granted<T>(fn: (g: WriteGrant) => Promise<T>, rule: "allow" | "deny" = "allow"): Promise<T> {
+    const policy = new Policy({ mode: "ci", rules: { xray: "ask", confluence: rule, testCode: "ask", jira: "deny", commands: "ask" }, audit: new MemoryAuditSink() });
+    const r = await policy.guard({ target: "confluence", summary: "test" }, fn);
+    if (r.status !== "done") throw new Error("declined");
+    return r.value;
+  }
+  function fake() {
+    const calls: Array<{ method: string; path: string; query: string; body?: unknown }> = [];
+    const fetch: FetchLike = async (url, init) => {
+      const u = new URL(url);
+      const method = init.method ?? "GET";
+      calls.push({ method, path: u.pathname, query: u.search, ...(init.body ? { body: JSON.parse(String(init.body)) } : {}) });
+      if (u.pathname === "/wiki/api/v2/spaces") return json({ results: u.searchParams.get("keys") === "QA" ? [{ id: 4456, key: "QA" }] : [] });
+      if (u.pathname === "/wiki/api/v2/pages" && method === "GET") return json({ results: [{ id: "77", title: "Test plan: ABC-1 copy" }, { id: "78", title: u.searchParams.get("title") }] });
+      if (u.pathname === "/wiki/api/v2/pages/78") return json({ id: "78", title: "Test plan: ABC-1", version: { number: 3 }, _links: { webui: "/spaces/QA/pages/78/Test+plan" } });
+      if (u.pathname === "/wiki/api/v2/pages/78/labels") return json({ results: [{ name: "agent-qa" }, { name: "qa" }] });
+      if (u.pathname === "/wiki/api/v2/pages/99") return json({}, 404);
+      if (u.pathname === "/wiki/api/v2/pages" && method === "POST") return json({ id: "101", version: { number: 1 } });
+      if (u.pathname === "/wiki/api/v2/pages/78" || method === "PUT") return json({ id: "78" });
+      if (u.pathname === "/wiki/rest/api/content/101/label") return json({ results: [] });
+      return json({}, 404);
+    };
+    return { calls, client: new ConfluenceClient({ site: SITE, email: "qa@example.com", token: "t", fetch, retries: 0 }) };
+  }
+
+  it("finds the space and the page with the exact title, with its version and labels", async () => {
+    const { client, calls } = fake();
+    expect(await client.spaceId("QA")).toBe("4456");
+    expect(await client.spaceId("NOPE")).toBeUndefined();
+    expect(await client.pageByTitle("4456", "Test plan: ABC-1")).toEqual({ id: "78", title: "Test plan: ABC-1", version: 3, labels: ["agent-qa", "qa"], url: `${SITE}/wiki/spaces/QA/pages/78/Test+plan` });
+    expect(calls[2]!.query).toBe("?space-id=4456&title=Test+plan%3A+ABC-1&status=current&limit=5");
+    expect(await client.pageRef("99")).toBeUndefined();
+    await expect(client.pageRef("../x")).rejects.toThrow(/Not a Confluence page id/);
+  });
+
+  it("creates, updates and labels a page only with a grant", async () => {
+    const { client, calls } = fake();
+    await expect(client.createPage({ spaceId: "4456", title: "T", storage: "<p>x</p>" }, undefined as unknown as WriteGrant)).rejects.toBeInstanceOf(PolicyDenied);
+    expect(calls).toHaveLength(0);
+    const created = await granted((g) => client.createPage({ spaceId: "4456", parentId: "500", title: "T", storage: "<p>x</p>" }, g));
+    expect(created).toEqual({ id: "101", version: 1, url: `${SITE}/wiki/pages/viewpage.action?pageId=101` });
+    expect(calls[0]).toMatchObject({ method: "POST", path: "/wiki/api/v2/pages", body: { spaceId: "4456", status: "current", title: "T", parentId: "500", body: { representation: "storage", value: "<p>x</p>" } } });
+    await granted((g) => client.addLabel("101", "agent-qa", g));
+    expect(calls[1]).toMatchObject({ method: "POST", path: "/wiki/rest/api/content/101/label", body: [{ prefix: "global", name: "agent-qa" }] });
+    const updated = await granted((g) => client.updatePage({ id: "78", title: "T", storage: "<p>y</p>", version: 4, message: "Agent-QA run r1" }, g));
+    expect(updated.version).toBe(4);
+    expect(calls[2]).toMatchObject({ method: "PUT", path: "/wiki/api/v2/pages/78", body: { id: "78", version: { number: 4, message: "Agent-QA run r1" } } });
+    await expect(granted((g) => client.updatePage({ id: "7/../8", title: "T", storage: "", version: 2, message: "" }, g))).rejects.toThrow(/Not a Confluence page id/);
+    await expect(granted((g) => client.addLabel("1", "x", g), "deny")).rejects.toBeInstanceOf(PolicyDenied);
   });
 });
