@@ -49,7 +49,7 @@ function check(s: DocumentSources, data: TestData): OutputError[] {
     x.cases.forEach((id, j) => {
       const of = cases.get(id);
       if (of === undefined) errors.push({ path: `$.sets.${i}.cases.${j}`, message: s.testCases ? `${id} isn't a reviewed case of the context` : "there are no test cases in the context: leave cases empty" });
-      else if (of !== norm(x.requirement)) errors.push({ path: `$.sets.${i}.cases.${j}`, message: `${id} is a case of ${of}, not of ${norm(x.requirement)}` });
+      else if (of !== norm(x.requirement)) errors.push({ path: `$.sets.${i}.cases.${j}`, message: `${id} is a case of ${of}, not of this set's issue` });
     }),
   );
   // An issue with criteria needs data that should work and data that shouldn't.
@@ -62,7 +62,7 @@ function check(s: DocumentSources, data: TestData): OutputError[] {
 }
 
 /** A value as a table cell, kept exact: in code, pipes escaped and line breaks shown as \\n; an empty one says so. */
-const value = (v: string): RawCell => ({ raw: v === "" ? "(empty)" : code(v.replace(/\|/g, "\\|").replace(/\r?\n/g, "\\n")) });
+const value = (v: string): RawCell => ({ raw: v === "" ? "(empty)" : code(v.replace(/\|/g, "\\|").replace(/\r\n|\r|\n/g, "\\n")) });
 
 function render(data: TestData, s: DocumentSources, meta: DocumentMeta): string {
   const rs = s.requirements.data.requirements;

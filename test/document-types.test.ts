@@ -280,7 +280,7 @@ describe("document types (S4-4)", () => {
     const bad = { summary: "s", sets: [set(1, "ABC-1", "valid", ["TC-ABC-2-001", "TC-ABC-9-001"]), set(2, "ABC-2", "invalid")], setup: [], rules: [] };
     const { run, result } = await draft("test-data", { testCasesRun: casesRun }, bad);
     expect(errorsOf(result)).toEqual([
-      { path: "$.sets.0.cases.0", message: "TC-ABC-2-001 is a case of ABC-2, not of ABC-1" },
+      { path: "$.sets.0.cases.0", message: "TC-ABC-2-001 is a case of ABC-2, not of this set's issue" },
       { path: "$.sets.0.cases.1", message: "TC-ABC-9-001 isn't a reviewed case of the context" },
       { path: "$.sets", message: "ABC-1 has no invalid, boundary or empty data set" },
       { path: "$.sets", message: "ABC-2 has no valid data set" },
@@ -291,6 +291,14 @@ describe("document types (S4-4)", () => {
     expect(md).toContain("| age (days) | (empty) |");
     expect(md).toContain("### TD-004 (boundary)");
     expect(md).toContain("Used by TC-ABC-1-001.");
+  });
+
+  it("echoes no requirement the person types in the review, whatever its case", async () => {
+    const { casesRun } = await sources();
+    const { run } = await draft("test-data", { testCasesRun: casesRun }, { summary: "s", sets: [set(1, "ABC-1", "valid", ["TC-ABC-1-001"]), set(2, "ABC-1", "empty"), set(3, "ABC-2", "valid"), set(4, "ABC-2", "boundary")], setup: [], rules: [] });
+    const errors = errorsOf(await engine.submit(run.runId, "review", { approved: true, changes: [{ path: "$.sets.0.requirement", value: "marguerite quillfeather" }] }));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(JSON.stringify(errors).toUpperCase()).not.toContain("MARGUERITE");
   });
 
   it("builds the traceability matrix from the cases and the test run, and makes the model name every gap", async () => {
