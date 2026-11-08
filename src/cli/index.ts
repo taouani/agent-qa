@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, type KeptRate, type RunnableRate } from "../harness/index.js";
-import { ApiDriver, HEADLESS_AGENTS, ModelConfigError, StaticDriver, type ModelDriver } from "../llm/index.js";
+import { ApiDriver, HEADLESS_AGENTS, HeadlessDriver, ModelConfigError, modelName, StaticDriver, type HeadlessAgent, type ModelDriver } from "../llm/index.js";
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
@@ -149,12 +149,13 @@ export function buildProgram(): Command {
     .command("harness")
     .description("run the quality harness: the real workflows on seeded fixtures, failing if a seeded value reaches a model; prints the kept and runnable rates from the project's runs")
     .option("--model <provider:model>", "answer with this model (from models in agent-qa.yaml); default: the offline fixture model, no API key needed")
+    .option("--headless <agent>", `answer with a headless agent CLI, ${HEADLESS_AGENTS.join(" or ")}, signed in its own way (see docs/ci.md)`)
     .option("--pipeline <name>", "masked (the real workflows) or empty (no model calls, checks the setup)", "masked")
     .option("--browser [folder]", "also run the browser cases on the stand-in app, with the Playwright (and Chromium) installed in this folder (default: the project folder)")
     .option("--headed", "show the browser of the browser cases")
     .option("--json", "print the full JSON report")
     .option("--cwd <dir>", "project folder (default: the current folder)")
-    .action(async (opts: { json?: boolean; cwd?: string; model?: string; pipeline: string; browser?: string | true; headed?: boolean }) => {
+    .action(async (opts: { json?: boolean; cwd?: string; model?: string; headless?: string; pipeline: string; browser?: string | true; headed?: boolean }) => {
       const root = resolve(opts.cwd ?? process.cwd());
       // Exit 1 means a case failed; exit 2 means the harness couldn't run (bad setup, or nothing to test).
       const setupError = (message: string) => {
@@ -171,9 +172,23 @@ export function buildProgram(): Command {
       }
       if (opts.pipeline !== "masked" && opts.pipeline !== "empty") return setupError(`unknown pipeline ${opts.pipeline}: use masked or empty`);
       let driver: ModelDriver;
-      if (opts.pipeline === "empty" && opts.model) return setupError("--model has no effect with --pipeline empty, which makes no model calls");
+      if (opts.pipeline === "empty" && (opts.model || opts.headless)) return setupError(`--${opts.model ? "model" : "headless"} has no effect with --pipeline empty, which makes no model calls`);
+      if (opts.headless !== undefined && !(HEADLESS_AGENTS as readonly string[]).includes(opts.headless)) return setupError(`unknown --headless ${opts.headless}: use ${HEADLESS_AGENTS.join(" or ")}`);
+      const agent = opts.headless as HeadlessAgent | undefined;
       if (opts.pipeline === "empty") driver = new StaticDriver();
-      else if (!opts.model) driver = new FixtureDriver();
+      else if (agent) {
+        let model: string | undefined;
+        try {
+          model = opts.model === undefined ? undefined : (modelName(agent, opts.model), opts.model);
+        } catch (error) {
+          if (error instanceof ModelConfigError) return setupError(error.message);
+          throw error;
+        }
+        // The CLI starts through the data layer, under a commands grant, like a run's.
+        const access = new DataAccess({ root, store: new RunStore(join(root, ".agent-qa", "harness", "runs")), env: process.env });
+        const headless = new HeadlessDriver({ agent, runner: access.modelCli(agent) });
+        driver = { name: `${agent}${model ? `(${model})` : ""}`, complete: (request) => headless.complete({ ...request, ...(model ? { model } : {}) }) };
+      } else if (!opts.model) driver = new FixtureDriver();
       else {
         if (!config?.models) return setupError("--model needs a models section in agent-qa.yaml");
         const api = new ApiDriver({ models: config.models, secrets: secretSources() });
@@ -196,7 +211,7 @@ export function buildProgram(): Command {
         }
         // A scripts case writes and runs the code its model wrote, with the harness saying yes as the person: the fixture model's fixed code only.
         const scriptCases = sources.cases.filter((c) => c.workflow === "scripts");
-        if (scriptCases.length && opts.model) {
+        if (scriptCases.length && (opts.model || agent)) {
           sources = { ...sources, cases: sources.cases.filter((c) => c.workflow !== "scripts"), notes: [...sources.notes, `${scriptCases.length} scripts case(s) skipped: they run generated code, so only with the offline fixture model`] };
         }
         const playwrightFolder = opts.browser === undefined ? undefined : resolve(root, opts.browser === true ? "." : opts.browser);

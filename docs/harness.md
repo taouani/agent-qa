@@ -5,6 +5,7 @@
 ```bash
 agent-qa harness                      # shipped cases, offline fixture model: no API key, no cost
 agent-qa harness --model anthropic:claude-sonnet-5-5   # the same with a real model from models in agent-qa.yaml
+agent-qa harness --headless claude-code                # or copilot: the CLI's own sign-in, no API key (docs/ci.md)
 agent-qa harness --json               # the full report
 ```
 
