@@ -1108,6 +1108,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const mask = (text: string, field: string, max: number) => echo.detect(local(plain(text), dir), field).slice(0, max);
     const tail = (r: HostCommandOutcome) => (r.stderr.trim() || r.stdout.trim()).slice(-3000);
     let durationMs = 0;
+    let skippedFiles: string[] = [];
     if (saved.commands?.generate) {
       const g = await this.runProfileCommand(runId, tokensRun, { command: saved.commands.generate, purpose: "turn the feature files into tests" }, true, false);
       if (g.status !== "done") return { status: "declined" };
@@ -1122,16 +1123,40 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
       const listed = await this.runProfileCommand(runId, tokensRun, { command: saved.commands!.test!, args: [...args.filter((a) => a !== "--headed"), "--list"], purpose: "list the tests, to pick them by their tags", timeoutMs: TEST_RUN_KILL_MS }, true, true);
       if (listed.status !== "done") return { status: "declined" };
       durationMs += listed.result.durationMs;
-      let tests;
+      const listFailed = (errors: string[]) => ({ status: "done" as const, exitCode: listed.result.exitCode || 1, timedOut: listed.result.timedOut, durationMs, tests: [], errors });
+      let list;
       try {
-        tests = parsePlaywrightReport(JSON.parse(listed.report ?? "null"), dir).tests;
+        list = parsePlaywrightReport(JSON.parse(listed.report ?? "null"), dir);
       } catch {
-        return { status: "done", exitCode: listed.result.exitCode, timedOut: listed.result.timedOut, durationMs, tests: [], errors: [`Playwright couldn't list the tests: ${tail(listed.result) || "no output"}`] };
+        return listFailed([`Playwright couldn't list the tests: ${tail(listed.result) || "no output"}`]);
       }
-      const picked = tests.filter((x) => tagsMatch(x.tags, byTags.groups) && isPlainRelativePath(x.file));
+      // A file that doesn't load (a syntax error, a duplicate title) stops here: run by file and line, it would never load, and its tests would just be missing.
+      if (list.errors.length) {
+        const errors = list.errors.map((e) => mask(e, "test.error", 4000));
+        await service.saveVault();
+        return listFailed([`Playwright couldn't load every test file, so the tests weren't picked by their tags:`, ...errors]);
+      }
       const expression = byTags.groups.map((g) => g.join(" ")).join(" | ");
-      if (picked.length === 0) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [`No tests found with the tags ${expression}`] };
-      const filters = [...new Set(picked.map((x) => `${fileFilter(x.file, false, byTags.anchor)}:${x.line}`))];
+      const picked = list.tests.filter((x) => tagsMatch(x.tags, byTags.groups) && isPlainRelativePath(x.file));
+      // A file whose path can't go on the command line safely (a space, a quote) is named, not run; the others still run.
+      const unsafe = new Set<string>();
+      const filters = [
+        ...new Set(
+          picked.flatMap((x) => {
+            const f = `${fileFilter(x.file, false, byTags.anchor)}:${x.line}`;
+            try {
+              checkHostCommand({ command: saved.commands!.test!, args: [...args, f], purpose, cwd: saved.folder }, commandList(saved.commands!));
+              return [f];
+            } catch (error) {
+              if (!(error instanceof HostCommandRefused)) throw error;
+              unsafe.add(x.file);
+              return [];
+            }
+          }),
+        ),
+      ];
+      if (unsafe.size) skippedFiles = [`Not run: ${[...unsafe].map((f) => mask(f, "test.file", 300)).join(", ")} have tests with the tags ${expression}, but their paths can't be passed to Playwright safely (rename them without spaces or quotes, or pick them with files)`];
+      if (filters.length === 0) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [...(picked.length ? skippedFiles : [`No tests found with the tags ${expression}`])] };
       if ([...args, ...filters].join(" ").length > MAX_SELECTION_CHARS) return { status: "done", exitCode: 1, timedOut: false, durationMs, tests: [], errors: [`${filters.length} tests have the tags ${expression}: too many for one command, pick a part of them (files or a project)`] };
       args = [...args, ...filters];
       checkHostCommand({ command: saved.commands!.test!, args, purpose, cwd: saved.folder }, commandList(saved.commands!));
@@ -1146,7 +1171,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     } catch {
       await service.saveVault();
       const why = t.result.timedOut ? ` (the run was stopped after ${Math.round(t.result.durationMs / 60_000)} minutes)` : "";
-      return { ...base, tests: [], errors: [`no test report came back${why}: ${tail(t.result) || "no output"}`] };
+      return { ...base, tests: [], errors: [...skippedFiles, `no test report came back${why}: ${tail(t.result) || "no output"}`] };
     }
     // A screenshot as a handle, never its path: Playwright names the folder after the test's title
     // (jane-doe-example-com), which the detectors don't recognise. "<output folder>#<hash of the path in it>".
@@ -1186,7 +1211,7 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
           : {}),
       });
     }
-    const errors = parsed.errors.map((e) => mask(e, "test.error", 4000));
+    const errors = [...skippedFiles, ...parsed.errors.map((e) => mask(e, "test.error", 4000))];
     await service.saveVault();
     return { ...base, tests, errors };
   }

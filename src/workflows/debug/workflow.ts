@@ -465,7 +465,9 @@ export function debugWorkflow(deps: DebugDeps): WorkflowDefinition<DebugInputs> 
       return r ? `${renderReport(r)}\nFile: debug-report.md in the run folder of ${ctx.runId}.` : undefined;
     },
     prepareInputs: async (runId, inputs) => {
-      const picked = inputs.testRun !== undefined ? { ...inputs, ...(await fromTestRun(inputs.testRun)) } : inputs;
+      // The run's selection, with debug's own project and workers, when given, over the run's.
+      const own = { ...(inputs.project !== undefined ? { project: inputs.project } : {}), ...(inputs.workers !== undefined ? { workers: inputs.workers } : {}) };
+      const picked = inputs.testRun !== undefined ? { ...inputs, ...(await fromTestRun(inputs.testRun)), ...own } : inputs;
       await deps.data.selectTests(runId, await folder(), selectionOf(picked));
       return picked;
     },

@@ -122,6 +122,33 @@ describe("running a part of the repo's suite (S3-2)", () => {
     await expect(ci.selectTests("r", ".", { tag: "@smoke", headed: true })).rejects.toThrow(/not in CI/);
   });
 
+  it("with several tags, stops on a file Playwright couldn't load, and names a file whose path can't go on the command line", async () => {
+    const spec = (file: string, line: number, tags: string[]) => ({ title: `t${line}`, file, line, tags, tests: [{ status: "skipped", results: [] }] });
+    let listing: Record<string, unknown> = {};
+    const lister: typeof runHostCommand = async (grant, options) => {
+      if (!options.argv.includes("--list")) return host(grant, options);
+      ran.push(options.argv);
+      await writeFile(options.env!.PLAYWRIGHT_JSON_OUTPUT_NAME!, JSON.stringify(listing));
+      return { exitCode: 1, timedOut: false, aborted: false, stdout: "", stderr: "", truncated: false, durationMs: 5 };
+    };
+    const d = new DataAccess({ host: lister, root: dir, store: new RunStore(join(dir, ".agent-qa", "runs")), config: configSchema.parse({ version: 1, policy: { writes: { commands: "ask" } } }), vault: new Vault({ storage: vaults, keys: { description: "t", getKey: async () => key } }), audit: new MemoryAuditSink() });
+    listing = { config: { rootDir: dir }, stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 1 }, suites: [{ title: "b", file: "tests/b.spec.ts", specs: [spec("tests/b.spec.ts", 3, ["a", "b"])] }], errors: [{ message: "SyntaxError: Unexpected token in tests/c.spec.ts (jane.doe@example.com)" }] };
+    const broken = await d.runTests("r", "r", ".", { tag: "@a @b" }, true);
+    expect(broken).toMatchObject({ status: "done", tests: [] });
+    if (broken.status !== "done") throw new Error(broken.status);
+    expect(broken.errors[0]).toMatch(/couldn't load every test file/);
+    expect(broken.errors.join(" ")).toContain("SyntaxError");
+    expect(JSON.stringify(broken)).not.toContain("jane.doe@example.com");
+    expect(ran).toHaveLength(1);
+    ran.length = 0;
+    listing = { config: { rootDir: dir }, stats: { expected: 0, unexpected: 0, flaky: 0, skipped: 1 }, suites: [{ title: "x", file: "tests/x.spec.ts", specs: [spec("tests/b.spec.ts", 3, ["a", "b"]), spec("tests/my dir/c.spec.ts", 4, ["a", "b"])] }] };
+    const r = await d.runTests("r", "r", ".", { tag: "@a @b" }, true);
+    if (r.status !== "done") throw new Error(r.status);
+    expect(ran).toHaveLength(2);
+    expect(ran[1]!.some((a) => a.includes("my dir"))).toBe(false);
+    expect(r.errors[0]).toMatch(/^Not run: tests\/my dir\/c\.spec\.ts have tests with the tags @a @b/);
+  });
+
   it("runs again an earlier report's failed tests, by file and line, with their titles masked", async () => {
     const d = data();
     const picked = await d.selectTests("r", ".", { failedIn: "last-run.json" });

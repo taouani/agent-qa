@@ -16,7 +16,7 @@ agent-qa run run-tests --input '{"failedIn":"playwright-report/report.json"}' --
 |---|---|
 | `files` | spec or feature paths in the profile's folder (a spec may end with `:line`), up to 50 |
 | `grep` | text in the tests' titles (plain text, not a pattern) |
-| `tag` | a tag such as `@smoke` (tags that start with it count too); not together with `grep`. Several: `"@a @b"` runs the tests that have both, `"@a\|@b"` those with either, `"@a @b\|@c"` those with both of the first or the last. With several, Playwright first lists the selection (nothing runs), then only the tests with the tags run, by file and line |
+| `tag` | a tag such as `@smoke` (tags that start with it count too); not together with `grep`. Several: `"@a @b"` runs the tests that have both, `"@a\|@b"` those with either, `"@a @b\|@c"` those with both of the first or the last. With several, Playwright first lists the selection (nothing runs), then only the tests with the tags run, by file and line. A line that defines several tests (a loop, a parameterised test) runs all of them; playwright-bdd puts each scenario on its own line. If a file doesn't load, nothing runs and its error is shown |
 | `project` | one Playwright project of your config |
 | `failedIn` | a Playwright JSON report in the folder: its failed and flaky tests run again |
 | `repeatEach`, `workers` | run each test 1 to 10 times; 1 to 4 workers (default 1) |

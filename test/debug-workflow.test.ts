@@ -121,6 +121,9 @@ describe("debug workflow (S3-3)", () => {
     const e = engine();
     const first = await e.start("debug", { testRun: "tests-run" });
     expect((await e.status(first.runId)).inputs).toMatchObject({ testRun: "tests-run", tag: "@refund @submission", project: "chromium" });
+    // Debug's own project and workers win over the run's.
+    const own = await e.start("debug", { testRun: "tests-run", project: "firefox", workers: 2 });
+    expect((await e.status(own.runId)).inputs).toMatchObject({ tag: "@refund @submission", project: "firefox", workers: 2 });
     await runs.writeArtifact("tests-run", TEST_RUN_ARTIFACT, earlier({ grep: "<PERSON_1> login" }) as never, { inputs: [], templateVersion: "test-run-1" });
     await expect(e.start("debug", { testRun: "tests-run" })).rejects.toThrow(/title text/);
     await expect(e.start("debug", { testRun: "nope" })).rejects.toThrow(/isn't a run-tests run/);
