@@ -72,6 +72,28 @@ describe("WorkflowEngine", () => {
     expect((await e.status("run-1")).status).toBe("done");
   });
 
+  it("shows the workflow's summary as the done step's context, cut, and an empty one when it fails", async () => {
+    const summarized = { ...demoWorkflow(), summary: (ctx: { outputs: Readonly<Record<string, unknown>> }) => `Wrote ${(ctx.outputs.cases as { cases: unknown[] }).cases.length} case(s).` };
+    const e = engine(new MemoryStateStore(), summarized);
+    await e.start("demo", { issue: "PROJ-1" });
+    await e.submit("run-1", "analyze", { summary: "x" });
+    await e.submit("run-1", "cases", { cases: [{ id: "TC-PROJ-1-001", title: "A" }] });
+    expect((await e.submit("run-1", "push", { approve: true })).next).toMatchObject({ kind: "done", context: "Wrote 1 case(s)." });
+    expect((await e.next("run-1")).context).toBe("Wrote 1 case(s).");
+
+    const long = engine(new MemoryStateStore(), { ...demoWorkflow(), summary: () => "x".repeat(9000) });
+    await long.start("demo", { issue: "PROJ-1" });
+    await long.submit("run-1", "analyze", { summary: "x" });
+    await long.submit("run-1", "cases", { cases: [{ id: "TC-PROJ-1-001", title: "A" }] });
+    expect((await long.submit("run-1", "push", { approve: true })).next.context).toMatch(/^x{8000}\n… \(the rest is in the run folder of run-1\)$/);
+
+    const broken = engine(new MemoryStateStore(), { ...demoWorkflow(), summary: () => { throw new Error("no"); } });
+    await broken.start("demo", { issue: "PROJ-1" });
+    await broken.submit("run-1", "analyze", { summary: "x" });
+    await broken.submit("run-1", "cases", { cases: [{ id: "TC-PROJ-1-001", title: "A" }] });
+    expect((await broken.submit("run-1", "push", { approve: true })).next).toMatchObject({ kind: "done", context: "" });
+  });
+
   it("rejects invalid inputs at start", async () => {
     await expect(engine().start("demo", { issue: "nope" })).rejects.toMatchObject({
       code: "INVALID_INPUTS",

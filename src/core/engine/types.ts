@@ -140,6 +140,13 @@ export interface WorkflowDefinition<I = unknown> {
    * such as closing a browser. Best effort: an error here is ignored.
    */
   onEnd?: (runId: string, status: Exclude<RunStatus, "running">) => void | Promise<void>;
+  /**
+   * What the run produced, shown as the context of the `done` step (masked
+   * text only): the counts and where the files are, so the host model can
+   * tell the user without reading the run folder. Best effort: an error here
+   * shows an empty context.
+   */
+  summary?: (ctx: StepContext<I>) => string | undefined | Promise<string | undefined>;
   // Steps differ in output type, so the list is typed loosely here.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   steps: ReadonlyArray<StepDefinition<I, any>>;

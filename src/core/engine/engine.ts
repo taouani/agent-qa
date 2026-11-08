@@ -54,6 +54,8 @@ export function toOutputErrors(error: z.ZodError): OutputError[] {
 
 /** Step ids the engine uses for terminal steps. */
 const RESERVED_STEP_IDS = new Set(["done", "failed", "cancelled"]);
+/** The done step's summary is cut here: the host model reads it whole. */
+const SUMMARY_CHARS = 8000;
 
 /** JSON Schema for what the model must write: the schema's input side. */
 function jsonSchemaOf(schema: z.ZodType, where: string): unknown {
@@ -406,7 +408,7 @@ export class WorkflowEngine {
 
   private async render({ workflow, outputSchemas }: Registered, state: RunState): Promise<Step> {
     const base = { runId: state.runId, instructions: "", context: "", attempt: 0, maxAttempts: 0 };
-    if (state.status === "done") return { ...base, stepId: "done", kind: "done" };
+    if (state.status === "done") return { ...base, stepId: "done", kind: "done", context: await this.summary(workflow, state) };
     if (state.status === "cancelled") return { ...base, stepId: "cancelled", kind: "failed", errors: [{ path: "$", message: "Run cancelled" }] };
     if (state.status === "failed") return { ...base, stepId: "failed", kind: "failed", errors: state.failure ?? [] };
     const def = this.currentStep(workflow, state);
@@ -445,6 +447,17 @@ export class WorkflowEngine {
       if (!(error instanceof EngineError) || error.code !== "CONTEXT_FAILED") throw error;
       const said = outcome === "accepted" ? "The answer was accepted and saved. " : "The answer was rejected (see errors). ";
       throw new EngineError("CONTEXT_FAILED", said + error.message, errors, state.runId);
+    }
+  }
+
+  /** The done step's context: the workflow's summary, cut to SUMMARY_CHARS. */
+  private async summary(workflow: WorkflowDefinition<unknown>, state: RunState): Promise<string> {
+    if (!workflow.summary) return "";
+    try {
+      const text = (await workflow.summary(this.ctx(state))) ?? "";
+      return text.length > SUMMARY_CHARS ? `${text.slice(0, SUMMARY_CHARS)}\n… (the rest is in the run folder of ${state.runId})` : text;
+    } catch {
+      return "";
     }
   }
 

@@ -16,8 +16,15 @@ async function connect() {
 
 async function call(client: Client, name: string, args: Record<string, unknown>) {
   const result = await client.callTool({ name, arguments: args });
-  const [first] = result.content as Array<{ type: string; text: string }>;
-  return { isError: result.isError === true, body: JSON.parse(first!.text) };
+  const [first, second] = result.content as Array<{ type: string; text: string }>;
+  const body = JSON.parse(first!.text);
+  // A step's context comes as its own text after the JSON.
+  if (second) {
+    const context = second.text.replace(/^## Context of step [^\n]*\n\n/, "");
+    if (body.next) body.next.context = context;
+    else body.context = context;
+  }
+  return { isError: result.isError === true, body };
 }
 
 function cases(n: number) {
@@ -66,6 +73,17 @@ describe("MCP step protocol", () => {
 
     const status = await call(client, "workflow_status", { runId: "run-1" });
     expect(status.body.status).toBe("done");
+  });
+
+  it("sends a step's context as its own text, with its line breaks, after the step's JSON", async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: "workflow_start", arguments: { workflow: "spike-test-cases", inputs: { ticket: "SPIKE-3" } } });
+    const [json, context] = result.content as Array<{ type: string; text: string }>;
+    const step = JSON.parse(json!.text);
+    expect(step.context).toBe('(the next text, "Context of step analyze")');
+    expect(context!.text.startsWith("## Context of step analyze\n\n")).toBe(true);
+    expect(context!.text).toContain("SPIKE-3");
+    expect(context!.text.split("\n").length).toBeGreaterThan(3);
   });
 
   it("accepts inputs sent as a JSON string", async () => {

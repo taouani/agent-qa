@@ -8,16 +8,38 @@ import { EngineError, recordUsage, VERSION, type Approval, type RunStore, type S
 /** Instructions every host model gets for the step loop (contract 3). */
 export const LOOP_INSTRUCTIONS = [
   "Agent-QA drives this workflow step by step. Follow this loop until the step kind is done or failed:",
-  "1. Read the step: `instructions` says what to do, `context` is the input (personal data is already masked as tokens like <PERSON_1>; keep tokens unchanged).",
+  "1. Read the step: `instructions` says what to do, `context` is the input (personal data is already masked as tokens like <PERSON_1>; keep tokens unchanged). The context comes as its own text after the step's JSON.",
   "2. For kind `generate`: produce JSON that matches `outputSchema` exactly and call workflow_submit with runId, stepId and output.",
-  "3. For kind `confirm`: ask the user the question in `instructions`, wait for their answer, then submit it.",
+  "3. For kind `confirm`: ask the user the question in `instructions`, wait for their answer, then submit it. When the instructions say Agent-QA asks the user itself in a prompt from the IDE, don't ask in chat: submit as they say, and the user answers in that prompt.",
   "4. If the result is `rejected`, fix every error listed (each has a JSON path) and submit the same stepId again.",
   "5. Continue with the `next` step from the result. Do not stop between steps unless a step needs the user.",
-  "6. When the kind is `done`, tell the user the run finished. When it is `failed`, show the errors.",
+  "6. When the kind is `done`, tell the user the run finished, with what its context says (the result and where its files are). When it is `failed`, show the errors.",
 ].join("\n");
 
+/** Where a result holds a step: the step itself, or the next one after a submit. */
+const stepOf = (value: unknown): Step | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as { context?: unknown; next?: unknown };
+  if (typeof v.context === "string" && "stepId" in v) return value as Step;
+  return v.next && typeof v.next === "object" && typeof (v.next as { context?: unknown }).context === "string" ? (v.next as Step) : undefined;
+};
+
+/**
+ * A step's context goes out as its own text, as written: inside the JSON it
+ * would be one escaped line, which hosts cut when they save a long result
+ * to a file (the model then has to dig it out with a shell).
+ */
 function ok(value: unknown): CallToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+  const step = stepOf(value);
+  if (!step || step.context === "") return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+  const note = `(the next text, "Context of step ${step.stepId}")`;
+  const json = step === value ? { ...step, context: note } : { ...(value as object), next: { ...step, context: note } };
+  return {
+    content: [
+      { type: "text", text: JSON.stringify(json, null, 2) },
+      { type: "text", text: `## Context of step ${step.stepId}\n\n${step.context}` },
+    ],
+  };
 }
 
 function fail(error: unknown): CallToolResult {

@@ -99,7 +99,11 @@ describe("running a part of the repo's suite (S3-2)", () => {
     expect(first.context).not.toContain("jane.doe@example.com");
     // A model's yes isn't the person's.
     await expect(e.submit(first.runId, "run", { run: true })).rejects.toMatchObject({ code: "NEEDS_PERSON" });
-    expect((await e.submit(first.runId, "run", { run: true }, { byPerson: true })).next.kind).toBe("done");
+    const finished = (await e.submit(first.runId, "run", { run: true }, { byPerson: true })).next;
+    expect(finished.kind).toBe("done");
+    // The host model can tell the user the counts without reading the run folder.
+    expect(finished.context).toContain("1 passed, 2 failed, 0 flaky, 0 skipped");
+    expect(finished.context).toContain(`Files: test-run.md in the run folder of ${first.runId}.`);
     const art = (await runs.readArtifact(first.runId, TEST_RUN_ARTIFACT))!.data;
     expect(art).toMatchObject({ status: "failed", folder: ".", counts: { passed: 1, failed: 2, flaky: 0, skipped: 0 }, selection: { failedIn: "last-run.json" } });
     expect(art.command.slice(0, 3)).toEqual(["npx", "playwright", "test"]);
