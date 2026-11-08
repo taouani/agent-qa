@@ -241,8 +241,11 @@ export function documentWorkflow(deps: RequirementsDeps): WorkflowDefinition<Doc
     const parsed = type.schema.safeParse(applyChanges((await draftOf(ctx)).content, changes));
     // Paths only: the messages of a schema can't echo the person's words, and the type's checks name keys.
     if (!parsed.success) return { errors: parsed.error.issues.map((i) => ({ path: `$.${i.path.join(".")}`, message: `doesn't fit the ${type.title.toLowerCase()} once changed (${i.code})` })) };
-    // The type's messages quote keys, which here may be the person's words: paths only.
-    const errors = type.check(await sourcesOf(ctx), parsed.data).map((e) => ({ path: e.path, message: `breaks a rule of the ${type.title.toLowerCase()} once changed (an issue key that isn't in the sources, or an issue named twice or not at all): undo or fix this change` }));
+    // A type's message may quote what it checks, here the person's words: such a message is replaced.
+    const typed = changes.flatMap((c) => (c.value !== undefined && c.value.trim() !== "" ? [c.value.trim()] : []));
+    const errors = type.check(await sourcesOf(ctx), parsed.data).map((e) =>
+      typed.some((t) => e.message.includes(t)) ? { path: e.path, message: `breaks a rule of the ${type.title.toLowerCase()} once changed: undo or fix this change` } : { path: e.path, message: `once changed: ${e.message}` },
+    );
     return { content: parsed.data, errors };
   }
 

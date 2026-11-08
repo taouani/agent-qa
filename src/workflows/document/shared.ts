@@ -78,17 +78,8 @@ export function everyIssueOnce(s: DocumentSources, path: string, keys: readonly 
   return errors;
 }
 
-/** Errors for ids at `path` that aren't `prefix` numbered in order from 001. */
-export function numberedIds(path: string, ids: readonly string[], prefix: (i: number) => string): OutputError[] {
-  const errors: OutputError[] = [];
-  ids.forEach((id, i) => {
-    const want = `${prefix(i)}${String(i + 1).padStart(3, "0")}`;
-    if (id !== want) errors.push({ path: `${path}.${i}.id`, message: `must be ${want}: number them in order from 001` });
-  });
-  return errors;
-}
-
-const CASE_IN = /TC-[A-Z][A-Z0-9_]+-\d+-\d{3}/g;
+// Whole ids only: TC-ABC-1-0012 is not TC-ABC-1-001.
+const CASE_IN = /(?<![A-Za-z0-9])TC-[A-Z][A-Z0-9_]+-\d+-\d{3,}(?!\d)/g;
 
 /** Each case id's results in a test run: from the test titles and tags that name it. */
 export function resultsByCase(run: TestRun | undefined): Map<string, Array<TestRun["tests"][number]["outcome"]>> {
@@ -99,9 +90,9 @@ export function resultsByCase(run: TestRun | undefined): Map<string, Array<TestR
   return by;
 }
 
-/** One outcome for several tests of a case: failed beats flaky beats passed beats skipped. */
+/** One outcome for several results: failed, then flaky, not run, skipped, and passed only when every one passed. */
 export function worst(outcomes: readonly string[] | undefined): string {
   if (!outcomes?.length) return "not run";
-  for (const o of ["failed", "flaky", "passed", "skipped"]) if (outcomes.includes(o)) return o;
+  for (const o of ["failed", "flaky", "not run", "skipped", "passed"]) if (outcomes.includes(o)) return o;
   return "not run";
 }

@@ -193,7 +193,6 @@ const charter = {
 };
 
 const risk = (n: number, over: Record<string, unknown> = {}) => ({
-  id: `R-${String(n).padStart(3, "0")}`,
   title: `Risk ${n}`,
   description: "Something may go wrong.",
   category: "requirements",
@@ -209,7 +208,6 @@ const risk = (n: number, over: Record<string, unknown> = {}) => ({
 });
 
 const set = (n: number, requirement: string, kind: string, cases: string[] = []) => ({
-  id: `TD-${String(n).padStart(3, "0")}`,
   requirement,
   kind,
   description: `${kind} data`,
@@ -257,14 +255,24 @@ describe("document types (S4-4)", () => {
     const { casesRun } = await sources();
     const { run, result } = await draft("risk-register", { testCasesRun: casesRun }, { summary: "s", risks: [risk(2, { requirements: ["ABC-1"] })], assumptions: [] });
     expect(errorsOf(result)).toEqual([
-      { path: "$.risks.0.id", message: "must be R-001: number them in order from 001" },
-      { path: "$.risks", message: "ABC-2 score below 60 for quality: name each in a requirements risk" },
+      { path: "$.risks", message: "ABC-2 score below 60 for quality: name each in at least one risk" },
     ]);
     await engine.submit(run.runId, "draft-risk-register", { summary: "s", risks: [risk(1, { probability: 1, impact: 2 }), risk(2, { probability: 5, impact: 4, requirements: [] })], assumptions: [] });
     const md = await finish(run.runId);
     expect(md).toContain("2 risk(s): 1 high, 0 medium, 1 low.");
     expect(md.indexOf("| R-002 |")).toBeLessThan(md.indexOf("| R-001 |"));
     expect(md).toContain("- ABC-1 AC2");
+    expect(md).toContain("### R-002: Risk 2");
+  });
+
+  it("numbers risks and data sets itself, so the review can remove one in the middle", async () => {
+    const req = await engine.start("requirements", { key: "ABC-1" });
+    await engine.submit(req.runId, "analyze", good);
+    const { run } = await draft("risk-register", { requirementsRun: req.runId }, { summary: "s", risks: [risk(1), risk(2), risk(3)], assumptions: [] });
+    expect((await engine.submit(run.runId, "review", { approved: true, changes: [{ path: "$.risks.1" }] })).next.kind).toBe("done");
+    const md = await readFile(join(dir, "runs", run.runId, "document.md"), "utf8");
+    expect(md).toContain("### R-002: Risk 3");
+    expect(md).not.toContain("R-003");
   });
 
   it("writes test data with valid and invalid sets per issue, tied to cases of the same issue", async () => {
@@ -281,6 +289,7 @@ describe("document types (S4-4)", () => {
     const md = await finish(run.runId);
     expect(md).toContain("| ABC-1 | 1 | 0 | 0 | 1 | 0 |");
     expect(md).toContain("| age (days) | (empty) |");
+    expect(md).toContain("### TD-004 (boundary)");
     expect(md).toContain("Used by TC-ABC-1-001.");
   });
 
@@ -323,6 +332,34 @@ describe("document types (S4-4)", () => {
     expect(md).toContain("- 2 reviewed test case(s) (run");
     expect(md).toContain(": failed, 1 passed, 1 failed, 0 flaky, 0 skipped.");
     expect(md).toContain("## Upgrade notes\n\nNothing to do.");
+  });
+
+  it("keeps test data values exact in the tables", async () => {
+    const req = await engine.start("requirements", { key: "ABC-1" });
+    await engine.submit(req.runId, "analyze", good);
+    const odd = { ...set(1, "ABC-1", "boundary"), fields: [{ name: "input", value: "a|b `c`\nd" }, { name: "spaces", value: "  " }] };
+    const { run } = await draft("test-data", { requirementsRun: req.runId }, { summary: "s", sets: [set(1, "ABC-1", "valid"), odd, set(3, "ABC-2", "valid"), set(4, "ABC-2", "empty")], setup: [], rules: [] });
+    const md = await finish(run.runId);
+    expect(md).toContain("| input | `` a\\|b `c`\\nd `` |");
+    expect(md).toContain("| spaces | `  ` |");
+  });
+
+  it("counts a criterion as passed only when every case of it passed, matching whole case ids", () => {
+    const req = (keys: Record<string, string[]>) => ({
+      run: "r",
+      data: { input: { key: "AB-1" }, truncated: false, unreachable: [], requirements: Object.entries(keys).map(([key, acs]) => ({ key, acceptanceCriteria: acs.map((id) => ({ id, text: id, origin: "jira" })) }) as never) },
+    });
+    const c = (id: string, covers: string[]) => ({ ...tc("AB-1", Number(id.slice(-3)), covers), id });
+    const testCases = { run: "c", data: { cases: [c("TC-AB-1-001", ["AC1"]), c("TC-AB-1-002", ["AC1"]), c("TC-AB-1-003", ["AC2"]), c("TC-AB-1-004", ["AC3"])], uncovered: [], skipped: [] } as never };
+    const t = (title: string, outcome: string) => ({ title, tags: [], file: "f", line: 1, outcome, runs: 1, failedRuns: 0 });
+    const testRun = { run: "t", data: { tests: [t("TC-AB-1-001 ok", "passed"), t("TC-AB-1-003 skipped", "skipped"), t("TC-AB-1-0045 other", "failed"), t("TC-AB-1-004 ok", "passed")] } as never };
+    const rows = matrixOf({ requirements: req({ "AB-1": ["AC1", "AC2", "AC3"] }), testCases, testRun });
+    // AC1: one case passed, one never ran. AC2: skipped. AC3: TC-AB-1-0045's failure isn't TC-AB-1-004's.
+    expect(rows.map((r) => [r.criterion, r.result])).toEqual([
+      ["AC1", "not run"],
+      ["AC2", "skipped"],
+      ["AC3", "passed"],
+    ]);
   });
 
   it("builds a matrix row for an issue with no criteria", () => {

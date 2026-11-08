@@ -1,13 +1,14 @@
 import { z } from "zod";
 import type { OutputError } from "../../core/index.js";
 import { bullets, one, section, table } from "./markdown.js";
-import { casesContext, issuesContext, knownKeys, norm, numberedIds } from "./shared.js";
+import { casesContext, issuesContext, knownKeys, norm } from "./shared.js";
 import type { DocumentMeta, DocumentSources, DocumentType } from "./types.js";
 
 /**
  * The `risk-register` document type (S4-4, from v1's generate-risk-register):
  * risks with a category, probability and impact from 1 to 5, a response and
- * the issues they are about. Agent-QA computes the score and the level.
+ * the issues they are about. Agent-QA numbers them (R-001 in the order
+ * written, so a review can remove one) and computes the score and level.
  */
 
 const text = (max = 1000) => z.string().trim().min(1).max(max);
@@ -22,7 +23,6 @@ export const riskRegisterSchema = z
       .array(
         z
           .object({
-            id: z.string().describe("R-001, R-002, ... in order"),
             title: text(200),
             description: text(2000),
             category: z.enum(RISK_CATEGORIES),
@@ -52,15 +52,15 @@ function check(s: DocumentSources, reg: RiskRegister): OutputError[] {
   const named = new Set(reg.risks.flatMap((r) => r.requirements.map(norm)));
   const weak = s.requirements.data.requirements.filter((r) => r.quality.score < WEAK_QUALITY && !named.has(r.key)).map((r) => r.key);
   return [
-    ...numberedIds("$.risks", reg.risks.map((r) => r.id), () => "R-"),
     ...knownKeys(s, reg.risks.flatMap((r, i) => r.requirements.map((k, j): [string, string] => [`$.risks.${i}.requirements.${j}`, k]))),
-    ...(weak.length ? [{ path: "$.risks", message: `${weak.join(", ")} score below ${WEAK_QUALITY} for quality: name each in a requirements risk` }] : []),
+    ...(weak.length ? [{ path: "$.risks", message: `${weak.join(", ")} score below ${WEAK_QUALITY} for quality: name each in at least one risk` }] : []),
   ];
 }
 
 function render(reg: RiskRegister, s: DocumentSources, meta: DocumentMeta): string {
   const rs = s.requirements.data.requirements;
-  const ranked = [...reg.risks].sort((a, b) => scoreOf(b) - scoreOf(a) || a.id.localeCompare(b.id));
+  const numbered = reg.risks.map((r, i) => ({ ...r, id: `R-${String(i + 1).padStart(3, "0")}` }));
+  const ranked = numbered.sort((a, b) => scoreOf(b) - scoreOf(a) || a.id.localeCompare(b.id));
   const count = (level: string) => reg.risks.filter((r) => levelOf(scoreOf(r)) === level).length;
   const lines = [`# ${meta.title}: ${meta.input}`, "", `Written from requirements run ${meta.requirementsRun} (${rs.length} issue(s)). Personal data is masked as tokens such as <PERSON_n>.`];
   lines.push(...section("Summary", [one(reg.summary), "", `${reg.risks.length} risk(s): ${count("high")} high, ${count("medium")} medium, ${count("low")} low. Score = probability × impact (1 to 25): high from 15, medium from 8.`]));
@@ -86,7 +86,7 @@ export const RISK_REGISTER: DocumentType<RiskRegister> = {
   instructions: [
     "Write a risk register for testing the issues in the context: what could make the release fail or the testing miss defects.",
     "Find risks in the issues (missing or vague criteria, open questions, integrations, data, permissions), and in the test cases if given (criteria no case covers). Merge duplicates.",
-    `Number risks R-001, R-002 and so on. Give each a category, a probability and an impact from 1 to 5 (Agent-QA computes the score and level), a response (avoid, mitigate, transfer, accept), a mitigation, a contingency, a trigger and an owner role. Every issue with a quality score below ${WEAK_QUALITY} must be named in at least one risk.`,
+    `Give each risk a category, a probability and an impact from 1 to 5 (Agent-QA computes the score and level), a response (avoid, mitigate, transfer, accept), a mitigation, a contingency, a trigger and an owner role. Every issue with a quality score below ${WEAK_QUALITY} must be named in at least one risk.`,
     "Owners are roles, never people. Don't invent facts the issues don't state.",
     "Values like <PERSON_1> are masked personal data: keep them exactly as they are and don't make up new ones.",
   ].join("\n"),

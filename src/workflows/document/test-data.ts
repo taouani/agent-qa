@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { OutputError } from "../../core/index.js";
-import { bullets, cell, one, section, table } from "./markdown.js";
-import { casesContext, issuesContext, knownKeys, norm, numberedIds } from "./shared.js";
+import { bullets, code, one, section, table, type RawCell } from "./markdown.js";
+import { casesContext, issuesContext, knownKeys, norm } from "./shared.js";
 import type { DocumentMeta, DocumentSources, DocumentType } from "./types.js";
 
 /**
@@ -20,7 +20,6 @@ export const testDataSchema = z
       .array(
         z
           .object({
-            id: z.string().describe("TD-001, TD-002, ... in order"),
             requirement: z.string().describe("The issue key the data is for"),
             kind: z.enum(DATA_KINDS),
             description: text(),
@@ -43,7 +42,6 @@ export type TestData = z.infer<typeof testDataSchema>;
 
 function check(s: DocumentSources, data: TestData): OutputError[] {
   const errors: OutputError[] = [
-    ...numberedIds("$.sets", data.sets.map((x) => x.id), () => "TD-"),
     ...knownKeys(s, data.sets.map((x, i): [string, string] => [`$.sets.${i}.requirement`, x.requirement])),
   ];
   const cases = new Map((s.testCases?.data.cases ?? []).map((c) => [c.id, c.requirement]));
@@ -63,8 +61,8 @@ function check(s: DocumentSources, data: TestData): OutputError[] {
   return errors;
 }
 
-/** A value as a table cell: an empty one says so, so it isn't read as missing. */
-const value = (v: string) => (v === "" ? "(empty)" : `\`${cell(v).replace(/`/g, "'")}\``);
+/** A value as a table cell, kept exact: in code, pipes escaped and line breaks shown as \\n; an empty one says so. */
+const value = (v: string): RawCell => ({ raw: v === "" ? "(empty)" : code(v.replace(/\|/g, "\\|").replace(/\r?\n/g, "\\n")) });
 
 function render(data: TestData, s: DocumentSources, meta: DocumentMeta): string {
   const rs = s.requirements.data.requirements;
@@ -75,7 +73,8 @@ function render(data: TestData, s: DocumentSources, meta: DocumentMeta): string 
     if (sets.length === 0) continue;
     lines.push("", `## ${r.key}: ${one(r.summary)}`);
     for (const x of sets) {
-      lines.push("", `### ${x.id} (${x.kind}): ${one(x.description)}`, "", ...table(["Field", "Value", "Note"], x.fields.map((f) => [f.name, value(f.value), f.note ?? ""])), "", `**Expected:** ${one(x.expected)}`);
+      const id = `TD-${String(data.sets.indexOf(x) + 1).padStart(3, "0")}`;
+      lines.push("", `### ${id} (${x.kind}): ${one(x.description)}`, "", ...table(["Field", "Value", "Note"], x.fields.map((f) => [f.name, value(f.value), f.note ?? ""])), "", `**Expected:** ${one(x.expected)}`);
       if (x.cases.length) lines.push("", `Used by ${x.cases.join(", ")}.`);
     }
   }
@@ -91,7 +90,7 @@ export const TEST_DATA: DocumentType<TestData> = {
   needs: { testCases: "optional", testRun: "unused" },
   schema: testDataSchema,
   instructions: [
-    "Write test data sets for the issues in the context. Number them TD-001, TD-002 and so on.",
+    "Write test data sets for the issues in the context. Agent-QA numbers them TD-001, TD-002 and so on, in the order you write them.",
     "For every issue with acceptance criteria, give at least one valid set and at least one invalid, boundary or empty set; add security sets (injection, oversized input) only where the issue takes free input.",
     "Each set lists field names and values, and the expected result. Values must be made up and obviously fake (example.com addresses, 555 numbers, Test User names), never real people or real data.",
     "If the context has testCases, name the cases (TC-...) that use each set; a set and its cases belong to the same issue. Without test cases, leave cases empty.",

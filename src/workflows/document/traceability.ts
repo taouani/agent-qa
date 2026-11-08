@@ -47,7 +47,8 @@ export function matrixOf(s: DocumentSources): Row[] {
   });
 }
 
-const gapsOf = (rows: Row[]) => rows.filter((r) => r.cases.length === 0 || r.result === "failed" || r.result === "not run" || r.result === "flaky");
+/** A criterion with no case, or whose cases didn't all pass in the run. */
+const gapsOf = (rows: Row[]) => rows.filter((r) => r.cases.length === 0 || ["failed", "flaky", "not run", "skipped"].includes(r.result));
 
 function check(s: DocumentSources, t: Traceability): OutputError[] {
   const errors = knownKeys(s, t.gaps.map((g, i): [string, string] => [`$.gaps.${i}.requirement`, g.requirement]));
@@ -66,11 +67,12 @@ function check(s: DocumentSources, t: Traceability): OutputError[] {
 function render(t: Traceability, s: DocumentSources, meta: DocumentMeta): string {
   const rows = matrixOf(s);
   const covered = rows.filter((r) => r.cases.length > 0).length;
+  const unit = rows.some((r) => r.criterion === "") ? "rows (criteria, or issues with none)" : "criteria";
   const run = s.testRun?.data;
   const from = [`requirements run ${meta.requirementsRun}`, `test cases run ${meta.testCasesRun}`, ...(meta.testRunRun ? [`test run ${meta.testRunRun}`] : [])];
   const lines = [`# ${meta.title}: ${meta.input}`, "", `Written from ${from.join(", ")}. Personal data is masked as tokens such as <PERSON_n>.`];
   const passed = run ? rows.filter((r) => r.result === "passed").length : 0;
-  lines.push(...section("Summary", [one(t.summary), "", `${covered} of ${rows.length} criteria have a reviewed case${run ? `; ${passed} passed in the test run (${run.status}: ${run.counts.passed} passed, ${run.counts.failed} failed, ${run.counts.flaky} flaky, ${run.counts.skipped} skipped)` : ""}.`]));
+  lines.push(...section("Summary", [one(t.summary), "", `${covered} of ${rows.length} ${unit} have a reviewed case${run ? `; ${passed} passed in the test run (${run.status}: ${run.counts.passed} passed, ${run.counts.failed} failed, ${run.counts.flaky} flaky, ${run.counts.skipped} skipped)` : ""}.`]));
   lines.push(...section("Matrix", table(["Issue", "Criterion", "Cases", ...(run ? ["Result"] : [])], rows.map((r) => [r.key, r.criterion || "(none)", r.cases.join(", ") || "none", ...(run ? [r.result || "no case"] : [])]))));
   if (s.testCases?.data.skipped.length) lines.push("", `No cases for ${s.testCases.data.skipped.join(", ")}: no acceptance criteria.`);
   lines.push(...section("Gaps", bullets(t.gaps.map((g) => `${g.requirement.trim().toUpperCase()}${g.criterion ? ` ${g.criterion}` : ""}: ${g.note}`), "None.")));
@@ -86,7 +88,7 @@ export const TRACEABILITY: DocumentType<Traceability> = {
   schema: traceabilitySchema,
   instructions: [
     "Agent-QA builds the traceability matrix (issue, criterion, cases, and the test result when a test run is given) from the context; the matrix is in the context. Don't rebuild it.",
-    "Write a short summary of what it shows, then name every gap: a criterion with no case, or one whose cases failed, were flaky or didn't run. Give the issue, the criterion (leave it out for a whole issue) and why the gap matters.",
+    "Write a short summary of what it shows, then name every gap: a criterion with no case, or one whose cases failed, were flaky, were skipped or didn't run. Give the issue, the criterion (leave it out for a whole issue) and why the gap matters.",
     "End with recommendations: which cases to add or fix first.",
     "Values like <PERSON_1> are masked personal data: keep them exactly as they are and don't make up new ones. Test results show masked values as [masked].",
   ].join("\n"),

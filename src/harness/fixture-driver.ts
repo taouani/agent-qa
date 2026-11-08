@@ -260,9 +260,11 @@ function documentDraft(type: string, context: string): unknown {
   const parsed = JSON.parse(context.slice(context.indexOf("{"))) as { issues?: ContextIssue[]; matrix?: string[] };
   const issues = parsed.issues ?? [];
   const keys = issues.map((i) => i.key);
-  const about = (i: ContextIssue) => clip(`Testing ${i.summary}`, 1000);
+  // Cut with no marker: the schemas cap these lengths.
+  const cut = (text: string, max: number) => text.slice(0, max);
+  const about = (i: ContextIssue) => cut(`Testing ${i.summary}`, 1000);
   const first = issues[0];
-  const summary = clip(`Covers ${issues.map((i) => i.summary).join("; ")}`, 2000);
+  const summary = cut(`Covers ${issues.map((i) => i.summary).join("; ")}`, 2000);
   switch (type) {
     case "test-plan":
       return {
@@ -305,7 +307,7 @@ function documentDraft(type: string, context: string): unknown {
         areas: { complex: [], edgeCases: [], integrations: [], unclear: issues.filter((i) => !i.acceptanceCriteria.length).map((i) => ({ area: about(i), requirements: [i.key] })) },
         techniques: ["Boundary exploration"],
         heuristics: [],
-        sessions: [{ title: "First look", focus: summary.slice(0, 1000), timeboxMinutes: 60, requirements: keys }],
+        sessions: [{ title: "First look", focus: cut(summary, 1000), timeboxMinutes: 60, requirements: keys }],
         personas: [],
         testData: [],
         debrief: "Notes per session.",
@@ -314,15 +316,15 @@ function documentDraft(type: string, context: string): unknown {
     case "risk-register":
       return {
         summary,
-        risks: [{ id: "R-001", title: "Unclear requirements", description: summary, category: "requirements", probability: 3, impact: 3, response: "mitigate", mitigation: "Ask the product owner", contingency: "Test what is known", trigger: "Questions stay open", owner: "QA lead", requirements: keys }],
+        risks: [{ title: "Unclear requirements", description: summary, category: "requirements", probability: 3, impact: 3, response: "mitigate", mitigation: "Ask the product owner", contingency: "Test what is known", trigger: "Questions stay open", owner: "QA lead", requirements: keys }],
         assumptions: [],
       };
     case "test-data":
       return {
         summary,
-        sets: issues.flatMap((i, n) => [
-          { id: `TD-${String(2 * n + 1).padStart(3, "0")}`, requirement: i.key, kind: "valid", description: about(i), fields: [{ name: "name", value: "Test User" }], expected: "Accepted", cases: [] },
-          { id: `TD-${String(2 * n + 2).padStart(3, "0")}`, requirement: i.key, kind: "empty", description: about(i), fields: [{ name: "name", value: "" }], expected: "Refused", cases: [] },
+        sets: issues.flatMap((i) => [
+          { requirement: i.key, kind: "valid", description: about(i), fields: [{ name: "name", value: "Test User" }], expected: "Accepted", cases: [] },
+          { requirement: i.key, kind: "empty", description: about(i), fields: [{ name: "name", value: "" }], expected: "Refused", cases: [] },
         ]),
         setup: [],
         rules: [],
@@ -335,7 +337,7 @@ function documentDraft(type: string, context: string): unknown {
       return { summary, gaps, recommendations: [] };
     }
     case "release-notes":
-      return { summary, highlights: first ? [about(first)] : [], items: issues.map((i) => ({ key: i.key, category: "feature", note: clip(i.summary, 1000) })), knownIssues: [], upgradeNotes: [] };
+      return { summary, highlights: first ? [about(first)] : [], items: issues.map((i) => ({ key: i.key, category: "feature", note: cut(i.summary, 1000) })), knownIssues: [], upgradeNotes: [] };
     default:
       return undefined;
   }

@@ -7,12 +7,12 @@ The `document` workflow writes a QA document from what earlier runs know. A docu
 | `test-strategy` | requirements; reviewed cases optional | each level and type once; functional and regression always; issue keys exist |
 | `test-plan` | requirements; reviewed cases optional | every issue once with its risk; the coverage table from the cases |
 | `test-charter` | requirements; reviewed cases optional | the sessions explore every issue; the total time |
-| `risk-register` | requirements; reviewed cases optional | ids R-001 in order; every issue with a quality score below 60 is in a risk; score (probability × impact) and level; risks ranked |
-| `test-data` | requirements; reviewed cases optional | ids TD-001 in order; a valid and an invalid, boundary or empty set per issue with criteria; a set's cases are of its issue |
-| `traceability` | reviewed cases (required); a test run optional | the matrix of issue, criterion, cases and result; the model must name every gap it shows |
+| `risk-register` | requirements; reviewed cases optional | every issue with a quality score below 60 is in a risk; numbers R-001 in the order written; score (probability × impact) and level; risks ranked |
+| `test-data` | requirements; reviewed cases optional | a valid and an invalid, boundary or empty set per issue with criteria; a set's cases are of its issue; numbers TD-001 in the order written; values shown exactly |
+| `traceability` | reviewed cases (required); a test run optional | the matrix of issue, criterion, cases and result (passed only when every case passed); the model must name every gap: no case, or a case failed, flaky, skipped or not run |
 | `release-notes` | requirements; reviewed cases and a test run optional | every issue once; the fix version; the testing figures |
 
-A test in a test run belongs to a case when its title or one of its tags names the case's id (`TC-ABC-1-001`).
+A test in a test run belongs to a case when its title or one of its tags names the case's whole id (`TC-ABC-1-001`). A traceability report made with a test run of other tests shows every case as not run.
 
 ## Run it
 
