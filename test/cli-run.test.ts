@@ -368,16 +368,17 @@ describe("agent-qa init", () => {
   it("asks a terminal only for the Jira site and the Xray key, and names the variables to set next", async () => {
     const root = join(dir, "ask");
     await mkdir(root);
-    const answers = ["not a site!", "Acme", "qa project", "qa"];
+    const answers = ["not a site!", "http://acme.atlassian.net", "Acme", "qa project", "qa"];
     const asked: string[] = [];
     const ask = async (q: string) => (asked.push(q), answers.shift());
     expect(await initCommand({ root, ask, platform: "win32", log: (l) => lines.push(l) })).toBe(0);
-    expect(asked).toHaveLength(4);
+    expect(asked).toHaveLength(5);
     const config = configSchema.parse(parseYaml(await readFile(join(root, "agent-qa.yaml"), "utf8")));
     expect(config.atlassian?.site).toBe("https://acme.atlassian.net");
     expect(config.xray?.projectKey).toBe("QA");
     const out = lines.join("\n");
     expect(out).toContain("not a site! isn't a Jira Cloud site");
+    expect(out).toContain("http://acme.atlassian.net isn't a Jira Cloud site (it must be https://)");
     expect(out).toContain("Set ATLASSIAN_EMAIL, ATLASSIAN_TOKEN, XRAY_CLIENT_ID, XRAY_CLIENT_SECRET, in PowerShell:");
     expect(out).toContain("ATLASSIAN_TOKEN is an API token from https://id.atlassian.com/manage-profile/security/api-tokens.");
     expect(out).toContain('$env:XRAY_CLIENT_SECRET = "..."');

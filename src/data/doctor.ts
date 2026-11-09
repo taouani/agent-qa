@@ -271,9 +271,10 @@ async function reachable(url: string, fetcher: typeof fetch, timeoutMs: number):
     return undefined;
   } catch (error) {
     const e = error as Error & { cause?: { code?: string; name?: string } };
-    // Through a proxy, undici reports the timeout as UND_ERR_ABORTED.
-    if (e.name === "TimeoutError" || signal.aborted) return `timed out after ${timeoutMs} ms`;
     if (error instanceof ConnectorError) return error.message; // a proxy URL that can't be used
+    // Through a proxy, undici reports the timeout as UND_ERR_ABORTED.
+    const aborted = e.name === "AbortError" || (e as { code?: string }).code === "UND_ERR_ABORTED" || e.cause?.code === "UND_ERR_ABORTED";
+    if (e.name === "TimeoutError" || (signal.aborted && aborted)) return `timed out after ${timeoutMs} ms`;
     return networkCause(error) ?? e.cause?.name ?? e.name ?? "error";
   }
 }

@@ -19,13 +19,13 @@ In your project folder (a git checkout):
 npx -y sf-agent-qa@next init
 ```
 
-`init` asks two things: your Jira site (`acme` is enough for `https://acme.atlassian.net`) and the Xray project key (press Enter to skip). It then writes these files:
+When it creates `agent-qa.yaml`, `init` asks two things: your Jira site (`acme` is enough for `https://acme.atlassian.net`) and the Xray project key (press Enter to skip). It then writes these files:
 
 - `agent-qa.yaml`: settings only, never a secret;
 - the MCP settings for VS Code, Claude Code and Cursor;
 - the `.gitignore` line for `.agent-qa/`, which holds the vault and the runs.
 
-It ends by printing the exact variables to set, in your shell's syntax. In CI, or with no terminal, it asks nothing: pass `--site` and `--xray-project` instead.
+An existing `agent-qa.yaml` is kept, and then nothing is asked (`--force` replaces it). It ends by printing the exact variables to set, in your shell's syntax. In CI, or with no terminal, it asks nothing: pass `--site` and `--xray-project` instead.
 
 ## 2. Give it your keys (5 minutes)
 
@@ -45,7 +45,8 @@ Windows (PowerShell):
 ```powershell
 $env:ATLASSIAN_EMAIL = "you@example.com"
 $env:ATLASSIAN_TOKEN = "..."
-$env:XRAY_CLIENT_ID = "..."; $env:XRAY_CLIENT_SECRET = "..."
+$env:XRAY_CLIENT_ID = "..."; $env:XRAY_CLIENT_SECRET = "..."    # if you push to Xray
+$env:ANTHROPIC_API_KEY = "..."                                  # for terminal runs only
 ```
 
 These last as long as the terminal does. **Your IDE has to see them too:** its Agent-QA server starts with the IDE's environment. So start the IDE from this same terminal (`code .`, `cursor .` or `claude`). An IDE started from the Start menu or the Dock doesn't see variables set in a terminal.

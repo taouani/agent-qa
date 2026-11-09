@@ -53,7 +53,7 @@ export function siteOf(input: string): string | undefined {
   }
 }
 
-const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,9}$/;
+const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,254}$/;
 
 /**
  * What VS Code runs: this exact version, so an IDE start never fetches a
@@ -202,8 +202,9 @@ export async function initCommand(opts: InitOptions): Promise<number> {
           log("agent-qa init: stopped, nothing written");
           return 2;
         }
-        settings.site = siteOf(answer);
-        if (settings.site === undefined) log(`  ${answer.trim() || "(empty)"} isn't a Jira Cloud site`);
+        const site = siteOf(answer);
+        if (site?.startsWith("https://")) settings.site = site;
+        else log(`  ${answer.trim() || "(empty)"} isn't a Jira Cloud site${site ? " (it must be https://)" : ""}`);
       }
     }
     if (opts.ask && settings.xrayProject === undefined) {
@@ -216,7 +217,7 @@ export async function initCommand(opts: InitOptions): Promise<number> {
         const key = answer.trim().toUpperCase();
         if (!key) break;
         if (PROJECT_KEY.test(key)) settings.xrayProject = key;
-        else log(`  ${answer.trim()} isn't a Jira project key (2 to 10 letters or digits, starting with a letter)`);
+        else log(`  ${answer.trim()} isn't a Jira project key (letters, digits or _, starting with a letter)`);
       }
     }
     const text = configTemplate(settings);

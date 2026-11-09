@@ -362,7 +362,6 @@ export function runnableLine(r: RunnableRate): string {
   return `runnable rate: ${(r.rate * 100).toFixed(1)}% (${r.runnable} of ${r.cases - r.defects - r.environment - r.unproven} case(s) pass again and again${rest ? `; ${rest}` : ""}), each case by its latest of ${r.runs} run(s)${apart ? `; left out: ${apart}` : ""}${waiting ? `; not counted: ${waiting}` : ""}`;
 }
 
-/** A path from the project folder when it is inside it, so the home folder isn't printed. */
 /** One answer typed in the terminal; undefined when the person interrupted (Ctrl-C or Ctrl-D). */
 async function terminalQuestion(question: string): Promise<string | undefined> {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
@@ -377,6 +376,7 @@ async function terminalQuestion(question: string): Promise<string | undefined> {
 
 const ciFromEnv = (env: NodeJS.ProcessEnv) => Boolean(env.CI) && !/^(false|0)$/i.test(env.CI!);
 
+/** A path from the project folder when it is inside it, so the home folder isn't printed. */
 function relativeOr(root: string, file: string): string {
   const rel = relative(root, file);
   return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : file;
