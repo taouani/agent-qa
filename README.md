@@ -59,6 +59,22 @@ Without an API key, `--headless claude-code` or `--headless copilot` answers eac
 - `refactor` carries out an audit's findings phase by phase, keeping what every test checks: [docs/refactor.md](docs/refactor.md).
 - `document` writes a test strategy, plan, charter, risk register, test data, traceability report or release notes from the requirements, reviewed test cases and test results: [docs/documents.md](docs/documents.md).
 
+## Documentation
+
+| To | Read |
+|---|---|
+| Install and run a first workflow | [getting-started.md](docs/getting-started.md) |
+| Look up a key of `agent-qa.yaml` | [config.md](docs/config.md) |
+| Fix a problem | [troubleshooting.md](docs/troubleshooting.md) |
+| Use it in VS Code, Claude Code or Cursor | [ide.md](docs/ide.md) |
+| Run it in CI | [ci.md](docs/ci.md) |
+| Choose models | [models.md](docs/models.md) |
+| Know what leaves your machine | [security.md](docs/security.md) |
+| Read the workflows | [requirements](docs/requirements.md), [profile](docs/profile.md), [explore](docs/explore.md), [scripts](docs/scripts.md), [run-tests](docs/run-tests.md), [debug](docs/debug.md), [review](docs/review.md), [audit](docs/audit.md), [refactor](docs/refactor.md), [documents](docs/documents.md) |
+| Sign in to Salesforce | [salesforce.md](docs/salesforce.md), [salesforce-pack.md](docs/salesforce-pack.md) |
+| Check masking, and your rates | [harness.md](docs/harness.md), [rates.md](docs/rates.md) |
+| Move from v1 | [migrating-from-v1.md](docs/migrating-from-v1.md) |
+
 ## Contributing
 
 Setting up a clone, the module boundaries, changesets, and the sign-off each commit needs (DCO): [CONTRIBUTING.md](CONTRIBUTING.md). How releases go out: [docs/releasing.md](docs/releasing.md).

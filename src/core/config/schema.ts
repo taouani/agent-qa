@@ -2,7 +2,10 @@ import { z } from "zod";
 
 /** A Jira date field set when a Test Execution is created: its id and whether it holds a day or a time. */
 const executionDateField = z
-  .object({ field: z.string().regex(/^customfield_\d+$/, "a Jira custom field id, such as customfield_10505"), type: z.enum(["date", "datetime"]).default("datetime") })
+  .object({
+    field: z.string().regex(/^customfield_\d+$/, "a Jira custom field id, such as customfield_10505").describe("The Jira custom field id, such as customfield_10505."),
+    type: z.enum(["date", "datetime"]).default("datetime").describe("`date` for a field that holds a day (the UTC day is written), `datetime` for a date and time."),
+  })
   .strict();
 
 /**
@@ -51,190 +54,204 @@ const writePolicy = z.enum(["allow", "ask", "deny"]);
 
 export const configSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(1).describe("The version of this file's format. Always 1."),
 
-    project: z.object({ name: z.string().min(1) }).strict().optional(),
+    project: z
+      .object({ name: z.string().min(1).describe("A name for the project. Not used by any workflow yet.") })
+      .strict()
+      .optional()
+      .describe("About the project."),
 
     atlassian: z
       .object({
-        site: httpsUrl,
-        /** Personal data if written literally; prefer ${env:ATLASSIAN_EMAIL} so it stays out of git. */
-        email: z.string().min(1),
-        token: secretRef,
-        confluence: z.object({ spaceKey: z.string().min(1), parentPageId: z.string().min(1).optional() }).strict().optional(),
+        site: httpsUrl.describe("Your Jira Cloud site, such as https://acme.atlassian.net."),
+        email: z.string().min(1).describe("The email of the Atlassian account the API token belongs to. It is personal data: prefer ${env:ATLASSIAN_EMAIL}, so it stays out of git."),
+        token: secretRef.describe("The Atlassian API token, as a secret reference."),
+        confluence: z
+          .object({
+            spaceKey: z.string().min(1).describe("The key of the space documents are published to."),
+            parentPageId: z.string().min(1).optional().describe("The id of the page that published documents go under. Without it, the page is created with no parent, and Confluence places it in the space (on Confluence Cloud, under the space's home page)."),
+          })
+          .strict()
+          .optional()
+          .describe("Where `document` publishes to Confluence."),
         /** How requirements are read from Jira. Every key has a default. */
         jira: z
           .object({
-            /** Field id or name holding acceptance criteria. Default: found by name; else read from the description. */
-            acceptanceCriteriaField: z.string().min(1).optional(),
-            /** More text fields to read into each requirement, by id or name. */
-            extraFields: z.array(z.string().min(1)).optional(),
-            /** Levels of child issues below each input issue. Default 3. */
-            maxDepth: z.number().int().min(0).max(5).optional(),
-            /** Most issues per run. Default 100. */
-            maxIssues: z.number().int().min(1).max(500).optional(),
-            /** Follow issue links one level out. Default true. */
-            followLinks: z.boolean().optional(),
-            /** Also read the children of linked issues. Default true. */
-            followLinkedChildren: z.boolean().optional(),
-            /** Most linked Confluence pages per run. Default 20. */
-            maxPages: z.number().int().min(0).max(100).optional(),
+            acceptanceCriteriaField: z.string().min(1).optional().describe("The field that holds acceptance criteria, by id or name. Default: a field named like acceptance criteria, else the criteria in the description."),
+            extraFields: z.array(z.string().min(1)).optional().describe("More text fields to read into each requirement, by id or name."),
+            maxDepth: z.number().int().min(0).max(5).optional().describe("Levels of child issues read below each input issue (epic, story, sub-task). Default 3."),
+            maxIssues: z.number().int().min(1).max(500).optional().describe("The most issues read in one run. Default 100."),
+            followLinks: z.boolean().optional().describe("Read linked issues, one level out. Default true."),
+            followLinkedChildren: z.boolean().optional().describe("Also read the children of linked issues. Default true."),
+            maxPages: z.number().int().min(0).max(100).optional().describe("The most linked Confluence pages read in one run. Default 20."),
           })
           .strict()
-          .optional(),
+          .optional()
+          .describe("How requirements are read from Jira. Every key has a default."),
       })
       .strict()
-      .optional(),
+      .optional()
+      .describe("Jira and Confluence Cloud. Needed by every workflow that reads requirements."),
 
     xray: z
       .object({
-        /** The API key's client id, or a secret reference to it. */
-        clientId: z.string().min(1),
-        clientSecret: secretRef,
-        /** Jira project the tests are created in. */
-        projectKey: z.string().regex(/^[A-Z][A-Z0-9_]+$/),
-        /** Xray Cloud region URL; default https://xray.cloud.getxray.app. */
-        baseUrl: httpsUrl.optional(),
-        /** Jira priority name for each test priority; priorities left out are not set. */
-        priorities: z.object({ P1: z.string().min(1), P2: z.string().min(1), P3: z.string().min(1), P4: z.string().min(1) }).partial().strict().optional(),
-        /** Jira link type from each test to its requirement. Default "Test" (tests / is tested by). */
-        linkType: z.string().min(1).max(100).default("Test"),
-        /**
-         * Attach Playwright's screenshots (`screenshot: 'on'` or
-         * 'only-on-failure' in its config) to the tests of a Test Execution,
-         * passed or failed (Tarek, 7 Nov 2026). Off by default: a screenshot
-         * can't be masked, so what the page showed (names, record data) goes
-         * to Xray as it is.
-         */
-        attachScreenshots: z.boolean().default(false),
-        /**
-         * The Test Execution's own start and end date fields, which Xray
-         * doesn't set from the results in this import: Jira custom field ids,
-         * with each field's type (a date field takes the UTC day only).
-         */
+        clientId: z.string().min(1).describe("The Xray API key's client id, or a secret reference to it."),
+        clientSecret: secretRef.describe("The Xray API key's client secret, as a secret reference."),
+        projectKey: z.string().regex(/^[A-Z][A-Z0-9_]+$/).describe("The Jira project the tests are created in, such as QA."),
+        baseUrl: httpsUrl.optional().describe("The Xray Cloud region's URL. Default https://xray.cloud.getxray.app."),
+        priorities: z
+          .object({
+            P1: z.string().min(1).describe("The Jira priority name for P1."),
+            P2: z.string().min(1).describe("The Jira priority name for P2."),
+            P3: z.string().min(1).describe("The Jira priority name for P3."),
+            P4: z.string().min(1).describe("The Jira priority name for P4."),
+          })
+          .partial()
+          .strict()
+          .optional()
+          .describe("The Jira priority name for each test priority, such as `P1: Highest`. A priority left out isn't set."),
+        linkType: z.string().min(1).max(100).default("Test").describe("The Jira link type from each test to its requirement. Default Test (tests / is tested by)."),
+        // Decided with Tarek, 7 Nov 2026.
+        attachScreenshots: z
+          .boolean()
+          .default(false)
+          .describe("Attach Playwright's screenshots to the tests of a Test Execution, passed or failed. Off by default: a screenshot can't be masked, so what the page showed (names, record data) goes to Xray as it is."),
         executionDates: z
-          .object({ start: executionDateField.optional(), end: executionDateField.optional() })
+          .object({
+            start: executionDateField.optional().describe("The field for the execution's start."),
+            end: executionDateField.optional().describe("The field for the execution's end."),
+          })
           .strict()
           .refine((d) => !d.start || !d.end || d.start.field !== d.end.field, "start and end must be different fields")
-          .optional(),
+          .optional()
+          .describe("The Test Execution's own start and end date fields, which Xray doesn't set from the results: Jira custom fields, with each field's type."),
       })
       .strict()
-      .optional(),
+      .optional()
+      .describe("Xray Cloud, where test cases and Test Executions are written."),
 
     git: z
       .object({
-        platform: z.enum(["github", "gitlab", "azure-devops"]),
-        repo: z.string().min(1),
-        token: secretRef,
-        /** The REST API root, https only: https://HOST/api/v3 on GitHub Enterprise Server. */
-        baseUrl: httpsUrl.optional(),
+        platform: z.enum(["github", "gitlab", "azure-devops"]).describe("Where the repository is hosted."),
+        repo: z.string().min(1).describe("owner/name on GitHub, organization/project/repository on Azure DevOps, the project's full path (group/subgroup/project) on GitLab."),
+        token: secretRef.describe("A token that can read pull requests and open one, as a secret reference."),
+        baseUrl: httpsUrl.optional().describe("The REST API root for a self-hosted server, such as https://HOST/api/v3 on GitHub Enterprise Server. Default: the cloud service."),
       })
       .strict()
-      .optional(),
+      .optional()
+      .describe("Your git host: read for pull request context, and used to open pull requests from CI."),
 
-    /**
-     * Salesforce sign-in for the explorer and generated tests (S2-3): the JWT
-     * bearer flow of an External Client App, one user per role. Nothing is stored:
-     * each sign-in mints a single-use frontdoor URL.
-     */
     salesforce: z
       .object({
-        /** The org's My Domain URL, e.g. https://acme--uat.sandbox.my.salesforce.com. */
-        baseUrl: httpsUrl,
-        auth: z.literal("jwt").default("jwt"),
-        /** https://login.salesforce.com, or https://test.salesforce.com for a sandbox. */
-        loginUrl: httpsUrl.default("https://login.salesforce.com"),
-        /** The assertion's audience. Default: https://test.salesforce.com for test.salesforce.com and sandbox My Domains, else https://login.salesforce.com. */
-        audience: httpsUrl.optional(),
-        /** The app's consumer key, or a secret reference to it. */
-        clientId: z.string().min(1),
-        /** The app's private key (PEM), as a secret reference. Or give privateKeyFile. */
-        privateKey: secretRef.optional(),
-        /** Path to the private key file (PEM), outside the repo, or a secret reference holding the path. The file holds the secret, not this setting. */
+        baseUrl: httpsUrl.describe("The org's My Domain URL, such as https://acme--uat.sandbox.my.salesforce.com."),
+        auth: z.literal("jwt").default("jwt").describe("How users sign in. Only jwt: the OAuth JWT bearer flow, which no MFA prompt stops."),
+        loginUrl: httpsUrl.default("https://login.salesforce.com").describe("https://login.salesforce.com, or https://test.salesforce.com for a sandbox."),
+        audience: httpsUrl.optional().describe("The JWT assertion's audience. Default: https://test.salesforce.com for test.salesforce.com and sandbox My Domains, else https://login.salesforce.com."),
+        clientId: z.string().min(1).describe("The External Client App's consumer key, or a secret reference to it."),
+        privateKey: secretRef.optional().describe("The app's private key (PEM), as a secret reference. Give this or privateKeyFile."),
         privateKeyFile: z
           .string()
           .min(1)
           .max(1000)
           .refine((v) => !/-----BEGIN|[\r\n]/.test(v), "a path to the key file, not the key itself (use privateKey: ${env:NAME} for the key)")
-          .optional(),
-        /** The Salesforce username for each role, e.g. StoreManager-FRA: user@acme.com.uat, or a secret reference. */
+          .optional()
+          .describe("The path to the private key file (PEM), outside the repo, or a secret reference holding the path. Give this or privateKey."),
         users: z
           .record(z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,59}$/, "a role name: letters, digits, _ . -"), z.string().min(1).max(200))
-          .refine((u) => Object.keys(u).length > 0, "name at least one user"),
+          .refine((u) => Object.keys(u).length > 0, "name at least one user")
+          .describe("The Salesforce username for each role, such as `StoreManager-FRA: user@acme.com.uat`, or a secret reference. At least one."),
       })
       .strict()
       .refine((s) => (s.privateKey === undefined) !== (s.privateKeyFile === undefined), { message: "give exactly one of privateKey or privateKeyFile", path: ["privateKey"] })
-      .optional(),
+      .optional()
+      .describe("Salesforce sign-in for `explore` and the generated tests: the JWT bearer flow of an External Client App, one user per role. Nothing is stored: each sign-in makes a single-use URL."),
 
     models: z
       .object({
-        default: modelId,
-        /** Narrows the shipped catalog. A model outside the catalog is allowed, with a doctor warning. */
-        allowed: z.array(modelPattern).min(1).optional(),
-        workflows: z.record(z.string(), modelId).optional(),
-        keys: z.partialRecord(z.enum(PROVIDERS), secretRef).optional(),
-        /** Base URLs for OpenRouter or a LiteLLM proxy. */
-        endpoints: z.partialRecord(z.enum(PROVIDERS), anyUrl).optional(),
+        default: modelId.describe("The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5, unless models.workflows or --model names another."),
+        allowed: z.array(modelPattern).min(1).optional().describe("The models that may run, as provider:model or provider:*. A model outside the shipped catalog runs, with a doctor warning."),
+        workflows: z.record(z.string(), modelId).optional().describe("A model for one workflow, by workflow id, such as `scripts: anthropic:claude-opus-5-5`."),
+        keys: z.partialRecord(z.enum(PROVIDERS), secretRef).optional().describe("The API key for each provider, as a secret reference. Default: the provider's usual variable, such as ANTHROPIC_API_KEY."),
+        endpoints: z.partialRecord(z.enum(PROVIDERS), anyUrl).optional().describe("The base URL for a provider: OpenRouter, or your LiteLLM gateway."),
       })
       .strict()
-      .optional(),
+      .optional()
+      .describe("The models that answer from the CLI and CI. In an IDE, the IDE's own model answers (docs/models.md)."),
 
     masking: z
       .object({
-        restoreOnWrite: z.boolean().default(false),
-        detectors: z.array(z.enum(["email", "phone", "iban", "card", "national-id", "name", "address", "ip"])).optional(),
-        /** Fields always replaced whole, by source: `jira: [customfield_10042, "Customer phone"]`. */
-        fields: z.record(z.string(), z.array(z.string().min(1))).optional(),
-        /** Languages for finding names that no people field lists. Default: all nine. */
-        languages: z.array(z.enum(["en", "fr", "es", "de", "pt", "nl", "it", "ar", "zh"])).optional(),
-        presidio: z.object({ url: anyUrl.nullable() }).strict().optional(),
+        restoreOnWrite: z.boolean().default(false).describe("Put the real values back into what is written to Xray and Confluence, on an approved write. Off: they receive the tokens as they are."),
+        detectors: z
+          .array(z.enum(["email", "phone", "iban", "card", "national-id", "name", "address", "ip"]))
+          .optional()
+          .describe("The detectors that run. Default: all. `address` is accepted but has no detector yet."),
+        fields: z
+          .record(z.string(), z.array(z.string().min(1)))
+          .optional()
+          .describe('Fields always replaced whole, by source, such as `jira: [customfield_10042, "Customer phone"]`.'),
+        languages: z
+          .array(z.enum(["en", "fr", "es", "de", "pt", "nl", "it", "ar", "zh"]))
+          .optional()
+          .describe("The languages whose name lists find names that no people field lists. Default: all nine."),
+        presidio: z
+          .object({ url: anyUrl.nullable().describe("The Presidio analyzer's URL.") })
+          .strict()
+          .optional()
+          .describe("Accepted and checked by doctor, but nothing sends text to Presidio yet."),
       })
       .strict()
-      .default(() => ({ restoreOnWrite: false })),
+      .default(() => ({ restoreOnWrite: false }))
+      .describe("How personal data is masked before a model sees it (docs/security.md)."),
 
     policy: z
       .object({
         writes: z
           .object({
-            xray: writePolicy.default("ask"),
-            confluence: writePolicy.default("ask"),
-            testCode: writePolicy.default("ask"),
-            jira: writePolicy.default("deny"),
-            /** Running the commands the framework profile lists (tests, type check) in your repo. In CI, anything but deny allows. */
-            commands: writePolicy.default("ask"),
+            xray: writePolicy.default("ask").describe("Creating and updating test cases and Test Executions. In CI, ask is denied."),
+            confluence: writePolicy.default("ask").describe("Publishing a document. In CI, ask is denied."),
+            testCode: writePolicy.default("ask").describe("Writing or deleting files in your repo. In CI, anything but deny leaves the code as a pull request, never a push."),
+            jira: writePolicy.default("deny").describe("Reserved: nothing writes to Jira."),
+            commands: writePolicy.default("ask").describe("Running the commands the framework profile lists (tests, type check) in your repo. In CI, anything but deny allows."),
           })
           .strict()
           // Factory defaults: each parse gets its own object, so a caller can't change another's defaults.
-          .default(() => ({ xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const, commands: "ask" as const })),
+          .default(() => ({ xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const, commands: "ask" as const }))
+          .describe("allow, ask or deny for each target."),
       })
       .strict()
-      .default(() => ({ writes: { xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const, commands: "ask" as const } })),
+      .default(() => ({ writes: { xray: "ask" as const, confluence: "ask" as const, testCode: "ask" as const, jira: "deny" as const, commands: "ask" as const } }))
+      .describe("What Agent-QA may write outside its run folder, and what it asks you first (docs/security.md)."),
 
     harness: z
       .object({
         sources: z
           .array(
             z.union([
-              z.object({ fixtures: z.string().min(1) }).strict(),
-              z.object({ jira: z.object({ jql: z.string().min(1) }).strict() }).strict(),
+              z.object({ fixtures: z.string().min(1).describe("A folder of harness cases.") }).strict(),
+              z.object({ jira: z.object({ jql: z.string().min(1).describe("A JQL filter.") }).strict().describe("Accepted, but skipped for now: a Jira source has no known seeds to check.") }).strict(),
             ]),
           )
-          .min(1),
-        seededPersonalData: z.string().min(1).optional(),
+          .min(1)
+          .describe("Where the cases come from: `- fixtures: path/to/cases`."),
+        seededPersonalData: z.string().min(1).optional().describe("A file of the planted values to look for. Default: the shipped seeds."),
       })
       .strict()
-      .optional(),
+      .optional()
+      .describe("Your own cases for `agent-qa harness`. Without this section, it runs the shipped synthetic cases (docs/harness.md)."),
 
     playwright: z
       .object({
-        baseUrl: anyUrl.default("http://localhost:3000"),
-        testDir: z.string().min(1).default("tests"),
-        profile: z.string().min(1).default(".agent-qa/framework-profile.json"),
+        baseUrl: anyUrl.default("http://localhost:3000").describe("A local app for `explore` to drive when there is no salesforce section."),
+        testDir: z.string().min(1).default("tests").describe("Not used: the reviewed framework profile says where the tests are."),
+        profile: z.string().min(1).default(".agent-qa/framework-profile.json").describe("Not used: the reviewed profile is always agent-qa.profile.json at the project root."),
       })
       .strict()
-      .optional(),
+      .optional()
+      .describe("A local web app, for `explore` without Salesforce."),
   })
-  .strict();
+  .strict()
+  .describe("agent-qa.yaml: Agent-QA's settings. Secrets appear only as ${env:NAME} or ${keychain:NAME} references.");
 
 /** Config as written (defaults not yet applied). */
 export type ConfigInput = z.input<typeof configSchema>;

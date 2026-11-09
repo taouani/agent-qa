@@ -70,7 +70,7 @@ atlassian:
   token: ${env:ATLASSIAN_TOKEN}
   confluence:
     spaceKey: QA
-    parentPageId: "123456"   # optional: without it the page goes at the top of the space
+    parentPageId: "123456"   # optional: without it, Confluence places the page in the space (under its home page)
 ```
 
 Then run with `publish: confluence` (or `--publish confluence`). After the review, the `publish` step asks first:
