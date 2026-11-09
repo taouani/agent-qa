@@ -116,20 +116,25 @@ export default tseslint.config(
         ...Object.keys(allowed)
           .filter((t) => t !== "root")
           .map((type) => ({ type, pattern: `src/${type}` })),
-        { type: "root", pattern: "src/index.ts", mode: "full" },
       ],
+      // The public entry point is one file, not a folder, so it is a file category.
+      "boundaries/files": [{ category: "root", pattern: "src/index.ts" }],
     },
     rules: {
       "no-restricted-syntax": restrictedSyntax(true),
       "no-restricted-imports": "off",
       "@typescript-eslint/no-restricted-imports": restrictedImports(true),
       "boundaries/no-unknown-files": "error",
-      "boundaries/element-types": [
+      "boundaries/dependencies": [
         "error",
         {
           default: "disallow",
-          rules: Object.entries(allowed).map(([from, allow]) => ({ from, allow })),
-          message: "${file.type} must not import ${dependency.type} (see the module boundaries in eslint.config.js)",
+          policies: Object.entries(allowed).map(([from, allow]) => ({
+            from: from === "root" ? { file: { categories: "root" } } : { element: { type: from } },
+            allow: { to: { element: { types: allow } } },
+            ...(from === "root" ? { message: "src/index.ts must not import {{ to.element.type }} (see the module boundaries in eslint.config.js)" } : {}),
+          })),
+          message: "{{ from.element.type }} must not import {{ to.element.type }} (see the module boundaries in eslint.config.js)",
         },
       ],
     },
