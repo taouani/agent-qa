@@ -1,12 +1,13 @@
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
-import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, weeklyRates, type KeptRate, type RunnableRate, type WeekRates } from "../harness/index.js";
+import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, weeklyRates, dashboardData, renderDashboard, type KeptRate, type RunnableRate, type WeekRates } from "../harness/index.js";
 import { ApiDriver, HEADLESS_AGENTS, HeadlessDriver, ModelConfigError, modelName, StaticDriver, type HeadlessAgent, type ModelDriver } from "../llm/index.js";
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
+import { DashboardFileError, writeDashboard, writeHarnessReport } from "./report-files.js";
 import { initCommand, MCP_HOSTS, type McpHost } from "./init.js";
 import { runCommand } from "./run.js";
 
@@ -158,7 +159,8 @@ export function buildProgram(): Command {
     .option("--json", "print the full JSON report")
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (opts: { json?: boolean; cwd?: string; model?: string; headless?: string; pipeline: string; browser?: string | true; headed?: boolean }) => {
-      const root = resolve(opts.cwd ?? process.cwd());
+      // From a subfolder too, as for report, so the dashboard finds the harness's last report.
+      const root = opts.cwd ? resolve(opts.cwd) : projectRoot(process.cwd(), process.env);
       // Exit 1 means a case failed; exit 2 means the harness couldn't run (bad setup, or nothing to test).
       const setupError = (message: string) => {
         process.stderr.write(`agent-qa harness: ${message.split(root).join(".")}\n`);
@@ -226,6 +228,10 @@ export function buildProgram(): Command {
         if (error instanceof HarnessCaseError) return setupError(error.message);
         throw error;
       }
+      // Kept for the dashboard (agent-qa report --html): seeds by id and kind only, never a value.
+      await writeHarnessReport(root, report).catch((error: unknown) => {
+        if (error instanceof DashboardFileError) process.stderr.write(`note: ${error.message.split(root).join(".")}\n`);
+      });
       // From the project's own runs, where people reviewed the cases; the harness's runs never count.
       let kept: KeptRate | undefined;
       let runnable: RunnableRate | undefined;
@@ -267,8 +273,9 @@ export function buildProgram(): Command {
       return n;
     }, 8)
     .option("--json", "print the rates as JSON")
+    .option("--html [file]", "also write the dashboard, one HTML file with no network call (default: .agent-qa/report.html)")
     .option("--cwd <dir>", "project folder (default: the current folder)")
-    .action(async (opts: { weeks: number; json?: boolean; cwd?: string }) => {
+    .action(async (opts: { weeks: number; json?: boolean; html?: string | true; cwd?: string }) => {
       // From a subfolder too: the project is where agent-qa.yaml is, as for run.
       const root = opts.cwd ? resolve(opts.cwd) : projectRoot(process.cwd(), process.env);
       const own = new RunStore(runsDirOf(process.env) ?? join(root, ".agent-qa", "runs"));
@@ -281,14 +288,27 @@ export function buildProgram(): Command {
         process.exitCode = 2;
         return;
       }
-      if (opts.json) {
-        process.stdout.write(JSON.stringify({ targets: RATE_TARGETS, keptRate: kept, runnableRate: runnable, weeks }, null, 2) + "\n");
-        return;
+      // The rates first: a dashboard that can't be written doesn't take the report with it.
+      if (opts.json) process.stdout.write(JSON.stringify({ targets: RATE_TARGETS, keptRate: kept, runnableRate: runnable, weeks }, null, 2) + "\n");
+      else {
+        process.stdout.write(`${keptLine(kept)}\n${runnableLine(runnable)}\n`);
+        if (weeks.length) process.stdout.write(`\n${weeksTable(weeks)}\n`);
+        if (weeks.length && kept.unreadableRuns + runnable.unreadableRuns > 0) process.stdout.write("(the weeks leave out the unreadable records the totals name)\n");
+        process.stdout.write(`\ntargets: ${RATE_TARGETS.kept * 100}% kept, ${RATE_TARGETS.runnable * 100}% runnable (see docs/rates.md)\n`);
       }
-      process.stdout.write(`${keptLine(kept)}\n${runnableLine(runnable)}\n`);
-      if (weeks.length) process.stdout.write(`\n${weeksTable(weeks)}\n`);
-      if (weeks.length && kept.unreadableRuns + runnable.unreadableRuns > 0) process.stdout.write("(the weeks leave out the unreadable records the totals name)\n");
-      process.stdout.write(`\ntargets: ${RATE_TARGETS.kept * 100}% kept, ${RATE_TARGETS.runnable * 100}% runnable (see docs/rates.md)\n`);
+      if (opts.html !== undefined) {
+        const file = opts.html === true ? join(root, ".agent-qa", "report.html") : resolve(opts.html);
+        try {
+          const data = await dashboardData(own, { harnessDir: join(root, ".agent-qa", "harness"), targets: RATE_TARGETS, weeks: Math.max(opts.weeks, 26) });
+          await writeDashboard(file, renderDashboard(data), opts.html === true ? join(root, ".agent-qa") : undefined);
+        } catch (error) {
+          const why = error instanceof DashboardFileError ? error.message.split(root).join(".") : `the dashboard couldn't be written (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error))})`;
+          process.stderr.write(`agent-qa report: ${why}\n`);
+          process.exitCode = 2;
+          return;
+        }
+        (opts.json ? process.stderr : process.stdout).write(`dashboard: ${relativeOr(root, file)}\n`);
+      }
     });
   program
     .command("mcp")
@@ -338,6 +358,12 @@ export function runnableLine(r: RunnableRate): string {
   const apart = [r.unproven ? `${r.unproven} passed once but weren't run again` : "", r.defects ? `${r.defects} stopped on a real defect` : "", r.environment ? `${r.environment} on the environment` : ""].filter(Boolean).join(", ");
   const rest = [r.unstable ? `${r.unstable} unstable` : "", r.failing ? `${r.failing} failing` : ""].filter(Boolean).join(", ");
   return `runnable rate: ${(r.rate * 100).toFixed(1)}% (${r.runnable} of ${r.cases - r.defects - r.environment - r.unproven} case(s) pass again and again${rest ? `; ${rest}` : ""}), each case by its latest of ${r.runs} run(s)${apart ? `; left out: ${apart}` : ""}${waiting ? `; not counted: ${waiting}` : ""}`;
+}
+
+/** A path from the project folder when it is inside it, so the home folder isn't printed. */
+function relativeOr(root: string, file: string): string {
+  const rel = relative(root, file);
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : file;
 }
 
 /** What the final plan aims for, after the first release: 95% of cases kept as written, 90% of generated tests runnable. */
