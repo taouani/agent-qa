@@ -78,15 +78,3 @@ jobs:
         run: |
           TGZ=$(npm pack --pack-destination "$RUNNER_TEMP" --silent | tail -n 1)
           node scripts/install-smoke.mjs "$RUNNER_TEMP/$TGZ"
-
-  # A high or critical advisory in a runtime dependency fails the build (docs/security.md
-  # lists the moderate ones and why they stay). Development tools aren't shipped to users.
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm audit --omit=dev --audit-level=high

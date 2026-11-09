@@ -30,12 +30,17 @@ Before any text reaches a model, Agent-QA masks personal data and puts tokens in
 - **The vault.**
   - Each run's tokens map back to the real values in that run's vault: a file under `.agent-qa/vault/`.
   - It is encrypted with AES-256-GCM and bound to the run's id.
-  - It expires 30 days after its first save.
+  - It can't be used after 30 days from its first save. Expired vault files are deleted the next time Agent-QA opens a vault in that project. To remove every vault at once, delete `.agent-qa/vault/`.
   - The vault never leaves the machine, and `.agent-qa/` is kept out of git (`agent-qa init` adds it to `.gitignore`, and `agent-qa doctor` checks it).
-- **The vault key** is in your OS keychain: macOS Keychain, Windows Credential Manager, or Secret Service on Linux. Where there is no keychain, such as a CI runner, it comes from `AGENT_QA_VAULT_KEY`, which you keep as a CI secret. Losing the key makes old vaults unreadable, but nothing else breaks.
-- **Real values come back only on a write you approved,** and only with `masking.restoreOnWrite: true`. With it off (the default), Xray and Confluence receive the tokens as they are.
-- **The masking report.** Each run writes `masking-report.json`: how many values each detector replaced, by field. It holds counts, never the values.
-- **Presidio.** `masking.presidio` is accepted in the config and checked by `doctor`, but nothing sends text to it yet.
+- **The vault key** comes from `AGENT_QA_VAULT_KEY` when that is set (CI, where you keep it as a secret). Otherwise it is in your OS keychain: macOS Keychain, Windows Credential Manager, or Secret Service on Linux. The first run creates it. Losing the key makes old vaults unreadable and changes every path token. Nothing else breaks.
+- **Where real values come back:**
+  - **Xray and Confluence:** only with `masking.restoreOnWrite: true`, on a write that was approved. With it off (the default), they receive the tokens as they are.
+  - **Your test files:** always. An edited file gets back the values it held before, from the vault. Only the tokens that came from that file are restored.
+  - **The browser in `explore`:** it acts on the real page. The model sees only the masked snapshot.
+- **The masking report.** A run that reads Jira or Confluence writes `masking-report.json`: how many values each detector replaced, by field. It holds counts, never the values.
+- **Not used yet:**
+  - `masking.presidio` is accepted in the config and checked by `doctor`, but nothing sends text to it.
+  - `address` is accepted in `masking.detectors`, but there is no address detector yet: addresses aren't masked unless a field holding them is listed in `masking.fields`.
 
 **Where masking stops.** Detectors find what they know. A personal detail written in free text that no pattern or name list matches is sent as it is. Examples are a nickname, an unusual name in a language outside the nine, or "the manager of the Lyon store". Treat masking as a strong reduction, not a guarantee.
 
@@ -56,15 +61,24 @@ Every write outside the run folder goes through one policy layer. `policy.writes
 | `commands` | ask | Running the commands your framework profile lists (tests, type check) |
 | `jira` | deny | Reserved |
 
-- **`ask` means the person.** In an IDE that can ask directly, Agent-QA shows its own prompt, which starts on "No". In a terminal, it asks there. The model can't answer for you: a model's "yes" is never a yes.
-- **In CI, nobody is asked.** `ask` is denied, except for `commands`. Test code leaves only as a pull request, never as a push to a branch.
+- **`ask` means the person, and how strictly depends on the host:**
+  - **In a terminal**, Agent-QA asks you there.
+  - **In an IDE that supports MCP elicitation** (form mode), Agent-QA shows its own prompt, which starts on "No". Only your "Yes, go ahead" counts, whatever the model sent.
+  - **In an IDE without elicitation**, the model asks you in chat and submits your answer. Agent-QA can't tell your yes from the model's. The run's step file (for example `xray-push.md`) records what was submitted.
+
+  Where every write must be your own yes, use the CLI or a host with elicitation.
+- **In CI, nobody is asked.** `ask` is denied for Xray and Confluence. Test code under `ask` leaves as a pull request, never as a push to a branch. `commands` is allowed unless it is `deny`.
 - **Only the reviewed profile's commands run.** Agent-QA runs commands in your repo only from `agent-qa.profile.json`, which a person reviewed and saved. Nothing a model or a ticket says can add one.
-- **Changes are checked before they're written.** Every edit to a test file is shown as a diff first. Agent-QA refuses a write when the file changed since it read it, and it never writes `package.json`, lockfiles, `tsconfig`, `.env` or its own settings.
+- **Changes are checked before they're written.** Every edit to a test file is shown as a diff first. Agent-QA refuses a write when the file changed since it read it.
+  - Generated and edited test code never touches `package.json`, lockfiles, `tsconfig`, the Playwright config, `.env` or Agent-QA's own settings.
+  - Two writes outside test code, each one you asked for:
+    - starting a new repo (`profile --accept scaffold`) creates those project files, and only in a folder that has none;
+    - saving the profile writes `agent-qa.profile.json`.
 - **The audit log.** Each write request and its outcome (approved, done, declined, denied, failed) goes to `.agent-qa/audit.jsonl`, with a summary and never the data written. A write never runs if its entry can't be stored.
 
 ## Secrets
 
-- `agent-qa.yaml` holds only references: `${env:NAME}` or `${keychain:NAME}`. Loading the config fails if a value looks like a literal token or password.
+- `agent-qa.yaml` holds only references: `${env:NAME}` or `${keychain:NAME}`. Secret fields (tokens, client secrets, keys) must be references. Loading the config also fails if any value has the shape of a known token, or a key is named like a secret.
 - Secrets are read when they're used. They are kept out of artifacts, logs, error messages and model prompts.
 - `doctor` shows which references resolve, never their values. It shows paths relative to the project, so home folders and user names stay out of CI logs.
 
@@ -73,8 +87,8 @@ Every write outside the run folder goes through one policy layer. `policy.writes
 Jira tickets, Confluence pages, pull requests and web pages are written by other people. A model that reads them can be steered by what they say (prompt injection). Agent-QA is built so that this changes only the model's answer:
 
 - **Every answer is checked against a schema** before the run goes on. An answer that doesn't fit is refused.
-- **Agent-QA gives the model no tools.** From the CLI, the API model and headless agent CLIs only answer the step they were given: headless CLIs run with every agent tool off.
-- **Every write and command Agent-QA makes goes through the policy layer above,** with your yes.
+- **Agent-QA gives the model no tools.** From the CLI, the API model and headless agent CLIs only answer the step they were given: headless CLIs run with their tools turned off, and shell and file writes denied.
+- **Every write and command Agent-QA makes goes through the policy layer above.** That includes the IDE case without elicitation, where the yes comes through the model (see Writes).
 
 **In an IDE, the host's model also has the host's own tools.** Copilot agent mode, Claude Code and Cursor can read and edit files and run terminal commands on their own, under that host's approval settings. Agent-QA's masking and gates cover only what goes through Agent-QA. They don't stop the host's model from:
 
@@ -87,12 +101,13 @@ What a steered model *can* do is write poor or misleading test cases or code. Th
 
 ## Supply chain
 
-- **Signed packages.** Releases are published from GitHub Actions with npm provenance. On npmjs.com, the package page links each version to the commit and workflow that built it.
-- **A package that holds only what it should.** Before each release, CI checks the packed package against a file list and a size limit, and scans it for anything that looks like a private key or token (`npm run pack:check`). It also installs it fresh on Ubuntu and Windows.
-- **Dependency audit.** CI runs `npm audit --omit=dev --audit-level=high` on every pull request: a high or critical advisory in a runtime dependency fails the build. Moderate and low advisories are reviewed here instead:
+- **Provenance.** Releases are published from GitHub Actions with a signed npm provenance attestation. On npmjs.com, the package page links each version to the commit and workflow that built it.
+- **A package that holds only what it should.** On every pull request, including the "Version packages" pull request that each release comes from, CI runs `npm run pack:check`. It checks the packed package against a file list and a size limit, and scans it for private keys and common token shapes (npm, GitHub, Anthropic, AWS, Slack). CI also installs the package fresh on Ubuntu and Windows.
+- **Dependency audit.** CI runs `npm audit --omit=dev --audit-level=high` on every pull request and every Monday: a high or critical advisory in a runtime dependency fails the build. Moderate and low advisories are reviewed here instead:
 
   | Advisory | In | Why it stays |
   |---|---|---|
   | [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), minimatch denial of service (moderate) | `ts-morph` → `@ts-morph/common` | `ts-morph` runs on an in-memory file system over the files Agent-QA passes it, and never matches a glob, so the vulnerable code isn't reached. The fix needs a `ts-morph` release that moves to minimatch 11. |
+  | [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq), uuid buffer bounds (moderate) | `@cucumber/gherkin` → `@cucumber/messages` | The flaw is in uuid v3, v5 and v6 when given an output buffer. Agent-QA parses Gherkin with the incrementing id generator, which never calls uuid. The fixed `@cucumber/gherkin` (42) needs a newer Node 20 than `engines` allows today, so it waits for the Node floor to move. |
 
   Advisories in development tools (the test runner, lint) don't reach users. They are fixed in the normal course of work.

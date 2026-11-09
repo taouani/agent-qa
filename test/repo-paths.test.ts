@@ -86,6 +86,15 @@ describe("repo paths are masked like any other text the model sees (S5-4)", () =
     };
     const leaks = (value: unknown) => /marie|curie|jane|doe@/i.test(JSON.stringify(value));
 
+    it("deletes expired run vaults the first time it opens one", async () => {
+      await vaults.write("expired-run", JSON.stringify({ expiresAt: "2000-01-01T00:00:00.000Z" }));
+      await vaults.write("live-run", JSON.stringify({ expiresAt: "2999-01-01T00:00:00.000Z" }));
+      await seeded(data(), "run-purge");
+      expect(await vaults.read("expired-run")).toBeUndefined();
+      expect(await vaults.read("live-run")).toBeDefined();
+      await vaults.delete("live-run");
+    });
+
     it("lists, reads, edits and removes files by the paths the model was shown", async () => {
       const d = await seeded(data(), "run-1");
       const listing = await d.frameworkFiles("run-1");
