@@ -20,6 +20,22 @@ npx agent-qa report --weeks 12
 npx agent-qa report --json     # for a spreadsheet or your own chart
 ```
 
+## The dashboard
+
+```bash
+npx agent-qa report --html                 # writes .agent-qa/report.html
+npx agent-qa report --html rates.html      # or a file you name
+```
+
+This writes one HTML file that opens in any browser, offline. It has no script and makes no network call. It shows:
+
+- the kept and runnable rates against their targets, as tiles and as a week-by-week chart (at least 26 weeks);
+- the last `agent-qa harness` run, if one was saved in `.agent-qa/harness/last-report.json`;
+- how many values masking replaced, by detector (counts only, never a value);
+- the latest runs and what each one cost.
+
+The file sits in `.agent-qa/`, so git leaves it out. It holds run ids, Jira keys and test case counts, so share it only where those may go.
+
 Each week is an ISO week, Monday to Sunday in UTC, and a run counts in the week it was saved. Each week's runnable rate judges every case by its latest run in that week. That way a week shows what the team got that week, not where the suite stands now. Harness runs (`agent-qa harness`) never count, because they live in their own folder.
 
 ## Collect them over 4 to 6 sprints

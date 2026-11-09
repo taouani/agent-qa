@@ -31,3 +31,5 @@ export type { StandInApp, StandInRecord } from "./stand-in-app.js";
 export type { RunnableRate } from "./runnable-rate.js";
 export { isoWeek, weeklyRates } from "./weekly.js";
 export type { WeekRates } from "./weekly.js";
+export { DASHBOARD_GENERATOR, dashboardData, HARNESS_LAST_REPORT, lastHarnessReport, renderDashboard } from "./dashboard.js";
+export type { DashboardData } from "./dashboard.js";
