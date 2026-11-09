@@ -88,6 +88,8 @@ export function typedValue(value: string, chunk: string): Typing {
     if (ch === "\r" || ch === "\n") {
       const rest = text.slice(i + 1).replace(/^\n/, "");
       if (rest.length > 0) return { state: "refused", reason: "the pasted value has more than one line: pipe it in instead, as docs/getting-started.md shows" };
+      // A key file pasted in pieces would otherwise be kept as its first line only.
+      if (value.startsWith("-----BEGIN")) return { state: "refused", reason: "a key file can't be typed or pasted at the prompt: pipe it in instead, as docs/getting-started.md shows" };
       return { state: "done", value };
     }
     if (ch === "\u0003" || (ch === "\u0004" && value === "")) return { state: "cancelled" };

@@ -192,6 +192,8 @@ export async function resolveSecret(reference: string, sources: SecretSources = 
   const match = SECRET_REF.exec(reference);
   if (!match) throw new SecretError("<redacted>", "Not a secret reference (expected ${env:NAME} or ${keychain:NAME})");
   const [, kind, name] = match as unknown as [string, "env" | "keychain", string];
+  // The vault key decrypts every run's real values: no config field may send it anywhere.
+  if (name.toUpperCase() === "AGENT_QA_VAULT_KEY") throw new SecretError(reference, `${name} is the vault key, which config can't read`);
   if (kind === "env") {
     const value = (sources.env ?? process.env)[name];
     if (!value) throw new SecretError(reference, `Environment variable ${name} is not set`);

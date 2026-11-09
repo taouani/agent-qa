@@ -102,5 +102,7 @@ describe("typing a hidden value", () => {
     const t = typedValue("", "first-part\nsecond-part\n");
     expect(t.state).toBe("refused");
     expect(JSON.stringify(t)).not.toContain("part");
+    // A key file whose first line arrives alone.
+    expect(typedValue("", "-----BEGIN PRIVATE KEY-----\n").state).toBe("refused");
   });
 });

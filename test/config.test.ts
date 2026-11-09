@@ -219,6 +219,8 @@ describe("secret references", () => {
     await expect(resolveSecret("${keychain:x}", { env: {} })).rejects.toThrow(/Keychain entry x not found \(no keychain is available\), and no environment variable x is set. Store it with: agent-qa secret set x/);
     await expect(resolveSecret("${keychain:x}", { env: {}, keychain: async () => undefined })).rejects.toThrow(/isn't in the keychain/);
     await expect(resolveSecret("ghp_realsecretvalue", {})).rejects.toThrow(/Not a secret reference/);
+    await expect(resolveSecret("${env:AGENT_QA_VAULT_KEY}", { env: { AGENT_QA_VAULT_KEY: "k" } })).rejects.toThrow(/is the vault key/);
+    await expect(resolveSecret("${keychain:agent_qa_vault_key}", { env: { agent_qa_vault_key: "k" } })).rejects.toThrow(/is the vault key/);
     await expect(resolveSecret("ghp_realsecretvalue", {})).rejects.not.toThrow(/ghp_/);
   });
 });
