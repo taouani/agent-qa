@@ -49,7 +49,7 @@ agent-qa harness --browser            # the browser cases too
 
 ## Kept rate
 
-The report also gives the kept rate: of the test cases the model wrote, the share people kept as written in review. It comes from the `test-cases@1` artifact of every run in `.agent-qa/runs/` (or `AGENT_QA_RUNS_DIR`). Runs reviewed with `--yes` are left out, because nobody looked at those cases, and harness runs never count.
+The report also gives the kept rate: of the test cases the model wrote, the share people kept as written in review. It comes from the `test-cases@1` artifact of every run in `.agent-qa/runs/` (or `AGENT_QA_RUNS_DIR`). Runs reviewed with `--yes` are left out, because nobody looked at those cases, and harness runs never count. To see the rates on their own, week by week, run `agent-qa report` (see [rates.md](rates.md)).
 
 ## In CI
 

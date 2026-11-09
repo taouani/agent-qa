@@ -2,7 +2,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
-import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, type KeptRate, type RunnableRate } from "../harness/index.js";
+import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, weeklyRates, type KeptRate, type RunnableRate, type WeekRates } from "../harness/index.js";
 import { ApiDriver, HEADLESS_AGENTS, HeadlessDriver, ModelConfigError, modelName, StaticDriver, type HeadlessAgent, type ModelDriver } from "../llm/index.js";
 import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
@@ -259,6 +259,28 @@ export function buildProgram(): Command {
       if (report.summary.failed + report.summary.errors > 0) process.exitCode = 1;
     });
   program
+    .command("report")
+    .description("the kept rate (test cases kept as written in review) and the runnable rate (generated tests that pass again and again) from the project's own runs, overall and week by week; --yes reviews and harness runs never count")
+    .option("--weeks <n>", "how many weeks to show, the latest last", (v) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1 || n > 104) throw new InvalidArgumentError("a whole number from 1 to 104");
+      return n;
+    }, 8)
+    .option("--json", "print the rates as JSON")
+    .option("--cwd <dir>", "project folder (default: the current folder)")
+    .action(async (opts: { weeks: number; json?: boolean; cwd?: string }) => {
+      const root = resolve(opts.cwd ?? process.cwd());
+      const own = new RunStore(runsDirOf(process.env) ?? join(root, ".agent-qa", "runs"));
+      const [kept, runnable, weeks] = await Promise.all([keptRate(own), runnableRate(own), weeklyRates(own, opts.weeks)]);
+      if (opts.json) {
+        process.stdout.write(JSON.stringify({ targets: RATE_TARGETS, keptRate: kept, runnableRate: runnable, weeks }, null, 2) + "\n");
+        return;
+      }
+      process.stdout.write(`${keptLine(kept)}\n${runnableLine(runnable)}\n`);
+      if (weeks.length) process.stdout.write(`\n${weeksTable(weeks)}\n`);
+      process.stdout.write(`\ntargets: ${RATE_TARGETS.kept * 100}% kept, ${RATE_TARGETS.runnable * 100}% runnable (see docs/rates.md)\n`);
+    });
+  program
     .command("mcp")
     .description("start the MCP server for an IDE host (stdio)")
     .action(async () => {
@@ -306,6 +328,22 @@ export function runnableLine(r: RunnableRate): string {
   const apart = [r.unproven ? `${r.unproven} passed once but weren't run again` : "", r.defects ? `${r.defects} stopped on a real defect` : "", r.environment ? `${r.environment} on the environment` : ""].filter(Boolean).join(", ");
   const rest = [r.unstable ? `${r.unstable} unstable` : "", r.failing ? `${r.failing} failing` : ""].filter(Boolean).join(", ");
   return `runnable rate: ${(r.rate * 100).toFixed(1)}% (${r.runnable} of ${r.cases - r.defects - r.environment - r.unproven} case(s) pass again and again${rest ? `; ${rest}` : ""}), each case by its latest of ${r.runs} run(s)${apart ? `; left out: ${apart}` : ""}${waiting ? `; not counted: ${waiting}` : ""}`;
+}
+
+/** What the final plan aims for, after the first release: 95% of cases kept as written, 90% of generated tests runnable. */
+export const RATE_TARGETS = { kept: 0.95, runnable: 0.9 } as const;
+
+/** The rates week by week, one line each, the latest last. */
+export function weeksTable(weeks: readonly WeekRates[]): string {
+  const pct = (r: number | undefined) => (r === undefined ? "-" : `${(r * 100).toFixed(0)}%`);
+  const rows = weeks.map((w) => [
+    w.week,
+    w.kept.runs ? `${pct(w.kept.rate)} (${w.kept.kept}/${w.kept.generated} in ${w.kept.runs} run(s))` : "-",
+    w.runnable.runs ? `${pct(w.runnable.rate)} (${w.runnable.runnable}/${w.runnable.judged} judged in ${w.runnable.runs} run(s))` : "-",
+  ]);
+  const all = [["week", "kept", "runnable"], ...rows];
+  const width = [0, 1].map((i) => Math.max(...all.map((r) => r[i]!.length)));
+  return all.map((r) => `${r[0]!.padEnd(width[0]!)}  ${r[1]!.padEnd(width[1]!)}  ${r[2]}`.trimEnd()).join("\n");
 }
 
 /** One line on the kept rate of the project's reviewed runs. */

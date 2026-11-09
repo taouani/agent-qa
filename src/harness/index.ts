@@ -29,3 +29,5 @@ export { caseOutcomes, runnableRate } from "./runnable-rate.js";
 export { STAND_IN_START, standInRecords, startStandInApp } from "./stand-in-app.js";
 export type { StandInApp, StandInRecord } from "./stand-in-app.js";
 export type { RunnableRate } from "./runnable-rate.js";
+export { isoWeek, weeklyRates } from "./weekly.js";
+export type { WeekRates } from "./weekly.js";
