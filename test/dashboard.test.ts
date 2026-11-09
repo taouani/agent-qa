@@ -92,6 +92,9 @@ describe("the local dashboard (S5-3)", () => {
         await mkdir(join(other, ".agent-qa"), { recursive: true });
         await symlink(join(dir, "out"), join(other, ".agent-qa", "harness"));
         await expect(writeHarnessReport(other, { summary: {} })).rejects.toThrow(/is a symlink/);
+        await expect(writeDashboard(join(other, ".agent-qa", "report.html"), html, join(other, ".agent-qa"))).resolves.toBeUndefined();
+        await symlink(join(dir, "out"), join(dir, "fake-agent-qa"));
+        await expect(writeDashboard(join(dir, "fake-agent-qa", "report.html"), html, join(dir, "fake-agent-qa"))).rejects.toThrow(/is a symlink, so the dashboard/);
         expect(await readFile(join(dir, "victim.txt"), "utf8")).toBe("keep");
         await writeHarnessReport(join(dir, "fresh"), { summary: {} });
         expect(JSON.parse(await readFile(join(dir, "fresh", ".agent-qa", "harness", HARNESS_LAST_REPORT), "utf8"))).toEqual({ summary: {} });

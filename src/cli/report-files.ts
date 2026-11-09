@@ -50,8 +50,10 @@ export async function writeHarnessReport(root: string, report: unknown): Promise
   await replaceFile(file, JSON.stringify(report, null, 2) + "\n");
 }
 
-export async function writeDashboard(file: string, html: string): Promise<void> {
+/** `checkedFolder`: a folder of the project the file goes in (the default `.agent-qa`), refused when it's a symlink. */
+export async function writeDashboard(file: string, html: string, checkedFolder?: string): Promise<void> {
   if (extname(file).toLowerCase() !== ".html") throw new DashboardFileError(`${file}: the dashboard is written to an .html file only`);
+  if (checkedFolder !== undefined && (await isLink(checkedFolder))) throw new DashboardFileError(`${checkedFolder} is a symlink, so the dashboard isn't written there`);
   if (await isLink(file)) throw new DashboardFileError(`${file} is a symlink, so it's left as it is`);
   let before: string | undefined;
   try {

@@ -300,7 +300,7 @@ export function buildProgram(): Command {
         const file = opts.html === true ? join(root, ".agent-qa", "report.html") : resolve(opts.html);
         try {
           const data = await dashboardData(own, { harnessDir: join(root, ".agent-qa", "harness"), targets: RATE_TARGETS, weeks: Math.max(opts.weeks, 26) });
-          await writeDashboard(file, renderDashboard(data));
+          await writeDashboard(file, renderDashboard(data), opts.html === true ? join(root, ".agent-qa") : undefined);
         } catch (error) {
           const why = error instanceof DashboardFileError ? error.message.split(root).join(".") : `the dashboard couldn't be written (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error))})`;
           process.stderr.write(`agent-qa report: ${why}\n`);
