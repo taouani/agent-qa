@@ -51,3 +51,30 @@ jobs:
         run: |
           node dist/cli/bin.js --version
           node -e "import('./dist/index.js').then((m) => console.log(m.VERSION))"
+
+  # A fresh install of the packed package, as a new user gets it (S5-7): what npm would
+  # publish is checked against a file list and size limits, then installed into an empty
+  # project, where --version, init, doctor --offline and the offline harness must work.
+  # Each step's time goes to the job summary (docs/getting-started.md, "How long it takes").
+  install:
+    name: install (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run pack:check
+      - name: Fresh install from the packed package
+        shell: bash
+        run: |
+          TGZ=$(npm pack --pack-destination "$RUNNER_TEMP" --silent | tail -n 1)
+          node scripts/install-smoke.mjs "$RUNNER_TEMP/$TGZ"

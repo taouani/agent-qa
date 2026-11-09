@@ -66,7 +66,7 @@ npm install
 npm run check      # typecheck, lint, test, build
 ```
 
-The source is split into modules under `src/`, and lint rules enforce which modules may import which. Only `src/data` may call the connectors, so every read goes through the masking gateway. See `eslint.config.js`.
+How releases go out: [docs/releasing.md](docs/releasing.md). The source is split into modules under `src/`, and lint rules enforce which modules may import which. Only `src/data` may call the connectors, so every read goes through the masking gateway. See `eslint.config.js`.
 
 ## License
 

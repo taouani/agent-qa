@@ -149,4 +149,4 @@ Measured on a clean Linux container with npm reachable, on 9 November 2026, from
 | `agent-qa init` | 1 s |
 | `agent-qa doctor` | 1 s (each network check waits at most 5 s) |
 
-The 10-minute goal leaves the rest for creating the API token and Xray key and for the first run. Not yet measured: Windows, and a company network. The release's install check in CI (Ubuntu and Windows) and the release live check will time those.
+The 10-minute goal leaves the rest for creating the API token and Xray key and for the first run. CI times the same steps on every pull request, on Ubuntu and Windows (the `install` jobs, in each run's summary). Not yet measured: a company network, which the release live check will time.
