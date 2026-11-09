@@ -53,6 +53,33 @@ From the PR #83 review (7 Nov 2026):
 
 From the PR #55 review (5 Nov 2026): a long test run inside one MCP `workflow_submit` can hit the host's own timeout. Agent-QA sends progress only when the host gives a progress token.
 
+## Masking across runs and machines
+
+From the PR #112 review (8 Nov 2026), on repo path tokens:
+- Path tokens come from the vault key, so CI and a laptop with different keys give the same file different tokens. Runs compared across them (a rerun's reuse of earlier cases) see different paths.
+- A name masked in one run can appear in clear in another run that uses a different vault, when only the second run's detectors miss it. Keeping the tokens each run showed would let later runs mask them too.
+- The real path of a test argument is found by replacing the token's text, which can also match inside a longer path part.
+- Review globs that a person writes with real names match the masked paths only when the name isn't masked.
+
+## Masking detectors
+
+- No address detector yet: `address` in `masking.detectors` does nothing, and an address is masked only through `masking.fields`.
+- `masking.presidio` is accepted and checked by doctor, but nothing sends text to it.
+
+## Audit log
+
+The audit log records what was asked and its outcome, but not who said yes. Recording how the answer came (Agent-QA's own prompt, MCP elicitation, or the model in chat) would let a reviewer tell a person's yes from a model's.
+
+## Release and repository
+
+From the slice 5 reviews (9 Nov 2026):
+- CODEOWNERS on `.github/workflows/` and `scripts/dco*.mjs`. A pull request runs its own workflow file, so only branch protection and code owners stop one from skipping its DCO step.
+- "Version packages" pull requests are opened with the workflow's own token, so GitHub runs no checks on them: CI is started by hand on `changeset-release/master`. A GitHub App token for the changesets step would run them, and the `install` jobs with them.
+- Move `@cucumber/gherkin` past the uuid advisory when the Node floor moves past 20.10, which its latest release needs.
+- `@playwright/test` stays at 1.49.1 as the oldest supported version; its advisory covers only `playwright install`. `esbuild`'s dev-server advisory doesn't apply (no dev server runs), and goes when tsup allows 0.28.
+- `playwright.testDir` and `playwright.profile` in `agent-qa.yaml` are read by nothing: the reviewed profile is always `agent-qa.profile.json`. Removing them is a breaking config change.
+- The lint message for an import of `src/index.ts` from inside `src` has an empty target name.
+
 ## Done or moved into a slice
 
 ### Healing existing scripts
