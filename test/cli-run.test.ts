@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { CLAUDE_CODE_SERVER, configTemplate, CURSOR_SERVER, initCommand, MCP_SERVER } from "../src/cli/init.js";
+import { CLAUDE_CODE_SERVER, configTemplate, CURSOR_SERVER, initCommand, MCP_SERVER, nextSteps, siteOf } from "../src/cli/init.js";
 import { EXIT, runCommand, type RunOptions } from "../src/cli/run.js";
 import { buildProgram } from "../src/cli/index.js";
 import type { JiraCollection, JiraInput, JiraIssue, XrayTest } from "../src/connectors/index.js";
@@ -363,6 +363,57 @@ describe("agent-qa init", () => {
     const program = buildProgram().exitOverride().configureOutput({ writeErr: () => {} });
     program.commands.forEach((c) => c.exitOverride().configureOutput({ writeErr: () => {} }));
     await expect(program.parseAsync(["node", "agent-qa", "init", "--host", "vscode,emacs"])).rejects.toThrow(/expected vscode, claude-code, cursor/);
+  });
+
+  it("asks a terminal only for the Jira site and the Xray key, and names the variables to set next", async () => {
+    const root = join(dir, "ask");
+    await mkdir(root);
+    const answers = ["not a site!", "http://acme.atlassian.net", "Acme", "qa project", "qa"];
+    const asked: string[] = [];
+    const ask = async (q: string) => (asked.push(q), answers.shift());
+    expect(await initCommand({ root, ask, platform: "win32", log: (l) => lines.push(l) })).toBe(0);
+    expect(asked).toHaveLength(5);
+    const config = configSchema.parse(parseYaml(await readFile(join(root, "agent-qa.yaml"), "utf8")));
+    expect(config.atlassian?.site).toBe("https://acme.atlassian.net");
+    expect(config.xray?.projectKey).toBe("QA");
+    const out = lines.join("\n");
+    expect(out).toContain("not a site! isn't a Jira Cloud site");
+    expect(out).toContain("http://acme.atlassian.net isn't a Jira Cloud site (it must be https://)");
+    expect(out).toContain("Set ATLASSIAN_EMAIL, ATLASSIAN_TOKEN, XRAY_CLIENT_ID, XRAY_CLIENT_SECRET, in PowerShell:");
+    expect(out).toContain("ATLASSIAN_TOKEN is an API token from https://id.atlassian.com/manage-profile/security/api-tokens.");
+    expect(out).toContain('$env:XRAY_CLIENT_SECRET = "..."');
+    expect(out).toContain("also ANTHROPIC_API_KEY");
+
+    // Enter skips Xray; an interrupt writes nothing.
+    const skip = join(dir, "skip");
+    await mkdir(skip);
+    const more = ["acme.atlassian.net/jira/your-work", ""];
+    expect(await initCommand({ root: skip, ask: async () => more.shift(), platform: "linux", log: () => {} })).toBe(0);
+    const text = await readFile(join(skip, "agent-qa.yaml"), "utf8");
+    expect(configSchema.parse(parseYaml(text)).xray).toBeUndefined();
+    expect(nextSteps(text, "linux")).toContain("       export ATLASSIAN_TOKEN=...");
+    expect(nextSteps(text, "linux").join("\n")).not.toContain("XRAY");
+    const stopped = join(dir, "stopped");
+    await mkdir(stopped);
+    expect(await initCommand({ root: stopped, ask: async () => undefined, log: () => {} })).toBe(2);
+    await expect(readFile(join(stopped, "agent-qa.yaml"), "utf8")).rejects.toThrow();
+
+    // Nobody to ask: the placeholder, and init says so.
+    const quiet = join(dir, "quiet");
+    await mkdir(quiet);
+    lines = [];
+    expect(await initCommand({ root: quiet, log: (l) => lines.push(l) })).toBe(0);
+    expect(lines[0]).toBe("agent-qa.yaml: written, with the placeholder site https://YOUR-SITE.atlassian.net: set atlassian.site to yours");
+  });
+
+  it("reads a Jira Cloud site the way people type it", () => {
+    expect(siteOf("acme")).toBe("https://acme.atlassian.net");
+    expect(siteOf(" acme.atlassian.net ")).toBe("https://acme.atlassian.net");
+    expect(siteOf("https://acme.atlassian.net/browse/ABC-1")).toBe("https://acme.atlassian.net");
+    expect(siteOf("http://insecure")).toBe("http://insecure");
+    expect(siteOf("")).toBeUndefined();
+    expect(siteOf("ftp://acme.atlassian.net")).toBeUndefined();
+    expect(siteOf("two words")).toBeUndefined();
   });
 
   it("refuses settings that don't make a valid config", async () => {
