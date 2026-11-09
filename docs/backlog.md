@@ -58,7 +58,7 @@ From the PR #55 review (5 Nov 2026): a long test run inside one MCP `workflow_su
 From the PR #112 review (8 Nov 2026), on repo path tokens:
 - Path tokens come from the vault key, so CI and a laptop with different keys give the same file different tokens. Runs compared across them (a rerun's reuse of earlier cases) see different paths.
 - A name masked in one run can appear in clear in another run that uses a different vault, when only the second run's detectors miss it. Keeping the tokens each run showed would let later runs mask them too.
-- The real path of a test argument is found by replacing the token's text, which can also match inside a longer path part.
+- The shown form of a test command's file filters is made by plain text replacement, which can also rewrite a longer path that contains a shorter one. Only what is shown and recorded is affected, never the command that runs.
 - Review globs that a person writes with real names match the masked paths only when the name isn't masked.
 
 ## Masking detectors
@@ -73,9 +73,10 @@ The audit log records what was asked and its outcome, but not who said yes. Reco
 ## Release and repository
 
 From the slice 5 reviews (9 Nov 2026):
+- Repository settings, for Tarek: protect `master` with the DCO and CI checks required (today nothing blocks a merge); turn on private vulnerability reporting, which SECURITY.md and the issue form rely on; and turn on sign-off for web-based commits, which CONTRIBUTING.md relies on.
 - CODEOWNERS on `.github/workflows/` and `scripts/dco*.mjs`. A pull request runs its own workflow file, so only branch protection and code owners stop one from skipping its DCO step.
 - "Version packages" pull requests are opened with the workflow's own token, so GitHub runs no checks on them: CI is started by hand on `changeset-release/master`. A GitHub App token for the changesets step would run them, and the `install` jobs with them.
-- Move `@cucumber/gherkin` past the uuid advisory when the Node floor moves past 20.10, which its latest release needs.
+- Move `@cucumber/gherkin` past the uuid advisory (fixed from 35 on). Releases 40 and later need import attributes (Node 20.10 or later); 39.1.0 with `@cucumber/messages` 32 is still CommonJS and should work on any Node 20. Try it.
 - `@playwright/test` stays at 1.49.1 as the oldest supported version; its advisory covers only `playwright install`. `esbuild`'s dev-server advisory doesn't apply (no dev server runs), and goes when tsup allows 0.28.
 - `playwright.testDir` and `playwright.profile` in `agent-qa.yaml` are read by nothing: the reviewed profile is always `agent-qa.profile.json`. Removing them is a breaking config change.
 - The lint message for an import of `src/index.ts` from inside `src` has an empty target name.
