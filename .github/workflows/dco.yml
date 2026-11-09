@@ -1,0 +1,26 @@
+name: DCO
+
+# Every commit of a pull request is signed off by its author (CONTRIBUTING.md).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node scripts/check-dco.mjs "$BASE" "$HEAD"
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # Agent-authored commits pass only on a maintainer's own pull request, from this repository.
+          MAINTAINER_PR: ${{ contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && github.event.pull_request.head.repo.full_name == github.repository }}
