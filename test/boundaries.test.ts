@@ -14,30 +14,30 @@ describe("module boundaries", () => {
   });
 
   it("forbids a front door importing connectors", async () => {
-    expect(await lint("src/cli/x.ts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
-    expect(await lint("src/mcp/x.ts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/cli/x.ts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/dependencies");
+    expect(await lint("src/mcp/x.ts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/dependencies");
   });
 
   it("forbids workflows bypassing the masked data service", async () => {
-    expect(await lint("src/workflows/x.ts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
-    expect(await lint("src/workflows/x.ts", 'export * from "../masking/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/workflows/x.ts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/dependencies");
+    expect(await lint("src/workflows/x.ts", 'export * from "../masking/index.js";\n')).toContain("boundaries/dependencies");
   });
 
   it("keeps core free of other modules", async () => {
-    expect(await lint("src/core/x.ts", 'export * from "../data/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/core/x.ts", 'export * from "../data/index.js";\n')).toContain("boundaries/dependencies");
   });
 
   it("keeps the public entry point away from connectors and masking", async () => {
-    expect(await lint("src/index.ts", 'export * from "./connectors/index.js";\n')).toContain("boundaries/element-types");
-    expect(await lint("src/index.ts", 'export * from "./masking/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/index.ts", 'export * from "./connectors/index.js";\n')).toContain("boundaries/dependencies");
+    expect(await lint("src/index.ts", 'export * from "./masking/index.js";\n')).toContain("boundaries/dependencies");
   });
 
   it("checks .js files too", async () => {
-    expect(await lint("src/cli/x.js", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/cli/x.js", 'export * from "../connectors/index.js";\n')).toContain("boundaries/dependencies");
   });
 
   it("checks .mts files too", async () => {
-    expect(await lint("src/cli/x.mts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/element-types");
+    expect(await lint("src/cli/x.mts", 'export * from "../connectors/index.js";\n')).toContain("boundaries/dependencies");
   });
 
   it("lets only the browser connector load CommonJS from the user's repo", async () => {
