@@ -141,12 +141,12 @@ That is `.vscode/mcp.json`. `.mcp.json` (Claude Code) and `.cursor/mcp.json` tak
 
 ## How long it takes
 
-Measured on a clean Linux container with npm reachable, on 9 November 2026, from the packed 2.0.0-alpha.2:
+Measured on 9 November 2026 from the packed 2.0.0-alpha.2, with npm reachable: on a clean Linux container, and on GitHub's Windows runner (Node 22):
 
-| Step | Time |
-|---|---|
-| `npm install` of the package (108 MB with its dependencies) | 5 to 11 s |
-| `agent-qa init` | 1 s |
-| `agent-qa doctor` | 1 s (each network check waits at most 5 s) |
+| Step | Linux | Windows |
+|---|---|---|
+| `npm install` of the package (108 MB with its dependencies) | 5 to 11 s | 76 s |
+| `agent-qa init` | 1 s | 1.4 s |
+| `agent-qa doctor` | 1 s | 1.9 s (offline) |
 
-The 10-minute goal leaves the rest for creating the API token and Xray key and for the first run. CI times the same steps on every pull request, on Ubuntu and Windows (the `install` jobs, in each run's summary). Not yet measured: a company network, which the release live check will time.
+Each network check of doctor waits at most 5 s. The npm install is the slow part on Windows: install once in the project (`npm install --save-dev sf-agent-qa@next`) rather than through `npx` each time. The 10-minute goal leaves the rest for creating the API token and Xray key and for the first run. CI times the same steps on every pull request, on Ubuntu and Windows (the `install` jobs, in each run's summary). Not yet measured: a company network, which the release live check will time.

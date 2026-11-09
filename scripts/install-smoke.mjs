@@ -21,9 +21,9 @@ const env = { ...process.env, CI: "" };
 const times = [];
 let failed = false;
 
-function step(name, cmd, args, check) {
+function step(name, cmd, args, check, input) {
   const start = Date.now();
-  const r = spawnSync(cmd, args, { cwd: project, env, encoding: "utf8", shell: win, timeout: 300_000 });
+  const r = spawnSync(cmd, args, { cwd: project, env, encoding: "utf8", shell: win, timeout: 300_000, ...(input === undefined ? {} : { input }) });
   const ms = Date.now() - start;
   let problem = r.error ? r.error.message : undefined;
   if (!problem) problem = check(r);
@@ -38,17 +38,18 @@ function step(name, cmd, args, check) {
 }
 
 const npm = win ? "npm.cmd" : "npm";
-const npx = win ? "npx.cmd" : "npx";
+// The installed bin itself, never npx: npx would fetch another package if the install failed.
+const bin = join(project, "node_modules", ".bin", win ? "agent-qa.cmd" : "agent-qa");
 step("npm install", npm, ["install", "--no-audit", "--no-fund", tgz], (r) => (r.status === 0 ? undefined : `exit ${r.status}`));
-step("agent-qa --version", npx, ["agent-qa", "--version"], (r) => (r.stdout.trim() === version ? undefined : `printed ${JSON.stringify(r.stdout.trim())}, expected ${version}`));
-step("agent-qa init", npx, ["agent-qa", "init", "--site", "acme", "--xray-project", "QA"], (r) => {
+step("agent-qa --version", bin, ["--version"], (r) => (r.stdout.trim() === version ? undefined : `printed ${JSON.stringify(r.stdout.trim())}, expected ${version}`));
+step("agent-qa init", bin, ["init", "--site", "acme", "--xray-project", "QA"], (r) => {
   if (r.status !== 0) return `exit ${r.status}`;
   const config = readFileSync(join(project, "agent-qa.yaml"), "utf8");
   if (!config.includes("site: https://acme.atlassian.net")) return "agent-qa.yaml doesn't have the site";
   if (!r.stderr.includes("Next:")) return "no next steps printed";
   return undefined;
 });
-step("agent-qa doctor --offline", npx, ["agent-qa", "doctor", "--offline", "--json"], (r) => {
+step("agent-qa doctor --offline", bin, ["doctor", "--offline", "--json"], (r) => {
   // Exit 1 is expected: no secrets are set here.
   let results;
   try {
@@ -59,7 +60,15 @@ step("agent-qa doctor --offline", npx, ["agent-qa", "doctor", "--offline", "--js
   const config = results.find((c) => c.id === "config");
   return config?.status === "pass" ? undefined : `config check: ${config?.status ?? "missing"}`;
 });
-step("agent-qa harness", npx, ["agent-qa", "harness"], (r) => (r.status === 0 ? undefined : `exit ${r.status}`));
+step("agent-qa harness", bin, ["harness"], (r) => (r.status === 0 ? undefined : `exit ${r.status}`));
+// The MCP server answers an initialize request on stdio, then exits when stdin closes.
+const initialize = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "install-smoke", version: "1" } } };
+step("agent-qa mcp (initialize)", bin, ["mcp"], (r) => {
+  const reply = r.stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return undefined; } }).find((m) => m?.id === 1);
+  return reply?.result?.serverInfo ? undefined : `no initialize result (exit ${r.status})`;
+}, JSON.stringify(initialize) + "\n");
+// The public API, as a library user imports it.
+step("import sf-agent-qa", process.execPath, ["--input-type=module", "-e", "const m = await import('sf-agent-qa'); console.log(m.VERSION);"], (r) => (r.stdout.trim() === version ? undefined : `VERSION is ${JSON.stringify(r.stdout.trim())} (exit ${r.status})`));
 
 const total = times.reduce((n, [, ms]) => n + ms, 0);
 console.log(`total ${(total / 1000).toFixed(1)} s on ${process.platform}, node ${process.version}`);

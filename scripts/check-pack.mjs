@@ -17,8 +17,16 @@ const ALLOWED = [
   /^dist\/[\w./-]+\.(js|js\.map|d\.ts)$/,
 ];
 /** Never in the package, whatever the list above allows. */
-const FORBIDDEN_PATH = /(^|\/)(\.agent-qa|\.env|vault|test|src)(\/|$)|\.(vault|pem|key|p12|pfx)$/i;
-const FORBIDDEN_TEXT = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bnpm_[A-Za-z0-9]{36}\b/, /\bghp_[A-Za-z0-9]{36}\b/, /\bsk-ant-[A-Za-z0-9_-]{20,}/];
+const FORBIDDEN_PATH = /^(src|test)\/|(^|\/)(\.agent-qa|\.env[^/]*)(\/|$)|\.(vault|pem|key|p12|pfx)$/i;
+const FORBIDDEN_TEXT = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bnpm_[A-Za-z0-9]{36}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{36}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{60,}/,
+  /\bsk-ant-[A-Za-z0-9_-]{20,}/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bxox[bpas]-[A-Za-z0-9-]{10,}/,
+];
 const MAX_PACKED = 2 * 1024 * 1024;
 const MAX_UNPACKED = 8 * 1024 * 1024;
 
