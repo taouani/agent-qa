@@ -4,14 +4,17 @@
   "properties": {
     "version": {
       "type": "number",
-      "const": 1
+      "const": 1,
+      "description": "The version of this file's format. Always 1."
     },
     "project": {
+      "description": "About the project.",
       "type": "object",
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "A name for the project. Not used by any workflow yet."
         }
       },
       "required": [
@@ -20,28 +23,35 @@
       "additionalProperties": false
     },
     "atlassian": {
+      "description": "Jira and Confluence Cloud. Needed by every workflow that reads requirements.",
       "type": "object",
       "properties": {
         "site": {
           "type": "string",
-          "format": "uri"
+          "format": "uri",
+          "description": "Your Jira Cloud site, such as https://acme.atlassian.net."
         },
         "email": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The email of the Atlassian account the API token belongs to. It is personal data: prefer ${env:ATLASSIAN_EMAIL}, so it stays out of git."
         },
         "token": {
           "type": "string",
-          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$",
+          "description": "The Atlassian API token, as a secret reference."
         },
         "confluence": {
+          "description": "Where `document` publishes to Confluence.",
           "type": "object",
           "properties": {
             "spaceKey": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The key of the space documents are published to."
             },
             "parentPageId": {
+              "description": "The id of the page that published documents go under. Without it, they go at the top of the space.",
               "type": "string",
               "minLength": 1
             }
@@ -52,13 +62,16 @@
           "additionalProperties": false
         },
         "jira": {
+          "description": "How requirements are read from Jira. Every key has a default.",
           "type": "object",
           "properties": {
             "acceptanceCriteriaField": {
+              "description": "The field that holds acceptance criteria, by id or name. Default: a field named like acceptance criteria, else the criteria in the description.",
               "type": "string",
               "minLength": 1
             },
             "extraFields": {
+              "description": "More text fields to read into each requirement, by id or name.",
               "type": "array",
               "items": {
                 "type": "string",
@@ -66,22 +79,27 @@
               }
             },
             "maxDepth": {
+              "description": "Levels of child issues read below each input issue (epic, story, sub-task). Default 3.",
               "type": "integer",
               "minimum": 0,
               "maximum": 5
             },
             "maxIssues": {
+              "description": "The most issues read in one run. Default 100.",
               "type": "integer",
               "minimum": 1,
               "maximum": 500
             },
             "followLinks": {
+              "description": "Read linked issues, one level out. Default true.",
               "type": "boolean"
             },
             "followLinkedChildren": {
+              "description": "Also read the children of linked issues. Default true.",
               "type": "boolean"
             },
             "maxPages": {
+              "description": "The most linked Confluence pages read in one run. Default 20.",
               "type": "integer",
               "minimum": 0,
               "maximum": 100
@@ -98,68 +116,84 @@
       "additionalProperties": false
     },
     "xray": {
+      "description": "Xray Cloud, where test cases and Test Executions are written.",
       "type": "object",
       "properties": {
         "clientId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The Xray API key's client id, or a secret reference to it."
         },
         "clientSecret": {
           "type": "string",
-          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$",
+          "description": "The Xray API key's client secret, as a secret reference."
         },
         "projectKey": {
           "type": "string",
-          "pattern": "^[A-Z][A-Z0-9_]+$"
+          "pattern": "^[A-Z][A-Z0-9_]+$",
+          "description": "The Jira project the tests are created in, such as QA."
         },
         "baseUrl": {
+          "description": "The Xray Cloud region's URL. Default https://xray.cloud.getxray.app.",
           "type": "string",
           "format": "uri"
         },
         "priorities": {
+          "description": "The Jira priority name for each test priority, such as `P1: Highest`. A priority left out isn't set.",
           "type": "object",
           "properties": {
             "P1": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The Jira priority name for P1."
             },
             "P2": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The Jira priority name for P2."
             },
             "P3": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The Jira priority name for P3."
             },
             "P4": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "description": "The Jira priority name for P4."
             }
           },
           "additionalProperties": false
         },
         "linkType": {
           "default": "Test",
+          "description": "The Jira link type from each test to its requirement. Default Test (tests / is tested by).",
           "type": "string",
           "minLength": 1,
           "maxLength": 100
         },
         "attachScreenshots": {
           "default": false,
+          "description": "Attach Playwright's screenshots to the tests of a Test Execution, passed or failed. Off by default: a screenshot can't be masked, so what the page showed (names, record data) goes to Xray as it is.",
           "type": "boolean"
         },
         "executionDates": {
+          "description": "The Test Execution's own start and end date fields, which Xray doesn't set from the results: Jira custom fields, with each field's type.",
           "type": "object",
           "properties": {
             "start": {
+              "description": "The field for the execution's start.",
               "type": "object",
               "properties": {
                 "field": {
                   "type": "string",
-                  "pattern": "^customfield_\\d+$"
+                  "pattern": "^customfield_\\d+$",
+                  "description": "The Jira custom field id, such as customfield_10505."
                 },
                 "type": {
                   "default": "datetime",
+                  "description": "`date` for a field that holds a day (the UTC day is written), `datetime` for a date and time.",
                   "type": "string",
                   "enum": [
                     "date",
@@ -173,14 +207,17 @@
               "additionalProperties": false
             },
             "end": {
+              "description": "The field for the execution's end.",
               "type": "object",
               "properties": {
                 "field": {
                   "type": "string",
-                  "pattern": "^customfield_\\d+$"
+                  "pattern": "^customfield_\\d+$",
+                  "description": "The Jira custom field id, such as customfield_10505."
                 },
                 "type": {
                   "default": "datetime",
+                  "description": "`date` for a field that holds a day (the UTC day is written), `datetime` for a date and time.",
                   "type": "string",
                   "enum": [
                     "date",
@@ -205,6 +242,7 @@
       "additionalProperties": false
     },
     "git": {
+      "description": "Your git host: read for pull request context, and used to open pull requests from CI.",
       "type": "object",
       "properties": {
         "platform": {
@@ -213,17 +251,21 @@
             "github",
             "gitlab",
             "azure-devops"
-          ]
+          ],
+          "description": "Where the repository is hosted."
         },
         "repo": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "owner/name on GitHub, organization/project/repository on Azure DevOps, the project's full path (group/subgroup/project) on GitLab."
         },
         "token": {
           "type": "string",
-          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
+          "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$",
+          "description": "A token that can read pull requests and open one, as a secret reference."
         },
         "baseUrl": {
+          "description": "The REST API root for a self-hosted server, such as https://HOST/api/v3 on GitHub Enterprise Server. Default: the cloud service.",
           "type": "string",
           "format": "uri"
         }
@@ -236,35 +278,43 @@
       "additionalProperties": false
     },
     "salesforce": {
+      "description": "Salesforce sign-in for `explore` and the generated tests: the JWT bearer flow of an External Client App, one user per role. Nothing is stored: each sign-in makes a single-use URL.",
       "type": "object",
       "properties": {
         "baseUrl": {
           "type": "string",
-          "format": "uri"
+          "format": "uri",
+          "description": "The org's My Domain URL, such as https://acme--uat.sandbox.my.salesforce.com."
         },
         "auth": {
           "default": "jwt",
+          "description": "How users sign in. Only jwt: the OAuth JWT bearer flow, which no MFA prompt stops.",
           "type": "string",
           "const": "jwt"
         },
         "loginUrl": {
           "default": "https://login.salesforce.com",
+          "description": "https://login.salesforce.com, or https://test.salesforce.com for a sandbox.",
           "type": "string",
           "format": "uri"
         },
         "audience": {
+          "description": "The JWT assertion's audience. Default: https://test.salesforce.com for test.salesforce.com and sandbox My Domains, else https://login.salesforce.com.",
           "type": "string",
           "format": "uri"
         },
         "clientId": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The External Client App's consumer key, or a secret reference to it."
         },
         "privateKey": {
+          "description": "The app's private key (PEM), as a secret reference. Give this or privateKeyFile.",
           "type": "string",
           "pattern": "^\\$\\{(env|keychain):([A-Za-z_][A-Za-z0-9_.-]*)\\}$"
         },
         "privateKeyFile": {
+          "description": "The path to the private key file (PEM), outside the repo, or a secret reference holding the path. Give this or privateKey.",
           "type": "string",
           "minLength": 1,
           "maxLength": 1000
@@ -279,7 +329,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
-          }
+          },
+          "description": "The Salesforce username for each role, such as `StoreManager-FRA: user@acme.com.uat`, or a secret reference. At least one."
         }
       },
       "required": [
@@ -290,13 +341,16 @@
       "additionalProperties": false
     },
     "models": {
+      "description": "The models that answer from the CLI and CI. In an IDE, the IDE's own model answers (docs/models.md).",
       "type": "object",
       "properties": {
         "default": {
           "type": "string",
-          "pattern": "^(anthropic|openai|mistral|xai|google|openrouter|litellm):[A-Za-z0-9._/@-]+$"
+          "pattern": "^(anthropic|openai|mistral|xai|google|openrouter|litellm):[A-Za-z0-9._/@-]+$",
+          "description": "The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5."
         },
         "allowed": {
+          "description": "The models that may run, as provider:model or provider:*. A model outside the shipped catalog runs, with a doctor warning.",
           "minItems": 1,
           "type": "array",
           "items": {
@@ -305,6 +359,7 @@
           }
         },
         "workflows": {
+          "description": "A model for one workflow, by workflow id, such as `scripts: anthropic:claude-opus-5-5`.",
           "type": "object",
           "propertyNames": {
             "type": "string"
@@ -315,6 +370,7 @@
           }
         },
         "keys": {
+          "description": "The API key for each provider, as a secret reference. Default: the provider's usual variable, such as ANTHROPIC_API_KEY.",
           "type": "object",
           "propertyNames": {
             "type": "string",
@@ -334,6 +390,7 @@
           }
         },
         "endpoints": {
+          "description": "The base URL for a provider: OpenRouter, or your LiteLLM gateway.",
           "type": "object",
           "propertyNames": {
             "type": "string",
@@ -362,13 +419,16 @@
       "default": {
         "restoreOnWrite": false
       },
+      "description": "How personal data is masked before a model sees it (docs/security.md).",
       "type": "object",
       "properties": {
         "restoreOnWrite": {
           "default": false,
+          "description": "Put the real values back into what is written to Xray and Confluence, on an approved write. Off: they receive the tokens as they are.",
           "type": "boolean"
         },
         "detectors": {
+          "description": "The detectors that run. Default: all. `address` is accepted but has no detector yet.",
           "type": "array",
           "items": {
             "type": "string",
@@ -385,6 +445,7 @@
           }
         },
         "fields": {
+          "description": "Fields always replaced whole, by source, such as `jira: [customfield_10042, \"Customer phone\"]`.",
           "type": "object",
           "propertyNames": {
             "type": "string"
@@ -398,6 +459,7 @@
           }
         },
         "languages": {
+          "description": "The languages whose name lists find names that no people field lists. Default: all nine.",
           "type": "array",
           "items": {
             "type": "string",
@@ -415,6 +477,7 @@
           }
         },
         "presidio": {
+          "description": "Accepted and checked by doctor, but nothing sends text to Presidio yet.",
           "type": "object",
           "properties": {
             "url": {
@@ -426,7 +489,8 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "description": "The Presidio analyzer's URL."
             }
           },
           "required": [
@@ -447,6 +511,7 @@
           "commands": "ask"
         }
       },
+      "description": "What Agent-QA may write outside its run folder, and what it asks you first (docs/security.md).",
       "type": "object",
       "properties": {
         "writes": {
@@ -457,10 +522,12 @@
             "jira": "deny",
             "commands": "ask"
           },
+          "description": "allow, ask or deny for each target.",
           "type": "object",
           "properties": {
             "xray": {
               "default": "ask",
+              "description": "Creating and updating test cases and Test Executions. In CI, ask is denied.",
               "type": "string",
               "enum": [
                 "allow",
@@ -470,6 +537,7 @@
             },
             "confluence": {
               "default": "ask",
+              "description": "Publishing a document. In CI, ask is denied.",
               "type": "string",
               "enum": [
                 "allow",
@@ -479,6 +547,7 @@
             },
             "testCode": {
               "default": "ask",
+              "description": "Writing or deleting files in your repo. In CI, ask leaves the code as a pull request.",
               "type": "string",
               "enum": [
                 "allow",
@@ -488,6 +557,7 @@
             },
             "jira": {
               "default": "deny",
+              "description": "Reserved: nothing writes to Jira.",
               "type": "string",
               "enum": [
                 "allow",
@@ -497,6 +567,7 @@
             },
             "commands": {
               "default": "ask",
+              "description": "Running the commands the framework profile lists (tests, type check) in your repo. In CI, anything but deny allows.",
               "type": "string",
               "enum": [
                 "allow",
@@ -511,6 +582,7 @@
       "additionalProperties": false
     },
     "harness": {
+      "description": "Your own cases for `agent-qa harness`. Without this section, it runs the shipped synthetic cases (docs/harness.md).",
       "type": "object",
       "properties": {
         "sources": {
@@ -523,7 +595,8 @@
                 "properties": {
                   "fixtures": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "description": "A folder of harness cases."
                   }
                 },
                 "required": [
@@ -539,13 +612,15 @@
                     "properties": {
                       "jql": {
                         "type": "string",
-                        "minLength": 1
+                        "minLength": 1,
+                        "description": "A JQL filter."
                       }
                     },
                     "required": [
                       "jql"
                     ],
-                    "additionalProperties": false
+                    "additionalProperties": false,
+                    "description": "Accepted, but skipped for now: a Jira source has no known seeds to check."
                   }
                 },
                 "required": [
@@ -554,9 +629,11 @@
                 "additionalProperties": false
               }
             ]
-          }
+          },
+          "description": "Where the cases come from: `- fixtures: path/to/cases`."
         },
         "seededPersonalData": {
+          "description": "A file of the planted values to look for. Default: the shipped seeds.",
           "type": "string",
           "minLength": 1
         }
@@ -567,20 +644,24 @@
       "additionalProperties": false
     },
     "playwright": {
+      "description": "A local web app, for `explore` without Salesforce.",
       "type": "object",
       "properties": {
         "baseUrl": {
           "default": "http://localhost:3000",
+          "description": "A local app for `explore` to drive when there is no salesforce section.",
           "type": "string",
           "format": "uri"
         },
         "testDir": {
           "default": "tests",
+          "description": "Not used: the reviewed framework profile says where the tests are.",
           "type": "string",
           "minLength": 1
         },
         "profile": {
           "default": ".agent-qa/framework-profile.json",
+          "description": "Not used: the reviewed profile is always agent-qa.profile.json at the project root.",
           "type": "string",
           "minLength": 1
         }
@@ -591,5 +672,6 @@
   "required": [
     "version"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "description": "agent-qa.yaml: Agent-QA's settings. Secrets appear only as ${env:NAME} or ${keychain:NAME} references."
 }

@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { configReference, undescribedKeys } from "../scripts/config-docs.mjs";
 import { ConfigError, configJsonSchema, loadConfig, parseConfig, resolveSecret } from "../src/core/index.js";
 
 /** The example from contract 1 of the slice 0 plan, with a concrete model id. */
@@ -213,5 +214,11 @@ describe("JSON Schema", () => {
   it("matches the committed schema/agent-qa.schema.json (run `npm run schema` after changing the config)", async () => {
     const committed = JSON.parse(await readFile(new URL("../schema/agent-qa.schema.json", import.meta.url), "utf8"));
     expect(committed).toEqual(configJsonSchema());
+  });
+
+  it("describes every key, and docs/config.md matches (run `npm run schema`)", async () => {
+    expect(undescribedKeys(configJsonSchema())).toEqual([]);
+    const committed = await readFile(new URL("../docs/config.md", import.meta.url), "utf8");
+    expect(committed.replace(/\r\n/g, "\n")).toBe(configReference(configJsonSchema()));
   });
 });
