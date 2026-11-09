@@ -100,6 +100,7 @@ Set `CLAUDE_CODE_OAUTH_TOKEN`, the Atlassian and Xray variables and `AGENT_QA_VA
 
 ## Notes for every CI
 
+- A `${keychain:NAME}` reference in `agent-qa.yaml` reads the variable `NAME` on a CI runner, which has no keychain: set the CI secret under that exact name.
 - The push to Xray needs `policy.writes.xray: allow` in `agent-qa.yaml`: `ask` is denied in CI.
 - `AGENT_QA_VAULT_KEY` (`openssl rand -base64 32`, kept as a CI secret) is the key of the vault that holds the masked values: a CI runner has no OS keychain to keep one in. With the same key, a later job that restores `.agent-qa/` can resume a run or push it (`--resume`, `--push-from`).
 - The run folder is git-ignored: keep it as a job artifact, as above, to read the cases and the cost report.

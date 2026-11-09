@@ -269,7 +269,7 @@ describe("keychain lookups", () => {
     const lookup = keychainLookup(async () => {
       throw new Error("OS keychain support is not installed; reinstall without --omit=optional");
     });
-    await expect(lookup("jira")).rejects.toThrow(/can't be read for jira.*not installed.*\$\{env:NAME\}/);
+    await expect(lookup("jira")).rejects.toThrow(/can't be read for jira.*not installed.*environment variable jira/);
     await expect(lookup("jira")).rejects.not.toThrow(/AGENT_QA_VAULT_KEY/);
   });
 });

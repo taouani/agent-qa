@@ -202,9 +202,22 @@ describe("secret references", () => {
     expect(await resolveSecret("${keychain:jira}", { keychain: async (n) => (n === "jira" ? "k3y" : undefined) })).toBe("k3y");
   });
 
+  it("falls back to the environment variable of the same name when the keychain has no entry, so CI runs a committed config", async () => {
+    expect(await resolveSecret("${keychain:JIRA}", { env: { JIRA: "from-env" } })).toBe("from-env");
+    expect(await resolveSecret("${keychain:JIRA}", { env: { JIRA: "from-env" }, keychain: async () => undefined })).toBe("from-env");
+    const broken = async () => {
+      throw new Error("no Secret Service");
+    };
+    expect(await resolveSecret("${keychain:JIRA}", { env: { JIRA: "from-env" }, keychain: broken })).toBe("from-env");
+    await expect(resolveSecret("${keychain:JIRA}", { env: {}, keychain: broken })).rejects.toThrow(/no Secret Service/);
+    // The keychain wins when it has the entry.
+    expect(await resolveSecret("${keychain:JIRA}", { env: { JIRA: "from-env" }, keychain: async () => "from-keychain" })).toBe("from-keychain");
+  });
+
   it("fails clearly when a secret is missing", async () => {
     await expect(resolveSecret("${env:NOPE}", { env: {} })).rejects.toThrow(/NOPE is not set/);
-    await expect(resolveSecret("${keychain:x}", {})).rejects.toThrow(/No keychain/);
+    await expect(resolveSecret("${keychain:x}", { env: {} })).rejects.toThrow(/Keychain entry x not found \(no keychain is available\), and no environment variable x is set. Store it with: agent-qa secret set x/);
+    await expect(resolveSecret("${keychain:x}", { env: {}, keychain: async () => undefined })).rejects.toThrow(/isn't in the keychain/);
     await expect(resolveSecret("ghp_realsecretvalue", {})).rejects.toThrow(/Not a secret reference/);
     await expect(resolveSecret("ghp_realsecretvalue", {})).rejects.not.toThrow(/ghp_/);
   });

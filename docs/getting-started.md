@@ -45,7 +45,9 @@ npx -y sf-agent-qa@next secret set XRAY_CLIENT_ID       # if you push to Xray
 npx -y sf-agent-qa@next secret set XRAY_CLIENT_SECRET
 ```
 
-They go in macOS Keychain or Windows Credential Manager (Secret Service on Linux), under the service `sf-agent-qa`. A key file with several lines is piped in: `agent-qa secret set SF_JWT_KEY < server.key`. To change a value, run `set` again; to remove one, `agent-qa secret delete NAME`. The model key for terminal runs stays a variable (`ANTHROPIC_API_KEY`), unless you add `models.keys.anthropic: ${keychain:ANTHROPIC_API_KEY}`.
+They go in macOS Keychain or Windows Credential Manager (on Linux, Secret Service, which needs a desktop session: on a server, WSL or a container, use variables), under the service `sf-agent-qa`. The prompt takes one line: a key file with several lines is piped in, `agent-qa secret set SF_JWT_KEY < server.key`. Windows Credential Manager keeps at most 2560 bytes per entry, enough for a 2048-bit private key in PEM but not for a 4096-bit one: keep a larger key in a variable (`SF_JWT_KEY`). To change a value, run `set` again; to remove one, `agent-qa secret delete NAME`. The model key for terminal runs stays a variable (`ANTHROPIC_API_KEY`), unless you add `models.keys.anthropic: ${keychain:ANTHROPIC_API_KEY}`.
+
+When the keychain has no entry for a name, `${keychain:NAME}` reads the environment variable `NAME` instead. So a committed `agent-qa.yaml` with keychain references also runs in CI, or on a teammate's Linux machine: set the variables there, with the same names.
 
 ### In environment variables
 

@@ -42,17 +42,28 @@ export interface KeyringEntry {
   /** True when an entry was removed. */
   deletePassword?(): boolean;
 }
-export type KeyringFactory = (service: string, account: string) => KeyringEntry | Promise<KeyringEntry>;
+/** `@napi-rs/keyring`'s entry options: on Linux, the store an entry must live in. */
+export interface KeyringOptions {
+  linux?: { store?: "secret-service" | "keyutils" };
+}
+export type KeyringFactory = (service: string, account: string, options?: KeyringOptions) => KeyringEntry | Promise<KeyringEntry>;
+
+/**
+ * Config secrets live only in Secret Service on Linux. Without the pin, the
+ * keyring falls back to the kernel keyring, which a headless box empties when
+ * the process's session ends: a secret would be "stored" and then gone.
+ */
+const SECRET_ENTRY: KeyringOptions = { linux: { store: "secret-service" } };
 
 /** Loads `@napi-rs/keyring` lazily: it's an optional native dependency. */
-export const defaultKeyringFactory: KeyringFactory = async (service, account) => {
-  let mod: { Entry: new (s: string, a: string) => KeyringEntry };
+export const defaultKeyringFactory: KeyringFactory = async (service, account, options) => {
+  let mod: { Entry: new (s: string, a: string, o?: KeyringOptions) => KeyringEntry };
   try {
     mod = (await import("@napi-rs/keyring")) as unknown as typeof mod;
   } catch {
     throw new Error("OS keychain support is not installed; reinstall without --omit=optional");
   }
-  return new mod.Entry(service, account);
+  return options ? new mod.Entry(service, account, options) : new mod.Entry(service, account);
 };
 
 function unavailable(detail: string): Error {
@@ -114,13 +125,14 @@ export function defaultKeyProvider(env: NodeJS.ProcessEnv = process.env): KeyPro
 /** Reads config secrets written as `${keychain:NAME}` from the same keychain service. */
 export function keychainLookup(factory: KeyringFactory = defaultKeyringFactory) {
   return async (name: string): Promise<string | undefined> => {
+    if (isVaultKeyEntry(name)) throw new Error(`${name} is the vault key's own entry, which config can't read`);
     try {
-      const entry = await factory(KEYCHAIN_SERVICE, name);
+      const entry = await factory(KEYCHAIN_SERVICE, name, SECRET_ENTRY);
       return entry.getPassword() ?? undefined;
     } catch (error) {
       throw new Error(
         `The OS keychain can't be read for ${name} (${error instanceof Error ? error.message : String(error)}). ` +
-          `Use \${env:NAME} in agent-qa.yaml instead.`,
+          `Set the environment variable ${name} instead: it is read when the keychain has no entry.`,
       );
     }
   };
@@ -129,6 +141,11 @@ export function keychainLookup(factory: KeyringFactory = defaultKeyringFactory) 
 /** A secret name `${keychain:NAME}` can refer to; the vault key's own entry is not one. */
 export const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 
+/** Windows Credential Manager matches names without case, so VAULT-KEY is the vault key too. */
+function isVaultKeyEntry(name: string): boolean {
+  return name.toLowerCase() === KEYCHAIN_ACCOUNT;
+}
+
 /**
  * Writes the entries that `${keychain:NAME}` references read (`agent-qa secret`),
  * under the same service. The vault key's entry can't be named, so a secret
@@ -136,10 +153,11 @@ export const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
  */
 export function keychainStore(factory: KeyringFactory = defaultKeyringFactory) {
   const entry = async (name: string): Promise<KeyringEntry> => {
-    if (!SECRET_NAME.test(name) || name.length > 100) throw new Error(`${JSON.stringify(name)} isn't a secret name: letters, digits, _ . -, starting with a letter or _`);
-    if (name === KEYCHAIN_ACCOUNT) throw new Error(`${name} is the vault key's own entry; pick another name`);
+    // The name isn't repeated: if it doesn't fit, it may be the value typed in the wrong place.
+    if (!SECRET_NAME.test(name) || name.length > 100) throw new Error("that isn't a secret name: letters, digits, _ . -, starting with a letter or _ (at most 100)");
+    if (isVaultKeyEntry(name)) throw new Error(`${name} is the vault key's own entry; pick another name`);
     try {
-      return await factory(KEYCHAIN_SERVICE, name);
+      return await factory(KEYCHAIN_SERVICE, name, SECRET_ENTRY);
     } catch (error) {
       throw new Error(`The OS keychain can't be used (${error instanceof Error ? error.message : String(error)}). Use \${env:NAME} in agent-qa.yaml instead.`);
     }

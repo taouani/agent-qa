@@ -11,7 +11,7 @@ import { builtinWorkflows } from "../workflows/index.js";
 import { DashboardFileError, writeDashboard, writeHarnessReport } from "./report-files.js";
 import { initCommand, MCP_HOSTS, SECRETS_MODES, type McpHost, type SecretsMode } from "./init.js";
 import { runCommand } from "./run.js";
-import { secretCommand } from "./secret.js";
+import { secretCommand, typedValue, type ValueRefused } from "./secret.js";
 
 /**
  * The project folder: `AGENT_QA_ROOT`, else the folder holding
@@ -397,11 +397,13 @@ async function terminalQuestion(question: string): Promise<string | undefined> {
 /**
  * A secret's value: typed at a hidden prompt in a terminal (nothing echoed, one
  * line), or all of stdin when piped, for a multi-line key file. Undefined when
- * interrupted.
+ * interrupted; refused when a paste at the prompt has more than one line.
  */
-async function hiddenValue(prompt: string): Promise<string | undefined> {
+async function hiddenValue(prompt: string): Promise<string | ValueRefused | undefined> {
   const stdin = process.stdin;
   if (!stdin.isTTY) {
+    // Piped in, or typed at a console that isn't a TTY (Git Bash's mintty): then it shows.
+    if (process.stderr.isTTY) process.stderr.write("agent-qa secret: reading the value from stdin, end it with Ctrl+D (Ctrl+Z then Enter on Windows). Typed input is visible here.\n");
     const chunks: Buffer[] = [];
     for await (const chunk of stdin) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer));
     return Buffer.concat(chunks).toString("utf8");
@@ -409,7 +411,7 @@ async function hiddenValue(prompt: string): Promise<string | undefined> {
   process.stderr.write(prompt);
   return new Promise((resolveValue) => {
     let value = "";
-    const finish = (result: string | undefined) => {
+    const finish = (result: string | ValueRefused | undefined) => {
       stdin.off("data", onData);
       stdin.setRawMode(false);
       stdin.pause();
@@ -417,13 +419,21 @@ async function hiddenValue(prompt: string): Promise<string | undefined> {
       resolveValue(result);
     };
     const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === "\r" || ch === "\n") return finish(value);
-        if (ch === "\u0003" || (ch === "\u0004" && value === "")) return finish(undefined);
-        if (ch === "\u007f" || ch === "\b") value = value.slice(0, -1);
-        else if (ch >= " ") value += ch;
+      const typing = typedValue(value, chunk);
+      if (typing.state === "typing") value = typing.value;
+      else if (typing.state === "done") finish(typing.value);
+      else if (typing.state === "cancelled") finish(undefined);
+      else {
+        // Swallow the rest of the paste so the shell doesn't run it, then stop.
+        stdin.off("data", onData);
+        stdin.on("data", ignore);
+        setTimeout(() => {
+          stdin.off("data", ignore);
+          finish({ refused: typing.reason });
+        }, 200);
       }
     };
+    const ignore = () => undefined;
     stdin.setEncoding("utf8");
     stdin.setRawMode(true);
     stdin.resume();

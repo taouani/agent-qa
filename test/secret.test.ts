@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { secretCommand } from "../src/cli/secret.js";
+import { secretCommand, typedValue } from "../src/cli/secret.js";
 import { secretStore } from "../src/data/index.js";
-import type { KeyringEntry } from "../src/masking/index.js";
+import { keychainLookup, type KeyringEntry } from "../src/masking/index.js";
 
 /** An in-memory keychain: service/account → value. */
 function fakeKeychain(options: { forgets?: boolean } = {}) {
@@ -45,9 +45,14 @@ describe("agent-qa secret", () => {
     expect(await secretCommand({ action: "set", name: "1BAD", store, readValue: async () => "x", log })).toBe(2);
     expect(await secretCommand({ action: "set", name: "vault-key", store, readValue: async () => "x", log })).toBe(2);
     expect(lines.at(-1)).toContain("vault key's own entry");
+    expect(await secretCommand({ action: "set", name: "VAULT-KEY", store, readValue: async () => "x", log })).toBe(2);
+    expect(lines.at(-1)).toContain("vault key's own entry");
+    expect(await secretCommand({ action: "delete", name: "Vault-Key", store, readValue: async () => undefined, log })).toBe(2);
     expect(await secretCommand({ action: "set", name: "TOKEN", store, readValue: async () => "  \n", log })).toBe(2);
     expect(await secretCommand({ action: "set", name: "TOKEN", store, readValue: async () => undefined, log })).toBe(2);
     expect(lines.at(-1)).toBe("agent-qa secret: stopped, nothing stored");
+    expect(await secretCommand({ action: "set", name: "TOKEN", store, readValue: async () => ({ refused: "the pasted value has more than one line" }), log })).toBe(2);
+    expect(lines.at(-1)).toBe("agent-qa secret: the pasted value has more than one line, nothing stored");
     expect(entries.size).toBe(0);
   });
 
@@ -56,5 +61,46 @@ describe("agent-qa secret", () => {
     const lines: string[] = [];
     expect(await secretCommand({ action: "set", name: "TOKEN", store, readValue: async () => "x", log: (l) => lines.push(l) })).toBe(1);
     expect(lines.at(-1)).toContain("didn't keep TOKEN");
+  });
+
+  it("refuses a token typed as the name, without printing it", async () => {
+    const { entries, store } = fakeKeychain();
+    const lines: string[] = [];
+    let asked = false;
+    const token = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    const code = await secretCommand({ action: "set", name: token, store, readValue: async () => ((asked = true), "x"), log: (l) => lines.push(l) });
+    expect(code).toBe(2);
+    expect(asked).toBe(false);
+    expect(lines.join("\n")).toMatch(/looks like a secret \(GitHub token\).*rotate/);
+    expect(lines.join("\n")).not.toContain(token);
+    expect(entries.size).toBe(0);
+  });
+
+  it("doesn't let a ${keychain:…} reference read the vault key", async () => {
+    const lookup = keychainLookup(() => ({ getPassword: () => "the-vault-key", setPassword: () => {} }));
+    await expect(lookup("vault-key")).rejects.toThrow(/vault key/);
+    await expect(lookup("VAULT-KEY")).rejects.toThrow(/vault key/);
+  });
+});
+
+describe("typing a hidden value", () => {
+  it("ends on Enter, deletes on backspace and drops escape sequences", () => {
+    let t = typedValue("", "ab\u001b[Dc\u001bOA");
+    expect(t).toEqual({ state: "typing", value: "abc" });
+    t = typedValue("abc", "\u007fd\r");
+    expect(t).toEqual({ state: "done", value: "abd" });
+    expect(typedValue("", "\u001b[200~tok\u001b[201~\r\n")).toEqual({ state: "done", value: "tok" });
+  });
+
+  it("cancels on Ctrl+C, and on Ctrl+D when nothing is typed", () => {
+    expect(typedValue("ab", "\u0003")).toEqual({ state: "cancelled" });
+    expect(typedValue("", "\u0004")).toEqual({ state: "cancelled" });
+    expect(typedValue("ab", "\u0004")).toEqual({ state: "typing", value: "ab" });
+  });
+
+  it("refuses a paste with text after the line end, instead of keeping only the first line", () => {
+    const t = typedValue("", "first-part\nsecond-part\n");
+    expect(t.state).toBe("refused");
+    expect(JSON.stringify(t)).not.toContain("part");
   });
 });
