@@ -30,7 +30,7 @@ Before any text reaches a model, Agent-QA masks personal data and puts tokens in
 - **The vault.**
   - Each run's tokens map back to the real values in that run's vault: a file under `.agent-qa/vault/`.
   - It is encrypted with AES-256-GCM and bound to the run's id.
-  - It can't be used after 30 days from its first save. Expired vault files are deleted the next time Agent-QA opens a vault in that project. To remove every vault at once, delete `.agent-qa/vault/`.
+  - It can't be used after 30 days from its first save. Expired vault files are deleted the first time each Agent-QA process (a CLI run, or an MCP server start) opens a vault in that project. To remove every vault at once, delete `.agent-qa/vault/`.
   - The vault never leaves the machine, and `.agent-qa/` is kept out of git (`agent-qa init` adds it to `.gitignore`, and `agent-qa doctor` checks it).
 - **The vault key** comes from `AGENT_QA_VAULT_KEY` when that is set (CI, where you keep it as a secret). Otherwise it is in your OS keychain: macOS Keychain, Windows Credential Manager, or Secret Service on Linux. The first run creates it. Losing the key makes old vaults unreadable and changes every path token. Nothing else breaks.
 - **Where real values come back:**
@@ -62,9 +62,9 @@ Every write outside the run folder goes through one policy layer. `policy.writes
 | `jira` | deny | Reserved |
 
 - **`ask` means the person, and how strictly depends on the host:**
-  - **In a terminal**, Agent-QA asks you there.
+  - **In a terminal**, Agent-QA asks you there, unless you answered the step ahead with `--accept <step>` or `--decline <step>`. `--yes` answers the rest unattended, and its answer to a push or a write is no.
   - **In an IDE that supports MCP elicitation** (form mode), Agent-QA shows its own prompt, which starts on "No". Only your "Yes, go ahead" counts, whatever the model sent.
-  - **In an IDE without elicitation**, the model asks you in chat and submits your answer. Agent-QA can't tell your yes from the model's. The run's step file (for example `xray-push.md`) records what was submitted.
+  - **In an IDE without elicitation**, the model asks you in chat and submits your answer. Agent-QA can't tell your yes from the model's. What was submitted is kept in the run's `steps/state.json`, and the write in `.agent-qa/audit.jsonl`, but neither says whether the yes came from you or from the model.
 
   Where every write must be your own yes, use the CLI or a host with elicitation.
 - **In CI, nobody is asked.** `ask` is denied for Xray and Confluence. Test code under `ask` leaves as a pull request, never as a push to a branch. `commands` is allowed unless it is `deny`.
@@ -108,6 +108,6 @@ What a steered model *can* do is write poor or misleading test cases or code. Th
   | Advisory | In | Why it stays |
   |---|---|---|
   | [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), minimatch denial of service (moderate) | `ts-morph` → `@ts-morph/common` | `ts-morph` runs on an in-memory file system over the files Agent-QA passes it, and never matches a glob, so the vulnerable code isn't reached. The fix needs a `ts-morph` release that moves to minimatch 11. |
-  | [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq), uuid buffer bounds (moderate) | `@cucumber/gherkin` → `@cucumber/messages` | The flaw is in uuid v3, v5 and v6 when given an output buffer. Agent-QA parses Gherkin with the incrementing id generator, which never calls uuid. The fixed `@cucumber/gherkin` (42) needs a newer Node 20 than `engines` allows today, so it waits for the Node floor to move. |
+  | [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq), uuid buffer bounds (moderate) | `@cucumber/gherkin` → `@cucumber/messages` | The flaw is in uuid v3, v5 and v6 when given an output buffer. Agent-QA parses Gherkin with the incrementing id generator, which never calls uuid. Moving to a `@cucumber/gherkin` release that drops uuid is a separate change, since the latest one (42) also needs a newer Node 20 than `engines` allows. |
 
   Advisories in development tools (the test runner, lint) don't reach users. They are fixed in the normal course of work.
