@@ -59,16 +59,9 @@ Without an API key, `--headless claude-code` or `--headless copilot` answers eac
 - `refactor` carries out an audit's findings phase by phase, keeping what every test checks: [docs/refactor.md](docs/refactor.md).
 - `document` writes a test strategy, plan, charter, risk register, test data, traceability report or release notes from the requirements, reviewed test cases and test results: [docs/documents.md](docs/documents.md).
 
-## Development
+## Contributing
 
-Requires Node.js 20 or later.
-
-```bash
-npm install
-npm run check      # typecheck, lint, test, build
-```
-
-How releases go out: [docs/releasing.md](docs/releasing.md). The source is split into modules under `src/`, and lint rules enforce which modules may import which. Only `src/data` may call the connectors, so every read goes through the masking gateway. See `eslint.config.js`.
+Setting up a clone, the module boundaries, changesets, and the sign-off each commit needs (DCO): [CONTRIBUTING.md](CONTRIBUTING.md). How releases go out: [docs/releasing.md](docs/releasing.md).
 
 ## License
 

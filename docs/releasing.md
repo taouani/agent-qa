@@ -43,7 +43,7 @@ The `NPM_TOKEN` secret must be an automation token (or a granular token that ski
 
 ## Before merging a "Version packages" pull request
 
-- CI is green, including the `install` jobs. Those jobs pack the package and check its files and size (`npm run pack:check`). They then install it into an empty project on Ubuntu and Windows and run `--version`, `init`, `doctor --offline`, the offline harness, an MCP `initialize`, and an import of the public API.
+- CI is green, including the `install` jobs. GitHub starts no workflow for this pull request, because the release workflow opens it with its own token, so start CI yourself: Actions, CI, Run workflow, on the branch `changeset-release/master`. The release job also runs `npm run check` before it publishes. Those jobs pack the package and check its files and size (`npm run pack:check`). They then install it into an empty project on Ubuntu and Windows and run `--version`, `init`, `doctor --offline`, the offline harness, an MCP `initialize`, and an import of the public API.
 - The changelog reads well for users. Edit the changesets, not `CHANGELOG.md`.
 - For a stable release: the release live check has passed.
 

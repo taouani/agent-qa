@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  # GitHub starts no workflow for the "Version packages" pull request, which is opened with
+  # its own token: run this on its branch by hand before merging it (docs/releasing.md).
+  workflow_dispatch:
 
 permissions:
   contents: read

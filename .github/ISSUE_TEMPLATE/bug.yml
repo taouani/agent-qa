@@ -1,0 +1,49 @@
+name: Bug report
+description: Something Agent-QA does wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Leave real personal data, ticket contents and credentials out: use made-up values. A security problem goes through a private report instead (SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `agent-qa --version`
+      placeholder: 2.0.0-alpha.2
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where you ran it
+      options:
+        - CLI (terminal)
+        - CI
+        - VS Code with Copilot
+        - Claude Code
+        - Cursor
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Node version
+      placeholder: Windows 11, Node 22.15
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or workflow, what you expected, and what happened instead. Paste the error message.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: agent-qa doctor --json
+      description: It shows which checks pass, never secret values. Remove your site name if you'd rather.
+      render: json
