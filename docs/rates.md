@@ -34,7 +34,7 @@ This writes one HTML file that opens in any browser, offline. It has no script a
 - how many values masking replaced, by detector (counts only, never a value);
 - the latest runs and what each one cost.
 
-The file sits in `.agent-qa/`, so git leaves it out. It holds run ids, Jira keys and test case counts, so share it only where those may go.
+The default file sits in `.agent-qa/`, which `agent-qa init` adds to `.gitignore` (and `agent-qa doctor` checks). A file you name elsewhere isn't ignored. It holds run ids, Jira keys and test case counts, so share it only where those may go.
 
 Each week is an ISO week, Monday to Sunday in UTC, and a run counts in the week it was saved. Each week's runnable rate judges every case by its latest run in that week. That way a week shows what the team got that week, not where the suite stands now. Harness runs (`agent-qa harness`) never count, because they live in their own folder.
 

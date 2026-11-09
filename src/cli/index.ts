@@ -159,7 +159,8 @@ export function buildProgram(): Command {
     .option("--json", "print the full JSON report")
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (opts: { json?: boolean; cwd?: string; model?: string; headless?: string; pipeline: string; browser?: string | true; headed?: boolean }) => {
-      const root = resolve(opts.cwd ?? process.cwd());
+      // From a subfolder too, as for report, so the dashboard finds the harness's last report.
+      const root = opts.cwd ? resolve(opts.cwd) : projectRoot(process.cwd(), process.env);
       // Exit 1 means a case failed; exit 2 means the harness couldn't run (bad setup, or nothing to test).
       const setupError = (message: string) => {
         process.stderr.write(`agent-qa harness: ${message.split(root).join(".")}\n`);
@@ -228,7 +229,9 @@ export function buildProgram(): Command {
         throw error;
       }
       // Kept for the dashboard (agent-qa report --html): seeds by id and kind only, never a value.
-      await writeHarnessReport(root, report).catch(() => undefined);
+      await writeHarnessReport(root, report).catch((error: unknown) => {
+        if (error instanceof DashboardFileError) process.stderr.write(`note: ${error.message.split(root).join(".")}\n`);
+      });
       // From the project's own runs, where people reviewed the cases; the harness's runs never count.
       let kept: KeptRate | undefined;
       let runnable: RunnableRate | undefined;
@@ -285,31 +288,27 @@ export function buildProgram(): Command {
         process.exitCode = 2;
         return;
       }
+      // The rates first: a dashboard that can't be written doesn't take the report with it.
+      if (opts.json) process.stdout.write(JSON.stringify({ targets: RATE_TARGETS, keptRate: kept, runnableRate: runnable, weeks }, null, 2) + "\n");
+      else {
+        process.stdout.write(`${keptLine(kept)}\n${runnableLine(runnable)}\n`);
+        if (weeks.length) process.stdout.write(`\n${weeksTable(weeks)}\n`);
+        if (weeks.length && kept.unreadableRuns + runnable.unreadableRuns > 0) process.stdout.write("(the weeks leave out the unreadable records the totals name)\n");
+        process.stdout.write(`\ntargets: ${RATE_TARGETS.kept * 100}% kept, ${RATE_TARGETS.runnable * 100}% runnable (see docs/rates.md)\n`);
+      }
       if (opts.html !== undefined) {
         const file = opts.html === true ? join(root, ".agent-qa", "report.html") : resolve(opts.html);
         try {
           const data = await dashboardData(own, { harnessDir: join(root, ".agent-qa", "harness"), targets: RATE_TARGETS, weeks: Math.max(opts.weeks, 26) });
           await writeDashboard(file, renderDashboard(data));
         } catch (error) {
-          if (error instanceof DashboardFileError) {
-            process.stderr.write(`agent-qa report: ${error.message.split(root).join(".")}\n`);
-            process.exitCode = 2;
-            return;
-          }
-          process.stderr.write(`agent-qa report: the dashboard couldn't be written (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error))})\n`);
+          const why = error instanceof DashboardFileError ? error.message.split(root).join(".") : `the dashboard couldn't be written (${(error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error))})`;
+          process.stderr.write(`agent-qa report: ${why}\n`);
           process.exitCode = 2;
           return;
         }
-        if (!opts.json) process.stdout.write(`dashboard: ${relativeOr(root, file)}\n`);
+        (opts.json ? process.stderr : process.stdout).write(`dashboard: ${relativeOr(root, file)}\n`);
       }
-      if (opts.json) {
-        process.stdout.write(JSON.stringify({ targets: RATE_TARGETS, keptRate: kept, runnableRate: runnable, weeks }, null, 2) + "\n");
-        return;
-      }
-      process.stdout.write(`${keptLine(kept)}\n${runnableLine(runnable)}\n`);
-      if (weeks.length) process.stdout.write(`\n${weeksTable(weeks)}\n`);
-      if (weeks.length && kept.unreadableRuns + runnable.unreadableRuns > 0) process.stdout.write("(the weeks leave out the unreadable records the totals name)\n");
-      process.stdout.write(`\ntargets: ${RATE_TARGETS.kept * 100}% kept, ${RATE_TARGETS.runnable * 100}% runnable (see docs/rates.md)\n`);
     });
   program
     .command("mcp")

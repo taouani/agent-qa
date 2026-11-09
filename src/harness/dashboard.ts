@@ -211,7 +211,7 @@ code { font-size: 13px; }
 ${tile("Kept rate", pct(d.kept.rate), keptNote)}
 ${tile("Runnable rate", pct(d.runnable.rate), runnableNote)}
 ${tile("Harness", h ? `${h.summary.passed}/${h.summary.cases}` : "–", h ? `${h.summary.seededLeaks} seeded leak(s)` : "not run yet")}
-${tile("Cost shown", `$${usd.toFixed(2)}`, `${d.runs.length} run(s); host-model answers aren't priced`)}
+${tile("Cost shown", `$${usd.toFixed(2)}`, `${d.olderRuns ? `the latest ${d.runs.length} run(s), not the ${d.olderRuns} older` : `${d.runs.length} run(s)`}; host-model answers aren't priced`)}
 </div>
 <h2>Rates by week</h2>
 ${chart(d.weeks, d.targets)}

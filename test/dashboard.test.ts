@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeDashboard } from "../src/cli/report-files.js";
+import { writeDashboard, writeHarnessReport } from "../src/cli/report-files.js";
 import { COST_ARTIFACT, RunStore } from "../src/core/index.js";
 import { MASKING_REPORT_ARTIFACT } from "../src/data/index.js";
 import { dashboardData, HARNESS_LAST_REPORT, renderDashboard } from "../src/harness/index.js";
@@ -79,6 +79,23 @@ describe("the local dashboard (S5-3)", () => {
       await expect(writeDashboard(join(dir, "mine.html"), html)).rejects.toThrow(/isn't a dashboard agent-qa wrote/);
       expect(await readFile(join(dir, "mine.html"), "utf8")).toBe("<p>my notes</p>");
       await expect(writeDashboard(join(dir, "playwright.config.ts"), html)).rejects.toThrow(/an \.html file only/);
+      // Never through a symlink a cloned repo could commit: not for the dashboard, the harness report or its folder.
+      if (process.platform !== "win32") {
+        await writeFile(join(dir, "victim.txt"), "keep");
+        await symlink(join(dir, "victim.txt"), join(dir, "linked.html"));
+        await expect(writeDashboard(join(dir, "linked.html"), html)).rejects.toThrow(/is a symlink/);
+        const project = join(dir, "project");
+        await mkdir(join(project, ".agent-qa", "harness"), { recursive: true });
+        await symlink(join(dir, "victim.txt"), join(project, ".agent-qa", "harness", HARNESS_LAST_REPORT));
+        await expect(writeHarnessReport(project, { summary: {} })).rejects.toThrow(/is a symlink/);
+        const other = join(dir, "other");
+        await mkdir(join(other, ".agent-qa"), { recursive: true });
+        await symlink(join(dir, "out"), join(other, ".agent-qa", "harness"));
+        await expect(writeHarnessReport(other, { summary: {} })).rejects.toThrow(/is a symlink/);
+        expect(await readFile(join(dir, "victim.txt"), "utf8")).toBe("keep");
+        await writeHarnessReport(join(dir, "fresh"), { summary: {} });
+        expect(JSON.parse(await readFile(join(dir, "fresh", ".agent-qa", "harness", HARNESS_LAST_REPORT), "utf8"))).toEqual({ summary: {} });
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
