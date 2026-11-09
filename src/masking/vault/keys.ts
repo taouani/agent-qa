@@ -39,6 +39,8 @@ export class EnvKeyProvider implements KeyProvider {
 export interface KeyringEntry {
   getPassword(): string | null | undefined;
   setPassword(password: string): void;
+  /** True when an entry was removed. */
+  deletePassword?(): boolean;
 }
 export type KeyringFactory = (service: string, account: string) => KeyringEntry | Promise<KeyringEntry>;
 
@@ -123,6 +125,53 @@ export function keychainLookup(factory: KeyringFactory = defaultKeyringFactory) 
     }
   };
 }
+
+/** A secret name `${keychain:NAME}` can refer to; the vault key's own entry is not one. */
+export const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+/**
+ * Writes the entries that `${keychain:NAME}` references read (`agent-qa secret`),
+ * under the same service. The vault key's entry can't be named, so a secret
+ * never replaces it.
+ */
+export function keychainStore(factory: KeyringFactory = defaultKeyringFactory) {
+  const entry = async (name: string): Promise<KeyringEntry> => {
+    if (!SECRET_NAME.test(name) || name.length > 100) throw new Error(`${JSON.stringify(name)} isn't a secret name: letters, digits, _ . -, starting with a letter or _`);
+    if (name === KEYCHAIN_ACCOUNT) throw new Error(`${name} is the vault key's own entry; pick another name`);
+    try {
+      return await factory(KEYCHAIN_SERVICE, name);
+    } catch (error) {
+      throw new Error(`The OS keychain can't be used (${error instanceof Error ? error.message : String(error)}). Use \${env:NAME} in agent-qa.yaml instead.`);
+    }
+  };
+  const call = <T>(name: string, fn: () => T): T => {
+    try {
+      return fn();
+    } catch (error) {
+      throw new Error(`The OS keychain refused ${name} (${error instanceof Error ? error.message : String(error)}). Use \${env:NAME} in agent-qa.yaml instead.`);
+    }
+  };
+  return {
+    service: KEYCHAIN_SERVICE,
+    async set(name: string, value: string): Promise<void> {
+      if (!value) throw new Error("the value is empty");
+      const e = await entry(name);
+      call(name, () => e.setPassword(value));
+      // Some keychains (headless Linux) accept a write they don't keep.
+      if (call(name, () => e.getPassword()) !== value) throw new Error(`The OS keychain didn't keep ${name}. Use \${env:NAME} in agent-qa.yaml instead.`);
+    },
+    async has(name: string): Promise<boolean> {
+      const e = await entry(name);
+      return Boolean(call(name, () => e.getPassword()));
+    },
+    async delete(name: string): Promise<boolean> {
+      const e = await entry(name);
+      if (!e.deletePassword) throw new Error("this keychain can't delete entries");
+      return call(name, () => e.deletePassword!());
+    },
+  };
+}
+export type KeychainStore = ReturnType<typeof keychainStore>;
 
 export interface VaultKeyStatus {
   ok: boolean;

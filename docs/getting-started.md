@@ -25,11 +25,29 @@ When it creates `agent-qa.yaml`, `init` asks two things: your Jira site (`acme` 
 - the MCP settings for VS Code, Claude Code and Cursor;
 - the `.gitignore` line for `.agent-qa/`, which holds the vault and the runs.
 
-An existing `agent-qa.yaml` is kept, and then nothing is asked (`--force` replaces it). It ends by printing the exact variables to set, in your shell's syntax. In CI, or with no terminal, it asks nothing: pass `--site` and `--xray-project` instead.
+An existing `agent-qa.yaml` is kept, and then nothing is asked (`--force` replaces it). It ends by printing the keys to store, as `agent-qa secret set` commands or as variables in your shell's syntax. In CI, or with no terminal, it asks nothing: pass `--site` and `--xray-project` instead.
 
 ## 2. Give it your keys (5 minutes)
 
-Secrets stay out of every file. `agent-qa.yaml` names environment variables such as `${env:ATLASSIAN_TOKEN}`, and Agent-QA reads them when it runs.
+Secrets stay out of every file. `agent-qa.yaml` names where each one is, and Agent-QA reads it when it runs. There are two places, and `init` picks one:
+
+- **The OS keychain** (`${keychain:ATLASSIAN_TOKEN}`): the default when `init` asks you at a terminal on macOS or Windows. Your IDE finds the keys however you start it.
+- **Environment variables** (`${env:ATLASSIAN_TOKEN}`): the default on Linux, in CI and with no terminal. Choose either with `init --secrets keychain` or `--secrets env`.
+
+### In the OS keychain
+
+Store each key that `init` named. Each value is asked for at a hidden prompt, and never shown:
+
+```bash
+npx -y sf-agent-qa@next secret set ATLASSIAN_EMAIL
+npx -y sf-agent-qa@next secret set ATLASSIAN_TOKEN
+npx -y sf-agent-qa@next secret set XRAY_CLIENT_ID       # if you push to Xray
+npx -y sf-agent-qa@next secret set XRAY_CLIENT_SECRET
+```
+
+They go in macOS Keychain or Windows Credential Manager (Secret Service on Linux), under the service `sf-agent-qa`. A key file with several lines is piped in: `agent-qa secret set SF_JWT_KEY < server.key`. To change a value, run `set` again; to remove one, `agent-qa secret delete NAME`. The model key for terminal runs stays a variable (`ANTHROPIC_API_KEY`), unless you add `models.keys.anthropic: ${keychain:ANTHROPIC_API_KEY}`.
+
+### In environment variables
 
 macOS and Linux:
 
@@ -55,8 +73,6 @@ To keep them for good, set them at the user level instead, and restart the IDE:
 
 - **Windows:** `setx ATLASSIAN_TOKEN "..."`, or System Properties, Environment Variables.
 - **macOS and Linux:** your shell profile.
-
-Agent-QA also reads `${keychain:NAME}` references from the OS keychain, under the service `sf-agent-qa`.
 
 ## 3. Check the setup (1 minute)
 

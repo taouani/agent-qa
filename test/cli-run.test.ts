@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { CLAUDE_CODE_SERVER, configTemplate, CURSOR_SERVER, initCommand, MCP_SERVER, nextSteps, siteOf } from "../src/cli/init.js";
+import { CLAUDE_CODE_SERVER, configTemplate, CURSOR_SERVER, defaultSecrets, initCommand, MCP_SERVER, nextSteps, siteOf } from "../src/cli/init.js";
 import { EXIT, runCommand, type RunOptions } from "../src/cli/run.js";
 import { buildProgram } from "../src/cli/index.js";
 import type { JiraCollection, JiraInput, JiraIssue, XrayTest } from "../src/connectors/index.js";
@@ -371,7 +371,7 @@ describe("agent-qa init", () => {
     const answers = ["not a site!", "http://acme.atlassian.net", "Acme", "qa project", "qa"];
     const asked: string[] = [];
     const ask = async (q: string) => (asked.push(q), answers.shift());
-    expect(await initCommand({ root, ask, platform: "win32", log: (l) => lines.push(l) })).toBe(0);
+    expect(await initCommand({ root, ask, platform: "win32", secrets: "env", log: (l) => lines.push(l) })).toBe(0);
     expect(asked).toHaveLength(5);
     const config = configSchema.parse(parseYaml(await readFile(join(root, "agent-qa.yaml"), "utf8")));
     expect(config.atlassian?.site).toBe("https://acme.atlassian.net");
@@ -404,6 +404,42 @@ describe("agent-qa init", () => {
     lines = [];
     expect(await initCommand({ root: quiet, log: (l) => lines.push(l) })).toBe(0);
     expect(lines[0]).toBe("agent-qa.yaml: written, with the placeholder site https://YOUR-SITE.atlassian.net: set atlassian.site to yours");
+  });
+
+  it("points at the keychain when asked at a macOS or Windows terminal, and says how to store each secret", async () => {
+    expect(defaultSecrets(true, "darwin")).toBe("keychain");
+    expect(defaultSecrets(true, "win32")).toBe("keychain");
+    expect(defaultSecrets(true, "linux")).toBe("env");
+    expect(defaultSecrets(false, "darwin")).toBe("env");
+
+    const root = join(dir, "keychain");
+    await mkdir(root);
+    lines = [];
+    const answers = ["acme", "QA"];
+    expect(await initCommand({ root, ask: async () => answers.shift(), platform: "darwin", log: (l) => lines.push(l) })).toBe(0);
+    const text = await readFile(join(root, "agent-qa.yaml"), "utf8");
+    const config = configSchema.parse(parseYaml(text));
+    expect(config.atlassian?.token).toBe("${keychain:ATLASSIAN_TOKEN}");
+    expect(config.xray?.clientSecret).toBe("${keychain:XRAY_CLIENT_SECRET}");
+    expect(text).toContain("#   privateKey: ${keychain:SF_JWT_KEY}");
+    const out = lines.join("\n");
+    expect(out).toContain("Store ATLASSIAN_EMAIL, ATLASSIAN_TOKEN, XRAY_CLIENT_ID, XRAY_CLIENT_SECRET in your OS keychain");
+    expect(out).toContain("       agent-qa secret set XRAY_CLIENT_SECRET");
+    expect(out).toContain("reads the keychain however the IDE was started");
+    expect(out).not.toContain("export ");
+
+    // --secrets env wins, and a config mixing both names each.
+    expect(configTemplate({ secrets: "env" })).toContain("token: ${env:ATLASSIAN_TOKEN}");
+    const mixed = nextSteps("atlassian:\n  email: ${env:ATLASSIAN_EMAIL}\n  token: ${keychain:ATLASSIAN_TOKEN}\n", "linux").join("\n");
+    expect(mixed).toContain("agent-qa secret set ATLASSIAN_TOKEN");
+    expect(mixed).toContain("Also set ATLASSIAN_EMAIL:");
+    expect(mixed).toContain("Start your IDE from this terminal");
+  });
+
+  it("refuses an unknown --secrets value", async () => {
+    const program = buildProgram().exitOverride().configureOutput({ writeErr: () => {} });
+    program.commands.forEach((c) => c.exitOverride().configureOutput({ writeErr: () => {} }));
+    await expect(program.parseAsync(["node", "agent-qa", "init", "--secrets", "dotenv"])).rejects.toThrow(/use env or keychain/);
   });
 
   it("reads a Jira Cloud site the way people type it", () => {

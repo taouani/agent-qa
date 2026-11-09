@@ -78,7 +78,7 @@ Every write outside the run folder goes through one policy layer. `policy.writes
 
 ## Secrets
 
-- `agent-qa.yaml` holds only references: `${env:NAME}` or `${keychain:NAME}`. Secret fields (tokens, client secrets, keys) must be references. Loading the config also fails if any value has the shape of a known token, or a key is named like a secret.
+- `agent-qa.yaml` holds only references: `${env:NAME}` or `${keychain:NAME}`. `agent-qa secret set NAME` stores a keychain entry from a hidden prompt (or piped in), under the service `sf-agent-qa`; the value is never an argument, so it stays out of shell history, and is never printed. It can't replace the vault key's own entry. Secret fields (tokens, client secrets, keys) must be references. Loading the config also fails if any value has the shape of a known token, or a key is named like a secret.
 - Secrets are read when they're used. They are kept out of artifacts, logs, error messages and model prompts.
 - `doctor` shows which references resolve, never their values. It shows paths relative to the project, so home folders and user names stay out of CI logs.
 

@@ -17,6 +17,8 @@ Start with `agent-qa doctor` in your project folder. Each failing line ends with
 |---|---|
 | `atlassian.site is still the placeholder` | `init` ran with nobody to ask. Set `atlassian.site` in `agent-qa.yaml`, or run `init --force --site acme`. |
 | `Environment variable … is not set` | Set it in the terminal you run from ([getting-started.md](getting-started.md#2-give-it-your-keys-5-minutes)). In an IDE, see [The IDE](#the-ide) below. |
+| `Keychain entry … not found` | Store it: `agent-qa secret set NAME`. |
+| `The OS keychain can't be used` or `didn't keep` | There is no keychain here (a Linux server, WSL, a container). Use `${env:NAME}` in `agent-qa.yaml` instead. |
 | `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `SELF_SIGNED_CERT_IN_CHAIN` | Your network re-signs HTTPS. Use `NODE_OPTIONS=--use-system-ca` (Node 22.15 or later), or set `NODE_EXTRA_CA_CERTS` to the company CA file. Never set `NODE_TLS_REJECT_UNAUTHORIZED=0`. |
 | `ENOTFOUND` | The host name didn't resolve. Check the site in `agent-qa.yaml`, and the proxy. |
 | `timed out after 5000 ms` | Usually a proxy: set `HTTPS_PROXY`, and `NO_PROXY` for hosts that skip it. |
@@ -36,7 +38,7 @@ The vault key encrypts each run's mapping of tokens back to real values. It live
 ## The IDE
 
 - **The Agent-QA server doesn't start, or doesn't appear.** In VS Code, open `.vscode/mcp.json` and click Start above `agent-qa`. In Cursor, turn it on in Settings, MCP. Run `agent-qa init` again if the file is missing.
-- **The server starts, but says a variable isn't set.** The server gets the IDE's environment, not your terminal's. Start the IDE from the terminal where the variables are set (`code .`, `cursor .` or `claude`), or set them at the user level and restart the IDE.
+- **The server starts, but says a variable isn't set.** The server gets the IDE's environment, not your terminal's. Start the IDE from the terminal where the variables are set (`code .`, `cursor .` or `claude`), or set them at the user level and restart the IDE. Or keep them in the OS keychain instead, which the server reads however the IDE starts: `agent-qa secret set NAME`, and `${keychain:NAME}` in `agent-qa.yaml`.
 - **Certificate errors only in the IDE.** The server needs `--use-system-ca` too: start it with `node` instead of `npx` ([getting-started.md](getting-started.md#behind-a-company-network)).
 - **The model answers, but never asks you before a push.** In a host without MCP elicitation, the model asks you in chat. Answer there. To be asked by Agent-QA itself, use a host with elicitation, or the CLI ([security.md](security.md#writes)).
 

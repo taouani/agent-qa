@@ -20,7 +20,7 @@ describe("cli", () => {
 
   it("lists the planned commands", () => {
     const names = buildProgram().commands.map((c) => c.name());
-    expect(names).toEqual(["init", "run", "profile", "doctor", "harness", "report", "mcp"]);
+    expect(names).toEqual(["init", "run", "profile", "secret", "doctor", "harness", "report", "mcp"]);
   });
 
   it("gives each run a folder under AGENT_QA_RUNS_DIR when set", async () => {

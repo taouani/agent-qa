@@ -8,8 +8,8 @@ import { writeSetupFile } from "./setup-files.js";
 /**
  * `agent-qa init` (S1-11): writes `agent-qa.yaml`, the MCP settings of each
  * IDE host (VS Code, Claude Code, Cursor) and the `.gitignore` lines. It never overwrites a file it didn't write
- * (`--force` replaces `agent-qa.yaml`), and secrets stay `${env:…}`
- * references: init asks for none.
+ * (`--force` replaces `agent-qa.yaml`), and secrets stay `${env:…}` or
+ * `${keychain:…}` references: init asks for none.
  */
 
 export interface InitOptions {
@@ -31,6 +31,20 @@ export interface InitOptions {
   ask?: (question: string) => Promise<string | undefined>;
   /** Picks the shell syntax of the next steps; the running platform by default. */
   platform?: NodeJS.Platform;
+  /**
+   * Where agent-qa.yaml points for secrets: `keychain` (`agent-qa secret set`), or
+   * `env` (environment variables). Default: keychain when someone is asked at a
+   * terminal on macOS or Windows, whose keychains are always there; env otherwise.
+   */
+  secrets?: SecretsMode;
+}
+
+export const SECRETS_MODES = ["env", "keychain"] as const;
+export type SecretsMode = (typeof SECRETS_MODES)[number];
+
+/** The default of `--secrets`: see InitOptions.secrets. */
+export function defaultSecrets(interactive: boolean, platform: NodeJS.Platform): SecretsMode {
+  return interactive && (platform === "darwin" || platform === "win32") ? "keychain" : "env";
 }
 
 export const PLACEHOLDER_SITE = "https://YOUR-SITE.atlassian.net";
@@ -123,8 +137,9 @@ async function addServer(root: string, host: HostConfig, log: (line: string) => 
 
 const IGNORE_LINES = ["# agent-qa: token vault, run folders and audit log", ".agent-qa/"];
 
-export function configTemplate(opts: { site?: string | undefined; model?: string | undefined; xrayProject?: string | undefined }): string {
+export function configTemplate(opts: { site?: string | undefined; model?: string | undefined; xrayProject?: string | undefined; secrets?: SecretsMode | undefined }): string {
   const model = opts.model ?? MODEL_CATALOG.anthropic[0]!.id;
+  const ref = (name: string) => `\${${opts.secrets ?? "env"}:${name}}`;
   const lines = [
     `# yaml-language-server: $schema=https://unpkg.com/sf-agent-qa@${VERSION}/schema/agent-qa.schema.json`,
     "# Agent-QA settings. Secrets are never written here: only ${env:NAME} or ${keychain:NAME} references.",
@@ -132,8 +147,8 @@ export function configTemplate(opts: { site?: string | undefined; model?: string
     "",
     "atlassian:",
     `  site: ${opts.site ?? PLACEHOLDER_SITE}`,
-    "  email: ${env:ATLASSIAN_EMAIL}",
-    "  token: ${env:ATLASSIAN_TOKEN}",
+    `  email: ${ref("ATLASSIAN_EMAIL")}`,
+    `  token: ${ref("ATLASSIAN_TOKEN")}`,
     "",
     "models:",
     `  default: ${model}`,
@@ -142,8 +157,8 @@ export function configTemplate(opts: { site?: string | undefined; model?: string
   ];
   const xray = [
     "xray:",
-    "  clientId: ${env:XRAY_CLIENT_ID}",
-    "  clientSecret: ${env:XRAY_CLIENT_SECRET}",
+    `  clientId: ${ref("XRAY_CLIENT_ID")}`,
+    `  clientSecret: ${ref("XRAY_CLIENT_SECRET")}`,
     `  projectKey: ${opts.xrayProject ?? "QA"}`,
     "  # priorities: { P1: Highest, P2: High, P3: Medium, P4: Low }",
   ];
@@ -153,10 +168,10 @@ export function configTemplate(opts: { site?: string | undefined; model?: string
     "# salesforce:",
     "#   baseUrl: https://YOUR-ORG.my.salesforce.com",
     "#   loginUrl: https://test.salesforce.com # sandboxes; production uses https://login.salesforce.com",
-    "#   clientId: ${env:SF_CLIENT_ID}",
-    "#   privateKey: ${env:SF_JWT_KEY} # or privateKeyFile: ../certs/server.key (outside the repo)",
+    `#   clientId: ${ref("SF_CLIENT_ID")}`,
+    `#   privateKey: ${ref("SF_JWT_KEY")} # or privateKeyFile: ../certs/server.key (outside the repo)`,
     "#   users:",
-    "#     StoreManager-FRA: ${env:SF_USER_STOREMANAGER_FRA}",
+    `#     StoreManager-FRA: ${ref("SF_USER_STOREMANAGER_FRA")}`,
     "",
     "policy:",
     "  writes:",
@@ -194,7 +209,12 @@ export async function initCommand(opts: InitOptions): Promise<number> {
   if (exists && !opts.force) log("agent-qa.yaml: kept (exists; --force replaces it)");
   else {
     // Only what agent-qa.yaml can't do without, asked before anything is written.
-    const settings = { site: opts.site === undefined ? undefined : (siteOf(opts.site) ?? opts.site), model: opts.model, xrayProject: opts.xrayProject };
+    const settings = {
+      site: opts.site === undefined ? undefined : (siteOf(opts.site) ?? opts.site),
+      model: opts.model,
+      xrayProject: opts.xrayProject,
+      secrets: opts.secrets ?? defaultSecrets(opts.ask !== undefined, opts.platform ?? process.platform),
+    };
     if (opts.ask && settings.site === undefined) {
       for (let tries = 0; settings.site === undefined && tries < 3; tries++) {
         const answer = await opts.ask("Jira Cloud site (acme, or https://acme.atlassian.net): ");
@@ -253,21 +273,32 @@ export async function initCommand(opts: InitOptions): Promise<number> {
   return code;
 }
 
-/** What to do after init: the variables the config names, in the shell of this platform, then doctor and the IDE. */
+/** What to do after init: the secrets the config names (keychain entries, or variables in this platform's shell), then doctor and the IDE. */
 export function nextSteps(config: string, platform: NodeJS.Platform): string[] {
   const live = config.split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join("\n");
-  const names = [...new Set([...live.matchAll(/\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]!))];
+  const named = (kind: "env" | "keychain") => [...new Set([...live.matchAll(new RegExp(`\\$\\{${kind}:([A-Za-z_][A-Za-z0-9_.-]*)\\}`, "g"))].map((m) => m[1]!))];
+  const names = named("env");
+  const stored = named("keychain");
   const provider = /^\s*default:\s*([a-z]+):/m.exec(live)?.[1];
   const modelKey = provider ? PROVIDER_KEY_ENV[provider as keyof typeof PROVIDER_KEY_ENV] : undefined;
   const set = (name: string) => (platform === "win32" ? `$env:${name} = "..."` : `export ${name}=...`);
   const lines = ["Next:"];
+  if (stored.length) {
+    lines.push(`  1. Store ${stored.join(", ")} in your OS keychain, one at a time (each value is asked for, and not shown):`);
+    for (const name of stored) lines.push(`       agent-qa secret set ${name}`);
+    if (stored.includes("ATLASSIAN_TOKEN")) lines.push("     ATLASSIAN_TOKEN is an API token from https://id.atlassian.com/manage-profile/security/api-tokens.");
+  }
   if (names.length) {
-    lines.push(`  1. Set ${names.join(", ")}${platform === "win32" ? ", in PowerShell:" : ":"}`);
+    lines.push(`  ${stored.length ? "   Also set" : "1. Set"} ${names.join(", ")}${platform === "win32" ? ", in PowerShell:" : ":"}`);
     for (const name of names) lines.push(`       ${set(name)}`);
     if (names.includes("ATLASSIAN_TOKEN")) lines.push("     ATLASSIAN_TOKEN is an API token from https://id.atlassian.com/manage-profile/security/api-tokens.");
   }
   if (modelKey) lines.push(`     To run workflows from a terminal or CI, also ${modelKey} (an IDE answers with its own model).`);
   lines.push("  2. Run agent-qa doctor: it names the fix for each problem.");
-  lines.push("  3. Start your IDE from this terminal, so its agent-qa server sees the same variables. See https://github.com/taouani/agent-qa/blob/master/docs/getting-started.md");
+  lines.push(
+    names.length
+      ? "  3. Start your IDE from this terminal, so its agent-qa server sees the same variables. See https://github.com/taouani/agent-qa/blob/master/docs/getting-started.md"
+      : "  3. Open your IDE: its agent-qa server reads the keychain however the IDE was started. See https://github.com/taouani/agent-qa/blob/master/docs/getting-started.md",
+  );
   return lines;
 }
