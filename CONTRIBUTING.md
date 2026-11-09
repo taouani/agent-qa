@@ -75,7 +75,7 @@ git commit -s -m "Fix the Xray retry"
 
 The `DCO` check in CI fails a pull request with a commit whose sign-off is missing, or doesn't match its author's email. To fix the last commit: `git commit --amend -s --no-edit`, then `git push --force-with-lease`. For several commits of your own: `git rebase --signoff origin/master`, then the same push. That signs as you, so it only fixes commits you authored.
 
-The check skips pull requests opened by bots, such as "Version packages". It skips a merge commit when its content is exactly what git merges from its parents, as with "Update branch"; a merge that changes anything itself needs a sign-off. Commits made in GitHub's web editor need one too: tick the sign-off box when you commit there.
+The check skips pull requests opened by bots, such as "Version packages". It skips a merge commit when its content is exactly what git merges from its parents, as with "Update branch"; a merge that changes anything itself needs a sign-off. Commits made in GitHub's web editor need one too: once the repository requires sign-off on web commits, GitHub adds it for you.
 
 **Code written with an AI assistant.** You can use one, and you are still the author who signs off. An AI agent can't certify the DCO. Commits that an agent authors itself, such as `Claude <noreply@anthropic.com>`, pass only on a pull request a maintainer opened from this repository: that maintainer reviews them and answers for them.
 

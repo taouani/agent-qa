@@ -13,12 +13,14 @@ const SIGN_OFF = /^Signed-off-by:[ \t]*(\S[^<>\n]*?)[ \t]*<([^<>\s]+)>[ \t]*$/gi
 
 /**
  * The emails of the Signed-off-by lines in the message's last paragraph, where git
- * puts trailers, in lower case.
+ * puts trailers, ignoring comment lines, in lower case.
  * @param {string} body the full commit message
  * @returns {string[]}
  */
 export function signOffs(body) {
-  const paragraphs = body.replace(/\r\n/g, "\n").trim().split(/\n[ \t]*\n/);
+  // Comment lines (git's "# Conflicts:" after a merge) are not part of the message.
+  const text = body.replace(/\r\n/g, "\n").split("\n").filter((line) => !line.startsWith("#")).join("\n");
+  const paragraphs = text.trim().split(/\n[ \t]*\n/);
   const trailers = paragraphs[paragraphs.length - 1] ?? "";
   return [...trailers.matchAll(SIGN_OFF)].map((m) => (m[2] ?? "").toLowerCase());
 }

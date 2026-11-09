@@ -28,6 +28,8 @@ describe("DCO check", () => {
     expect(dcoProblems([commit({ body: "Mention Signed-off-by: Ada <ada@example.com> in docs" })], outside)[0]).toContain("no Signed-off-by");
     expect(dcoProblems([commit({ body: "x\n\nSigned-off-by: Ada <ada@example.com>\n\nMore text after it" })], outside)[0]).toContain("no Signed-off-by");
     expect(signOffs("x\n\nSigned-off-by:\nAda <ada@example.com>")).toEqual([]);
+    // git commit -s on a conflict merge puts the sign-off before the "# Conflicts:" comment.
+    expect(signOffs("Merge branch 'master' into pr\n\nSigned-off-by: Ada <ada@example.com>\n\n# Conflicts:\n#\tf\n")).toEqual(["ada@example.com"]);
   });
 
   it("skips a clean merge, and checks a merge with changes of its own", () => {
