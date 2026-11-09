@@ -269,15 +269,25 @@ export function buildProgram(): Command {
     .option("--json", "print the rates as JSON")
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (opts: { weeks: number; json?: boolean; cwd?: string }) => {
-      const root = resolve(opts.cwd ?? process.cwd());
+      // From a subfolder too: the project is where agent-qa.yaml is, as for run.
+      const root = opts.cwd ? resolve(opts.cwd) : projectRoot(process.cwd(), process.env);
       const own = new RunStore(runsDirOf(process.env) ?? join(root, ".agent-qa", "runs"));
-      const [kept, runnable, weeks] = await Promise.all([keptRate(own), runnableRate(own), weeklyRates(own, opts.weeks)]);
+      let kept: KeptRate, runnable: RunnableRate, weeks: WeekRates[];
+      try {
+        [kept, runnable, weeks] = await Promise.all([keptRate(own), runnableRate(own), weeklyRates(own, opts.weeks)]);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        process.stderr.write(`agent-qa report: the runs folder can't be read (${code ?? (error instanceof Error ? error.message : String(error))})\n`);
+        process.exitCode = 2;
+        return;
+      }
       if (opts.json) {
         process.stdout.write(JSON.stringify({ targets: RATE_TARGETS, keptRate: kept, runnableRate: runnable, weeks }, null, 2) + "\n");
         return;
       }
       process.stdout.write(`${keptLine(kept)}\n${runnableLine(runnable)}\n`);
       if (weeks.length) process.stdout.write(`\n${weeksTable(weeks)}\n`);
+      if (weeks.length && kept.unreadableRuns + runnable.unreadableRuns > 0) process.stdout.write("(the weeks leave out the unreadable records the totals name)\n");
       process.stdout.write(`\ntargets: ${RATE_TARGETS.kept * 100}% kept, ${RATE_TARGETS.runnable * 100}% runnable (see docs/rates.md)\n`);
     });
   program
