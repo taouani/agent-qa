@@ -24,10 +24,9 @@ cd your-project
 npx -y sf-agent-qa@next init
 ```
 
-`init` asks for your Jira site and Xray project key (or takes `--site` and `--xray-project`), then writes `agent-qa.yaml` (settings only: secrets stay in environment variables or your OS keychain), the MCP settings for VS Code (`.vscode/mcp.json`), Claude Code (`.mcp.json`) and Cursor (`.cursor/mcp.json`), and the `.gitignore` lines for `.agent-qa/`. Then set the variables it names and check the setup:
+`init` asks for your Jira site and Xray project key (or takes `--site` and `--xray-project`), then writes `agent-qa.yaml` (settings only: secrets stay in environment variables or your OS keychain), the MCP settings for VS Code (`.vscode/mcp.json`), Claude Code (`.mcp.json`) and Cursor (`.cursor/mcp.json`), and the `.gitignore` lines for `.agent-qa/`. Then store the keys it names, in your OS keychain (`npx -y sf-agent-qa@next secret set ATLASSIAN_TOKEN`, asked at a hidden prompt) or as environment variables, and check the setup:
 
 ```bash
-export ATLASSIAN_EMAIL=you@example.com ATLASSIAN_TOKEN=... XRAY_CLIENT_ID=... XRAY_CLIENT_SECRET=...
 npx -y sf-agent-qa@next doctor
 ```
 

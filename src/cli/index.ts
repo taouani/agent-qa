@@ -5,12 +5,13 @@ import { Command, InvalidArgumentError } from "commander";
 import { ConfigError, loadConfig, RunStore, VERSION, WorkflowEngine } from "../core/index.js";
 import { BROWSER_WORKFLOWS, emptyPipeline, FixtureDriver, HarnessCaseError, harnessSources, keptRate, maskedPipeline, runHarness, runnableRate, weeklyRates, dashboardData, renderDashboard, type KeptRate, type RunnableRate, type WeekRates } from "../harness/index.js";
 import { ApiDriver, HEADLESS_AGENTS, HeadlessDriver, ModelConfigError, modelName, StaticDriver, type HeadlessAgent, type ModelDriver } from "../llm/index.js";
-import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources } from "../data/index.js";
+import { commandList, DataAccess, describeProfile, formatDoctor, HostCommandRefused, PROFILE_FILE, ProfileError, readSavedProfile, runDoctor, scanFramework, secretSources, secretStore } from "../data/index.js";
 import { serveStdio } from "../mcp/index.js";
 import { builtinWorkflows } from "../workflows/index.js";
 import { DashboardFileError, writeDashboard, writeHarnessReport } from "./report-files.js";
-import { initCommand, MCP_HOSTS, type McpHost } from "./init.js";
+import { initCommand, MCP_HOSTS, SECRETS_MODES, type McpHost, type SecretsMode } from "./init.js";
 import { runCommand } from "./run.js";
+import { secretCommand, typedValue, type ValueRefused } from "./secret.js";
 
 /**
  * The project folder: `AGENT_QA_ROOT`, else the folder holding
@@ -92,9 +93,13 @@ export function buildProgram(): Command {
     .option("--model <provider:model>", "the default model")
     .option("--xray-project <key>", "Xray project key (adds the xray section)")
     .option("--force", "replace an existing agent-qa.yaml")
+    .option("--secrets <where>", `where agent-qa.yaml points for secrets: keychain (agent-qa secret set) or env (environment variables); default keychain when asked at a terminal on macOS or Windows, env otherwise`, (v: string) => {
+      if (!(SECRETS_MODES as readonly string[]).includes(v)) throw new InvalidArgumentError(`use ${SECRETS_MODES.join(" or ")}`);
+      return v as SecretsMode;
+    })
     .option("--host <host>", `IDE host to set up: ${MCP_HOSTS.join(", ")} (repeatable or comma-separated; default all three)`, collectHosts, [])
     .option("--cwd <dir>", "project folder (default: the current folder)")
-    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; host: McpHost[]; cwd?: string }) => {
+    .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; secrets?: SecretsMode; host: McpHost[]; cwd?: string }) => {
       const { host, ...rest } = opts;
       const ask = process.stdin.isTTY && process.stderr.isTTY && !ciFromEnv(process.env) ? terminalQuestion : undefined;
       process.exitCode = await initCommand({ ...rest, ...(host.length ? { hosts: host } : {}), ...(ask ? { ask } : {}), root: resolve(opts.cwd ?? process.cwd()) });
@@ -138,6 +143,21 @@ export function buildProgram(): Command {
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action((opts: { folder?: string; json?: boolean; cwd?: string }) => {
       process.exitCode = profileCommand({ root: resolve(opts.cwd ?? process.cwd()), ...(opts.folder ? { folder: opts.folder } : {}), json: opts.json ?? false });
+    });
+  const secret = program
+    .command("secret")
+    .description("keep a secret in the OS keychain, where ${keychain:NAME} in agent-qa.yaml reads it (service sf-agent-qa)");
+  secret
+    .command("set <name>")
+    .description("store or replace a secret: typed at a hidden prompt, or piped in (agent-qa secret set SF_JWT_KEY < server.key)")
+    .action(async (name: string) => {
+      process.exitCode = await secretCommand({ action: "set", name, store: secretStore(), readValue: hiddenValue });
+    });
+  secret
+    .command("delete <name>")
+    .description("remove a secret from the OS keychain")
+    .action(async (name: string) => {
+      process.exitCode = await secretCommand({ action: "delete", name, store: secretStore(), readValue: async () => undefined });
     });
   program
     .command("doctor")
@@ -372,6 +392,53 @@ async function terminalQuestion(question: string): Promise<string | undefined> {
   } finally {
     rl.close();
   }
+}
+
+/**
+ * A secret's value: typed at a hidden prompt in a terminal (nothing echoed, one
+ * line), or all of stdin when piped, for a multi-line key file. Undefined when
+ * interrupted; refused when a paste at the prompt has more than one line.
+ */
+async function hiddenValue(prompt: string): Promise<string | ValueRefused | undefined> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) {
+    // Piped in, or typed at a console that isn't a TTY (Git Bash's mintty): then it shows.
+    if (process.stderr.isTTY) process.stderr.write("agent-qa secret: reading the value from stdin, end it with Ctrl+D (Ctrl+Z then Enter on Windows). Typed input is visible here.\n");
+    const chunks: Buffer[] = [];
+    for await (const chunk of stdin) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer));
+    return Buffer.concat(chunks).toString("utf8");
+  }
+  process.stderr.write(prompt);
+  return new Promise((resolveValue) => {
+    let value = "";
+    const finish = (result: string | ValueRefused | undefined) => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stderr.write("\n");
+      resolveValue(result);
+    };
+    const onData = (chunk: string) => {
+      const typing = typedValue(value, chunk);
+      if (typing.state === "typing") value = typing.value;
+      else if (typing.state === "done") finish(typing.value);
+      else if (typing.state === "cancelled") finish(undefined);
+      else {
+        // Swallow the rest of the paste so the shell doesn't run it, then stop.
+        stdin.off("data", onData);
+        stdin.on("data", ignore);
+        setTimeout(() => {
+          stdin.off("data", ignore);
+          finish({ refused: typing.reason });
+        }, 200);
+      }
+    };
+    const ignore = () => undefined;
+    stdin.setEncoding("utf8");
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+  });
 }
 
 const ciFromEnv = (env: NodeJS.ProcessEnv) => Boolean(env.CI) && !/^(false|0)$/i.test(env.CI!);

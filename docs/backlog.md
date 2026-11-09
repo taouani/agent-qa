@@ -86,3 +86,7 @@ From the slice 5 reviews (9 Nov 2026):
 ### Healing existing scripts
 
 Moved into slice 3 on 6 Nov 2026: the `debug` workflow (S3-3) is this feature. It runs a chosen part of a repo's existing suite (S3-2), sorts each failure into the kinds the `scripts` run uses (selector, timing, data, flake, environment, defect), reports real bugs and test-data problems, and heals what is allowed: selectors and waits, never a check, a title or a feature file. The edits to files Agent-QA didn't write (S3-1) are shown as a whole diff for review, and go as a pull request in CI.
+
+## The vault key on Linux with no Secret Service
+
+From the PR #125 review (9 Nov 2026): on Linux with no Secret Service (a server, WSL, a container), the keychain library can fall back to the kernel keyring, which keeps an entry only for the login session. `agent-qa secret` pins Secret Service for this reason, but the vault key's own entry doesn't yet, so a vault key created there can vanish after the session, and the runs it encrypted can't be read. `AGENT_QA_VAULT_KEY` avoids it today, as the docs say. Pinning Secret Service for the vault key too needs a check that it doesn't move keys people already have.

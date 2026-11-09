@@ -57,6 +57,11 @@ const LITERAL_SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "private key"],
 ];
 
+/** What kind of secret `text` looks like (`GitHub token`), or undefined. */
+export function literalSecretKind(text: string): string | undefined {
+  return LITERAL_SECRET_PATTERNS.find(([pattern]) => pattern.test(text))?.[1];
+}
+
 function lineOf(doc: Document, counter: LineCounter, path: ReadonlyArray<PropertyKey>): number | undefined {
   // Walk up until a node with a range exists (missing keys have none).
   for (let n = path.length; n >= 0; n--) {
@@ -187,15 +192,30 @@ export async function resolveSecret(reference: string, sources: SecretSources = 
   const match = SECRET_REF.exec(reference);
   if (!match) throw new SecretError("<redacted>", "Not a secret reference (expected ${env:NAME} or ${keychain:NAME})");
   const [, kind, name] = match as unknown as [string, "env" | "keychain", string];
+  // The vault key decrypts every run's real values: no config field may send it anywhere.
+  if (name.toUpperCase() === "AGENT_QA_VAULT_KEY") throw new SecretError(reference, `${name} is the vault key, which config can't read`);
   if (kind === "env") {
     const value = (sources.env ?? process.env)[name];
     if (!value) throw new SecretError(reference, `Environment variable ${name} is not set`);
     return value;
   }
-  if (!sources.keychain) throw new SecretError(reference, `No keychain available to read ${name}`);
-  const value = await sources.keychain(name);
-  if (!value) throw new SecretError(reference, `Keychain entry ${name} not found`);
-  return value;
+  // A committed config with keychain references also runs where there is no
+  // keychain entry (CI, a Linux server): the variable of the same name stands in.
+  const fallback = (sources.env ?? process.env)[name];
+  let value: string | undefined;
+  let problem: string | undefined;
+  if (!sources.keychain) problem = "no keychain is available";
+  else {
+    try {
+      value = await sources.keychain(name);
+      if (!value) problem = "it isn't in the keychain";
+    } catch (error) {
+      problem = error instanceof Error ? error.message : String(error);
+    }
+  }
+  if (value) return value;
+  if (fallback) return fallback;
+  throw new SecretError(reference, `Keychain entry ${name} not found (${problem}), and no environment variable ${name} is set. Store it with: agent-qa secret set ${name}`);
 }
 
 /** JSON Schema for editors (VS Code YAML extension) and docs. */

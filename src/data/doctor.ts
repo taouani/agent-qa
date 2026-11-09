@@ -84,7 +84,7 @@ async function secretsCheck(config: Config, env: NodeJS.ProcessEnv, keyring: Key
         title: "Secrets",
         status: "fail",
         detail: missing.join("\n"),
-        fix: "Set each environment variable, or add the keychain entry under the service sf-agent-qa.",
+        fix: "Set each environment variable, or store each keychain entry with `agent-qa secret set NAME`.",
       };
 }
 

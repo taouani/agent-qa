@@ -6,6 +6,7 @@ export {
   configJsonSchema,
   loadConfig,
   parseConfig,
+  literalSecretKind,
   resolveSecret,
   SecretError,
 } from "./load.js";
