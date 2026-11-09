@@ -179,7 +179,14 @@ describe("agent-qa doctor", () => {
     await writeFile(join(dir, "agent-qa.yaml"), "version: 1\n");
     expect(byId(await doctor(ENV)).models!.status).toBe("warn");
     await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: anthropic:claude-custom-9\n  keys:\n    anthropic: ${env:ANTHROPIC_API_KEY}\n");
-    expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/not in the shipped catalog.*claude-custom-9/) });
+    // A likely typo: the listed models are named.
+    expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/not in the shipped catalog[^]*claude-custom-9: not a listed anthropic model[^]*Listed: anthropic:claude-opus-5-5/) });
+    // A provider 2.0.0 lists nothing for: it runs, and OpenRouter or LiteLLM is the way in.
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: openai:gpt-x\n  keys:\n    openai: ${env:ANTHROPIC_API_KEY}\n");
+    expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/openai:gpt-x: Agent-QA lists no openai models yet[^]*openrouter:/) });
+    // LiteLLM needs its URL, not a key.
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: litellm:gpt-x\n  endpoints:\n    litellm: https://llm.example.com\n");
+    expect(byId(await doctor(ENV)).models!.status).toBe("pass");
   });
 
   it("reports unreachable services by host, and can skip the network", async () => {

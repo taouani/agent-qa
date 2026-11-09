@@ -38,7 +38,7 @@ npx -y sf-agent-qa@next run test-cases --key ABC-123
 npx -y sf-agent-qa@next run test-cases --jql "project = ABC AND fixVersion = 2.4" --ci --yes
 ```
 
-Without an API key, `--headless claude-code` or `--headless copilot` answers each step with Claude Code or Copilot CLI and its own sign-in, every agent tool off. See [docs/ci.md](docs/ci.md) for that and for GitHub Actions, Azure Pipelines and GitLab CI jobs.
+Without an API key, `--headless claude-code` or `--headless copilot` answers each step with Claude Code or Copilot CLI and its own sign-in, every agent tool off. See [docs/ci.md](docs/ci.md) for that and for GitHub Actions, Azure Pipelines and GitLab CI jobs. Which models to use, and how other providers' models run: [docs/models.md](docs/models.md).
 
 `--yes` accepts the review as unattended and never pushes; `--accept push` pushes. In CI (`--ci`), a push also needs `policy.writes.xray: allow` in `agent-qa.yaml`, because `ask` is denied when nobody can be asked. Each run's files are in `.agent-qa/runs/`, with a cost report. To check that no personal data reaches a model, see [docs/harness.md](docs/harness.md).
 
