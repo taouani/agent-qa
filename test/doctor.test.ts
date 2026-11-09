@@ -204,6 +204,10 @@ describe("agent-qa doctor", () => {
     const hanging = ((_url: string, init: RequestInit) =>
       new Promise((_, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)))) as unknown as typeof fetch;
     expect(byId(await doctor(ENV, { fetch: hanging, timeoutMs: 20 })).network!.detail).toContain("timed out after 20 ms");
+    // Through a proxy, undici rejects with its own abort error, not the signal's TimeoutError.
+    const proxied = ((_url: string, init: RequestInit) =>
+      new Promise((_, reject) => init.signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { code: "UND_ERR_ABORTED" }))))) as unknown as typeof fetch;
+    expect(byId(await doctor(ENV, { fetch: proxied, timeoutMs: 20 })).network!.detail).toContain("timed out after 20 ms");
     const bare = (async () => {
       throw new TypeError("fetch failed");
     }) as unknown as typeof fetch;
@@ -372,5 +376,11 @@ describe("doctor in a git work tree (clean-up of slice 0 follow-ups)", () => {
     execFileSync(bin!, args, { cwd: project, stdio: "pipe" });
     expect(byId(await doctor(ENV, { cwd: project })).tracked!.status).toBe("pass");
   });
-});
 
+  it("names the placeholder site agent-qa init writes without --site", async () => {
+    await writeFile(join(dir, "agent-qa.yaml"), CONFIG.replace("https://acme.atlassian.net", "https://YOUR-SITE.atlassian.net"));
+    expect(byId(await doctor(ENV, { online: false }))["config-site"]).toMatchObject({ status: "fail", fix: expect.stringContaining("atlassian.site") });
+    await writeFile(join(dir, "agent-qa.yaml"), CONFIG);
+    expect(byId(await doctor(ENV, { online: false }))["config-site"]).toBeUndefined();
+  });
+});

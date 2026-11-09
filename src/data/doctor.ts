@@ -264,13 +264,15 @@ function proxyAwareFetch(env: NodeJS.ProcessEnv): typeof fetch {
 }
 
 async function reachable(url: string, fetcher: typeof fetch, timeoutMs: number): Promise<string | undefined> {
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     // Any HTTP answer, even 401, means the host is reachable; credentials are checked by the connectors.
-    await fetcher(url, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+    await fetcher(url, { method: "HEAD", redirect: "manual", signal });
     return undefined;
   } catch (error) {
     const e = error as Error & { cause?: { code?: string; name?: string } };
-    if (e.name === "TimeoutError") return `timed out after ${timeoutMs} ms`;
+    // Through a proxy, undici reports the timeout as UND_ERR_ABORTED.
+    if (e.name === "TimeoutError" || signal.aborted) return `timed out after ${timeoutMs} ms`;
     if (error instanceof ConnectorError) return error.message; // a proxy URL that can't be used
     return networkCause(error) ?? e.cause?.name ?? e.name ?? "error";
   }
@@ -321,6 +323,15 @@ export async function runDoctor(options: DoctorOptions): Promise<CheckResult[]> 
         status: "warn",
         detail: `the schema line points at sf-agent-qa@${loaded.schemaVersion}, but ${VERSION} is running, so your editor may flag settings this version supports`,
         fix: `In the schema line, change sf-agent-qa@${loaded.schemaVersion} to sf-agent-qa@${VERSION}.`,
+      });
+    }
+    if (config.atlassian && new URL(config.atlassian.site).hostname.toLowerCase() === "your-site.atlassian.net") {
+      results.push({
+        id: "config-site",
+        title: "Jira site",
+        status: "fail",
+        detail: "atlassian.site is still the placeholder agent-qa init writes",
+        fix: "Set atlassian.site in agent-qa.yaml to your Jira Cloud site, such as https://acme.atlassian.net.",
       });
     }
     if (!SECRET_REF.test(config.atlassian?.email ?? "${env:x}")) {

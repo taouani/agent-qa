@@ -54,4 +54,6 @@ Reviewed cases are pushed once. `casesRun` is refused for a run that isn't finis
 
 ## Behind a corporate proxy
 
+The full steps, including npm itself behind a proxy, are in [getting-started.md](getting-started.md#behind-a-company-network).
+
 If `agent-qa doctor` shows a certificate error such as `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, your network re-signs HTTPS with a company certificate that Node doesn't trust by default. Start node with `--use-system-ca` (Node 22.15 and later) so it uses the operating system's certificates, in `mcp.json` too: `"command": "node", "args": ["--use-system-ca", "<path>/dist/cli/bin.js", "mcp"]`. For `agent-qa` in a terminal, set `NODE_OPTIONS=--use-system-ca` first (PowerShell: `$env:NODE_OPTIONS = "--use-system-ca"`). Or set `NODE_EXTRA_CA_CERTS` to the company CA file (.pem). If the network only reaches out through a proxy, set `HTTPS_PROXY` (and `NO_PROXY`). Never set `NODE_TLS_REJECT_UNAUTHORIZED=0`: it turns off certificate checks for your Jira and Xray tokens.

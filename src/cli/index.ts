@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
@@ -95,7 +96,8 @@ export function buildProgram(): Command {
     .option("--cwd <dir>", "project folder (default: the current folder)")
     .action(async (opts: { site?: string; model?: string; xrayProject?: string; force?: boolean; host: McpHost[]; cwd?: string }) => {
       const { host, ...rest } = opts;
-      process.exitCode = await initCommand({ ...rest, ...(host.length ? { hosts: host } : {}), root: resolve(opts.cwd ?? process.cwd()) });
+      const ask = process.stdin.isTTY && process.stderr.isTTY && !ciFromEnv(process.env) ? terminalQuestion : undefined;
+      process.exitCode = await initCommand({ ...rest, ...(host.length ? { hosts: host } : {}), ...(ask ? { ask } : {}), root: resolve(opts.cwd ?? process.cwd()) });
     });
   program
     .command("run [workflow]")
@@ -361,6 +363,20 @@ export function runnableLine(r: RunnableRate): string {
 }
 
 /** A path from the project folder when it is inside it, so the home folder isn't printed. */
+/** One answer typed in the terminal; undefined when the person interrupted (Ctrl-C or Ctrl-D). */
+async function terminalQuestion(question: string): Promise<string | undefined> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return await rl.question(question);
+  } catch {
+    return undefined;
+  } finally {
+    rl.close();
+  }
+}
+
+const ciFromEnv = (env: NodeJS.ProcessEnv) => Boolean(env.CI) && !/^(false|0)$/i.test(env.CI!);
+
 function relativeOr(root: string, file: string): string {
   const rel = relative(root, file);
   return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : file;
