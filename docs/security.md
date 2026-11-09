@@ -108,6 +108,5 @@ What a steered model *can* do is write poor or misleading test cases or code. Th
   | Advisory | In | Why it stays |
   |---|---|---|
   | [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249), minimatch denial of service (moderate) | `ts-morph` → `@ts-morph/common` | `ts-morph` runs on an in-memory file system over the files Agent-QA passes it, and never matches a glob, so the vulnerable code isn't reached. The fix needs a `ts-morph` release that moves to minimatch 11. |
-  | [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq), uuid buffer bounds (moderate) | `@cucumber/gherkin` → `@cucumber/messages` | The flaw is in uuid v3, v5 and v6 when given an output buffer. Agent-QA parses Gherkin with the incrementing id generator, which never calls uuid. Moving to a `@cucumber/gherkin` release that drops uuid is a separate change, since the latest one (42) also needs a newer Node 20 than `engines` allows. |
 
   Advisories in development tools (the test runner, lint) don't reach users. They are fixed in the normal course of work.
