@@ -23,7 +23,8 @@ let failed = false;
 
 function step(name, cmd, args, check, input) {
   const start = Date.now();
-  const r = spawnSync(cmd, args, { cwd: project, env, encoding: "utf8", shell: win, timeout: 300_000, ...(input === undefined ? {} : { input }) });
+  // A shell only for Windows .cmd shims, which need one; it would split other arguments at spaces.
+  const r = spawnSync(cmd, args, { cwd: project, env, encoding: "utf8", shell: win && /\.cmd$/i.test(cmd), timeout: 300_000, ...(input === undefined ? {} : { input }) });
   const ms = Date.now() - start;
   let problem = r.error ? r.error.message : undefined;
   if (!problem) problem = check(r);
@@ -68,7 +69,8 @@ step("agent-qa mcp (initialize)", bin, ["mcp"], (r) => {
   return reply?.result?.serverInfo ? undefined : `no initialize result (exit ${r.status})`;
 }, JSON.stringify(initialize) + "\n");
 // The public API, as a library user imports it.
-step("import sf-agent-qa", process.execPath, ["--input-type=module", "-e", "const m = await import('sf-agent-qa'); console.log(m.VERSION);"], (r) => (r.stdout.trim() === version ? undefined : `VERSION is ${JSON.stringify(r.stdout.trim())} (exit ${r.status})`));
+writeFileSync(join(project, "import-check.mjs"), "const m = await import('sf-agent-qa');\nconsole.log(m.VERSION);\n");
+step("import sf-agent-qa", process.execPath, ["import-check.mjs"], (r) => (r.stdout.trim() === version ? undefined : `VERSION is ${JSON.stringify(r.stdout.trim())} (exit ${r.status})`));
 
 const total = times.reduce((n, [, ms]) => n + ms, 0);
 console.log(`total ${(total / 1000).toFixed(1)} s on ${process.platform}, node ${process.version}`);
