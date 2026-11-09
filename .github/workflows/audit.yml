@@ -1,0 +1,24 @@
+name: Audit
+
+# A high or critical advisory in a runtime dependency fails the build (docs/security.md
+# lists the moderate ones and why they stay). Development tools aren't shipped to users.
+# Weekly too, so an advisory published between pull requests is found.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm audit --omit=dev --audit-level=high

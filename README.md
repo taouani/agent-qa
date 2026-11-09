@@ -9,6 +9,8 @@ Two rules shape the design:
 - **Personal data is masked before any model sees it.** It's replaced with tokens, and the real values stay in an encrypted local vault (GDPR, PIPL, CCPA).
 - **Every output is validated and every write is gated.** Artifacts are typed JSON checked against schemas, and pushes to Xray, Confluence or your test code go through a policy layer.
 
+What leaves your machine, and where the protection stops: [docs/security.md](docs/security.md). To report a vulnerability: [SECURITY.md](SECURITY.md).
+
 ## Status
 
 v2 is in alpha, on the npm `next` tag. Expect breaking changes before 2.0.0, planned for 28 February 2027. The alpha covers requirements analysis, test cases pushed to Xray, Playwright scripts (Gherkin with playwright-bdd, specs, or API tests) written into your repo and run there, and maintaining an existing suite (run, debug, review, audit, refactor). It also writes QA documents (strategy, plan, charter, risk register, test data, traceability and release notes) and can publish them to Confluence. The analysis can also read the pull requests that name each issue. For everything else v1 did (accessibility), keep using v1 for now: see [docs/migrating-from-v1.md](docs/migrating-from-v1.md).

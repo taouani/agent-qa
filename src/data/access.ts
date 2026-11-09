@@ -451,7 +451,7 @@ export interface DataAccessOptions {
   /** The config, else `agent-qa.yaml` in `root`, read on first use. */
   config?: Config;
   /** The token vault, else encrypted files in `.agent-qa/vault/` with the default key. */
-  vault?: Pick<Vault, "open" | "derivedKey">;
+  vault?: Pick<Vault, "open" | "derivedKey"> & Partial<Pick<Vault, "purgeExpired">>;
   secrets?: SecretSources;
   fetch?: FetchLike;
   /** Replace the clients, for tests. */
@@ -531,7 +531,8 @@ const MAX_OPEN = 16;
 
 export class DataAccess implements RequirementsData, XrayData, HostData, ProfileData, ScriptsData, SuiteData, TestFilesData, SalesforceData, ExplorerData, DocumentData {
   private config: Promise<Config> | undefined;
-  private vault: Pick<Vault, "open" | "derivedKey"> | undefined;
+  private vault: Pick<Vault, "open" | "derivedKey"> & Partial<Pick<Vault, "purgeExpired">> | undefined;
+  private purged: Promise<void> | undefined;
   private pathKey: Promise<Buffer> | undefined;
   private readonly open = new Map<string, Promise<{ vault: RunVault; service: MaskedDataService }>>();
   private readonly profiles = new Map<string, Promise<FrameworkProfile>>();
@@ -2243,7 +2244,12 @@ export class DataAccess implements RequirementsData, XrayData, HostData, Profile
     const { root, env, store } = this.options;
     const config = await this.loadConfig();
     this.vault ??= this.options.vault ?? new Vault({ storage: new FileVaultStorage(join(root, ".agent-qa", "vault")), keys: defaultKeyProvider(env) });
-    const vault = await this.vault.open(runId);
+    // Expired run vaults are deleted, not just refused, once per process: the real values don't outlive their 30 days on disk.
+    // Every open waits for it, so a purge never deletes a vault that an open just saved again.
+    const vaults = this.vault;
+    this.purged ??= Promise.resolve(vaults.purgeExpired?.()).then(() => undefined, () => undefined);
+    await this.purged;
+    const vault = await vaults.open(runId);
     const secrets = this.secrets();
     const service = new MaskedDataService({
       config,
