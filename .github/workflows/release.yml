@@ -49,3 +49,15 @@ jobs:
         run: npm dist-tag add "sf-agent-qa@$(node -p "require('./package.json').version")" next
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # A stable release (pre mode exited): `next` follows it, so `npm i sf-agent-qa@next`
+      # never gives something older than `latest`, and the empty 0.0.0 placeholder is
+      # deprecated (decision 6a). Both commands can be repeated, but a re-run of this job
+      # publishes nothing and skips this step: if it fails, run them by hand (docs/releasing.md).
+      - name: Point next at the stable release, deprecate 0.0.0
+        if: steps.changesets.outputs.published == 'true' && hashFiles('.changeset/pre.json') == ''
+        run: |
+          case "$(node -p "require('./package.json').version")" in *-*) echo "not a stable version"; exit 0;; esac
+          npm dist-tag add "sf-agent-qa@$(node -p "require('./package.json').version")" next
+          npm deprecate sf-agent-qa@0.0.0 "Placeholder. Install sf-agent-qa@latest (Agent-QA v2)."
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

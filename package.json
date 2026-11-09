@@ -41,6 +41,7 @@
   "scripts": {
     "build": "tsup",
     "build:tsc": "node scripts/build-tsc.mjs",
+    "pack:check": "node scripts/check-pack.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

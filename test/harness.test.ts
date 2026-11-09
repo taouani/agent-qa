@@ -367,5 +367,5 @@ describe("agent-qa harness", () => {
       process.exitCode = before;
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 60_000); // the whole harness, all seven cases: past the 5 s default on a busy CI runner
 });
