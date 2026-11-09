@@ -4,6 +4,7 @@ export interface Commit {
   authorEmail: string;
   parents: number;
   body: string;
+  cleanMerge?: boolean;
 }
 export const AGENT_EMAILS: string[];
 export function signOffs(body: string): string[];

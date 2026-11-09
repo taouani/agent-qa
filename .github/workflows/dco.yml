@@ -9,18 +9,32 @@ permissions:
 
 jobs:
   dco:
+    # Bot pull requests ("Version packages") carry no sign-off; a skipped job counts as passed.
+    if: github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: node scripts/check-dco.mjs "$BASE" "$HEAD"
+      # The check's own scripts come from the base branch, so a pull request can't change
+      # the rules it is checked by. Only a pull request that adds them runs its own copy.
+      - name: Take the check from the base branch
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          for f in dco.mjs check-dco.mjs; do
+            git show "origin/$BASE_REF:scripts/$f" > "$RUNNER_TEMP/$f" 2>/dev/null || cp "scripts/$f" "$RUNNER_TEMP/$f"
+          done
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
+      # The range is against the base branch as it is now, so commits merged into the
+      # pull request from it ("Update branch") are not counted as the pull request's.
+      - run: node "$RUNNER_TEMP/check-dco.mjs" "origin/$BASE_REF" HEAD
+        env:
+          BASE_REF: ${{ github.base_ref }}
           # Agent-authored commits pass only on a maintainer's own pull request, from this repository.
           MAINTAINER_PR: ${{ contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && github.event.pull_request.head.repo.full_name == github.repository }}

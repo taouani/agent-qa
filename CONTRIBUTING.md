@@ -19,7 +19,7 @@ npm run check
 
 | Command | What it does |
 |---|---|
-| `npm test` | The tests (vitest). Two browser tests run only when `AGENT_QA_PLAYWRIGHT_DIR` points at a folder with Playwright and Chromium installed. |
+| `npm test` | The tests (vitest). The browser suites run only when `AGENT_QA_PLAYWRIGHT_DIR` points at a folder with Playwright and Chromium installed, and are skipped otherwise. |
 | `npm run lint` | ESLint, including the module boundary and file-write rules below |
 | `npm run build` | The bundle in `dist/`. On a locked-down Windows machine where esbuild fails with `Access is denied`, use `npm run build:tsc`. |
 | `npm run schema` | Regenerates `schema/agent-qa.schema.json` after a change to `src/core/config/schema.ts`. A test checks that they match. |
@@ -48,7 +48,7 @@ These are checked by lint and tests, and a pull request that relaxes them to mak
   | `src/index.ts` (the public API) | core, data, workflows |
 
   When an import is refused, route the call through `data` instead.
-- **Writes go through the policy layer.** Only the files listed in `FS_WRITERS` in `eslint.config.js` may write to disk, and only `src/connectors/host.ts` may start a process. Every other write outside the run folder asks `Policy.guard`. Adding a file to those lists needs a reason in the pull request.
+- **Writes go through the policy layer.** Only the files listed in `FS_WRITERS` in `eslint.config.js` may write to disk, and only `src/connectors/host.ts` may run commands (the browser connector starts Chromium through Playwright, with a policy grant). Every other write outside the run folder asks `Policy.guard`. Adding a file to those lists needs a reason in the pull request.
 - **No secrets in files.** Config holds only `${env:NAME}` or `${keychain:NAME}` references. Tests use made-up values: never a real name, email, token or ticket.
 - **Code style.** ESM, TypeScript strict, relative imports with the `.js` extension. Schemas are zod. Artifacts are typed JSON with a `sourceHash`.
 
@@ -73,9 +73,9 @@ git commit -s -m "Fix the Xray retry"
 # Signed-off-by: Your Name <you@example.com>
 ```
 
-The `DCO` check in CI fails a pull request with a commit whose sign-off is missing, or doesn't match its author's email. To fix the last commit: `git commit --amend -s --no-edit`, then `git push --force-with-lease`. For several commits: `git rebase --signoff origin/master`, then the same push.
+The `DCO` check in CI fails a pull request with a commit whose sign-off is missing, or doesn't match its author's email. To fix the last commit: `git commit --amend -s --no-edit`, then `git push --force-with-lease`. For several commits of your own: `git rebase --signoff origin/master`, then the same push. That signs as you, so it only fixes commits you authored.
 
-The check skips bots, such as the "Version packages" pull request, and merge commits.
+The check skips pull requests opened by bots, such as "Version packages". It skips a merge commit when its content is exactly what git merges from its parents, as with "Update branch"; a merge that changes anything itself needs a sign-off. Commits made in GitHub's web editor need one too: tick the sign-off box when you commit there.
 
 **Code written with an AI assistant.** You can use one, and you are still the author who signs off. An AI agent can't certify the DCO. Commits that an agent authors itself, such as `Claude <noreply@anthropic.com>`, pass only on a pull request a maintainer opened from this repository: that maintainer reviews them and answers for them.
 
