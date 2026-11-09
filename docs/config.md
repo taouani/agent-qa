@@ -29,7 +29,7 @@ Jira and Confluence Cloud. Needed by every workflow that reads requirements. Opt
 | `atlassian.token` | secret reference | required | The Atlassian API token, as a secret reference. |
 | `atlassian.confluence` | section |  | Where `document` publishes to Confluence. |
 | `atlassian.confluence.spaceKey` | text | required | The key of the space documents are published to. |
-| `atlassian.confluence.parentPageId` | text |  | The id of the page that published documents go under. Without it, they go at the top of the space. |
+| `atlassian.confluence.parentPageId` | text |  | The id of the page that published documents go under. Without it, the page is created with no parent, and Confluence places it in the space (on Confluence Cloud, under the space's home page). |
 | `atlassian.jira` | section |  | How requirements are read from Jira. Every key has a default. |
 | `atlassian.jira.acceptanceCriteriaField` | text |  | The field that holds acceptance criteria, by id or name. Default: a field named like acceptance criteria, else the criteria in the description. |
 | `atlassian.jira.extraFields` | list of text |  | More text fields to read into each requirement, by id or name. |
@@ -96,7 +96,7 @@ The models that answer from the CLI and CI. In an IDE, the IDE's own model answe
 
 | Key | Type | Default | What it does |
 |---|---|---|---|
-| `models.default` | text | required | The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5. |
+| `models.default` | text | required | The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5, unless models.workflows or --model names another. |
 | `models.allowed` | list of text |  | The models that may run, as provider:model or provider:*. A model outside the shipped catalog runs, with a doctor warning. |
 | `models.workflows` | map of name to text |  | A model for one workflow, by workflow id, such as `scripts: anthropic:claude-opus-5-5`. |
 | `models.keys` | map of name (`anthropic`, `openai`, `mistral`, `xai`, `google`, `openrouter`, `litellm`) to secret reference |  | The API key for each provider, as a secret reference. Default: the provider's usual variable, such as ANTHROPIC_API_KEY. |
@@ -124,7 +124,7 @@ What Agent-QA may write outside its run folder, and what it asks you first (docs
 | `policy.writes` | section | see its keys | allow, ask or deny for each target. |
 | `policy.writes.xray` | `allow`, `ask`, `deny` | `ask` | Creating and updating test cases and Test Executions. In CI, ask is denied. |
 | `policy.writes.confluence` | `allow`, `ask`, `deny` | `ask` | Publishing a document. In CI, ask is denied. |
-| `policy.writes.testCode` | `allow`, `ask`, `deny` | `ask` | Writing or deleting files in your repo. In CI, ask leaves the code as a pull request. |
+| `policy.writes.testCode` | `allow`, `ask`, `deny` | `ask` | Writing or deleting files in your repo. In CI, anything but deny leaves the code as a pull request, never a push. |
 | `policy.writes.jira` | `allow`, `ask`, `deny` | `deny` | Reserved: nothing writes to Jira. |
 | `policy.writes.commands` | `allow`, `ask`, `deny` | `ask` | Running the commands the framework profile lists (tests, type check) in your repo. In CI, anything but deny allows. |
 

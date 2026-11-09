@@ -70,7 +70,7 @@ export const configSchema = z
         confluence: z
           .object({
             spaceKey: z.string().min(1).describe("The key of the space documents are published to."),
-            parentPageId: z.string().min(1).optional().describe("The id of the page that published documents go under. Without it, they go at the top of the space."),
+            parentPageId: z.string().min(1).optional().describe("The id of the page that published documents go under. Without it, the page is created with no parent, and Confluence places it in the space (on Confluence Cloud, under the space's home page)."),
           })
           .strict()
           .optional()
@@ -169,7 +169,7 @@ export const configSchema = z
 
     models: z
       .object({
-        default: modelId.describe("The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5."),
+        default: modelId.describe("The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5, unless models.workflows or --model names another."),
         allowed: z.array(modelPattern).min(1).optional().describe("The models that may run, as provider:model or provider:*. A model outside the shipped catalog runs, with a doctor warning."),
         workflows: z.record(z.string(), modelId).optional().describe("A model for one workflow, by workflow id, such as `scripts: anthropic:claude-opus-5-5`."),
         keys: z.partialRecord(z.enum(PROVIDERS), secretRef).optional().describe("The API key for each provider, as a secret reference. Default: the provider's usual variable, such as ANTHROPIC_API_KEY."),
@@ -210,7 +210,7 @@ export const configSchema = z
           .object({
             xray: writePolicy.default("ask").describe("Creating and updating test cases and Test Executions. In CI, ask is denied."),
             confluence: writePolicy.default("ask").describe("Publishing a document. In CI, ask is denied."),
-            testCode: writePolicy.default("ask").describe("Writing or deleting files in your repo. In CI, ask leaves the code as a pull request."),
+            testCode: writePolicy.default("ask").describe("Writing or deleting files in your repo. In CI, anything but deny leaves the code as a pull request, never a push."),
             jira: writePolicy.default("deny").describe("Reserved: nothing writes to Jira."),
             commands: writePolicy.default("ask").describe("Running the commands the framework profile lists (tests, type check) in your repo. In CI, anything but deny allows."),
           })

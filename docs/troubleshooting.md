@@ -8,8 +8,8 @@ Start with `agent-qa doctor` in your project folder. Each failing line ends with
 |---|---|
 | `npx : File …\npx.ps1 cannot be loaded because running scripts is disabled` (PowerShell) | Run `npx.cmd` instead of `npx`, or allow local scripts for your account: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. |
 | `npx` hangs, or fails with a certificate error | npm can't reach the registry through your company network. Set npm's proxy and CA file: [getting-started.md](getting-started.md#behind-a-company-network). |
-| The install takes over a minute on Windows | That's npm on Windows (about 70 s, against 6 s on Linux). Install once in the project, `npm install --save-dev sf-agent-qa@next`, instead of `npx` each time. |
-| `Install Node 20 or later` | Agent-QA needs Node.js 20 or later. Check with `node --version`. |
+| The install takes over a minute on Windows | That's npm on Windows (76 s measured, against 5 to 11 s on Linux). Install once in the project, `npm install --save-dev sf-agent-qa@next`, instead of `npx` each time. |
+| `npm warn EBADENGINE Unsupported engine`, or a crash as it starts | Agent-QA needs Node.js 20 or later. Check with `node --version`. |
 
 ## Setting up
 
@@ -47,11 +47,11 @@ More in [ide.md](ide.md).
 | You see | What to do |
 |---|---|
 | `Write to xray denied: …` in CI | In CI nobody can be asked, so `ask` is denied. Set `policy.writes.xray: allow` in `agent-qa.yaml` if CI should push, and pass `--accept push`. |
-| Exit code 3 | The run is waiting for a person (a review or a yes). The CLI prints the command that answers it: `agent-qa run --resume <run id> --accept <step>` (or `--decline <step>`). You can also answer it in your IDE. |
+| Exit code 3 | The run is waiting for a person (a review or a yes). The CLI prints the command that answers it: `agent-qa run --resume <run id> --accept <step>` (or `--decline <step>`). You can also answer it in your IDE. When the message says only a host model can answer the step, continue the run in your IDE. |
 | Exit code 2 | Bad setup or input: the message says which. Run `agent-qa doctor`. |
 | A run stopped half way | Fix the cause, then `agent-qa run --resume <run id>` continues it from the last finished step. The run id is its folder name in `.agent-qa/runs/`, and the CLI prints it. |
 | `Models: not in models.allowed` | Add the model to `models.allowed`, or pick one that is. |
-| A model id that isn't Anthropic's | Run it through OpenRouter or LiteLLM ([models.md](models.md)). |
+| `Models: … it runs, untested` (warn) | It runs directly, but Agent-QA has only tested Anthropic's models. Routing it through OpenRouter or LiteLLM is the suggested way ([models.md](models.md)). |
 
 ## Salesforce sign-in
 

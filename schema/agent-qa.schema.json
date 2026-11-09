@@ -51,7 +51,7 @@
               "description": "The key of the space documents are published to."
             },
             "parentPageId": {
-              "description": "The id of the page that published documents go under. Without it, they go at the top of the space.",
+              "description": "The id of the page that published documents go under. Without it, the page is created with no parent, and Confluence places it in the space (on Confluence Cloud, under the space's home page).",
               "type": "string",
               "minLength": 1
             }
@@ -347,7 +347,7 @@
         "default": {
           "type": "string",
           "pattern": "^(anthropic|openai|mistral|xai|google|openrouter|litellm):[A-Za-z0-9._/@-]+$",
-          "description": "The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5."
+          "description": "The model for every step, as provider:model, such as anthropic:claude-sonnet-5-5, unless models.workflows or --model names another."
         },
         "allowed": {
           "description": "The models that may run, as provider:model or provider:*. A model outside the shipped catalog runs, with a doctor warning.",
@@ -547,7 +547,7 @@
             },
             "testCode": {
               "default": "ask",
-              "description": "Writing or deleting files in your repo. In CI, ask leaves the code as a pull request.",
+              "description": "Writing or deleting files in your repo. In CI, anything but deny leaves the code as a pull request, never a push.",
               "type": "string",
               "enum": [
                 "allow",
