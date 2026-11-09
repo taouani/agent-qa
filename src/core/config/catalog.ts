@@ -5,7 +5,7 @@ import type { Provider } from "./schema.js";
  * (Tarek's choice 3b, 8 Nov 2026): the other direct providers' IDs could not
  * be checked, so they ship with no list and run with a doctor warning, and
  * their models are best reached through OpenRouter or LiteLLM until they are
- * listed. `models.allowed` narrows the catalog; a model outside it still runs,
+ * listed. `models.allowed` narrows the catalog; a model outside the catalog still runs,
  * with a doctor warning. OpenRouter and LiteLLM route to any provider's
  * models, so they have no list of their own.
  *

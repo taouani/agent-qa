@@ -184,6 +184,9 @@ describe("agent-qa doctor", () => {
     // A provider 2.0.0 lists nothing for: it runs, and OpenRouter or LiteLLM is the way in.
     await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: openai:gpt-x\n  keys:\n    openai: ${env:ANTHROPIC_API_KEY}\n");
     expect(byId(await doctor(ENV)).models).toMatchObject({ status: "warn", detail: expect.stringMatching(/openai:gpt-x: Agent-QA lists no openai models yet[^]*openrouter:/) });
+    // LiteLLM needs its URL, not a key.
+    await writeFile(join(dir, "agent-qa.yaml"), "version: 1\nmodels:\n  default: litellm:gpt-x\n  endpoints:\n    litellm: https://llm.example.com\n");
+    expect(byId(await doctor(ENV)).models!.status).toBe("pass");
   });
 
   it("reports unreachable services by host, and can skip the network", async () => {
