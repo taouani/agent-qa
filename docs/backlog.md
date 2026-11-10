@@ -90,3 +90,7 @@ Moved into slice 3 on 6 Nov 2026: the `debug` workflow (S3-3) is this feature. I
 ## The vault key on Linux with no Secret Service
 
 From the PR #125 review (9 Nov 2026): on Linux with no Secret Service (a server, WSL, a container), the keychain library can fall back to the kernel keyring, which keeps an entry only for the login session. `agent-qa secret` pins Secret Service for this reason, but the vault key's own entry doesn't yet, so a vault key created there can vanish after the session, and the runs it encrypted can't be read. `AGENT_QA_VAULT_KEY` avoids it today, as the docs say. Pinning Secret Service for the vault key too needs a check that it doesn't move keys people already have.
+
+## The DCO check can be changed by the branch it checks
+
+From the PR #127 review (10 Nov 2026): the `dco` check runs the workflow file of the pull request or dispatched branch, so someone with write access can push a branch whose `dco.yml` always passes; the hand-run check of `changeset-release/` branches also trusts commit emails, which a client sets. Closing it needs a repository setting: a ruleset rule that requires the DCO workflow from a fixed ref, or limiting who can push to `changeset-release/*`. A CODEOWNERS file would also make the ruleset's code owner review apply.
