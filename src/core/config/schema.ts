@@ -243,8 +243,6 @@ export const configSchema = z
     playwright: z
       .object({
         baseUrl: anyUrl.default("http://localhost:3000").describe("A local app for `explore` to drive when there is no salesforce section."),
-        testDir: z.string().min(1).default("tests").describe("Not used: the reviewed framework profile says where the tests are."),
-        profile: z.string().min(1).default(".agent-qa/framework-profile.json").describe("Not used: the reviewed profile is always agent-qa.profile.json at the project root."),
       })
       .strict()
       .optional()

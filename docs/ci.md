@@ -60,6 +60,8 @@ With Copilot CLI, install `@github/copilot`, pass `--headless copilot`, and set 
 
 ## Azure Pipelines
 
+> **Untested:** Azure DevOps support is built from Microsoft's API docs and tested against stand-ins only; no real Azure DevOps org has run it yet. GitHub and GitLab, which use the same interface, are checked live. Please report what you find ([issue form](https://github.com/taouani/agent-qa/issues/new/choose)).
+
 ```yaml
 trigger: none
 pool: { vmImage: ubuntu-latest }

@@ -89,7 +89,7 @@ agent-qa run scripts --ci --input '{"testCasesRun":"<run id>"}' --accept typeche
 - a git checkout of the repo, with `agent-qa.profile.json` committed (CI never writes it);
 - the test-cases run: run `test-cases` in the same job, or restore `.agent-qa/runs/` (or `AGENT_QA_RUNS_DIR`), which is git-ignored;
 - `policy.writes.testCode` and `policy.writes.commands` not set to `deny` (in CI, anything else allows);
-- a `git` section in `agent-qa.yaml`, for GitHub, Azure DevOps or GitLab.
+- a `git` section in `agent-qa.yaml`, for GitHub, Azure DevOps (untested, see [ci.md](ci.md#azure-pipelines)) or GitLab.
 
   ```yaml
   git:

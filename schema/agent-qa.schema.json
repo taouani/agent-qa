@@ -652,18 +652,6 @@
           "description": "A local app for `explore` to drive when there is no salesforce section.",
           "type": "string",
           "format": "uri"
-        },
-        "testDir": {
-          "default": "tests",
-          "description": "Not used: the reviewed framework profile says where the tests are.",
-          "type": "string",
-          "minLength": 1
-        },
-        "profile": {
-          "default": ".agent-qa/framework-profile.json",
-          "description": "Not used: the reviewed profile is always agent-qa.profile.json at the project root.",
-          "type": "string",
-          "minLength": 1
         }
       },
       "additionalProperties": false

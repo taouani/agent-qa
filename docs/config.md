@@ -147,5 +147,3 @@ A local web app, for `explore` without Salesforce. Optional.
 | Key | Type | Default | What it does |
 |---|---|---|---|
 | `playwright.baseUrl` | URL | `http://localhost:3000` | A local app for `explore` to drive when there is no salesforce section. |
-| `playwright.testDir` | text | `tests` | Not used: the reviewed framework profile says where the tests are. |
-| `playwright.profile` | text | `.agent-qa/framework-profile.json` | Not used: the reviewed profile is always agent-qa.profile.json at the project root. |

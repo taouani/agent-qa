@@ -15,7 +15,7 @@ The context is the same in an IDE and in CI. The host model (Copilot's, for exam
 
 ## Pull requests as context
 
-With `withPullRequests: true` (CLI `--with-pull-requests`), on `requirements`, `test-cases` or `document` from a `key` or `jql`, the analysis also gets the pull requests that name each issue on the git host of the `git` section (GitHub, Azure DevOps or GitLab 15.7 or later, where they are merge requests):
+With `withPullRequests: true` (CLI `--with-pull-requests`), on `requirements`, `test-cases` or `document` from a `key` or `jql`, the analysis also gets the pull requests that name each issue on the git host of the `git` section (GitHub, Azure DevOps (untested: [ci.md](ci.md#azure-pipelines)) or GitLab 15.7 or later, where they are merge requests):
 
 ```bash
 agent-qa run requirements --key ABC-123 --with-pull-requests
