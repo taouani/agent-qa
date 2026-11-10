@@ -145,7 +145,35 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
     .locator(LOOKUP_RECORD)
     .filter({ hasNotText: NOT_A_RECORD })
     .filter({ hasText: option ?? search });
-  await records.first().click({ timeout });
+  // The results redraw a moment after typing, and the last search's can still show: a
+  // click while they redraw is lost, and an entry redrawn in place can become another.
+  // So the click goes to the record that is still the first match 400 ms later.
+  const end = Date.now() + timeout;
+  const left = () => Math.max(1_000, end - Date.now());
+  let clickError = "";
+  for (;;) {
+    const record = await records.first().elementHandle({ timeout: left() });
+    try {
+      if (record) {
+        const text = await record.innerText();
+        await page.waitForTimeout(400);
+        const same = await records
+          .first()
+          .evaluate((el, h) => el === h, record, { timeout: 1_000 })
+          .catch(() => false);
+        if (same && (await record.innerText().catch(() => "")) === text) {
+          const clicked = await record.click({ timeout: left() }).then(
+            () => true,
+            (error: unknown) => ((clickError = error instanceof Error ? error.message.split("\n")[0]! : String(error)), false),
+          );
+          if (clicked) break;
+        }
+      }
+    } finally {
+      await record?.dispose();
+    }
+    if (Date.now() > end) throw new Error(clickError ? `the result for ${search} couldn't be clicked: ${clickError}` : `the results for ${search} kept changing for ${timeout} ms`);
+  }
   await waitForLightning(page, options);
 }
 
