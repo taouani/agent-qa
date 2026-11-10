@@ -1,0 +1,7 @@
+# The files that decide which checks a pull request must pass. With the ruleset's
+# "Require review from Code Owners", a pull request that changes them needs the
+# maintainer's approval (docs/planning/17-repository-settings-guide-2026-11-10.md).
+/.github/workflows/ @taouani
+/.github/CODEOWNERS @taouani
+/scripts/dco.mjs @taouani
+/scripts/check-dco.mjs @taouani

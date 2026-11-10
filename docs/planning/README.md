@@ -17,6 +17,9 @@ How Agent-QA v2 was planned. These are exports of the planning docs, in the orde
 | 11 | [Live check guide (slice 2)](11-live-check-guide-2026-11-05.md) | 5 Nov 2026 |
 | 12 | [Plan and status](12-plan-and-status-2026-11-07.md) | 7 Nov 2026 |
 | 13 | [Live check guide (slice 4)](13-live-check-guide-slice4-2026-11-08.md) | 8 Nov 2026 |
-| 14 | [Plan and status](14-plan-and-status-2026-11-08.md): **the current master plan** | 8 Nov 2026 |
+| 14 | [Plan and status](14-plan-and-status-2026-11-08.md) | 8 Nov 2026 |
+| 15 | [Plan and status](15-plan-and-status-2026-11-10.md): **the current master plan** | 10 Nov 2026 |
+| 16 | [Release live check](16-release-live-check-2026-11-10.md) | 10 Nov 2026 |
+| 17 | [Repository settings guide: DCO and release PRs](17-repository-settings-guide-2026-11-10.md) | 10 Nov 2026 |
 
 The backlog is in [../backlog.md](../backlog.md).
