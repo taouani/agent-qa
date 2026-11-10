@@ -9,7 +9,7 @@ Agent-QA runs on your laptop or a CI runner. It has no server of its own and sen
 | To | What | When |
 |---|---|---|
 | Your Jira, Confluence and Xray Cloud | API reads; test cases, executions and pages it writes | Every workflow that reads requirements; a write only as below |
-| Your git host (GitHub, Azure DevOps, GitLab) | Pull request reads; a pull request it opens | With the `git` section, `--with-pull-requests`, or a CI run that leaves code as a pull request |
+| Your git host (GitHub, GitLab, or Azure DevOps, untested) | Pull request reads; a pull request it opens | With the `git` section, `--with-pull-requests`, or a CI run that leaves code as a pull request |
 | The model | **Masked** text only: prompts and the files a step shows | Every model step: the API model from the CLI, or your IDE's model through MCP |
 | Your Salesforce sandbox | A browser session with the users you configure | `explore`, and the tests Agent-QA runs in your repo |
 | npm | The package download | Install, or each `npx` start |
