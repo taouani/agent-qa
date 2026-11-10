@@ -1,8 +1,8 @@
 {
   "mode": "pre",
-  "tag": "alpha",
+  "tag": "rc",
   "initialVersions": {
-    "sf-agent-qa": "1.0.0"
+    "sf-agent-qa": "2.0.0-alpha.2"
   },
   "changesets": [
     "api-tests",
