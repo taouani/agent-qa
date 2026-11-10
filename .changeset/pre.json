@@ -40,6 +40,7 @@
     "npm-provenance",
     "refactor-workflow",
     "release-candidate",
+    "remove-unused-playwright-keys",
     "report-dashboard",
     "report-rates",
     "requirements-related-features",
