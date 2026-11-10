@@ -3,8 +3,8 @@ name: DCO
 # Every commit of a pull request is signed off by its author (CONTRIBUTING.md).
 on:
   pull_request:
-  # The "Version packages" pull request is opened with GITHUB_TOKEN, which starts no
-  # workflow: a maintainer runs this by hand on its branch (docs/releasing.md).
+  # Run by hand on a "Version packages" branch (docs/releasing.md). Its pull_request run,
+  # once approved, is skipped for the bot author, which counts as passed.
   workflow_dispatch:
 
 permissions:

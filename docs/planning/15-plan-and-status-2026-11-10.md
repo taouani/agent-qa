@@ -49,7 +49,7 @@ Assumption: the slice 3 and 4 live checks are complete. On 8 Nov you called them
 The full list is in [../backlog.md](../backlog.md). These are the ones a user may meet:
 
 - **Azure DevOps** is untested against a real org. GitHub and GitLab, which share its interface, are checked live.
-- **The DCO check** can be changed by the branch it checks, until the repository settings in guide 17 are made.
+- **The DCO check** can be changed by the branch it checks. The settings in guide 17 narrow this, but someone with write access can still fake the check.
 - **Path tokens** differ between machines (each has its own vault key), and a name the detectors miss in one run can show in clear in another.
 - **No address detector**, and `masking.presidio` is accepted but never called.
 - **The vault key on Linux with no Secret Service** can vanish after the session. `AGENT_QA_VAULT_KEY` avoids it, as the docs say.

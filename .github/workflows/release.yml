@@ -44,6 +44,8 @@ jobs:
         id: changesets
         if: env.HAS_NPM_TOKEN == 'true'
         with:
+          # The action opens the pull request with this input, not with the env below.
+          github-token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           version: npx changeset version
           # In prerelease mode (.changeset/pre.json) this publishes to the pre tag (rc);
           # changesets refuses a custom --tag in pre mode, so `next` is added below.

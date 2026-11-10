@@ -2,7 +2,7 @@
 
 10 Nov 2026 · @Tarek AOUANI
 
-These are two settings jobs on GitHub for you (answers 5 and 6 of the 10 Nov alignment), about 20 minutes together. The repository side is already merged: `.github/CODEOWNERS` and the App token step in `release.yml`.
+These are two settings jobs on GitHub for you (answers 5 and 6 of the 10 Nov alignment), about 20 minutes together. The repository side comes with this guide's pull request (#129): `.github/CODEOWNERS` and the App token step in `release.yml`.
 
 ## 1. Stop a pull request from changing the check it is checked by (5 min)
 
@@ -20,6 +20,9 @@ What works on a personal repository instead is code owners:
 - Someone else's pull request that touches a workflow or the DCO scripts can't merge until you approve it.
 - GitHub doesn't let you approve your own pull request, and the ones I open are yours. So when one of mine changes a workflow, you merge it with "Merge without waiting for requirements" (the bypass).
 - Pull requests that don't touch those files don't change at all.
+- The bypass also lets you merge past a failing `dco`, so use it only for your own pull requests.
+
+This narrows the gap; it doesn't close it. Someone with write access could still post a passing `dco` check from a workflow on another branch. On a personal repository only the collaborators you invite have write access, so the risk is small.
 
 ## 2. Release PRs that run their checks without asking (15 min)
 

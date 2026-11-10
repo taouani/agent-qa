@@ -11,9 +11,10 @@ Azure DevOps stays out of scope: 2.0.0 ships with it marked untested (your answe
 ## 0. Fresh install (10 min)
 
 - [ ] In an empty folder: `npx -y sf-agent-qa@next --version` prints the rc's version (rc.4 or later; ask me which).
-- [ ] In your approval-app repo: `npx -y sf-agent-qa@next init --force`. It asks for the site and the Xray key, then prints `agent-qa secret set` lines.
-- [ ] Run each `secret set` line. Then run `npx -y sf-agent-qa@next doctor`: no line fails.
-- [ ] On the corporate network, check that `.vscode/mcp.json` starts `node --use-system-ca`, as in [getting-started.md](../getting-started.md#behind-a-company-network).
+- [ ] In your approval-app repo: `npm install -D sf-agent-qa@next`, then `npx agent-qa --version` prints the same version. Every command below is `npx agent-qa …` from this repo, so it runs that version.
+- [ ] Remove the `agent-qa` entries from `.vscode/mcp.json`, `.mcp.json` and `.cursor/mcp.json` (init keeps an existing one, which may run an older version). Then `npx agent-qa init --force`: it asks for the site and the Xray key, writes the three files again, and prints `agent-qa secret set` lines.
+- [ ] Run each `secret set` line. Then run `npx agent-qa doctor`: no line fails.
+- [ ] On the corporate network, check that `.vscode/mcp.json` starts `node --use-system-ca` on `node_modules/sf-agent-qa`, as in [getting-started.md](../getting-started.md#behind-a-company-network).
 
 ## 1. Copilot in VS Code (30 min)
 
