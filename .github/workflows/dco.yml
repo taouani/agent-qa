@@ -3,8 +3,9 @@ name: DCO
 # Every commit of a pull request is signed off by its author (CONTRIBUTING.md).
 on:
   pull_request:
-  # Run by hand on a "Version packages" branch (docs/releasing.md). Its pull_request run,
-  # once approved, is skipped for the bot author, which counts as passed.
+  # A hand run on a "Version packages" branch checks its commits, but GitHub didn't count it
+  # for the required check on 10 Nov (docs/releasing.md). The approved pull_request run,
+  # skipped for the bot author, is what counts.
   workflow_dispatch:
 
 permissions:
