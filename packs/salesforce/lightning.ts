@@ -145,7 +145,21 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
     .locator(LOOKUP_RECORD)
     .filter({ hasNotText: NOT_A_RECORD })
     .filter({ hasText: option ?? search });
-  await records.first().click({ timeout });
+  // The results redraw a moment after typing, and the last search's can still show: a
+  // click while they redraw is lost. So the click goes to a record that stayed put 400 ms.
+  const end = Date.now() + timeout;
+  for (;;) {
+    const record = await records.first().elementHandle({ timeout: Math.max(1, end - Date.now()) });
+    await page.waitForTimeout(400);
+    const stayed = record ? await record.evaluate((el: { isConnected: boolean }) => el.isConnected) : false;
+    if (record && stayed) {
+      await record.click({ timeout: Math.max(1, end - Date.now()) });
+      await record.dispose();
+      break;
+    }
+    await record?.dispose();
+    if (Date.now() > end) throw new Error(`the results for ${search} kept changing for ${timeout} ms`);
+  }
   await waitForLightning(page, options);
 }
 
