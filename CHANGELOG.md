@@ -1,5 +1,26 @@
 # sf-agent-qa
 
+## 2.0.0-rc.3
+
+### Minor Changes
+
+- 10ece5c: A fresh install is quicker to get right. `agent-qa init` asks in a terminal for the Jira site (`acme` is enough) and the Xray project key, instead of writing a placeholder site. It ends with the exact variables to set, in your shell's syntax. `doctor` names a placeholder site left in `agent-qa.yaml`, and reports a timeout through a proxy as a timeout. New guide: docs/getting-started.md, including Windows and company-network notes.
+- 0c67d98: Repo paths are masked like any other text a model sees. A test file named after a person (`tests/users/marie-curie.spec.ts`) reaches the model, the run's reports and its artifacts as `tests/users/<PATH_CCTXRDPWVM_1>.spec.ts`, and Agent-QA finds the real file again when that path comes back (a read, an edit, a test run, a type check, a pull request). Each part of a path is masked alone, with its suffix kept (`.spec.ts`, `.page.ts`, `.feature`). The token is a keyed hash of the name (a key derived from the vault key), so the same file has the same token in every run on the machine: an audit's finding still names the file in the refactor, and a run-tests selection in debug. This covers the framework listing, the framework profile, the test command shown for approval, test results and failures, type errors, related feature files and refusal messages. Limits: the profile's folder itself is shown as it is; an import inside a file can name a masked file differently from its path; a review glob is matched against the shown paths, so a glob that spells a masked name matches nothing; tokens differ between machines (CI and a laptop have different vault keys).
+- e91527f: The model catalog lists Anthropic's current models only (Claude Opus 5.5, Fable 5.1, Sonnet 5.5, Haiku 5.5 and Opus 5). OpenAI, Google, Mistral and xAI models still run with their own keys, but `doctor` warns that they are untested. Until they are listed, they are best reached through OpenRouter or LiteLLM. `doctor` names the listed IDs when an Anthropic ID isn't one of them, a likely typo. See docs/models.md.
+- f8b49a6: `agent-qa report --html [file]` writes a dashboard to `.agent-qa/report.html`: one self-contained HTML file with no script and no network call. It shows the kept and runnable rates against their targets week by week, the last `agent-qa harness` run, masking totals by detector, and the latest runs with their cost. `agent-qa harness` now also saves its report to `.agent-qa/harness/last-report.json` for it.
+- 3781ece: `agent-qa report` shows the kept rate (test cases kept as written in review) and the runnable rate (generated tests that pass again and again) from the project's own runs, overall and week by week, against the 95% and 90% targets. `--weeks <n>` sets how many weeks it shows, and `--json` prints it all for a spreadsheet. As before, `--yes` reviews and harness runs never count. docs/rates.md says how to collect the rates over 4 to 6 sprints.
+
+### Patch Changes
+
+- aed2761: Contributing guide, issue and pull request templates, and a DCO sign-off check on pull requests.
+- 81bb566: Every key of `agent-qa.yaml` now has a description, shown by editors that read the schema and listed in the new reference, docs/config.md. A troubleshooting page and a documentation index in the README.
+- 624f510: Gherkin parsing moves to `@cucumber/gherkin` 39 and `@cucumber/messages` 32, which no longer depend on the `uuid` release with a moderate advisory.
+- 72fa3e7: Each release is now checked as a new user installs it. CI packs the package, checks its files and size, and installs it into an empty project on Ubuntu and Windows. There it runs `--version`, `init`, `doctor --offline` and the offline harness. A stable release also moves `next` to it and deprecates the empty 0.0.0 placeholder.
+- bf14755: The Salesforce pack's `fillLookup` helper clicks a lookup result only once it has stayed the first match, unchanged, for 400 ms. Before, a click that landed while Lightning redrew the list could be lost, leaving the field on its previous record.
+- ddd245a: First release candidate of Agent-QA v2. It goes on the `next` tag, and `npm i sf-agent-qa` still gives the 0.0.0 placeholder until 2.0.0.
+- ac572bb: `agent-qa secret set NAME` stores a key in the OS keychain from a hidden prompt (or piped in), and `agent-qa secret delete NAME` removes it. `init` now points `agent-qa.yaml` at the keychain (`${keychain:…}`) when it asks you at a terminal on macOS or Windows, so your IDE finds the keys however it is started; `--secrets env` keeps environment variables.
+- 587618e: Security policy and data-handling page: SECURITY.md (how to report a vulnerability, supported versions) and docs/security.md (what leaves the machine, masking and its limits, the vault, the policy layer, secrets, what a model can do, the supply chain). Expired run vaults are now deleted from disk the next time a vault is opened, instead of only being refused. CI fails on a high or critical advisory in a runtime dependency, checked on every pull request and weekly.
+
 ## 2.0.0-alpha.2
 
 ### Minor Changes
