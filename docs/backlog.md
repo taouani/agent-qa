@@ -73,15 +73,18 @@ The audit log records what was asked and its outcome, but not who said yes. Reco
 ## Release and repository
 
 From the slice 5 reviews (9 Nov 2026):
-- Repository settings, for Tarek: protect `master` with the DCO and CI checks required (today nothing blocks a merge); turn on private vulnerability reporting, which SECURITY.md and the issue form rely on; and turn on sign-off for web-based commits, which CONTRIBUTING.md relies on.
-- CODEOWNERS on `.github/workflows/` and `scripts/dco*.mjs`. A pull request runs its own workflow file, so only branch protection and code owners stop one from skipping its DCO step.
-- "Version packages" pull requests are opened with the workflow's own token, so GitHub runs no checks on them: CI is started by hand on `changeset-release/master`. A GitHub App token for the changesets step would run them, and the `install` jobs with them.
 - `@cucumber/gherkin` stays on 39 while `engines` allows Node 20 before 20.10: releases 40 and later need import attributes.
 - `@playwright/test` stays at 1.49.1 as the oldest supported version; its advisory covers only `playwright install`. `esbuild`'s dev-server advisory doesn't apply (no dev server runs), and goes when tsup allows 0.28.
-- `playwright.testDir` and `playwright.profile` in `agent-qa.yaml` are read by nothing: the reviewed profile is always `agent-qa.profile.json`. Removing them is a breaking config change.
 - The lint message for an import of `src/index.ts` from inside `src` has an empty target name.
 
 ## Done or moved into a slice
+
+### Release and repository items (10 Nov 2026)
+
+- The repository settings are on: `dco` required on `master`, private vulnerability reporting, sign-off for web commits.
+- CODEOWNERS covers the workflows and the DCO scripts (#129). The settings that make it count are in [planning/17](planning/17-repository-settings-guide-2026-11-10.md).
+- Release pull requests use a GitHub App's token once its secrets are set (#129, same guide). Without them, the maintainer approves their runs.
+- `playwright.testDir` and `playwright.profile` were removed before 2.0.0 (#130).
 
 ### Healing existing scripts
 

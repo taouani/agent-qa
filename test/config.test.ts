@@ -69,8 +69,6 @@ harness:
 
 playwright:
   baseUrl: http://localhost:3000
-  testDir: tests
-  profile: .agent-qa/framework-profile.json
 `;
 
 function problems(text: string) {
@@ -89,6 +87,10 @@ describe("agent-qa.yaml", () => {
     expect(config.git?.platform).toBe("github");
     expect(config.models?.default).toBe("anthropic:claude-model-x");
     expect(config.harness?.sources).toHaveLength(2);
+  });
+
+  it("refuses playwright.testDir and playwright.profile, removed before 2.0.0, by name", () => {
+    expect(JSON.stringify(problems("version: 1\nplaywright:\n  testDir: tests\n  profile: x.json\n"))).toMatch(/testDir.*profile|profile.*testDir/);
   });
 
   it("needs only a version, and applies safe defaults", () => {
