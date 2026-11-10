@@ -4,9 +4,9 @@ v1 is a markdown prompt pack that you install into a project, and your IDE's mod
 
 v1 stays available and unchanged at tag `v1.0.0` on the [`v1` branch](https://github.com/taouani/agent-qa/tree/v1). Its install commands still work. You can use both side by side: they keep their files in different places (v1 in `agent-qa/`, v2 in `agent-qa.yaml` and `.agent-qa/`).
 
-## What the alpha covers
+## What v2 covers
 
-| v1 command | v2 alpha | Notes |
+| v1 command | v2 | Notes |
 |---|---|---|
 | `analyze-requirements` | `requirements` workflow | Jira issue key or JQL filter, with children (epic, story, sub-task), linked issues and their children, and linked Confluence pages. Gives a quality score, gaps, open questions and inferred criteria for each issue. |
 | `generate-test-cases` | `test-cases` workflow | At least one case per acceptance criterion, at most 30 per issue, `TC-{KEY}-{NNN}`, P1 to P4. You review the cases before they're kept. They're then pushed straight to Xray Cloud (create or update), not exported as CSV. |

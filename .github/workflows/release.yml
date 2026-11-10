@@ -33,7 +33,7 @@ jobs:
         if: env.HAS_NPM_TOKEN == 'true'
         with:
           version: npx changeset version
-          # In prerelease mode (.changeset/pre.json) this publishes to the pre tag (alpha);
+          # In prerelease mode (.changeset/pre.json) this publishes to the pre tag (rc);
           # changesets refuses a custom --tag in pre mode, so `next` is added below.
           publish: npm run release
         env:
