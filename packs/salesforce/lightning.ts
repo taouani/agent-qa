@@ -150,6 +150,7 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
   // So the click goes to the record that is still the first match 400 ms later.
   const end = Date.now() + timeout;
   const left = () => Math.max(1_000, end - Date.now());
+  let clickError = "";
   for (;;) {
     const record = await records.first().elementHandle({ timeout: left() });
     try {
@@ -163,7 +164,7 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
         if (same && (await record.innerText().catch(() => "")) === text) {
           const clicked = await record.click({ timeout: left() }).then(
             () => true,
-            () => false,
+            (error: unknown) => ((clickError = error instanceof Error ? error.message.split("\n")[0]! : String(error)), false),
           );
           if (clicked) break;
         }
@@ -171,7 +172,7 @@ export async function fillLookup(scope: Page | Locator, label: string, search: s
     } finally {
       await record?.dispose();
     }
-    if (Date.now() > end) throw new Error(`the results for ${search} kept changing for ${timeout} ms`);
+    if (Date.now() > end) throw new Error(clickError ? `the result for ${search} couldn't be clicked: ${clickError}` : `the results for ${search} kept changing for ${timeout} ms`);
   }
   await waitForLightning(page, options);
 }
