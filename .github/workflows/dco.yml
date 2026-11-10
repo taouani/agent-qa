@@ -11,22 +11,27 @@ permissions:
   contents: read
 
 jobs:
+  # One job, so each commit gets exactly one `dco` check run (master requires it):
+  # a second job of the same name would report "skipped", which counts as passed.
   dco:
-    # Bot pull requests ("Version packages") carry no sign-off; a skipped job counts as passed.
-    if: github.event_name == 'pull_request' && github.event.pull_request.user.type != 'Bot'
+    # Bot pull requests ("Version packages") start no run; a maintainer runs this by hand
+    # on their branch instead (workflow_dispatch).
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v5
+        if: github.event_name == 'pull_request'
         with:
           node-version: 22
       # The check's own scripts come from the base branch, so a pull request can't change
       # the rules it is checked by. Only a pull request that adds them runs its own copy.
       - name: Take the check from the base branch
+        if: github.event_name == 'pull_request'
         run: |
           git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
           for f in dco.mjs check-dco.mjs; do
@@ -36,24 +41,16 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
       # The range is against the base branch as it is now, so commits merged into the
       # pull request from it ("Update branch") are not counted as the pull request's.
-      - run: node "$RUNNER_TEMP/check-dco.mjs" "origin/$BASE_REF" HEAD
+      - if: github.event_name == 'pull_request'
+        run: node "$RUNNER_TEMP/check-dco.mjs" "origin/$BASE_REF" HEAD
         env:
           BASE_REF: ${{ github.base_ref }}
           # Agent-authored commits pass only on a maintainer's own pull request, from this repository.
           MAINTAINER_PR: ${{ contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) && github.event.pull_request.head.repo.full_name == github.repository }}
-
-  # Run by hand on changeset-release/master: passes only when every commit there that
-  # master lacks is the release workflow's own (no person's commit to sign off).
-  release-branch:
-    name: dco
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          persist-credentials: false
+      # Run by hand on changeset-release/master: passes only when every commit there that
+      # master lacks is the release workflow's own (no person's commit to sign off).
       - name: Only the release workflow's commits
+        if: github.event_name == 'workflow_dispatch'
         run: |
           case "$GITHUB_REF_NAME" in changeset-release/*) ;; *) echo "::error::run by hand only on a changeset-release/ branch"; exit 1;; esac
           git fetch --no-tags origin "+refs/heads/master:refs/remotes/origin/master"
