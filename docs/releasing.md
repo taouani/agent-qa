@@ -10,7 +10,7 @@ For maintainers. Releases are cut by `.github/workflows/release.yml` with [Chang
 
 ## Prereleases
 
-While `.changeset/pre.json` exists, Changesets is in pre mode. Versions get the pre tag (`2.0.0-alpha.2`) and go on that dist-tag. The workflow then also puts them on `next`. A plain `npm install sf-agent-qa` keeps giving `latest`.
+While `.changeset/pre.json` exists, Changesets is in pre mode. Versions get the pre tag (`2.0.0-rc.3`) and go on that dist-tag. The workflow then also puts them on `next`. A plain `npm install sf-agent-qa` keeps giving `latest`.
 
 To move from alpha to a release candidate, commit this in a pull request, together with a changeset:
 
@@ -19,7 +19,7 @@ npx changeset pre exit
 npx changeset pre enter rc
 ```
 
-In pre mode, Changesets only versions changesets that `pre.json` doesn't list yet, so the pull request needs a changeset of its own (or the rc waits for the next one). The prerelease number carries on from the alpha: after `2.0.0-alpha.2` comes `2.0.0-rc.3`. Check the version in the "Version packages" pull request before merging it.
+In pre mode, Changesets only versions changesets that `pre.json` doesn't list yet, so the pull request needs a changeset of its own (or the rc waits for the next one). The prerelease number carries on from the alpha: after `2.0.0-alpha.2` comes `2.0.0-rc.3`. Check the version in the "Version packages" pull request before merging it. After the first rc is published, the `alpha` dist-tag still points at the last alpha: remove it with `npm dist-tag rm sf-agent-qa alpha`.
 
 ## The stable release
 
